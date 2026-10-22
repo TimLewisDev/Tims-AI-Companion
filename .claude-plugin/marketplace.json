@@ -1,0 +1,16 @@
+{
+  "name": "tims-ai-companion",
+  "owner": {
+    "name": "Tim Lewis"
+  },
+  "metadata": {
+    "description": "Tatty, a companion app for the TT toolbox: a friendlier way to see and drive the workflow. The toolbox works the same without it."
+  },
+  "plugins": [
+    {
+      "name": "tatty",
+      "source": "./plugins/tatty",
+      "description": "Tatty, a companion app for the TT toolbox (Tims-AI-Toolbox): your features, their workflow and documents, and their sessions, in a window beside you"
+    }
+  ]
+}

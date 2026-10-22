@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""page-check.py: load Tatty's page in a headless Chromium browser
+(Edge or Chrome) over the DevTools protocol, wait for it to settle, then run
+JavaScript in it: report what rendered, and optionally pick an answer to the
+newest open question the way a person would. Standard library only.
+
+usage: page-check.py <browser exe> <page url> [--answer <option label>] [--say <text>]
+       page-check.py attach <devtools port> [--answer <option label>] [--say <text>]
+Prints one JSON object: {"text": <the page's visible text>, "cards": n, "asks": n, ...}.
+"""
+
+import base64
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+
+def ws_connect(url):
+    host, rest = url[len("ws://"):].split("/", 1)
+    h, p = host.split(":")
+    s = socket.create_connection((h, int(p)), timeout=30)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f"GET /{rest} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        buf += s.recv(4096)
+    if b" 101 " not in buf.split(b"\r\n")[0]:
+        raise RuntimeError(buf[:200])
+    return s
+
+
+def ws_send(s, text):
+    data = text.encode()
+    head = bytearray([0x81])
+    n = len(data)
+    if n < 126:
+        head.append(0x80 | n)
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + n.to_bytes(2, "big")
+    else:
+        head += bytes([0x80 | 127]) + n.to_bytes(8, "big")
+    mask = os.urandom(4)
+    s.sendall(bytes(head) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+
+def recv_exact(s, n):
+    out = b""
+    while len(out) < n:
+        chunk = s.recv(n - len(out))
+        if not chunk:
+            raise EOFError
+        out += chunk
+    return out
+
+
+def ws_recv(s):
+    msg = b""
+    while True:
+        b0, b1 = recv_exact(s, 2)
+        n = b1 & 0x7F
+        if n == 126:
+            n = int.from_bytes(recv_exact(s, 2), "big")
+        elif n == 127:
+            n = int.from_bytes(recv_exact(s, 8), "big")
+        msg += recv_exact(s, n)
+        if b0 & 0x80:
+            return msg.decode("utf-8", "replace")
+
+
+class Page:
+    def __init__(self, ws):
+        self.ws, self.n = ws, 0
+
+    def call(self, method, **params):
+        self.n += 1
+        ws_send(self.ws, json.dumps({"id": self.n, "method": method, "params": params}))
+        while True:
+            m = json.loads(ws_recv(self.ws))
+            if m.get("id") == self.n:
+                return m
+
+    def js(self, expr):
+        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
+        res = r.get("result", {})
+        if "exceptionDetails" in res:
+            raise RuntimeError(json.dumps(res["exceptionDetails"])[:500])
+        return res.get("result", {}).get("value")
+
+
+def main(argv):
+    if len(argv) < 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    answer = argv[argv.index("--answer") + 1] if "--answer" in argv else None
+    say = argv[argv.index("--say") + 1] if "--say" in argv else None
+    # attach <port>: a page already open elsewhere (Tatty's companion, started
+    # with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>)
+    attach = argv[0] == "attach"
+    proc = None
+    if attach:
+        port, url = int(argv[1]), None
+    else:
+        exe, url = argv[0], argv[1]
+        port = 9300 + os.getpid() % 500
+        profile = tempfile.mkdtemp()
+        proc = subprocess.Popen([exe, "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={profile}",
+                                 f"--remote-debugging-port={port}", "about:blank"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            try:
+                tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2))
+                page = next(t for t in tabs if t.get("type") == "page" and (not attach or "127.0.0.1" in t.get("url", "")))
+                break
+            except (OSError, StopIteration, ValueError):
+                time.sleep(0.2)
+        else:
+            print("the browser's DevTools port never answered", file=sys.stderr)
+            return 2
+        p = Page(ws_connect(page["webSocketDebuggerUrl"]))
+        p.call("Runtime.enable")
+        if url:
+            p.call("Page.navigate", url=url)
+        out = {}
+        for _ in range(60):  # until the status table and the feed have arrived
+            time.sleep(0.5)
+            ready = p.js("!!document.querySelector('#status-body table, #status-body .st, #status-body p:not(.dim)') && document.querySelector('#conn').textContent === 'connected'")
+            if ready:
+                break
+        time.sleep(0.5)
+        out["body_class"] = p.js("document.body.className")
+        out["visible_cards"] = p.js("[...document.querySelectorAll('#feed > .card')].filter(c => c.offsetParent !== null).length")
+        out["conn"] = p.js("document.querySelector('#conn').textContent")
+        out["mod"] = p.js("document.querySelector('#mod').textContent")
+        out["cards"] = p.js("document.querySelectorAll('#feed .card').length")
+        out["asks"] = p.js("document.querySelectorAll('#feed .card.ask:not(.done)').length")
+        out["status_rows"] = p.js("document.querySelectorAll('#status-body tbody tr').length")
+        out["banner"] = p.js("(document.querySelector('#status-body pre.banner')||{}).textContent||''")
+        out["markdown"] = p.js("[...document.querySelectorAll('#feed .md')].map(n => n.innerHTML).join('\\n')")
+        if answer is not None:
+            out["answered"] = p.js(f"""(() => {{
+                const open = document.querySelectorAll('#feed .card.ask:not(.done)'); const card = open[open.length - 1];
+                if (!card) return 'no open question';
+                const opt = [...card.querySelectorAll('.opt')].find(o => o.textContent.includes({json.dumps(answer)}));
+                if (!opt) return 'no such option';
+                opt.click();
+                const send = [...card.querySelectorAll('button')].find(b => b.textContent === 'Send answer');
+                if (send.disabled) return 'send still disabled';
+                send.click();
+                return 'clicked';
+            }})()""")
+            time.sleep(1.5)
+            out["done_cards"] = p.js("document.querySelectorAll('#feed .card.ask.done').length")
+        if say is not None:
+            p.js(f"document.querySelector('#say').value = {json.dumps(say)}; document.querySelector('#chat').requestSubmit(); 'sent'")
+            time.sleep(1)
+            out["you_cards"] = p.js("document.querySelectorAll('#feed .card.you').length")
+        p.js("document.querySelector('.tabs button[data-tab=docs]').click()")
+        for _ in range(30):
+            time.sleep(0.5)
+            if p.js("!!document.querySelector('#docs-body .md')"):
+                break
+        out["docs_headings"] = p.js("[...document.querySelectorAll('#docs-body h1,#docs-body h2,#docs-body h3,#docs-body h4')].map(h => h.textContent).slice(0, 5)")
+        out["text"] = p.js("document.body.innerText")[:1500]
+        print(json.dumps(out, indent=1))  # ASCII, whatever the console's code page
+        return 0
+    finally:
+        if proc:
+            proc.kill()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

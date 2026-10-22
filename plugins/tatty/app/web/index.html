@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tatty</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
+     (drag to move, double-click to maximise). -->
+<div id="companion-bar" title="">
+  <span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong>
+  <span class="spacer"></span>
+  <button type="button" id="expand" title="Your features, their status and documents">Full panel</button>
+  <button type="button" id="max" title="Fill the screen">Maximise</button>
+  <button type="button" id="collapse" title="Back to the bubble">Compact</button>
+  <button type="button" id="hide" title="Tuck Tatty away until something happens">×</button>
+</div>
+<header>
+  <div class="brand"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong> <span class="dim">your TT toolbox companion</span></div>
+  <nav class="pnav">
+    <a href="#home" data-page="home">Features</a>
+    <a href="#toolbox" data-page="toolbox">Toolbox</a>
+  </nav>
+  <div class="where dim" id="cwd"></div>
+  <div class="badges">
+    <span class="badge" id="conn" title="Connection to the window server">connecting…</span>
+    <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>
+    <button type="button" id="chat-toggle" title="Show or hide the chat">Chat</button>
+  </div>
+</header>
+
+<main>
+  <!-- Features: Tatty's root folder; one card per feature (features.js). -->
+  <section class="page" id="page-home"></section>
+  <!-- One feature: its documents on the left, where it stands on the right. -->
+  <section class="page" id="page-feature"></section>
+  <!-- Toolbox: status of any folder, connections and the toolbox's docs. -->
+  <section class="page" id="page-toolbox">
+  <nav class="rail">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="status" class="on">Status</button>
+      <button role="tab" data-tab="connections">Connections</button>
+      <button role="tab" data-tab="docs">Docs</button>
+    </div>
+
+    <section class="pane on" id="tab-status">
+      <form class="row" id="dir-form">
+        <input id="dir" placeholder="folder with tt documents (blank: the session's folder)" aria-label="Folder">
+        <button type="submit">Look</button>
+      </form>
+      <div id="status-body" class="body"></div>
+    </section>
+
+    <section class="pane" id="tab-connections">
+      <div class="row"><button id="conn-refresh">Check again</button><span class="dim small">runs each check; can take a few seconds</span></div>
+      <div id="connections-body" class="body"></div>
+    </section>
+
+    <section class="pane" id="tab-docs">
+      <div class="row"><button id="docs-start">Where to start</button><button id="docs-topics">Topics</button></div>
+      <form class="row" id="about-form">
+        <input id="about" placeholder="a skill or topic, e.g. tt-workflow, work units" aria-label="Skill or topic">
+        <button type="submit">Read</button>
+      </form>
+      <div id="docs-body" class="body md"></div>
+    </section>
+  </nav>
+  </section>
+
+  <section class="feed-col">
+    <div id="feed" aria-live="polite"></div>
+    <form id="chat">
+      <textarea id="say" rows="2" placeholder="Ask Tatty something…  (Enter sends, Shift+Enter for a new line)"></textarea>
+      <button type="submit">Send</button>
+      <div class="note dim small">Never paste a token, password or key here; enter secrets in your own shell or through <code>/mcp</code>.</div>
+      <div class="note dim small" id="chat-mode"></div>
+    </form>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+<script src="/static/features.js"></script>
+</body>
+</html>

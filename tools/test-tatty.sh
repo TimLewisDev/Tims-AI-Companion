@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# test-tatty.sh: smoke tests for Tatty (plugins/tatty/scripts/tatty.sh and
+# plugins/tatty/app/server.py), with throwaway state and no window shown.
+# Needs bash, curl and Python 3.8+; skips (exit 0) without Python or curl.
+# The workflow pages need the TT toolbox: TATTY_TOOLBOX names a Tims-AI-Toolbox
+# checkout, else the installed one is used (~/.claude/tt-plugins/core); without
+# either, those checks are skipped. Prints one line per check and a count; exit 1
+# on failure.
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+W="$root/plugins/tatty/scripts/tatty.sh"
+TR="$root/plugins/tatty/scripts/tatty-root.sh"
+SRV="$root/plugins/tatty/app/server.py"
+T=$(mktemp -d)
+
+# The toolbox, found before CLAUDE_CONFIG_DIR is pointed at the throwaway folder.
+if [ -z "${TATTY_TOOLBOX:-}" ] && [ -f "${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tt-plugins}/core/skills/tt-common/scripts/workflow-state.sh" ]; then
+	export TATTY_TOOLBOX="${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tt-plugins}/core"
+fi
+# Everything else is the tests' own: Tatty's state, the Claude config folder
+# (open sessions' names), the events ledger and the workflow's links.
+export CLAUDE_CONFIG_DIR="$T/claude" TATTY_HOME="$T/home" TT_EVENTS_HOME="$T/events" TT_WORKFLOW_HOME="$T/workflow"
+mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+# A stand-in for Windows' folder dialog: "chooses" what $T/pick-answer says.
+printf '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done\ncat "%s/pick-answer" >"$out" 2>/dev/null\n' "$T" >"$T/picker.sh"
+export TATTY_PICKER="$T/picker.sh"
+# Start reports the session it would open instead of opening it.
+export TATTY_DRYRUN=1
+trap 'bash "$W" close >/dev/null 2>&1; rm -rf "$T"' EXIT
+pass=0; fail=0
+
+ok() { pass=$((pass + 1)); echo "ok    $1"; }
+bad() { fail=$((fail + 1)); echo "FAIL  $1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; }
+# expect <name> <exit code> <command...>: the command exits with the code
+expect() { local n=$1 want=$2; shift 2; "$@" >"$T/out" 2>&1; local rc=$?; [ "$rc" = "$want" ] && ok "$n" || bad "$n" "exit $rc, wanted $want: $(head -c 300 "$T/out")"; }
+has() { grep -qF -- "$3" "$2" && ok "$1" || bad "$1" "missing: $3"; }
+hasnt() { grep -qF -- "$3" "$2" && bad "$1" "unexpected: $3" || ok "$1"; }
+finish() { bash "$W" close >/dev/null 2>&1; echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]; exit; }
+
+echo "# tatty.sh"
+expect "no Python: exit 3" 3 env TATTY_PYTHON=no-such-python bash "$W" status
+if ! bash "$W" status >/dev/null 2>&1 && [ $? = 3 ] || ! command -v curl >/dev/null 2>&1; then
+	echo "skip  no Python 3.8+ or no curl: Tatty's tests need both"
+	finish
+fi
+PY=python; command -v python3 >/dev/null 2>&1 && python3 -c 1 2>/dev/null && PY=python3
+json() { $PY -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$TATTY_HOME/server.json"; }
+# pick <file> <python expression over d>: print what the JSON answer holds
+pick() { $PY -c "import json, sys; d = json.load(open(sys.argv[1], encoding='utf-8')); print($2)" "$1"; }
+TOOLBOX=0; [ -n "${TATTY_TOOLBOX:-}" ] && TOOLBOX=1
+
+expect "usage" 2 bash "$W"
+expect "status before open" 1 bash "$W" status
+has "says not open" "$T/out" "not open"
+expect "show before open" 1 bash -c "echo hi | bash '$W' show text Hi"
+expect "open" 0 bash "$W" open --no-browser
+has "prints the URL" "$T/out" "http://127.0.0.1:"
+expect "open again reuses it" 0 bash "$W" open --no-browser
+expect "status" 0 bash "$W" status
+has "attached" "$T/out" "attached"
+hasnt "no session yet" "$T/out" "claude mod"
+[ -f "$TATTY_HOME/server.json" ] && ok "state in TATTY_HOME" || bad "state in TATTY_HOME"
+
+P=$(json x 'd["port"]'); K=$(json x 'd["token"]'); U="http://127.0.0.1:$P"
+get() { curl -s -H "X-TT-Token: $K" "$U$1"; }
+post() { curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U$1"; }
+code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+get /api/events >"$T/ev"
+has "a fresh window greets" "$T/ev" '"title": "Tatty"'
+[ "$(code "$U/api/status")" = 403 ] && ok "no token: 403" || bad "no token: 403"
+[ "$(code -H "X-TT-Token: wrong" "$U/api/status")" = 403 ] && ok "wrong token: 403" || bad "wrong token: 403"
+[ "$(code -H "Host: evil.example:$P" -H "X-TT-Token: $K" "$U/api/status")" = 403 ] && ok "foreign Host: 403" || bad "foreign Host: 403"
+[ "$(code "$U/")" = 200 ] && ok "page served" || bad "page served"
+[ "$(code "$U/static/../server.py")" = 404 ] && ok "only the page's files" || bad "only the page's files"
+[ "$(code "$U/static/features.js")" = 200 ] && ok "features.js served" || bad "features.js served"
+[ "$(code -H "X-TT-Token: $K" "$U/api/view/rm")" = 404 ] && ok "unknown view refused" || bad "unknown view refused"
+
+expect "show" 0 bash -c "printf 'line one\r\n┌─┐ ◉\n' | bash '$W' show markdown 'A title'"
+get /api/events >"$T/ev"
+has "card kept" "$T/ev" '"title": "A title"'
+$PY -c "import json,sys; b=json.load(open(sys.argv[1]))[-1]['body']; sys.exit(b != 'line one\n┌─┐ ◉\n')" "$T/ev" &&
+	ok "CRLF folded, UTF-8 kept" || bad "CRLF folded, UTF-8 kept" "$(head -c 200 "$T/ev")"
+expect "bad kind refused" 2 bash -c "echo x | bash '$W' show nope T"
+
+Q='{"questions":[{"question":"Go ahead?","header":"Update","multiSelect":false,"options":[{"label":"Go ahead","description":"pull"},{"label":"No","description":"stop"}]}]}'
+expect "ask, no answer yet" 5 bash -c "echo '$Q' | bash '$W' ask --wait 1"
+has "prints the id" "$T/out" "id="
+id=$(sed -n 's/^id=//p' "$T/out")
+post /api/reply "{\"id\":\"$id\",\"answers\":{\"Go ahead?\":\"No\"}}" >/dev/null
+expect "answer after a reply" 0 bash "$W" answer "$id" --wait 2
+has "header and answer" "$T/out" "$(printf 'Update\tNo')"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"id\":\"$id\",\"answers\":{}}" "$U/api/reply")" = 409 ] &&
+	ok "answered once only" || bad "answered once only"
+
+( sleep 1; get /api/events | $PY -c "import json,sys; print([e for e in json.load(sys.stdin) if e['type']=='ask'][-1]['id'])" >"$T/qid"
+	post /api/reply "{\"id\":\"$(cat "$T/qid")\",\"declined\":true}" >/dev/null ) &
+expect "declined: exit 6" 6 bash -c "echo '$Q' | bash '$W' ask --wait 10"
+wait
+expect "not JSON" 2 bash -c "echo nope | bash '$W' ask"
+expect "too few options" 2 bash -c "echo '{\"questions\":[{\"question\":\"Q?\",\"options\":[\"one\"]}]}' | bash '$W' ask"
+expect "unknown id" 2 bash "$W" answer nope --wait 0
+
+expect "listen, nothing yet" 5 bash "$W" listen --wait 1
+post /api/say '{"text":"which skill for a bug?"}' >/dev/null
+expect "listen" 0 bash "$W" listen --wait 2
+has "the typed message" "$T/out" "which skill for a bug?"
+
+post /api/hello '{"session":"s1"}' >/dev/null
+expect "status with a session" 0 bash "$W" status
+has "a session works with Tatty" "$T/out" "attached (claude mod)"
+
+echo "# tatty-root.sh"
+expect "no root set: exit 1" 1 env TATTY_HOME="$T/tr" bash "$TR"
+has "prints the default" "$T/out" "/Tatty"
+expect "relative path refused" 2 env TATTY_HOME="$T/tr" bash "$TR" set some/where
+expect "the Claude folder refused" 2 env TATTY_HOME="$T/tr" CLAUDE_CONFIG_DIR="$HOME/.claude" bash "$TR" set "$HOME/.claude/features-here" --create
+expect "a missing folder refused" 2 env TATTY_HOME="$T/tr" bash "$TR" set "$T/nope"
+expect "set --create" 0 env TATTY_HOME="$T/tr" bash "$TR" set "$T/myroot" --create
+[ -d "$T/myroot/features" ] && ok "made the features folder" || bad "made the features folder"
+expect "features folder" 0 env TATTY_HOME="$T/tr" bash "$TR" features
+has "is under the root" "$T/out" "myroot/features"
+
+echo "# without the toolbox"
+$PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, sys
+os.environ.pop("TATTY_TOOLBOX", None); os.environ["TT_PLUGINS_HOME"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+print("core:", m.toolbox_core())
+class S: cwd = "."; bash = "bash"
+print("view:", m.run_view(S, "where", {})["stderr"])
+EOF
+has "no toolbox found" "$T/f" "core: None"
+has "a view says so" "$T/f" "can't find the TT toolbox"
+
+[ "$TOOLBOX" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
+
+echo "# toolbox views"
+FX="$T/fxroot"; cp -r "$root/tools/fixtures/tatty-root" "$FX"
+FX=$(cd "$FX" && { pwd -W 2>/dev/null || pwd; })
+D=$(cd "$FX/features/Demo" && { pwd -W 2>/dev/null || pwd; })
+get "/api/view/where?dir=$($PY -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$D")" >"$T/view"
+has "where view runs workflow-state" "$T/view" 'Demo\tprimary\t'
+get "/api/view/hello" >"$T/view"
+has "hello view runs the toolbox's banner" "$T/view" '"exit": 0'
+
+echo "# features pages"
+DEMO=$($PY -c "import sys, pathlib; print(pathlib.Path(sys.argv[1]).resolve().as_posix())" "$FX/features/Demo")
+mkdir -p "$TT_EVENTS_HOME"
+printf '{"v":1,"ts":"2026-10-01T09:00:00Z","event":"plan.signed_off","prefix":"Demo","folder":"%s","route":"full","qualifier":"","approx":false}\n' "$DEMO" >"$TT_EVENTS_HOME/events.jsonl"
+printf '{"v":1,"ts":"2026-10-02T15:00:00Z","event":"build.unit_validated","prefix":"Demo","folder":"%s","route":"full","qualifier":"WU1","approx":true}\n' "$DEMO" >>"$TT_EVENTS_HOME/events.jsonl"
+printf '{"v":1,"ts":"2026-10-03T15:00:00Z","event":"build.complete","prefix":"Other","folder":"C:/somewhere/else","route":"full","qualifier":"","approx":false}\n' >>"$TT_EVENTS_HOME/events.jsonl"
+get /api/root >"$T/j"
+has "root not set yet" "$T/j" '"isSet": false'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"path\":\"$(cd "$CLAUDE_CONFIG_DIR" && { pwd -W 2>/dev/null || pwd; })/x\",\"create\":true}" "$U/api/root")" = 400 ] &&
+	ok "root in the Claude folder refused" || bad "root in the Claude folder refused"
+has "a folder dialog is available" "$T/j" '"picker": true'
+: >"$T/pick-answer"
+post /api/pick-folder '{"start":""}' >"$T/j"
+has "dialog cancelled" "$T/j" '"cancelled": true'
+printf '%s/features' "$FX" >"$T/pick-answer"
+post /api/pick-folder '{"start":""}' >"$T/j"
+has "dialog chose a folder" "$T/j" "fxroot/features"
+CHOSEN=$(pick "$T/j" "d['path']")
+post /api/root "{\"path\":\"$CHOSEN\"}" >"$T/j"
+has "root set" "$T/j" '"isSet": true'
+pick "$T/j" "d['root']" >"$T/f"
+hasnt "picking a features folder means its parent" "$T/f" "fxroot/features"
+has "the parent is the root" "$T/f" "fxroot"
+[ -s "$TATTY_HOME/root" ] && ok "the root setting is Tatty's" || bad "the root setting is Tatty's"
+get /api/features >"$T/j"
+has "the toolbox is found" "$T/j" '"toolbox": true'
+pick "$T/j" "'\n'.join(f['name'] + ' ' + f['route'] + ' ' + f['phase'] for f in d['features'])" >"$T/f"
+has "Demo is building" "$T/f" "Demo full building"
+has "Draft is planning" "$T/f" "Draft full planning"
+has "Bugfix is a bug" "$T/f" "Bugfix bug debug-done"
+has "Empty is new" "$T/f" "Empty new empty"
+pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['tasks']" >"$T/f"
+has "Demo's task counts" "$T/f" "{'done': 3, 'total': 4}"
+get "/api/feature?name=Demo" >"$T/j"
+pick "$T/j" "' | '.join(x['doc'] for x in d['docList'])" >"$T/f"
+has "documents in workflow order" "$T/f" "Comprehensive Tech Plan | Task Breakdown | Task Status"
+pick "$T/j" "' '.join(u['id'] + ':' + u['status'] for u in d['unitList'])" >"$T/f"
+has "work units" "$T/f" "WU1:Done WU2:In Progress"
+pick "$T/j" "' '.join(n['file'] for n in d['notes'])" >"$T/f"
+has "working notes" "$T/f" ".tt/Demo - Task Status/step-log.md"
+pick "$T/j" "' '.join(e['event'] for e in d['events'])" >"$T/f"
+has "this feature's events" "$T/f" "plan.signed_off build.unit_validated"
+hasnt "not another folder's" "$T/f" "build.complete"
+pick "$T/j" "[s['ts'] for s in d['stages'] if s['stage'] == 'Sign-off'][0]" >"$T/f"
+has "signed-off stages dated from the ledger" "$T/f" "2026-10-01T09:00:00Z"
+pick "$T/j" "d['workflowStep']['skill'] + ' ' + d['workflowStep']['arg']" >"$T/f"
+has "every feature can be handed to tt-workflow" "$T/f" "tt-workflow $DEMO"
+get "/api/feature?name=Draft" >"$T/j"
+pick "$T/j" "' '.join(s['stage'] + '=' + s['status'] for s in d['stages'])" >"$T/f"
+has "draft stages from the Stages table" "$T/f" "Scope & Constraints=In progress"
+has "skipped stage" "$T/f" "Familiarisation=Skipped"
+get "/api/doc?name=Demo&file=Demo%20-%20Task%20Status.md" >"$T/j"
+has "a document" "$T/j" "# Status"
+[ "$(code -H "X-TT-Token: $K" "$U/api/doc?name=Demo&file=.tt/Demo%20-%20Task%20Status/step-log.md")" = 200 ] && ok "a working note" || bad "a working note"
+for f in "..%2FDraft%2FDraft%20-%20Challenges.md" ".tt%2F..%2F..%2FDraft%2FDraft%20-%20Challenges.md" "Demo%20-%20Task%20Status.txt" "%2Fetc%2Fpasswd.md"; do
+	[ "$(code -H "X-TT-Token: $K" "$U/api/doc?name=Demo&file=$f")" = 403 ] && ok "refused: $f" || bad "refused: $f"
+done
+for n in "Nope" "..%2Ftatty-root" ".tt"; do
+	[ "$(code -H "X-TT-Token: $K" "$U/api/feature?name=$n")" = 404 ] && ok "no feature: $n" || bad "no feature: $n"
+done
+get "/api/resolve?name=Draft&target=Draft%20-%20Challenges" >"$T/j"
+has "a link to this feature's document" "$T/j" '"name": "Draft", "file": "Draft - Challenges.md"'
+get "/api/resolve?name=Draft&target=demo%20-%20task%20status" >"$T/j"
+has "a link to another feature's, any case" "$T/j" '"name": "Demo", "file": "Demo - Task Status.md"'
+get "/api/resolve?name=Draft&target=some%2Fpath%2FDemo%20-%20Task%20Breakdown.md" >"$T/j"
+has "a link with a path and .md" "$T/j" '"file": "Demo - Task Breakdown.md"'
+get "/api/resolve?name=Demo&target=step-log" >"$T/j"
+has "a link to a working note" "$T/j" '"file": ".tt/Demo - Task Status/step-log.md"'
+[ "$(code -H "X-TT-Token: $K" "$U/api/resolve?name=Draft&target=No%20Such%20Doc")" = 404 ] && ok "a link to nothing: 404" || bad "a link to nothing: 404"
+
+echo "# a new feature"
+post /api/new-feature '{"name":"Shiny Thing"}' >"$T/j"
+has "made" "$T/j" '"name": "Shiny Thing"'
+[ -d "$FX/features/Shiny Thing" ] && ok "in Tatty's features folder" || bad "in Tatty's features folder"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo"}' "$U/api/new-feature")" = 409 ] &&
+	ok "a feature with documents isn't remade" || bad "a feature with documents isn't remade"
+for n in "a/b" "" ".." "what?"; do
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"$n\"}" "$U/api/new-feature")" = 400 ] &&
+		ok "refused name: '$n'" || bad "refused name: '$n'"
+done
+
+echo "# starting the next step"
+HERE=$(cd "$root" && { pwd -W 2>/dev/null || pwd; })
+get "/api/feature?name=Demo" >"$T/j"
+has "no project known yet" "$T/j" '"project": null'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","row":0}' "$U/api/start")" = 400 ] &&
+	ok "start refused without a project" || bad "start refused without a project"
+mkdir -p "$TT_WORKFLOW_HOME"
+printf '%s\t%s\t2026-10-20\n' "$HERE" "$FX/features/Demo" >"$TT_WORKFLOW_HOME/links.tsv"
+get "/api/feature?name=Demo" >"$T/j"
+has "project from the tt-workflow link" "$T/j" '"projectFrom": "link"'
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+has "starts" "$T/j" '"ok": true'
+has "session named feature : stage" "$T/j" '"name": "Demo : Build"'
+has "with the next command" "$T/j" '/tt-execute \"'
+has "Tatty's own launcher" "$T/j" "Prompt: /tt-execute"
+has "the session carries its tag" "$T/j" "TATTY_SESSION="
+has "and, from a checkout, loads this plugin" "$T/j" "--plugin-dir"
+printf '{"pid":1,"name":"Demo : Build"}' >"$CLAUDE_CONFIG_DIR/sessions/1.json"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+has "a name an open session has gets a number" "$T/j" '"name": "Demo : Build (2)"'
+rm -f "$CLAUDE_CONFIG_DIR/sessions/1.json"
+post /api/start '{"name":"Demo","row":"workflow"}' >"$T/j"
+has "handed to tt-workflow" "$T/j" '"name": "Demo : Workflow"'
+has "with the workflow's own command" "$T/j" "/tt-workflow \\\""
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Empty\",\"row\":0,\"project\":\"$HERE\"}" "$U/api/start")" = 400 ] &&
+	ok "a placeholder must be filled" || bad "a placeholder must be filled"
+post /api/start "{\"name\":\"Empty\",\"row\":0,\"project\":\"$HERE\",\"values\":{\"idea, spec or ticket\":\"a settings page\"}}" >"$T/j"
+has "an empty feature starts" "$T/j" '"name": "Empty : Start"'
+has "with the placeholder filled" "$T/j" "/tt-adversarial-plan a settings page"
+get "/api/feature?name=Empty" >"$T/j"
+has "the chosen project is remembered" "$T/j" '"projectFrom": "chosen"'
+post /api/project "{\"name\":\"Draft\",\"path\":\"$HERE\"}" >"$T/j"
+has "a project can be chosen" "$T/j" '"projectFrom": "chosen"'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Draft","path":"C:/no/such/place"}' "$U/api/project")" = 400 ] &&
+	ok "a missing project folder refused" || bad "a missing project folder refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","row":7}' "$U/api/start")" = 400 ] &&
+	ok "no such step" || bad "no such step"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","row":0}' "$U/api/start")" = 404 ] &&
+	ok "no such feature" || bad "start: no such feature"
+
+echo "# a started session, live"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+TAG=$(pick "$T/j" "d['tag']")
+case $TAG in s-*) ok "the session has a tag" ;; *) bad "the session has a tag" "$(cat "$T/j")" ;; esac
+get "/api/sessions?name=Demo" >"$T/j"
+has "listed for the feature, starting" "$T/j" "\"tag\": \"$TAG\""
+has "starting" "$T/j" '"status": "starting"'
+get /api/features >"$T/j"
+pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['live']" >"$T/f"
+has "the home card shows it live" "$T/f" "'name': 'Demo : Build'"
+post /api/hello "{\"session\":\"abc\",\"tag\":\"$TAG\"}" >/dev/null
+get "/api/feature?name=Demo" >"$T/j"
+pick "$T/j" "[s['status'] for s in d['sessions'] if s['tag'] == '$TAG'][0]" >"$T/f"
+has "running once its mod says hello" "$T/f" "running"
+get /api/status >"$T/j"
+hasnt "a started session isn't the main one" "$T/j" '"session": "abc"'
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool\",\"tool\":\"Read\",\"text\":\"Demo - Task Status.md\",\"id\":\"t1\"}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool-done\",\"tool\":\"Read\",\"id\":\"t1\",\"ok\":true}" >/dev/null
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"tag\":\"$TAG\",\"kind\":\"nope\"}" "$U/api/activity")" = 400 ] &&
+	ok "unknown activity refused" || bad "unknown activity refused"
+get /api/events >"$T/j"
+pick "$T/j" "' '.join(e['kind'] + ':' + e['tool'] for e in d if e['type'] == 'activity' and e['tag'] == '$TAG')" >"$T/f"
+has "its activity, tagged" "$T/f" "tool:Read tool-done:Read"
+get "/api/sessions?name=Demo" >"$T/j"
+has "what it is doing" "$T/j" '"doing": "Read Demo - Task Status.md"'
+post /api/ask "{\"tag\":\"$TAG\",\"questions\":[{\"question\":\"Carry on?\",\"header\":\"Go\",\"options\":[\"Yes\",\"No\"]}]}" >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "[e['source'] + '|' + e['tag'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
+has "its question, named for the session" "$T/f" "Demo : Build|$TAG"
+post /api/say "{\"tag\":\"$TAG\",\"text\":\"use the new folder\"}" >/dev/null
+expect "the main inbox doesn't get it" 5 bash "$W" listen --wait 1
+get "/api/inbox?wait=1&tag=$TAG&client=claude-mod" >"$T/j"
+has "the session's inbox does" "$T/j" "use the new folder"
+post /api/bye "{\"tag\":\"$TAG\"}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+pick "$T/j" "[s['status'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "ended" "$T/f" "ended"
+get /api/features >"$T/j"
+pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['live']" >"$T/f"
+hasnt "no longer live" "$T/f" "$TAG"
+
+echo "# close"
+expect "close" 0 bash "$W" close
+sleep 1
+expect "status after close" 1 bash "$W" status
+
+finish
