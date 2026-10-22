@@ -10,7 +10,8 @@ visually:
   workflow (exploring, planning, building, done), and its progress.
 - **A feature's page:**
   - its documents, readable in place, with `[[wikilinks]]` that open the
-    heading or item they name;
+    heading or item they name; View lays each kind out for reading (the
+    Challenges as cards), Edit changes and saves the markdown;
   - a tracker of its steps, its work units and a timeline.
 - **Start the next step:** opens a new Claude session that runs it, then
   watches that session live: what it's doing, and its questions, which you
@@ -19,17 +20,24 @@ visually:
   terminal, and you can chat to that session from Tatty.
 
 Tatty is **optional and separate**. The toolbox never needs it and works the
-same without it. Tatty only reads the toolbox's documents and runs a few of its
-scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
+same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
+Edit mode) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
 
 ## Install
 
-Tatty is a Claude Code plugin, with the TT toolbox as a prerequisite. In Claude
-Code (2.1.275 or later):
+Tatty is a Claude Code plugin that depends on the TT toolbox's `core` plugin,
+from the toolbox's own marketplace. In Claude Code (2.1.292 or later), add the
+toolbox's marketplace first (skip this if you already have the toolbox), then
+install Tatty:
 
 ```
+/plugin marketplace add TimLewisDev/Tims-AI-Toolbox
 /plugin install tatty --marketplace TimLewisDev/Tims-AI-Companion
 ```
+
+Installing Tatty installs `core` too, if you don't have it yet. Install the
+toolbox's `engineering` plugin as well (`/plugin install engineering@tims-ai-toolbox`)
+for the workflow Tatty shows and starts.
 
 Then, in any session, run `/tatty open`. The first time, it builds the tray app,
 which takes about a minute. See [docs/install.md](docs/install.md) for what
@@ -58,7 +66,7 @@ they ask their questions in the terminal as usual.
   - `app/web`: the page.
   - `app/companion`: the Windows tray app (.NET 9 WPF and WebView2).
   - `scripts/`: `tatty.sh` and `tatty-root.sh`.
-- [`tools/`](tools): tests and the browser checks.
+- [`tools/`](tools): tests, the browser checks and the window checks.
 - [`docs/`](docs):
   - [design](docs/design.md);
   - [the toolbox contract](docs/toolbox-contract.md);

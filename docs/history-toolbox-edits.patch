@@ -1,0 +1,279 @@
+# The spike's edits to the TT toolbox, left behind when Tatty moved out
+#
+# Never committed and never applied to the toolbox: kept only as a record of what
+# the spike changed (tt-guide window section, guide.sh window, workflow.sh root,
+# the workflow skills' new steps, new-session.sh variables, README). Against the
+# old flat layout (eeba264), not the toolbox's plugin layout.
+#
+diff --git a/README.md b/README.md
+index 9b230e9..c4fe9e2 100644
+--- a/README.md
++++ b/README.md
+@@ -363,6 +363,11 @@ next, then answers questions about the toolbox.
+   `guide.sh pack save` write a machine-wide [connection
+   pack](#tt-connections-set-up-a-projects-connections) for you. She never sets
+   anything up; `/tt-connections setup` does.
++- **Window (spike):** `/tt-guide window` opens the tt window, a local HTML page
++  where Tatty asks her questions with buttons and you can read status,
++  connections and docs, and type questions. Needs Python 3.8+; without it,
++  everything stays in the terminal. See
++  [the spike write-up](docs/spikes/2026-10-21-tt-window.md).
+ - **Won't:** run other skills (the one exception is `tt-connections`, offered
+   after `init` and started only on your yes), edit documents, or touch git. The
+   only file she writes besides the project cache is the connection pack, after
+diff --git a/tt-common/scripts/new-session.sh b/tt-common/scripts/new-session.sh
+index 3892407..59a5777 100644
+--- a/tt-common/scripts/new-session.sh
++++ b/tt-common/scripts/new-session.sh
+@@ -20,6 +20,9 @@ Opens a new terminal in <folder> running: claude [-n "<name>"] "<prompt>"
+   macOS               Terminal.app, through osascript
+   elsewhere           nothing is opened; the command is printed
+ 
++TT_SESSION_EXPORTS (lines of NAME=value) are set for the new session, and
++TT_SESSION_CLAUDE_ARGS (one argument per line) are passed to claude before -n.
++
+ --print shows what would run and opens nothing. The prompt and the folder are
+ written into a small launcher script in the temp folder, so spaces and quotes
+ in paths and prompts survive every shell on the way.
+@@ -53,7 +56,10 @@ manual() {
+ 		n=$(printf '%s' "$name" | sed "s/'/'\\\\''/g")
+ 		n="-n '$n' "
+ 	fi
+-	printf 'Open a new terminal and run:\n  cd "%s" && claude %s'"'%s'"'\n' "$dir" "$n" "$q"
++	local a extra="" envs=""
++	while IFS= read -r a; do [ -z "$a" ] || extra="$extra'$a' "; done <<<"${TT_SESSION_CLAUDE_ARGS:-}"
++	while IFS= read -r a; do case $a in [A-Za-z_]*=*) envs="$envs${a%%=*}='${a#*=}' " ;; esac; done <<<"${TT_SESSION_EXPORTS:-}"
++	printf 'Open a new terminal and run:\n  cd "%s" && %sclaude %s%s'"'%s'"'\n' "$dir" "$envs" "$extra" "$n" "$q"
+ }
+ 
+ if [ "$print" = 1 ]; then
+@@ -78,10 +84,17 @@ launcher=$(mktemp "${TMPDIR:-/tmp}/tt-session.XXXXXX")
+ 	# the terminal tab's title, for terminals that take it from the program (Windows Terminal)
+ 	[ -z "$name" ] || printf '%s\n' "printf '\\033]0;%s\\007' $(printf '%q' "$name")"
+ 	printf 'cd %q || exit 1\n' "$dir"
++	# Variables for the new session, set here because a new terminal tab doesn't
++	# inherit this process's environment (Windows Terminal starts it itself).
++	while IFS= read -r kv; do
++		case $kv in [A-Za-z_]*=*) printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}" ;; esac
++	done <<<"${TT_SESSION_EXPORTS:-}"
++	extra=""
++	while IFS= read -r a; do [ -z "$a" ] || extra="$extra $(printf '%q' "$a")"; done <<<"${TT_SESSION_CLAUDE_ARGS:-}"
+ 	if [ -n "$name" ]; then
+-		printf 'exec %q -n %q %q\n' "$claude" "$name" "$prompt"
++		printf 'exec %q%s -n %q %q\n' "$claude" "$extra" "$name" "$prompt"
+ 	else
+-		printf 'exec %q %q\n' "$claude" "$prompt"
++		printf 'exec %q%s %q\n' "$claude" "$extra" "$prompt"
+ 	fi
+ } >"$launcher"
+ chmod +x "$launcher"
+diff --git a/tt-guide/SKILL.md b/tt-guide/SKILL.md
+index a92e798..3ac1162 100644
+--- a/tt-guide/SKILL.md
++++ b/tt-guide/SKILL.md
+@@ -11,8 +11,8 @@ description: >
+   no git, and starts no other skill except tt-connections, offered during init.
+   Use when the user is new to the tt skills, asks which tt skill to use, asks
+   how to use the toolbox, asks "where was I", or wants to describe connections.
+-argument-hint: "[init | refresh | context | connections [what to include] | update | question | where <folder> | about <skill or topic>]"
+-allowed-tools: Bash, Skill
++argument-hint: "[init | refresh | context | connections [what to include] | update | window | question | where <folder> | about <skill or topic>]"
++allowed-tools: Bash, Skill, AskUserQuestion
+ metadata:
+   version: "1.0"
+ ---
+@@ -39,6 +39,7 @@ Tell the user what will happen: how many commits will be pulled (list them),
+ and which symlinks are missing or broken in the Claude Code, Copilot CLI and
+ Codex CLI personal skill locations. Keep it brief and concrete.
+ Ask: "Happy for me to go ahead?" — wait for an explicit yes before continuing.
++(With the window open, ask it there; see "The window".)
+ If they say no, confirm nothing was changed and stop.
+ 
+ On yes, run:
+@@ -106,7 +107,8 @@ CLI logins, git settings.)
+ 2. **Play it back, in plain English.** One line per connection: what it is, how
+    it is checked, what setup would run. Say plainly anything you guessed. Then ask
+    "Have I understood this right?" and **wait for an explicit yes**. A correction
+-   goes back to step 1. Without a yes, write nothing.
++   goes back to step 1. Without a yes, write nothing. (With the window open, show
++   the playback there as markdown and ask there.)
+ 3. **Name it.** Default `personal`. Run
+    `bash "<skill folder>/scripts/guide.sh" pack list`; if the name is taken, ask
+    before replacing it.
+@@ -141,6 +143,57 @@ Report `current`, `stale` or `not initialized` exactly. Do not silently refresh
+ or treat a stale profile as authoritative. A skill may refresh it when the
+ engineer explicitly asks, or fall back to direct source inspection.
+ 
++## The window
++
++The tt window is a local HTML page beside the session: it shows what you send
++it, asks your questions with buttons, lets the engineer read status,
++connections and docs, and takes typed questions. It is optional; without it,
++everything here works in the terminal as written.
++
++For `window`, run:
++
++```sh
++bash "<skill folder>/scripts/guide.sh" window open
++```
++
++It opens the page in the browser and shows the greeting and where the documents
++in this folder stand. Exit 3 means no Python: say the window isn't available
++here, and carry on in the terminal. Then say in one line that questions will be
++asked in the window, and that `/tt-guide window` reopens it.
++
++At the start of any other flow, check once:
++`bash "<skill folder>/scripts/guide.sh" window status`. Exit 1 (`not open`) means
++no window: ignore the rest of this section. While it is open:
++
++- **Questions.** Ask each yes/no or choice question (the update go-ahead, the
++  connections playback, replacing a pack, init's "go through the gaps?") through
++  the window, with the questions as JSON on stdin in the AskUserQuestion shape:
++
++  ```sh
++  bash "<skill folder>/scripts/guide.sh" window ask <<'Q'
++  {"questions":[{"question":"Happy for me to go ahead?","header":"Update","multiSelect":false,
++    "options":[{"label":"Go ahead","description":"pull and fix the links"},{"label":"No","description":"change nothing"}]}]}
++  Q
++  ```
++
++  It prints `<header><TAB><answer>` per question. Only the "yes" option itself
++  is an explicit yes; anything typed under Other is the engineer's own words, to
++  read as you would in chat. Exit 5: say in one line that you are waiting in the
++  window, then run `window answer <id>` with the printed id; after three of
++  those, ask in chat instead. Exit 6 (declined) or any other failure: ask in chat.
++- **Showing.** Put what's worth reading in the window as well as in chat: the
++  connections playback, `about` and `start` output, a longer answer. Pipe it in:
++  `... | bash "<skill folder>/scripts/guide.sh" window show markdown "<title>"`
++  (`text` for plain output). Keep the chat reply to a line and the command to
++  type.
++- **Typed questions.** If `window status` said `attached (claude mod)`, the
++  window's messages reach you as ordinary prompts: do nothing extra. Otherwise,
++  after each answer run `bash "<skill folder>/scripts/guide.sh" window listen`
++  and answer what it prints as if it were typed here. Exit 5 (nothing yet):
++  listen again, at most five times in a row, then say "The window's quiet; type
++  here, or ask me to listen again." and stop.
++- Never send a token, password or key to the window, and never ask for one there.
++
+ ## Greet
+ 
+ Show the greeting to the user exactly as it is, the robot in a code block,
+@@ -170,4 +223,5 @@ bash "<this skill's folder>/scripts/guide.sh" start                    # the "Wh
+   start other skills (the one exception is `tt-connections`, after the user says
+   yes during `init`), edit documents, or stage, commit or push anything. The one
+   file Tatty writes besides the project cache is the connection pack, and only
+-  after the engineer confirms it (see "Describe your connections").
++  after the engineer confirms it (see "Describe your connections"). The one
++  process Tatty starts is the window, and only for `window`.
+diff --git a/tt-guide/scripts/guide.sh b/tt-guide/scripts/guide.sh
+index 3624a17..3363ca3 100644
+--- a/tt-guide/scripts/guide.sh
++++ b/tt-guide/scripts/guide.sh
+@@ -23,9 +23,12 @@ usage: guide.sh [hello]                    the greeting, then "where ."
+        guide.sh update [check|apply]       pull latest from git and fix missing symlinks;
+                                            check (default) previews only, apply makes the changes
+        guide.sh quip                       one quip
++       guide.sh window open [--no-browser] open the tt window and show the greeting and "where ." in it
++       guide.sh window <command> ...       any other window.sh command (status, show, ask, answer, listen, close)
+ 
+ TT_GUIDE_ASCII=1 draws Tatty without box-drawing characters.
+-Exit: 0 ok, 1 "about" found nothing, 2 usage error, 4 "pack save": that pack already exists.
++Exit: 0 ok, 1 "about" found nothing, 2 usage error, 4 "pack save": that pack already exists;
++      window: window.sh's codes (1 not open, 3 no Python, 5 no answer yet, 6 declined).
+ EOF
+ }
+ 
+@@ -316,6 +319,22 @@ pack() {
+ 	esac
+ }
+ 
++# window <command> ...: the tt window (tt-common/scripts/window.sh). "open" also
++# shows the greeting and where the documents in this folder stand.
++window() {
++	local W="$root/tt-common/scripts/window.sh" rc rows
++	[ -f "$W" ] || { echo "No window in this toolbox (tt-common/scripts/window.sh is missing)." >&2; return 3; }
++	[ "${1:-}" = open ] || { bash "$W" "$@"; return; }
++	bash "$W" "$@"
++	rc=$?
++	[ "$rc" = 0 ] || return "$rc"
++	bash "$TATTY" banner | bash "$W" show text "Tatty"
++	if rows=$(bash "$STATE" --tsv . 2>/dev/null); then
++		printf '%s\n' "$rows" | bash "$W" show table "Where things stand in $(pwd)"
++	fi
++	return 0
++}
++
+ cmd=${1:-hello}
+ [ $# -gt 0 ] && shift
+ case $cmd in
+@@ -337,6 +356,7 @@ context) context status "${1:-.}" ;;
+ connections) connections "${1:-.}" ;;
+ pack) pack "$@" ;;
+ quip) quip ;;
++window) window "$@" ;;
+ -h | --help) usage ;;
+ *) usage; exit 2 ;;
+ esac
+diff --git a/tt-workflow-lite/SKILL.md b/tt-workflow-lite/SKILL.md
+index 26a3d7e..1cea79c 100644
+--- a/tt-workflow-lite/SKILL.md
++++ b/tt-workflow-lite/SKILL.md
+@@ -61,9 +61,13 @@ fact below: `lite.sh state`, `link <folder>`, `unlink`, `new <parent> <name>`
+   ask with `AskUserQuestion`: **Bug** (something is wrong and you want to find
+   out why) · **Feature** (a small change you want to make). Then ask, in one
+   open question, what it is, in a sentence. Then the folder: the parent path
+-  (offer the old link's parent) and a name for the task (propose one from the
+-  sentence), with `AskUserQuestion`; then `lite.sh new "<parent>" "<name>"`. It
+-  creates the folder, links it and prints `Folder` and `Prefix`.
++  and a name for the task (propose one from the sentence), with
++  `AskUserQuestion`; then `lite.sh new "<parent>" "<name>"`. It creates the
++  folder, links it and prints `Folder` and `Prefix`. For the parent, run
++  `lite.sh root` first: if it prints a folder (exit 0), offer it first as
++  **Tatty's features folder (Recommended)**, so the task shows on Tatty's
++  Features page; then the old link's parent. Exit 1 means no Tatty root: offer
++  the old link's parent, as before.
+ - Nothing given: use the link. If there is none (or its folder is missing),
+   ask: **Link an existing task folder** (then ask for the path) · **Start a new
+   task** (as above).
+diff --git a/tt-workflow/SKILL.md b/tt-workflow/SKILL.md
+index eb9b1c1..edba7d1 100644
+--- a/tt-workflow/SKILL.md
++++ b/tt-workflow/SKILL.md
+@@ -51,9 +51,13 @@ for every fact below: `workflow.sh state`, `link <folder>`, `unlink`,
+   (`status <folder>`), use `workflow.sh state "<folder>"` and leave the link
+   as it is; without one, use the linked folder.
+ - `<folder>`: `workflow.sh link "<folder>"`.
+-- `new`: ask the parent path (offer the old link's parent) and a feature name,
+-  with `AskUserQuestion`, then `workflow.sh new "<parent>" "<name>"`. It
+-  creates the folder, links it and prints `Folder` and `Prefix`.
++- `new`: ask the parent path and a feature name, with `AskUserQuestion`, then
++  `workflow.sh new "<parent>" "<name>"`. It creates the folder, links it and
++  prints `Folder` and `Prefix`. For the parent, run `workflow.sh root` first:
++  if it prints a folder (exit 0), offer it first as **Tatty's features folder
++  (Recommended)**, so the feature shows on Tatty's Features page; then the old
++  link's parent. Exit 1 means no Tatty root: offer the old link's parent, as
++  before.
+ - `unlink`: `workflow.sh unlink`, say so, stop.
+ - Nothing given: use the link. If none (or its folder is missing), ask:
+   **Link an existing folder** (then ask for the path) · **Start a new feature
+diff --git a/tt-workflow/scripts/workflow.sh b/tt-workflow/scripts/workflow.sh
+index 25c324c..564b9c1 100644
+--- a/tt-workflow/scripts/workflow.sh
++++ b/tt-workflow/scripts/workflow.sh
+@@ -14,6 +14,8 @@ usage: workflow.sh start                    Tatty, then this project's linked fo
+        workflow.sh link <folder>            link a folder to this project, replacing any old link
+        workflow.sh unlink                   forget this project's link
+        workflow.sh new <parent> <name>      create <parent>/<name>, link it, print its folder and prefix
++       workflow.sh root                     Tatty's features folder, the default parent for new
++                                            (exit 1: no root set, or its features folder is missing)
+ 
+ The link is kept per project (the git root of the current directory) in
+ ${TT_WORKFLOW_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tt-workflow}/${TT_WORKFLOW_LINKS:-links.tsv}
+@@ -105,6 +107,7 @@ new)
+ 	mkdir -p "$p/$2" || exit 2
+ 	setlink "$p/$2" && printf 'Folder: %s\nPrefix: %s\n' "$p/$2" "$2"
+ 	;;
++root) bash "$common/tatty-root.sh" features ;;
+ -h | --help) usage ;;
+ *) usage; exit 2 ;;
+ esac

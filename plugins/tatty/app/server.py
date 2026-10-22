@@ -48,7 +48,7 @@ HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a checkout)
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "features.js": "text/javascript",
-          "style.css": "text/css"}
+          "views.js": "text/javascript", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
 MAX_WAIT = 55  # seconds one long-poll request may wait server-side
@@ -77,8 +77,18 @@ def plugin_version():
 
 
 def installed():
-    """True when this is an installed plugin (Claude Code's plugin cache), not a checkout."""
-    return "/plugins/cache/" in PLUGIN.as_posix().lower()
+    """True when every session already loads Tatty: it runs from Claude Code's
+    plugin cache, or it is installed at user scope (a folder marketplace is read
+    in place, so its plugin runs from the checkout yet is installed). Only
+    otherwise do the sessions Start opens need --plugin-dir."""
+    if "/plugins/cache/" in PLUGIN.as_posix().lower():
+        return True
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        return any(name.split("@")[0] == "tatty" and any(e.get("scope") == "user" for e in installs)
+                   for name, installs in recorded.get("plugins", {}).items())
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
 
 
 # ---------------------------------------------------------------- the toolbox
@@ -758,6 +768,25 @@ def doc_path(folder, file):
     return p if inside and p.is_file() else None
 
 
+def save_doc(p, text, expected):
+    """Write text over the document at p (from doc_path), but only if it hasn't
+    changed since the page read it (expected is the mtime /api/doc gave): the
+    toolbox's skills edit these files in place too. Returns (status, answer)."""
+    if abs(p.stat().st_mtime - expected) > 1e-6:
+        return 409, {"error": "the document changed on disk since you opened it", "updated": p.stat().st_mtime}
+    # The page's text has \n line ends (it read them through text mode); keep the file's own.
+    crlf = b"\r\n" in p.read_bytes()
+    data = text.replace("\r\n", "\n").replace("\n", "\r\n" if crlf else "\n").encode("utf-8")
+    tmp = p.with_name(f".{p.name}.tatty-tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, p)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        return 500, {"error": f"couldn't save: {e}"}
+    return 200, {"updated": p.stat().st_mtime}
+
+
 # ---------------------------------------------------------------- questions
 
 
@@ -1036,6 +1065,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"path": chosen} if chosen else {"cancelled": True})
         if path == "/api/new-feature":
             code, answer = new_feature(b.get("name", ""))
+            return self.send(code, answer)
+        if path == "/api/doc/save":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            p = doc_path(folder, str(b.get("file", "")))
+            if not p:
+                return self.send(403, {"error": "not a document of this feature"})
+            text, expected = b.get("text"), b.get("expected")
+            if not isinstance(text, str) or isinstance(expected, bool) or not isinstance(expected, (int, float)):
+                return self.send(400, {"error": "text (a string) and expected (the mtime /api/doc gave) are required"})
+            code, answer = save_doc(p, text, float(expected))
             return self.send(code, answer)
         if path in ("/api/start", "/api/project"):
             folder = feature_dir(str(b.get("name", "")))

@@ -228,6 +228,99 @@ or with pywebview if its Python 3.14 support holds.
    - a full-screen Unity Editor;
    - the companion and the mod together in a live Claude session.
 
+## An application on the taskbar, and Alt-Tab for the panel only
+
+Tatty was a tray tool: no taskbar button, no Alt-Tab entry, no window icon, and
+the tray the only way back. The wanted end was a button always, Alt-Tab for the
+full and maximised panel only, the compact bubble still over everything, and no
+rebuilding of the runtime when the view changes -- that last one ruling out
+anything that recreates the window, since the panel's WebView2 and everything
+unsaved in the page would go with it.
+
+What the shell actually does, measured on Windows 11 rather than taken from the
+documentation. `tools/window-check.py` was written first, so each answer is a
+reading rather than an impression:
+
+1. **`ShowInTaskbar="False"` does not use `WS_EX_TOOLWINDOW`.** WPF gives the
+   window a hidden owner window instead and clears `WS_EX_APPWINDOW`; an owned
+   window is left out of the taskbar and Alt-Tab. The probe sees it: both windows
+   report a non-zero owner, each a separate `"Hidden Window"` of WPF's making.
+   `WS_EX_APPWINDOW` is the way back in, because a window that has it is treated
+   as if it had no owner. Nothing needs to touch `GWLP_HWNDPARENT`.
+2. **The style flip is live.** Clearing `WS_EX_TOOLWINDOW` and setting
+   `WS_EX_APPWINDOW` on the window we already have puts the panel in Alt-Tab and
+   on the taskbar at once, with no hide and show to make the shell read it again.
+   A `Reregister` helper was written for that and deleted when it proved
+   unnecessary. The panel's icon-less, caption-less chrome is no obstacle either:
+   it appears with its title and Tatty's face.
+3. **`ITaskbarList::AddTab` does nothing here.** It is the documented way to give
+   a window a taskbar button it would not otherwise get, which would have let the
+   compact bubble have a button without an Alt-Tab entry. Tried on a tool window
+   with a caption and a system menu, both before and after the window was shown:
+   no button either way. The COM declaration was deleted with it.
+4. **So taskbar presence and Alt-Tab presence are the same bit** -- except for
+   `WS_EX_NOACTIVATE`, which is the seam the design turns on. Its documentation
+   says such a window "does not appear on the taskbar by default. To force the
+   window to appear on the taskbar, use the `WS_EX_APPWINDOW` style", so the two
+   are read separately; and a window that will never come forward is no use to
+   the switcher, which leaves it out. Both halves hold:
+   `WS_EX_APPWINDOW | WS_EX_NOACTIVATE` gives a button and no Alt-Tab entry.
+   This is not in the documented Alt-Tab rule, so `window-check.py` says where it
+   came from.
+5. **A hidden window cannot be woken from a taskbar button.** The shell cannot
+   activate a window without `WS_VISIBLE` and `ITaskbarList` has no callback, so
+   the always-there button cannot belong to the bubble, which is hidden whenever
+   Tatty is tucked away. Hence `TaskbarProxy`: one pixel, off every screen,
+   minimised for good, `WS_EX_APPWINDOW | WS_EX_NOACTIVATE`, styles that never
+   change. Being minimised is what makes it work -- a click on its button arrives
+   as `WM_SYSCOMMAND`/`SC_RESTORE`, which it refuses, popping Tatty up instead.
+   Checked by hand: button there with nothing on screen, no Alt-Tab entry,
+   clicking it brings Tatty back.
+6. **Exactly one button.** While the panel is out it has one of its own, so the
+   proxy stands down (hidden) and comes back when the panel goes. `Apply()`
+   decides it, driven by every change of shape *and* of visibility, so the two
+   cannot both have one.
+7. **Minimise is a real minimise**, and it composes with the panel's own
+   maximise, which is still an ordinary window moved to the work area rather than
+   `WindowState.Maximized`: the restore comes back to that rectangle with the
+   bookkeeping intact. WPF's `StateChanged` and `Activated` carry all of it, so
+   no window message hook was needed. Two things fell out of having it:
+   - `SaveBounds` would have written the icon's rectangle -- a minimised window's
+     is `(-32000, -32000)`. It now saves the last real one, and refuses anything
+     under 100 pixels.
+   - Windows' own maximise (Win+Up, dragged to the top) arrives as
+     `WindowState.Maximized`, which the panel's bookkeeping knew nothing about,
+     so the page's button still said "Maximise". It is taken over on arrival and
+     turned into the panel's own kind of maximised.
+8. **The taskbar button's menu offers Close.** Left alone, `WM_CLOSE` would
+   destroy the bubble and its WebView2 and leave a tray app with nothing behind
+   it, since the app's shutdown mode is explicit. Both the panel and the proxy
+   refuse it and tuck Tatty away instead -- but refusing it *unconditionally*
+   cancels `Application.Shutdown` as well, which left the companion running with
+   its windows already destroyed and WebView2's browser window re-parented onto
+   some other window of the process. That is what `BubbleWindow.Quitting` is for,
+   set by `App.Quit` before every shutdown, and `test-companion.sh` ends by
+   checking the process really does leave when its server does.
+9. **Staying on top needed saying twice.** Topmost is only a promise about the
+   windows that were there first; the next window to declare itself topmost sits
+   over Tatty. A foreground `SetWinEventHook` says it again, with no timer asking
+   the desktop every second -- and not over the shell (`WorkerW`, `Progman`,
+   `Shell_TrayWnd`), not over a window with a whole monitor to itself, and not
+   while the full panel is out. `Native.MoveTo` also used to re-assert
+   `HWND_TOPMOST` on every placement, which would have dragged the expanded panel
+   back on top; z-order is now decided in one place.
+10. **An explicit AppUserModelID**, because the exe lives in a folder named after
+    the plugin's version. Without one the shell works identity out from the path
+    and calls Tatty a different application after every update, losing the
+    button's place and history. Pinning is still not worth it, as a pinned
+    shortcut records the versioned path.
+11. **Still not checked by script:** that the switcher's own list matches the
+    documented rule (it cannot be enumerated, so `window-check.py` computes the
+    rule and the real thing is eyeballed); the taskbar button's icon and label;
+    restoring from the button; several monitors at mixed DPI; virtual desktops,
+    where Tatty stays on the desktop he was put on (pinning to all of them needs
+    an undocumented interface and was left alone).
+
 ## Features: seeing the workflow
 
 The full panel (and the browser page) now opens on **Features**: the features

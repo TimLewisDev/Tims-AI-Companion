@@ -143,6 +143,8 @@ function goToTarget(main, at) {
     main.scrollTop = 0;
     return;
   }
+  // a ticket or unit that is folded up (views.js's <details>) opens to show it
+  for (let d = hit.closest("details"); d; d = d.parentElement && d.parentElement.closest("details")) d.open = true;
   hit.scrollIntoView({ block: "start" });
   for (const n of main.querySelectorAll(".target-flash")) n.classList.remove("target-flash");
   void hit.offsetWidth; // restart the highlight
@@ -297,7 +299,12 @@ let shown = null; // the document on screen: { name, file, main }
 async function renderFeature(name, doc, at) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
-  if (doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected) { goToTarget(shown.main, at); return; }
+  const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
+  if (same) { if (docMode.get() === "view") goToTarget(shown.main, at); return; }
+  if (shown && editing && editing.dirty() && !confirm("Discard your unsaved changes?")) {
+    location.hash = featureHref(shown.name, shown.file); // stay where the edit is
+    return;
+  }
   shown = null;
   let f = featureCache.get(name);
   if (!f || !doc) {
@@ -310,7 +317,7 @@ async function renderFeature(name, doc, at) {
   const main = el("div", { class: "fmain" });
   box.replaceChildren(el("div", { class: "fpage" }, featureNav(f, doc), main));
   if (doc) {
-    if (await showDoc(f, doc, main)) { shown = { name, file: doc, main }; goToTarget(main, at); }
+    if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
   } else main.append(overview(f));
 }
 
@@ -642,17 +649,101 @@ function overview(f) {
     units, events);
 }
 
-async function showDoc(f, file, main) {
+// A document is read in View (a viewer made for its kind, views.js; the plain
+// markdown for a kind without one) or changed in Edit (its markdown, saved back to
+// the file). It opens in View; the choice is kept for the session.
+const docMode = {
+  get: () => (sessionStorage.getItem("tt-doc-mode") === "edit" ? "edit" : "view"),
+  set: m => sessionStorage.setItem("tt-doc-mode", m),
+};
+let editing = null; // the editor on screen: { dirty() }
+window.addEventListener("beforeunload", e => { if (editing && editing.dirty()) e.preventDefault(); });
+
+const docUrl = (f, file) => `/api/doc?name=${encodeURIComponent(f.name)}&file=${encodeURIComponent(file)}`;
+
+// d is the /api/doc answer; it is kept current as the document is saved or reloaded.
+function editor(f, file, d, meta, changed) {
+  const ta = el("textarea", { class: "doc-edit", spellcheck: "false", "aria-label": "Document markdown" });
+  ta.value = d.text;
+  let base = d.text;
+  const note = el("span", { class: "small dim" });
+  const save = el("button", { type: "button", onclick: () => write(d.updated) }, "Save");
+  const revert = el("button", { type: "button", onclick: () => { ta.value = base; sync(); } }, "Revert");
+  const fix = el("span", { class: "ed-fix" });
+  const sync = () => {
+    const dirty = ta.value !== base;
+    save.disabled = revert.disabled = !dirty;
+    note.className = "small dim";
+    note.textContent = dirty ? "Unsaved changes" : "";
+  };
+  const adopt = (text, updated) => { base = text; d.text = text; d.updated = updated; if (meta) meta.updated = updated; changed(updated); };
+  async function write(expected) {
+    fix.replaceChildren();
+    try {
+      const r = await api("/api/doc/save", { name: f.name, file, text: ta.value, expected });
+      adopt(ta.value, r.updated);
+      sync();
+      note.textContent = "Saved";
+    } catch (e) {
+      if (e.status !== 409) { note.className = "small st missing"; note.textContent = `Couldn't save: ${e.message || e}`; return; }
+      note.className = "small st missing";
+      note.textContent = "This document changed on disk since you opened it.";
+      fix.replaceChildren(
+        el("button", { type: "button", onclick: async () => { const cur = await api(docUrl(f, file)); write(cur.updated); } }, "Overwrite with mine"),
+        el("button", { type: "button", onclick: async () => { const cur = await api(docUrl(f, file)); ta.value = cur.text; adopt(cur.text, cur.updated); fix.replaceChildren(); sync(); } }, "Load the disk version"));
+    }
+  }
+  ta.addEventListener("input", sync);
+  ta.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (!save.disabled) write(d.updated); } });
+  sync();
+  editing = { dirty: () => ta.value !== base };
+  return el("div", { class: "doc-editor" }, el("div", { class: "ed-bar" }, save, revert, note, fix), ta);
+}
+
+async function showDoc(f, file, main, at) {
   main.replaceChildren(el("p", { class: "dim" }, "Opening…"));
+  editing = null;
   try {
-    const d = await api(`/api/doc?name=${encodeURIComponent(f.name)}&file=${encodeURIComponent(file)}`);
+    const d = await api(docUrl(f, file));
     const meta = [...f.docList, ...f.notes].find(x => x.file === file);
+    const kind = meta && meta.doc;
+    if (at) docMode.set("view"); // following a link to a heading: read it
+    const body = el("div", { class: "doc-body" });
+    const changedAt = el("span", { class: "dim small" }, "changed " + ago(d.updated));
+    const buttons = {};
+    // What a viewer may ask for: another document of this feature, by kind (a Task
+    // Breakdown shows its tasks' status from the Task Status).
+    const ctx = {
+      sibling: async other => {
+        const hit = f.docList.find(x => x.doc === other && meta && x.prefix === meta.prefix);
+        if (!hit) return null;
+        try { return (await api(docUrl(f, hit.file))).text; } catch { return null; }
+      },
+    };
+    const render = () => {
+      const mode = docMode.get();
+      for (const [m, b] of Object.entries(buttons)) b.classList.toggle("on", m === mode);
+      editing = null;
+      body.replaceChildren(mode === "edit" ? editor(f, file, d, meta, u => { changedAt.textContent = "changed " + ago(u); })
+        : viewOf(kind, d.text, ctx) || mdNode(d.text));
+    };
+    const pick = m => {
+      if (m === docMode.get()) return;
+      if (editing && editing.dirty() && !confirm("Discard your unsaved changes?")) return;
+      docMode.set(m);
+      render();
+    };
+    for (const [m, label] of [["view", "View"], ["edit", "Edit"]]) {
+      buttons[m] = el("button", { type: "button", class: "mode-btn", title: m === "view" ? "Read it" : "Change its markdown", onclick: () => pick(m) }, label);
+    }
     main.replaceChildren(
       el("div", { class: "doc-head" },
         el("h2", {}, meta ? (meta.doc || meta.name) : file),
-        el("span", { class: "dim small" }, "changed " + ago(d.updated)),
+        el("div", { class: "mode-toggle", role: "group", "aria-label": "Document mode" }, buttons.view, buttons.edit),
+        changedAt,
         el("span", { class: "right" }, copyable(d.path))),
-      mdNode(d.text));
+      body);
+    render();
     main.scrollTop = 0;
     return true;
   } catch (e) { main.replaceChildren(el("p", { class: "st missing" }, `Can't open ${file}: ${e.message || e}`)); return false; }

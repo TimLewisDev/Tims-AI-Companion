@@ -216,6 +216,49 @@ get "/api/resolve?name=Demo&target=step-log" >"$T/j"
 has "a link to a working note" "$T/j" '"file": ".tt/Demo - Task Status/step-log.md"'
 [ "$(code -H "X-TT-Token: $K" "$U/api/resolve?name=Draft&target=No%20Such%20Doc")" = 404 ] && ok "a link to nothing: 404" || bad "a link to nothing: 404"
 
+echo "# editing a document"
+CH="$FX/features/Draft/Draft - Challenges.md"
+CHF="Draft%20-%20Challenges.md"
+get "/api/doc?name=Draft&file=$CHF" >"$T/j"
+STAMP=$(pick "$T/j" "d['updated']")
+# save <file> <expected mtime> <text, as a JSON string>
+save() { post /api/doc/save "{\"name\":\"Draft\",\"file\":\"$1\",\"expected\":$2,\"text\":$3}"; }
+save "Draft - Challenges.md" "$STAMP" '"# Draft: Challenges\n\nedited\n"' >"$T/j"
+has "a saved document answers with its new mtime" "$T/j" '"updated"'
+has "and is written to the file" "$CH" "edited"
+get "/api/doc?name=Draft&file=$CHF" >"$T/j"
+has "and read back" "$T/j" "edited"
+save "Draft - Challenges.md" "$STAMP" '"stale"' >"$T/j"
+has "a save over a newer file is refused" "$T/j" "changed on disk"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Draft\",\"file\":\"Draft - Challenges.md\",\"expected\":$STAMP,\"text\":\"stale\"}" "$U/api/doc/save")" = 409 ] &&
+	ok "as a 409" || bad "as a 409"
+hasnt "and the file is left alone" "$CH" "stale"
+mkdir -p "$FX/features/Draft/.tt"
+printf 'one\r\ntwo\r\n' >"$FX/features/Draft/.tt/crlf.md"
+get "/api/doc?name=Draft&file=.tt%2Fcrlf.md" >"$T/j"
+save ".tt/crlf.md" "$(pick "$T/j" "d['updated']")" '"x\ny\n"' >"$T/j"
+has "a note with CRLF line ends is saved" "$T/j" '"updated"'
+[ "$($PY -c "import sys; print(open(sys.argv[1], 'rb').read())" "$FX/features/Draft/.tt/crlf.md")" = "b'x\\r\\ny\\r\\n'" ] &&
+	ok "and keeps its CRLF" || bad "and keeps its CRLF"
+[ -z "$(ls -A "$FX/features/Draft" "$FX/features/Draft/.tt" | grep tatty-tmp)" ] && ok "no temp file left behind" || bad "no temp file left behind"
+for f in "../Demo/Demo - Task Status.md" "Draft - Challenges.txt" "/etc/passwd.md" ".tt/../../Demo/Demo - Task Status.md" "No Such.md"; do
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Draft\",\"file\":\"$f\",\"expected\":1,\"text\":\"x\"}" "$U/api/doc/save")" = 403 ] &&
+		ok "save refused: $f" || bad "save refused: $f"
+done
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","file":"a.md","expected":1,"text":"x"}' "$U/api/doc/save")" = 404 ] &&
+	ok "save: no such feature" || bad "save: no such feature"
+for body in '{"name":"Draft","file":"Draft - Challenges.md","expected":1}' '{"name":"Draft","file":"Draft - Challenges.md","expected":1,"text":5}' \
+	'{"name":"Draft","file":"Draft - Challenges.md","text":"x"}' '{"name":"Draft","file":"Draft - Challenges.md","expected":"1","text":"x"}'; do
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$body" "$U/api/doc/save")" = 400 ] &&
+		ok "save needs text and the mtime" || bad "save needs text and the mtime" "$body"
+done
+[ "$(code -H 'Content-Type: application/json' -d '{"name":"Draft","file":"Draft - Challenges.md","expected":1,"text":"x"}' "$U/api/doc/save")" = 403 ] &&
+	ok "save needs the token" || bad "save needs the token"
+BIG="$T/big.json"; $PY -c "import json, sys; print(json.dumps({'name': 'Draft', 'file': 'Draft - Challenges.md', 'expected': 1, 'text': 'x' * 1100000}))" >"$BIG"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary "@$BIG" "$U/api/doc/save")" = 400 ] &&
+	ok "a document over 1 MB is refused" || bad "a document over 1 MB is refused"
+[ "$(code "$U/static/views.js")" = 200 ] && ok "views.js is served" || bad "views.js is served"
+
 echo "# a new feature"
 post /api/new-feature '{"name":"Shiny Thing"}' >"$T/j"
 has "made" "$T/j" '"name": "Shiny Thing"'
@@ -244,6 +287,11 @@ has "with the next command" "$T/j" '/tt-execute \"'
 has "Tatty's own launcher" "$T/j" "Prompt: /tt-execute"
 has "the session carries its tag" "$T/j" "TATTY_SESSION="
 has "and, from a checkout, loads this plugin" "$T/j" "--plugin-dir"
+mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+printf '{"version":2,"plugins":{"tatty@tims-ai-companion":[{"scope":"user","installPath":"x"}]}}' >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+hasnt "once installed at user scope, no --plugin-dir" "$T/j" "--plugin-dir"
+rm -f "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
 printf '{"pid":1,"name":"Demo : Build"}' >"$CLAUDE_CONFIG_DIR/sessions/1.json"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
 has "a name an open session has gets a number" "$T/j" '"name": "Demo : Build (2)"'

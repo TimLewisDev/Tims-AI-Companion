@@ -45,11 +45,33 @@ A demo.
 
 ### T01 — Add the settings store
 
-**Files** (nothing outside this list)
-- new `src/store.sh`: the store
+**In plain English:** Adds the place where settings are kept, so the other tasks have
+something to read from and write to.
+
+| | |
+|---|---|
+| **Executor** | Agent |
+| **Work unit** | WU1 |
+| **Depends on** | — |
+| **Plan step** | §1 |
+| **Traces to** | R1 |
+
+**Goal:** A `store.sh` that saves and loads a key.
+
+**Read first**
+- Precedent: `src/other.sh:10`, for the file layout
 
 **Steps**
 1. Write it.
+2. **Confirm:** the path the store writes to.
+
+**Not in this task**
+- Loading settings at start-up (T02).
+
+**Validated in:** WU1, checks 1 and 3
+
+**Files** (nothing outside this list)
+- new `src/store.sh`: the store
 
 ### T02 — Add the settings loader
 

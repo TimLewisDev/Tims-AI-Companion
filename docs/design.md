@@ -36,7 +36,21 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     XAML.
   - The bubble is an opaque WebView2 window with Windows 11's rounded corners,
     because WebView2 can't draw in a transparent window.
-  - The full panel moves, resizes, maximises and remembers its place.
+  - The full panel moves, resizes, maximises, minimises and remembers its place.
+    Only Tatty and the compact bubble stay on top, and they say so again whenever
+    another window comes to the front -- though never over the shell, over a
+    window with a whole monitor to itself, or while the full panel is out. The
+    full and maximised panel are ordinary windows that other windows can cover. A
+    click on Tatty raises a covered full panel, and tucks it away when it is
+    already in front.
+  - **Tatty is an application on the taskbar**, and only the full and maximised
+    panel is in Alt-Tab. Those are the same style bit, so they are kept apart by
+    two windows: the panel asks for `WS_EX_APPWINDOW` while it is out, which puts
+    it in both; and `TaskbarProxy` -- one pixel, off every screen, minimised for
+    good, never able to come forward -- holds the button the rest of the time, so
+    there is always exactly one and it works even while nothing is on screen.
+    `BubbleWindow.Apply()` decides all of this in one place, and the window is
+    never recreated, because the page and its WebView2 would go down with it.
   - There is a tray icon and menu.
   - It watches the server's events to pop up and tuck away, and follows a
     reopened server.
@@ -65,6 +79,16 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   `workflow-state.sh` for where each stands.
 - **A feature's page** reads its documents, the toolbox ledger's events for it,
   and the tables in its Task Status and draft plan.
+- **A document** has a View | Edit toggle above it (`showDoc` in `features.js`),
+  remembered for the session. View picks a viewer by the document's kind from
+  the `VIEWS` registry in `views.js` (today `Challenges`, as cards, and
+  `Task Breakdown`, as work-unit groups of foldable tickets with status read from
+  the Task Status through `ctx.sibling`; other kinds, or a file the viewer can't
+  read, show the plain markdown). A link to a ticket opens the folds around it
+  (`goToTarget`). Edit is a
+  textarea whose Save posts to `/api/doc/save`: the path guard `doc_path`, a
+  modified-time check against the version the page read (409 if it moved on),
+  and an atomic write. To add a viewer, add a parser and a function to `VIEWS`.
 - **New feature…** makes the folder. **Start** then runs the workflow's own
   `/tt-workflow "<folder>"`, so the toolbox links and starts the feature.
   Tatty never changes the workflow's records.
@@ -82,9 +106,20 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  132 checks against a real toolbox, with a toolbox-free part when there's no
+  155 checks against a real toolbox, with a toolbox-free part when there's no
   toolbox.
 - `claude plugin test plugins/tatty` covers the mod, including the joining
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
+- `tools/window-check.py` reports what the shell makes of the companion's
+  windows -- the styles that decide the taskbar and Alt-Tab, who holds the
+  button, what is on top -- and asserts the lot for one view with
+  `--expect <view>`. With `--switch <view>` it changes view through the page's
+  own buttons and checks that the window, its WebView2 and the loaded page all
+  came through unchanged, which is the promise that a view switch never rebuilds
+  the runtime.
+- `tools/test-companion.sh` walks every view with it (compact, full, maximised,
+  minimised, restored, tucked away and back). It is the only test that builds
+  and runs the exe and shows real windows, so it is opt-in rather than part of
+  `test-tatty.sh`.

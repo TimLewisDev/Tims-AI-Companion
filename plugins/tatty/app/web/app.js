@@ -12,6 +12,15 @@ const token = (() => {
   return sessionStorage.getItem("tt-token") || "";
 })();
 
+// A fresh id on every load, counted in sessionStorage (which survives a reload
+// in the same window), so a test can prove the host changed the window's shape
+// without reloading the page underneath it.
+window.ttLoad = (() => {
+  const n = Number(sessionStorage.getItem("tt-loads") || 0) + 1;
+  sessionStorage.setItem("tt-loads", String(n));
+  return n + ":" + Date.now();
+})();
+
 const $ = sel => document.querySelector(sel);
 const el = (tag, props = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -30,7 +39,11 @@ async function api(path, body) {
     headers: { "X-TT-Token": token, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  if (!r.ok) {
+    const e = new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    e.status = r.status;
+    throw e;
+  }
   return r.json();
 }
 
@@ -78,13 +91,14 @@ const BLOCK = /\s\^([A-Za-z0-9-]+)\s*$/;
 const block = text => { const m = text.match(BLOCK); return m ? [text.slice(0, m.index), m[1]] : [text, ""]; };
 const blockAttr = id => (id ? ` data-block="${esc(id)}"` : "");
 
+const isTable = l => /^\s*\|.*\|\s*$/.test(l);
+// a cell may hold an escaped pipe (`a \| b`), which stays in the cell
+const cells = l => l.trim().replace(/^\||(?<!\\)\|$/g, "").split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
+
 function markdown(src) {
   const lines = src.replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n");
   const out = [];
   let i = 0;
-  const isTable = l => /^\s*\|.*\|\s*$/.test(l);
-  // a cell may hold an escaped pipe (`a \| b`), which stays in the cell
-  const cells = l => l.trim().replace(/^\||(?<!\\)\|$/g, "").split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
   while (i < lines.length) {
     const l = lines[i];
     if (/^```/.test(l)) {
@@ -405,6 +419,7 @@ if (companion) {
   $("#collapse").addEventListener("click", () => { expand(false); tell("collapse"); });
   $("#hide").addEventListener("click", () => tell("hide"));
   $("#max").addEventListener("click", () => tell("maximise"));
+  $("#min").addEventListener("click", () => tell("minimise"));
   // In the full panel the bar is the title bar: drag it to move, double-click
   // to maximise. The host runs Windows' own move loop, so snapping works too.
   const bar = $("#companion-bar");

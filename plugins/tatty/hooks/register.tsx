@@ -86,9 +86,29 @@ function about(e: any): string {
   return String(v).replace(/\s+/g, ' ').slice(0, 300)
 }
 
+// findBash: the bash that runs tatty.sh. $.process.run has no shell and only the
+// session's PATH, which on Windows often lacks Git Bash, so look where Git for
+// Windows installs (per user, then per machine) before trusting a bare `bash`.
+async function findBash($: EngineInterface): Promise<string> {
+  const set = await $.env.get('CLAUDE_CODE_GIT_BASH_PATH')
+  if (set) return set
+  const roots = [
+    `${(await $.env.get('LOCALAPPDATA')) || ''}/Programs/Git`,
+    `${(await $.env.get('ProgramFiles')) || 'C:/Program Files'}/Git`,
+    `${(await $.env.get('ProgramFiles(x86)')) || 'C:/Program Files (x86)'}/Git`,
+  ]
+  for (const root of roots) {
+    for (const sub of ['bin/bash.exe', 'usr/bin/bash.exe']) {
+      if (root.startsWith('/')) continue // LOCALAPPDATA was not set
+      if (await $.fs.exists(`${root}/${sub}`)) return `${root}/${sub}`
+    }
+  }
+  return 'bash'
+}
+
 async function tattySh($: EngineInterface, args: string[]) {
   const script = `${$.plugin.root}/scripts/tatty.sh`
-  const bash = (await $.env.get('CLAUDE_CODE_GIT_BASH_PATH')) || 'bash'
+  const bash = await findBash($)
   // `open` may build the tray companion the first time, which takes a minute or so.
   return $.process.run([bash, script, ...args], { timeoutMs: 300000 })
 }
@@ -111,6 +131,39 @@ async function pollInbox($: EngineInterface) {
   }
 }
 
+// The /tatty command: open (the default), attach, detach, close or status.
+async function runTatty($: EngineInterface, args: string): Promise<{ text: string }> {
+  const verb = args.trim() || 'open'
+  if (verb === 'open') {
+    const r = await tattySh($, ['open'])
+    if (r.exitCode === 3) return { text: 'No Python 3.8+ found, so Tatty is not available here.' }
+    if (r.exitCode !== 0) return { text: `Tatty didn't open: ${(r.stderr || r.stdout).trim()}` }
+    joined = true
+    const info = await attach($)
+    return { text: info ? 'Tatty is open, and this session works with it: questions are asked there.' : 'Tatty started, but this session could not attach to it.' }
+  }
+  if (verb === 'attach') {
+    joined = true
+    const info = await attach($)
+    return { text: info ? 'This session now works with Tatty.' : 'Tatty is not open. /tatty open starts it.' }
+  }
+  if (verb === 'detach') {
+    await detach($)
+    return { text: 'This session no longer works with Tatty; questions come back to the terminal.' }
+  }
+  if (verb === 'close') {
+    await detach($)
+    await tattySh($, ['close'])
+    return { text: "Tatty's window is closed. Questions come back to the terminal." }
+  }
+  if (verb === 'status') {
+    const info = joined ? await attach($) : await find($)
+    if (!info) return { text: 'Tatty is not open. /tatty open starts it.' }
+    return { text: joined ? `This session works with Tatty: ${info.url.split('#')[0]}` : 'Tatty is open, but this session does not work with it. /tatty attach joins.' }
+  }
+  return { text: 'usage: /tatty [open | attach | detach | close | status]' }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -127,36 +180,14 @@ export const register: Register = on => {
     return started
   })
 
+  // A throw here would make the engine skip the hook and report that nothing answered
+  // /tatty, so the work is in runTatty and a failure is said in words.
   on('command.run', { command: 'tatty' }, async ($, e) => {
-    const verb = e.args.trim() || 'open'
-    if (verb === 'open') {
-      const r = await tattySh($, ['open'])
-      if (r.exitCode === 3) return { text: 'No Python 3.8+ found, so Tatty is not available here.' }
-      if (r.exitCode !== 0) return { text: `Tatty didn't open: ${(r.stderr || r.stdout).trim()}` }
-      joined = true
-      const info = await attach($)
-      return { text: info ? 'Tatty is open, and this session works with it: questions are asked there.' : 'Tatty started, but this session could not attach to it.' }
+    try {
+      return await runTatty($, e.args ?? '')
+    } catch (err) {
+      return { text: `/tatty failed: ${err instanceof Error ? err.message : String(err)}` }
     }
-    if (verb === 'attach') {
-      joined = true
-      const info = await attach($)
-      return { text: info ? 'This session now works with Tatty.' : 'Tatty is not open. /tatty open starts it.' }
-    }
-    if (verb === 'detach') {
-      await detach($)
-      return { text: 'This session no longer works with Tatty; questions come back to the terminal.' }
-    }
-    if (verb === 'close') {
-      await detach($)
-      await tattySh($, ['close'])
-      return { text: "Tatty's window is closed. Questions come back to the terminal." }
-    }
-    if (verb === 'status') {
-      const info = joined ? await attach($) : await find($)
-      if (!info) return { text: 'Tatty is not open. /tatty open starts it.' }
-      return { text: joined ? `This session works with Tatty: ${info.url.split('#')[0]}` : 'Tatty is open, but this session does not work with it. /tatty attach joins.' }
-    }
-    return { text: 'usage: /tatty [open | attach | detach | close | status]' }
   })
 
   // AskUserQuestion: asked in Tatty while it is open. "Answer in terminal

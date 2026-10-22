@@ -86,7 +86,8 @@ th { font-weight: 600; color: var(--dim); font-size: 12px; }
 #companion-bar button { padding: 2px 8px; font-size: 12px; }
 body.companion #companion-bar { display: flex; }
 body.companion:not(.expanded) header, body.companion:not(.expanded) .page { display: none !important; }
-body.companion:not(.expanded) #collapse, body.companion:not(.expanded) #max, body.companion.expanded #expand { display: none; }
+body.companion:not(.expanded) #collapse, body.companion:not(.expanded) #max,
+body.companion:not(.expanded) #min, body.companion.expanded #expand { display: none; }
 body.companion.expanded #companion-bar { cursor: move; user-select: none; }
 body.companion.expanded #companion-bar button { cursor: pointer; }
 body.companion:not(.expanded) #feed { padding: 8px 10px; gap: 8px; }
@@ -264,3 +265,73 @@ a.doclink.missing { color: var(--bad); text-decoration: underline dotted; cursor
 .toolbox-missing { margin: 16px 20px 0; border-color: var(--warn); }
 .new-feature { margin: 8px 20px 0; display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
 .new-feature .row { padding: 0; }
+
+/* ---- document modes (features.js) and the Challenges cards (views.js) */
+.fmain .doc-body > .md { max-width: 860px; }
+.fmain .doc-body > .chview { max-width: 980px; }
+.mode-toggle { display: inline-flex; }
+.mode-toggle .mode-btn { padding: 2px 12px; font-size: 12.5px; border-radius: 0; }
+.mode-toggle .mode-btn:first-child { border-radius: 6px 0 0 6px; }
+.mode-toggle .mode-btn:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+.mode-toggle .mode-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.doc-editor { display: flex; flex-direction: column; gap: 6px; max-width: 980px; }
+.ed-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ed-bar button:disabled { opacity: .5; cursor: default; }
+.ed-fix { display: inline-flex; gap: 6px; }
+.doc-edit { width: 100%; box-sizing: border-box; min-height: 60vh; resize: vertical; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--ink); font: 12.5px/1.5 ui-monospace, Consolas, monospace; tab-size: 2; }
+.doc-edit:focus { outline: none; border-color: var(--accent); }
+
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.hidden { display: none !important; }
+.ch-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 12px; }
+.chip.ch-filter { cursor: pointer; background: none; }
+.chip.ch-filter.on { background: var(--panel); box-shadow: 0 0 0 2px var(--accent); }
+.ch-section { margin: 0 0 18px; }
+.ch-stage { display: flex; align-items: baseline; gap: 8px; }
+.cards { display: block; }
+.chcard { margin: 8px 0; border-left: 4px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.chcard.sev-blocking { border-left-color: var(--bad); }
+.chcard.sev-significant { border-left-color: var(--warn); }
+.chcard.sev-minor { border-left-color: var(--dim); }
+.ch-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ch-top .ch-title { margin: 0; flex: 1; min-width: 12em; font-size: 14.5px; scroll-margin-top: 12px; }
+.ch-why { margin: 0; }
+.ch-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; font-size: 13px; }
+.ch-facts dt { color: var(--dim); }
+.ch-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ch-resolution { border-top: 1px solid var(--line); padding-top: 6px; font-size: 13px; }
+.ch-num { display: inline-block; margin-right: 4px; padding: 0 7px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line);
+  font: 600 12px/1.6 ui-monospace, Consolas, monospace; color: var(--dim); }
+
+/* ---- the Task Breakdown as a ticket list (views.js) */
+.fmain .doc-body > .bdview { max-width: 980px; }
+.bd-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 10px; }
+.bd-toolbar button { padding: 2px 10px; font-size: 12.5px; }
+.bd-toolbar .ch-summary { margin: 0 0 0 8px; flex: 1; }
+.bd-toolbar .bar { min-width: 160px; }
+details.wu, details.bd-tail { margin: 0 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+details > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▸"; color: var(--dim); width: 1em; flex: none; transition: transform .12s; }
+details[open] > summary::before { transform: rotate(90deg); }
+details.wu > summary, details.bd-tail > summary { padding: 8px 12px; }
+details.wu > summary h2, details.bd-tail > summary h2, details.tk > summary h3 { margin: 0; display: inline; }
+details.wu > summary h2 { font-size: 15.5px; flex: 1; min-width: 12em; }
+details.bd-tail > summary h2 { font-size: 14.5px; }
+.wu-progress { min-width: 120px; }
+.wu-body { padding: 0 12px 10px; }
+.tickets { margin-top: 8px; border-top: 1px solid var(--line); }
+details.tk { border-bottom: 1px solid var(--line); }
+details.tk:last-child { border-bottom: none; }
+details.tk > summary { padding: 7px 4px; }
+details.tk > summary:hover { background: var(--bg); }
+details.tk > summary h3 { font-size: 14px; flex: 1; min-width: 12em; }
+.tk-plain { flex-basis: 100%; padding-left: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.tk[open] .tk-plain { display: none; }
+.tk-body { padding: 4px 8px 10px 1.4em; }
+.tk-body > :first-child { margin-top: 0; }
+.tk-card h3, .wu-card h3 { font-size: 13.5px; }
+details.wu-validation { margin-top: 10px; }
+details.wu-validation > summary { padding: 4px 0; }
+details.wu-validation > .wu-card { padding-left: 1.4em; }
