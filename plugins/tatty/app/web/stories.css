@@ -1,0 +1,136 @@
+/* The User Stories boards (stories.js): the board of sticky notes, its pinned
+   group panel and the opened card. Group colours are this file's own palette,
+   .g0 to .g7 (the server gives each group one and keeps it), and .gu for
+   Ungrouped; everything else uses theme.css's tokens. */
+
+/* ---------------------------------------------------------------- the group palette */
+.g0 { --note: #fff3a8; --note-edge: #e0c84a; }
+.g1 { --note: #ffd6c9; --note-edge: #e59a82; }
+.g2 { --note: #cfeecf; --note-edge: #7fbf7f; }
+.g3 { --note: #cde4ff; --note-edge: #78a9e0; }
+.g4 { --note: #ead7ff; --note-edge: #ab86da; }
+.g5 { --note: #ffd9ec; --note-edge: #e08bb5; }
+.g6 { --note: #d3f3f1; --note-edge: #6fc2bb; }
+.g7 { --note: #ffe2b8; --note-edge: #e0a454; }
+.gu { --note: #eceae4; --note-edge: #b9b5aa; }
+@media (prefers-color-scheme: dark) {
+  .g0 { --note: #4a4421; --note-edge: #a8962e; }
+  .g1 { --note: #4d3029; --note-edge: #b06a55; }
+  .g2 { --note: #263f27; --note-edge: #5c9a5c; }
+  .g3 { --note: #233650; --note-edge: #5a87bd; }
+  .g4 { --note: #382a4d; --note-edge: #8a6ab8; }
+  .g5 { --note: #4a2a3b; --note-edge: #b8698f; }
+  .g6 { --note: #213f3d; --note-edge: #4f9a93; }
+  .g7 { --note: #4a3820; --note-edge: #b88440; }
+  .gu { --note: #2c2f34; --note-edge: #5d636b; }
+}
+
+/* ---------------------------------------------------------------- the page */
+.board-page { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; }
+.board-bar { display: flex; align-items: baseline; gap: 12px; padding: 10px 16px 6px; }
+.board-bar h2 { margin: 0; font-size: 18px; }
+.board-bar a { color: var(--accent); }
+.board-bar .spacer, .run-strip .spacer, .ocard-head .spacer { flex: 1; }
+.board-problems { margin: 0 16px 6px; }
+.board-card .chip { margin-right: 4px; }
+
+.run-strip { display: none; align-items: center; gap: 8px; margin: 0 16px 6px; padding: 6px 10px; border-radius: 6px;
+  background: var(--accent-soft); border: 1px solid var(--line); font-size: 13px; }
+.run-strip.on { display: flex; }
+.run-strip.bad { border-color: var(--bad); }
+.spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent;
+  animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------------------------------------------------------------- the board */
+.board { position: relative; flex: 1; min-height: 320px; overflow: hidden; cursor: grab; outline: none;
+  background-color: var(--bg); border-top: 1px solid var(--line);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px;
+  touch-action: none; user-select: none; }
+.board.panning { cursor: grabbing; }
+.world { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+.world.easing { transition: transform 0.35s ease; }
+
+.scard { position: absolute; width: 230px; height: 156px; box-sizing: border-box; padding: 10px 12px 8px;
+  display: flex; flex-direction: column; gap: 4px; cursor: pointer; overflow: hidden;
+  background: var(--note); color: var(--ink); border-bottom: 3px solid var(--note-edge); border-radius: 2px 2px 6px 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 6px 14px rgba(0, 0, 0, 0.12); }
+.scard.rot0 { rotate: -1.5deg; } .scard.rot1 { rotate: -0.6deg; } .scard.rot2 { rotate: 0.4deg; }
+.scard.rot3 { rotate: 1.1deg; } .scard.rot4 { rotate: 1.8deg; }
+.scard:hover, .scard:focus-visible { z-index: 2; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.16), 0 10px 22px rgba(0, 0, 0, 0.18); }
+.scard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.scard.dragging { z-index: 5; cursor: grabbing; rotate: 0deg; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2), 0 18px 32px rgba(0, 0, 0, 0.22); }
+.scard.proposed { border: 2px dashed var(--note-edge); border-bottom-width: 3px; }
+.scard.hl { z-index: 3; outline: 3px solid var(--accent); outline-offset: 3px; }
+.scard.dim { opacity: 0.28; }
+.scard.fresh::after { content: "new"; position: absolute; right: 8px; bottom: 6px; font-size: 10px; font-weight: 700;
+  color: var(--on-accent); background: var(--accent); padding: 0 5px; border-radius: 8px; }
+.scard.busy { opacity: 0.7; }
+.scard.busy .sbadge::after { content: " · rewriting"; }
+.scard-top { display: flex; gap: 6px; align-items: center; font-size: 11px; }
+.sid { font-family: var(--mono); font-weight: 700; }
+.sgroup { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.sbadge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--warn); }
+.stitle { font-weight: 700; font-size: 14px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sline { font-size: 12px; line-height: 1.35; color: var(--ink); opacity: 0.85; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.sfoot { margin-top: auto; font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 60px; }
+.sacts { position: absolute; right: 6px; bottom: 5px; display: flex; gap: 4px; }
+.sacts button { padding: 1px 7px; font-size: 13px; line-height: 1.4; background: var(--panel); }
+.sacts .s-accept:hover { border-color: var(--ok); color: var(--ok); }
+.sacts .s-reject:hover { border-color: var(--bad); }
+.scard.fresh .sacts { bottom: 22px; }
+
+/* A group in focus: a labelled frame round its cards, in its colour. */
+.gframe { position: absolute; border: 2px dashed var(--note-edge); border-radius: 10px; background: color-mix(in srgb, var(--note) 25%, transparent);
+  pointer-events: none; padding: 4px 10px; box-sizing: border-box; font-size: 13px; font-weight: 700; color: var(--dim); }
+
+/* ---------------------------------------------------------------- the group panel (pinned) */
+.gpanel { position: absolute; top: 10px; right: 10px; z-index: 10; width: 230px; max-height: calc(100% - 70px); overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; cursor: default;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); user-select: none; }
+.gpanel-head { display: flex; justify-content: space-between; align-items: baseline; padding: 0 4px 6px; }
+.glist { list-style: none; margin: 0; padding: 0; }
+.grow { display: flex; align-items: center; gap: 2px; border-radius: 6px; padding: 1px; }
+.grow.on { background: var(--accent-soft); }
+.grow .small { flex: 1; }
+.gname { flex: 1; display: flex; align-items: center; gap: 8px; border: none; background: none; text-align: left; padding: 4px 6px; min-width: 0; }
+.gname:hover { background: var(--accent-soft); }
+.gtext { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; background: var(--note); border: 1px solid var(--note-edge); }
+.gremove { border: none; background: none; color: var(--dim); padding: 2px 6px; visibility: hidden; }
+.grow:hover .gremove, .gremove:focus-visible { visibility: visible; }
+.gremove:hover { color: var(--bad); }
+.gadd { display: flex; gap: 4px; margin-top: 6px; }
+.gadd input { flex: 1; min-width: 0; }
+
+.zoomctl { position: absolute; left: 10px; bottom: 10px; z-index: 10; display: flex; align-items: center; gap: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; cursor: default; }
+.zoom-pct { min-width: 44px; text-align: center; font-size: 12px; color: var(--dim); }
+
+/* ---------------------------------------------------------------- an opened card */
+.scard-overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 16px; background: rgba(0, 0, 0, 0.28); overflow: auto; }
+.scard-overlay[hidden] { display: none; }
+.ocard { width: min(640px, 100%); box-sizing: border-box; padding: 16px 18px; border-radius: 4px 4px 10px 4px;
+  background: var(--note); color: var(--ink); border-bottom: 4px solid var(--note-edge); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3); }
+.ocard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.oclose { border: none; background: none; font-size: 18px; padding: 0 6px; }
+.otitle { margin: 0 0 4px; font-size: 20px; }
+.oline { font-size: 15px; line-height: 1.5; }
+.obody h4 { margin: 14px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); }
+.ocrit { margin: 0; padding-left: 1.2em; }
+.ocrit li { margin: 3px 0; }
+.oacts { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--note-edge); display: flex; flex-direction: column; gap: 8px; }
+.oacts .row, .oedit .row { display: flex; gap: 6px; align-items: center; }
+.oacts .row input { flex: 1; }
+.alter { display: flex; gap: 6px; align-items: flex-start; }
+.alter textarea { flex: 1; }
+.oedit { display: flex; flex-direction: column; gap: 8px; }
+.elab { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
+.elab input, .elab select, .elab textarea { font-size: 14px; color: var(--ink); }
+.eline { display: grid; grid-template-columns: 1fr 1.4fr 1.4fr; gap: 6px; }
+.ecrit { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 4px; }
+.ecrit li { display: flex; gap: 3px; }
+.ecrit li input { flex: 1; }
+.ecrit li button { padding: 2px 6px; }
+.elab > button { align-self: flex-start; }

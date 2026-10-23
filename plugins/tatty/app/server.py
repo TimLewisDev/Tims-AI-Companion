@@ -56,6 +56,7 @@ WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
+          "stories.js": "text/javascript", "stories.css": "text/css",
           "ids.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
@@ -216,6 +217,7 @@ class State:
         self.baseline = {}  # plugin name -> the version it was at when this server first looked
         self.update_lock = threading.Lock()
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
+        self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.last_activity = time.time()
 
     def touch(self):
@@ -526,7 +528,8 @@ def tatty_root():
 def root_info():
     root, is_set = tatty_root()
     features = root / "features"
-    return {"root": root.as_posix(), "features": features.as_posix(), "isSet": is_set,
+    return {"root": root.as_posix(), "features": features.as_posix(), "design": (root / "design").as_posix(),
+            "isSet": is_set,
             "exists": features.is_dir(), "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
 
 
@@ -557,8 +560,9 @@ def picker_argv(build=False):
     return [str(COMPANION_EXE)] if companion_ready() else None
 
 
-def pick_folder(state, start, title=""):
-    """Show the folder dialog and wait for the person (10 minutes at most): the folder, or None."""
+def pick_folder(state, start, title="", kind="folder"):
+    """Show the folder dialog (kind "file": the file dialog, for a markdown
+    document) and wait for the person (10 minutes at most): the path, or None."""
     argv = picker_argv(build=True)
     if not argv:
         return None
@@ -567,7 +571,7 @@ def pick_folder(state, start, title=""):
     out = home() / f"pick-{secrets.token_hex(4)}.txt"
     extra = ["--title", title] if title else []
     try:
-        subprocess.run(argv + ["--pick-folder", "--start", start or str(Path.home()), "--out", str(out)] + extra,
+        subprocess.run(argv + ["--pick-" + kind, "--start", start or str(Path.home()), "--out", str(out)] + extra,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
         chosen = out.read_text(encoding="utf-8").strip() if out.exists() else ""
     except (OSError, subprocess.TimeoutExpired):
@@ -596,12 +600,17 @@ def set_root(state, path, create):
 
 
 def feature_dir(name):
-    """The feature's folder, or None: a direct subfolder of <root>/features. It may
-    be a link (a junction to a folder in a vault, say): the name is one plain path
-    part, and documents are checked against where the folder really is (doc_path)."""
+    return area_dir("features", name)
+
+
+def area_dir(area, name):
+    """A feature's folder (area "features") or a design board's ("design"), or
+    None: a direct subfolder of <root>/<area>. It may be a link (a junction to a
+    folder in a vault, say): the name is one plain path part, and documents are
+    checked against where the folder really is (doc_path)."""
     if not name or name.startswith(".") or any(c in name for c in "/\\") or ".." in name:
         return None
-    base = (tatty_root()[0] / "features").resolve()
+    base = (tatty_root()[0] / area).resolve()
     d = base / name
     return d if d.parent == base and d.is_dir() else None
 
@@ -1759,6 +1768,571 @@ def clean_questions(body):
     return out
 
 
+# ---------------------------------------------------------------- design (user stories)
+# The design mode's boards: <root>/design/<name>/, each holding a copy of a design
+# document and its "<name> - User Stories.md". Only the toolbox's design skill,
+# tt-user-stories, and its script stories.sh write that document: Tatty reads it
+# through `stories.sh list --tsv`, changes it through stories.sh when a person
+# clicks, and runs the skill headless (`claude -p`, prompt on stdin) to draft the
+# stories and to alter a proposed one. Where the cards sit on the board and each
+# group's colour are Tatty's own, in <home>/boards/. See docs/toolbox-contract.md,
+# "User Stories".
+
+STORIES_SCRIPT = "tt-user-stories/scripts/stories.sh"
+STORIES_DOC = " - User Stories.md"
+STORY_COLS = ["id", "title", "group", "status", "origin", "altered", "source", "article", "as", "want",
+              "soThat", "details", "criteria", "hash"]
+STORY_FIELDS = {"title": "title", "group": "group", "source": "source", "as": "as", "want": "want",
+                "soThat": "so_that"}  # the page's names -> the spec's keys (details and criteria are blocks)
+STORIES_TIMEOUT = float(os.environ.get("TATTY_STORIES_TIMEOUT", "1800"))
+STORIES_BUDGET = os.environ.get("TATTY_STORIES_BUDGET", "5")  # US dollars, at most, per headless run
+PALETTE = 8  # group colours: .g0 ... .g7 in stories.css
+MAX_NOTE = 4000
+
+
+def toolbox_plugin(name):
+    """A toolbox plugin's folder (the one holding skills/), or None: under a
+    TATTY_TOOLBOX checkout (or beside the plugin it names), through the pointer
+    folder the plugin's SessionStart hook keeps, else where Claude Code recorded
+    installing it (a plugin just installed has no pointer until a session loads it)."""
+    tries = []
+    own = os.environ.get("TATTY_TOOLBOX")
+    if own:
+        o = Path(own)
+        tries += [o / "plugins" / name, o.parent / name, o.parent.parent / name]
+    tries.append(Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins") / name)
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for e in recorded.get("plugins", {}).get(f"{name}@{toolbox_market()}", []):
+            if e.get("installPath"):
+                tries.append(Path(e["installPath"]))
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return next((t for t in tries if (t / "skills").is_dir()), None)
+
+
+def stories_script():
+    p = toolbox_plugin("design")
+    return p / "skills" / STORIES_SCRIPT if p and (p / "skills" / STORIES_SCRIPT).is_file() else None
+
+
+DESIGN_MISSING = ("The User Stories board needs the toolbox's design plugin (its tt-user-stories skill). "
+                  "Add the Design mode on the modes page, or set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout.")
+
+
+def design_root():
+    return tatty_root()[0] / "design"
+
+
+def design_dir(name):
+    return area_dir("design", name)
+
+
+def stories_doc(folder):
+    """The board's stories document: <name> - User Stories.md, else any * - User Stories.md."""
+    own = folder / (folder.name + STORIES_DOC)
+    if own.is_file():
+        return own
+    return next((f for f in sorted(folder.glob("*" + STORIES_DOC)) if f.is_file()), None)
+
+
+def design_intake(folder, doc):
+    """The design document the stories come from: the file the Source line links
+    to, else the only other .md in the folder."""
+    others = [f for f in folder.glob("*.md") if f.is_file() and f != doc]
+    try:
+        head = doc.read_text(encoding="utf-8", errors="replace")[:4000]
+        m = re.search(r"^- \*\*Source:\*\*\s*\[\[([^\]|#]+)", head, re.M)
+        if m:
+            hit = next((f for f in others if f.stem.lower() == m.group(1).strip().lower()), None)
+            if hit:
+                return hit
+    except OSError:
+        pass
+    return others[0] if len(others) == 1 else None
+
+
+def unesc(s):
+    """A field of stories.sh's TSV: \\\\ is a backslash, \\t a tab, \\n a newline."""
+    return re.sub(r"\\(.)", lambda m: {"t": "\t", "n": "\n"}.get(m.group(1), m.group(1)), s)
+
+
+def run_stories(state, args, cwd=None):
+    """stories.sh <args>: (exit code, stdout, stderr). Exit 2 with a reason when it can't run."""
+    script = stories_script()
+    if not script:
+        return 2, "", DESIGN_MISSING
+    try:
+        # Paths as P:/x/y: bash reads them, and its dirname splits them
+        argv = [state.bash, script.as_posix()] + [a.as_posix() if isinstance(a, Path) else str(a) for a in args]
+        p = quiet_run(state, argv, cwd=cwd, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 2, "", str(e)
+    return p.returncode, p.stdout, p.stderr
+
+
+def read_stories(state, doc):
+    """The document through `stories.sh list --tsv`: meta, groups, stories, retired,
+    and the problems it found (a hand edit out of the template's layout)."""
+    code, out, err = run_stories(state, ["list", doc, "--tsv"], cwd=str(doc.parent))
+    got = {"meta": {}, "groups": [], "stories": [], "retired": [], "error": "",
+           "problems": [ln[len("problem: "):] for ln in err.splitlines() if ln.startswith("problem: ")]}
+    if code != 0:
+        got["error"] = (err.strip().splitlines() or ["stories.sh couldn't read the document"])[-1]
+        return got
+    for line in out.splitlines():
+        f = [unesc(c) for c in line.split("\t")]
+        if f[0] == "meta" and len(f) >= 3:
+            got["meta"][f[1]] = f[2]
+        elif f[0] == "group" and len(f) >= 4:
+            got["groups"].append({"name": f[1], "description": f[2], "count": int(f[3] or 0)})
+        elif f[0] == "story" and len(f) >= 15:
+            s = dict(zip(STORY_COLS, f[1:]))
+            s["criteria"] = [c for c in s["criteria"].split("\n") if c]
+            got["stories"].append(s)
+        elif f[0] == "retired" and len(f) >= 4:
+            got["retired"].append({"id": f[1], "title": f[2], "outcome": f[3]})
+    return got
+
+
+def board_path(folder):
+    import hashlib
+    key = hashlib.sha1(folder.resolve().as_posix().lower().encode("utf-8")).hexdigest()[:16]
+    return home() / "boards" / f"{key}.json"
+
+
+def board_layout(folder):
+    try:
+        got = json.loads(board_path(folder).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        got = {}
+    got = got if isinstance(got, dict) else {}
+    return {"cards": got.get("cards") if isinstance(got.get("cards"), dict) else {},
+            "colours": got.get("colours") if isinstance(got.get("colours"), dict) else {},
+            "view": got.get("view") if isinstance(got.get("view"), dict) else {}}
+
+
+def save_layout(folder, layout):
+    p = board_path(folder)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(layout, indent=1), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def group_colours(folder, layout, groups):
+    """Each group's palette index, kept once given, so removing one group never
+    recolours the others. A new group takes the least used index."""
+    colours, changed = layout["colours"], False
+    for g in groups:
+        k = g["name"].lower()
+        if not isinstance(colours.get(k), int):
+            used = collections.Counter(v for v in colours.values() if isinstance(v, int))
+            colours[k] = min(range(PALETTE), key=lambda i: (used[i], i))
+            changed = True
+        g["colour"] = colours[k] % PALETTE
+    if changed:
+        save_layout(folder, layout)
+
+
+def design_view(state, folder):
+    doc = stories_doc(folder)
+    view = {"name": folder.name, "folder": folder.as_posix(), "plugin": stories_script() is not None,
+            "run": stories_run_view(state, folder.name)}
+    if not doc:
+        return {**view, "doc": "", "intake": "", "meta": {}, "groups": [], "stories": [],
+                "retired": [], "problems": [], "layout": {"cards": {}, "view": {}},
+                "error": "This board has no User Stories document yet."}
+    intake = design_intake(folder, doc)
+    got = read_stories(state, doc) if view["plugin"] else {"meta": {}, "groups": [], "stories": [], "retired": [],
+                                                           "problems": [], "error": DESIGN_MISSING}
+    layout = board_layout(folder)
+    group_colours(folder, layout, got["groups"])
+    return {**view, **got, "doc": doc.name, "intake": intake.name if intake else "",
+            "updated": doc.stat().st_mtime, "layout": {"cards": layout["cards"], "view": layout["view"]}}
+
+
+def designs_list(state):
+    """The boards under <root>/design, newest first, counted from their documents."""
+    base = design_root()
+    out = []
+    if base.is_dir():
+        for d in base.iterdir():
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            doc = stories_doc(d)
+            text = doc.read_text(encoding="utf-8", errors="replace") if doc else ""
+            out.append({"name": d.name, "doc": doc.name if doc else "",
+                        "stories": len(re.findall(r"^### US-\d+:", text, re.M)),
+                        "proposed": len(re.findall(r"^- \*\*Status:\*\* Proposed\s*$", text, re.M)),
+                        "groups": max(0, len(re.findall(r"^\|", text.split("## Groups", 1)[-1].split("\n## ", 1)[0], re.M)) - 2)
+                        if "## Groups" in text else 0,
+                        "updated": doc.stat().st_mtime if doc else d.stat().st_mtime,
+                        "running": stories_run_view(state, d.name) is not None})
+    root, is_set = tatty_root()
+    return {"root": root.as_posix(), "isSet": is_set, "folder": base.as_posix(), "plugin": stories_script() is not None,
+            "claude": claude_path() is not None, "picker": picker_argv() is not None,
+            "designs": sorted(out, key=lambda d: -d["updated"])}
+
+
+def new_design(state, name, intake):
+    """Make <root>/design/<name>/ with a copy of the design document and an empty
+    User Stories document (stories.sh init): (http code, answer). The page then
+    asks for a draft run."""
+    import shutil
+    name = " ".join(str(name).split())
+    if not name or NAME_REFUSED.search(name):
+        return 400, {"error": "Not a usable folder name (no / \\ : * ? \" < > |)."}
+    root, is_set = tatty_root()
+    if not is_set or not root.is_dir():
+        return 400, {"error": "Set Tatty's root folder first."}
+    src = Path(str(intake))
+    if not src.is_file() or src.suffix.lower() != ".md":
+        return 400, {"error": "Pick a markdown (.md) design document."}
+    if not stories_script():
+        return 501, {"error": DESIGN_MISSING}
+    d = design_root() / name
+    if d.exists() and (not d.is_dir() or any(d.iterdir())):
+        return 409, {"error": f"{name} already exists and isn't empty."}
+    d.mkdir(parents=True, exist_ok=True)
+    copy = d / src.name
+    if copy.name.endswith(STORIES_DOC):
+        copy = d / (src.stem + " (design).md")
+    doc = d / (name + STORIES_DOC)
+    try:
+        shutil.copy2(src, copy)
+    except OSError as e:
+        return 500, {"error": f"couldn't copy the design document: {e}"}
+    code, _, err = run_stories(state, ["init", copy.name, doc.name], cwd=str(d))
+    if code != 0:
+        return 500, {"error": err.strip() or "stories.sh couldn't start the document"}
+    return 200, {"name": name, "folder": d.as_posix(), "doc": doc.name, "intake": copy.name}
+
+
+def spec_text(b):
+    """A stories.sh spec from the page's fields (only the ones it sent)."""
+    lines = []
+    for field, key in STORY_FIELDS.items():
+        if field in b:
+            v = str(b[field])
+            if "\n" in v or "\r" in v:
+                raise ValueError(f"{field} is one line")
+            lines.append(f"{key}: {v.strip()}")
+    if "details" in b:
+        lines.append("details:")
+        lines += ["  " + ln if ln.strip() else "" for ln in str(b["details"]).replace("\r", "").split("\n")]
+    if "criteria" in b:
+        crit = b["criteria"]
+        if not isinstance(crit, list) or any("\n" in str(c) for c in crit):
+            raise ValueError("criteria is a list of one-line criteria")
+        lines.append("criteria:")
+        lines += ["  - " + str(c).strip() for c in crit if str(c).strip()]
+    return "\n".join(lines) + "\n"
+
+
+def stories_change(state, folder, b):
+    """One change a person made on the board, through stories.sh: (http code, answer).
+    action: edit (the story's fields), accept, reject (reason), group (op: add,
+    describe, rename, remove; name; value or to). A story change carries the hash
+    the page read, so a story that changed meanwhile is refused (409)."""
+    doc = stories_doc(folder)
+    if not doc:
+        return 404, {"error": "This board has no User Stories document."}
+    if stories_run_view(state, folder.name):
+        return 409, {"error": "The stories are being written right now; try again when that's done."}
+    action, sid = str(b.get("action", "")), str(b.get("id", ""))
+    guard = ["--if", str(b["hash"])] if b.get("hash") else []
+    spec = None
+    if action in ("edit", "accept", "reject") and not re.fullmatch(r"US-\d+", sid):
+        return 400, {"error": "which story? (id US-NN)"}
+    if action == "edit":
+        try:
+            text = spec_text(b)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        spec = home() / f"spec-{secrets.token_hex(4)}.txt"
+        home().mkdir(parents=True, exist_ok=True)
+        spec.write_text(text, encoding="utf-8")
+        args = ["edit", doc, sid, spec] + guard
+    elif action == "accept":
+        args = ["accept", doc, sid] + guard
+    elif action == "reject":
+        reason = " ".join(str(b.get("reason", "")).split())[:300]
+        args = ["reject", doc, sid] + ([reason] if reason else []) + guard
+    elif action == "group":
+        op, name = str(b.get("op", "")), " ".join(str(b.get("group", "")).split())
+        value = " ".join(str(b.get("value", "")).split())
+        if op not in ("add", "describe", "rename", "remove") or not name:
+            return 400, {"error": "group: op add, describe, rename or remove, and the group's name"}
+        args = ["group", op, doc, name]
+        if op in ("describe", "rename") or (op == "add" and value):
+            args.append(value)
+        if op == "remove" and value:
+            args += ["--to", value]
+    else:
+        return 400, {"error": "action: edit, accept, reject or group"}
+    try:
+        code, _, err = run_stories(state, args, cwd=str(folder))
+    finally:
+        if spec:
+            spec.unlink(missing_ok=True)
+    msg = " ".join(ln.replace("stories.sh: ", "", 1) for ln in err.strip().splitlines()) or "stories.sh refused"
+    if code == 3:
+        return 409, {"error": "This story changed since you opened it. It's been reloaded; make your change again.",
+                     **design_view(state, folder)}
+    if code != 0:
+        return (400 if code == 1 else 500), {"error": msg}
+    if action == "group" and b.get("op") == "rename":
+        layout = board_layout(folder)  # the colour follows the group
+        old, new = " ".join(str(b.get("group", "")).split()).lower(), " ".join(str(b.get("value", "")).split()).lower()
+        if old in layout["colours"]:
+            layout["colours"][new] = layout["colours"].pop(old)
+            save_layout(folder, layout)
+    state.emit("stories", name=folder.name, changed=True)
+    return 200, design_view(state, folder)
+
+
+def move_cards(folder, b):
+    """Where the person put the cards (and the view): merged into <home>/boards."""
+    layout = board_layout(folder)
+    for sid, at in (b.get("cards") or {}).items():
+        if not re.fullmatch(r"US-\d+", str(sid)):
+            continue
+        if at is None:
+            layout["cards"].pop(sid, None)
+        elif isinstance(at, list) and len(at) == 2 and all(isinstance(v, (int, float)) for v in at):
+            layout["cards"][sid] = [round(float(at[0]), 1), round(float(at[1]), 1)]
+    v = b.get("view")
+    if isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) for k in ("x", "y", "z")):
+        layout["view"] = {k: round(float(v[k]), 3) for k in ("x", "y", "z")}
+    save_layout(folder, layout)
+
+
+# -- the headless run
+
+def claude_path():
+    """The claude command to run headless: TATTY_CLAUDE (a stand-in, for tests), else PATH's."""
+    import shutil
+    return os.environ.get("TATTY_CLAUDE") or shutil.which("claude")
+
+
+def stories_run_view(state, name):
+    """The run for this board while it goes (and once it has ended, until the next), or None."""
+    r = state.stories_run
+    if not r or r["name"] != name or r["status"] != "running":
+        return None
+    return {k: r[k] for k in ("name", "mode", "id", "status", "step", "steps", "started")}
+
+
+def stories_prompt(mode, doc, intake, sid, note):
+    if mode == "draft":
+        return f'/design:tt-user-stories draft "{intake}" "{doc}"\n'
+    return f'/design:tt-user-stories alter "{doc}" {sid} "{note}"\n'
+
+
+def tool_step(block):
+    """A tool call in the run, as one line for the page."""
+    name, inp = block.get("name", ""), block.get("input") or {}
+    cmd = str(inp.get("command", ""))
+    if name == "Bash" and "stories.sh" in cmd:
+        m = re.search(r"stories\.sh\"?\s+(\w+)(?:\s+(\w+))?", cmd)
+        verb = m.group(1) if m else ""
+        return {"add": "Writing a story", "edit": "Rewriting a story", "group": "Setting up the groups",
+                "list": "Reading the stories", "show": "Reading the story", "check": "Checking the document",
+                "status": "Finishing", "init": "Starting the document", "accept": "Accepting a story",
+                "reject": "Rejecting a story"}.get(verb, "Running stories.sh")
+    if name == "Read":
+        return f"Reading {Path(str(inp.get('file_path', ''))).name or 'a file'}"
+    if name == "Skill":
+        return "Starting tt-user-stories"
+    return name or "Working"
+
+
+def git_bash_path(state):
+    """The Git Bash for a headless claude's Bash tool on Windows. Named in
+    CLAUDE_CODE_GIT_BASH_PATH: without it a claude started from here may get
+    PowerShell instead of Bash, and the skill's `bash stories.sh` can't run.
+    Git's own bin\\bash.exe is preferred to usr\\bin\\bash.exe, as Claude Code documents."""
+    import shutil
+    p = Path(shutil.which(state.bash) or state.bash)
+    if not p.is_file():
+        return None
+    if p.parent.name.lower() == "bin" and p.parent.parent.name.lower() == "usr":
+        own = p.parent.parent.parent / "bin" / "bash.exe"
+        if own.is_file():
+            return str(own)
+    return str(p)
+
+
+def kill_tree(p):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    else:
+        try:
+            os.killpg(p.pid, 9)
+        except OSError:
+            p.kill()
+
+
+def start_stories_run(state, folder, b):
+    """Start a headless run of tt-user-stories on this board: (http code, answer).
+    mode draft writes every story (merges and suggestions stay Proposed); alter
+    rewrites one Proposed story from the person's note. One run at a time."""
+    mode = str(b.get("mode", ""))
+    if mode not in ("draft", "alter"):
+        return 400, {"error": "mode: draft or alter"}
+    doc = stories_doc(folder)
+    if not doc:
+        return 404, {"error": "This board has no User Stories document."}
+    if not stories_script():
+        return 501, {"error": DESIGN_MISSING}
+    claude = claude_path()
+    if not claude:
+        return 501, {"error": "There's no claude command on this machine's PATH."}
+    intake = design_intake(folder, doc)
+    sid, note = str(b.get("id", "")), str(b.get("note", "")).strip()
+    run_dir = home() / "runs" / secrets.token_hex(4)
+    if mode == "draft" and not intake:
+        return 400, {"error": "Tatty can't tell which document in the folder is the design document."}
+    if mode == "alter":
+        story = next((s for s in read_stories(state, doc)["stories"] if s["id"] == sid), None)
+        if not story or story["status"] != "Proposed":
+            return 400, {"error": "Only a Proposed story can be sent back for changes."}
+        if not note or len(note) > MAX_NOTE:
+            return 400, {"error": f"Say what to change (at most {MAX_NOTE} characters)."}
+    with state.cond:
+        if state.stories_run and state.stories_run["status"] == "running":
+            return 409, {"error": f"Tatty is already writing stories for {state.stories_run['name']}."}
+        state.stories_run = {"name": folder.name, "mode": mode, "id": sid, "status": "running", "step": "Starting",
+                             "steps": 0, "started": time.time(), "proc": None, "cancelled": False}
+    run_dir.mkdir(parents=True, exist_ok=True)
+    note_file = ""
+    if mode == "alter":
+        (run_dir / "note.txt").write_text(note + "\n", encoding="utf-8")
+        note_file = (run_dir / "note.txt").as_posix()
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    argv += ["-p", "--output-format", "stream-json", "--verbose",
+             # the skill reads, and writes only through stories.sh (specs on stdin): no Write at all
+             "--tools", "Bash,Read,Glob,Grep,Skill",
+             "--allowedTools", "Read", "Glob", "Grep", "Skill", "Bash(bash *stories.sh*)",
+             "--permission-mode", "dontAsk", "--setting-sources", "user", "--no-session-persistence",
+             "--strict-mcp-config", "--max-budget-usd", STORIES_BUDGET, "--add-dir", run_dir.as_posix()]
+    if os.environ.get("TATTY_STORIES_MODEL"):
+        argv += ["--model", os.environ["TATTY_STORIES_MODEL"]]
+    design = toolbox_plugin("design")
+    if design and not str(design).replace("\\", "/").lower().startswith(
+            (Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins").as_posix().lower(),
+             (config_dir() / "plugins").as_posix().lower())):
+        # found only in a checkout: load it (and core) into the run
+        core = toolbox_plugin("core")
+        argv += ["--plugin-dir", str(design)] + (["--plugin-dir", str(core)] if core else [])
+    prompt = stories_prompt(mode, doc.name, intake.name if intake else "", sid, note_file)
+    before = {s["id"]: s["hash"] for s in read_stories(state, doc)["stories"]}
+    threading.Thread(target=stories_run_work, args=(state, folder, doc, argv, prompt, before, run_dir),
+                     daemon=True).start()
+    state.emit("stories", name=folder.name, run=stories_run_view(state, folder.name))
+    return 202, {"run": stories_run_view(state, folder.name)}
+
+
+def stories_run_work(state, folder, doc, argv, prompt, before, run_dir):
+    import shutil
+    r = state.stories_run
+    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
+    final, error = None, ""
+    try:
+        with open(run_dir / "stderr.txt", "w+", encoding="utf-8", errors="replace") as errf:
+            p = subprocess.Popen(argv, cwd=str(folder), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf,
+                                 encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW,
+                                 start_new_session=os.name != "nt")
+            r["proc"] = p
+            if r.get("cancelled"):
+                kill_tree(p)
+            timer = threading.Timer(STORIES_TIMEOUT, lambda: (r.update(timedOut=True), kill_tree(p)))
+            timer.start()
+            try:
+                p.stdin.write(prompt)
+                p.stdin.close()
+            except OSError:
+                pass
+            for line in p.stdout:
+                state.touch()  # a long run is activity: the idle watchdog leaves the server up
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "assistant":
+                    for block in (msg.get("message") or {}).get("content") or []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            r["step"], r["steps"] = tool_step(block), r["steps"] + 1
+                            state.emit("stories", name=folder.name, run=stories_run_view(state, folder.name))
+                elif msg.get("type") == "result":
+                    final = msg
+            p.wait()
+            timer.cancel()
+            errf.seek(0)
+            said = [ln.strip() for ln in errf.read().splitlines() if ln.strip()]
+        if r.get("cancelled"):
+            error = "Stopped."
+        elif r.get("timedOut"):
+            error = f"The run took longer than {int(STORIES_TIMEOUT // 60)} minutes and was stopped."
+        elif final is None:
+            error = said[-1] if said else f"claude exited {p.returncode} saying nothing"
+        elif final.get("is_error") or final.get("subtype") != "success":
+            error = str(final.get("result") or final.get("subtype") or "the run failed")[:400]
+    except OSError as e:
+        error = f"couldn't run claude: {e}"
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+    after = read_stories(state, doc)
+    new = [s["id"] for s in after["stories"] if s["id"] not in before]
+    changed = [s["id"] for s in after["stories"] if s["id"] in before and before[s["id"]] != s["hash"]]
+    with state.cond:
+        r["status"] = "error" if error else "done"
+        r["proc"] = None
+    cost = float(final.get("total_cost_usd") or 0) if final else 0.0
+    note = error or ("Nothing was written." if not new and not changed else "")
+    state.emit("stories", name=folder.name, changed=True, done=True, mode=r["mode"], id=r["id"],
+               ok=not error, error=error, note=note, new=new, altered=changed, problems=after["problems"],
+               cost=round(cost, 4))
+
+
+def cancel_stories_run(state):
+    r = state.stories_run
+    if not r or r["status"] != "running":
+        return False
+    r["cancelled"] = True
+    if r.get("proc"):
+        kill_tree(r["proc"])
+    return True
+
+
+def watch_designs(state):
+    """Hand edits (in Obsidian, say) and the skill's own writes reach the board:
+    a "stories" event whenever a board's document changes on disk."""
+    seen = {}
+    while True:
+        time.sleep(1.5)
+        base = design_root()
+        if not base.is_dir():
+            continue
+        try:
+            for d in base.iterdir():
+                doc = stories_doc(d) if d.is_dir() else None
+                if not doc:
+                    continue
+                m = doc.stat().st_mtime
+                if d.name in seen and seen[d.name] != m:
+                    state.emit("stories", name=d.name, changed=True)
+                seen[d.name] = m
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -1911,6 +2485,13 @@ class Handler(BaseHTTPRequestHandler):
             if not JIRA_KEY.match(key):
                 return self.send(400, {"error": "not a ticket key"})
             return self.send(200, jira_issue(key) or {"key": key, "cached": False})
+        if path == "/api/designs":
+            return self.send(200, designs_list(st))
+        if path == "/api/design":
+            folder = design_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such board"})
+            return self.send(200, design_view(st, folder))
         if path.startswith("/api/view/"):
             res = run_view(st, path[len("/api/view/"):], q)
             return self.send(200, res) if res is not None else self.send(404, {"error": "no such view"})
@@ -2085,8 +2666,27 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/jira/start":
             code, answer = jira_start(st, b if isinstance(b, dict) else {})
             return self.send(code, answer)
+        if path == "/api/pick-file":
+            if not picker_argv():
+                return self.send(501, {"error": "no file dialog on this machine"})
+            chosen = pick_folder(st, str(b.get("start", "")), str(b.get("title", ""))[:100], kind="file")
+            return self.send(200, {"path": chosen} if chosen else {"cancelled": True})
         if path == "/api/new-feature":
             code, answer = new_feature(b.get("name", ""))
+            return self.send(code, answer)
+        if path == "/api/new-design":
+            code, answer = new_design(st, b.get("name", ""), b.get("intake", ""))
+            return self.send(code, answer)
+        if path == "/api/stories/cancel":
+            return self.send(200, {"ok": cancel_stories_run(st)})
+        if path in ("/api/stories", "/api/stories/layout", "/api/stories/run"):
+            folder = design_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such board"})
+            if path == "/api/stories/layout":
+                move_cards(folder, b)
+                return self.send(200, {"ok": True})
+            code, answer = (start_stories_run if path == "/api/stories/run" else stories_change)(st, folder, b)
             return self.send(code, answer)
         if path == "/api/doc/save":
             folder = feature_dir(str(b.get("name", "")))
@@ -2174,6 +2774,7 @@ def serve(cwd, bash):
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=watch_ledger, args=(state,), daemon=True).start()
     threading.Thread(target=watch_updates, args=(state,), daemon=True).start()
+    threading.Thread(target=watch_designs, args=(state,), daemon=True).start()
     try:
         httpd.serve_forever(poll_interval=0.5)
     finally:

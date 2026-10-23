@@ -5,10 +5,12 @@ a user interface over its workflow, never part of it. The dependency runs one
 way:
 
 - **Tatty reads the toolbox.** It reads the toolbox's documents and records and
-  runs a few of its scripts, read-only. The one thing it writes is a feature's
-  own document, and only when a person saves it in Edit mode (see below), or a
-  ticket's document into a new feature folder made for it on Start workflow
-  (see "Jira"). It can also ask Claude Code to install one of the toolbox's
+  runs a few of its scripts, read-only. It writes a document only on a
+  person's action: a feature's document when it is saved in Edit mode (see
+  below), a ticket's document into a new feature folder made for it on Start
+  workflow (see "Jira"), and a User Stories document, through the toolbox's own
+  `stories.sh`, when a person changes a story on the board (see "User
+  Stories"). It can also ask Claude Code to install one of the toolbox's
   discipline plugins, on a person's click (see below); that is Claude Code's
   doing, and changes nothing of the toolbox's.
 - **The toolbox never knows about Tatty.** Nothing in the toolbox calls Tatty,
@@ -90,8 +92,8 @@ All of these are under the core plugin's `skills/` folder.
 | `tt-connections/scripts/connections.sh status <folder>` | the project's connections | the Toolbox page's Connections tab |
 | `tt-common/scripts/ids.sh index <feature folder>` | every planning ID the feature's documents define, one row each: `ID file line form gloss` (form `heading`, `item` or `row`), from the document that owns its prefix | ID links and their hover cards (below) |
 
-The page can't name any other command. The server runs only these, by argv,
-with no shell.
+The page can't name any other command. The server runs only these (and the
+design plugin's `stories.sh`, below), by argv, with no shell.
 
 ## Files Tatty reads
 
@@ -174,7 +176,58 @@ In **Edit** a person changes the document's markdown and saves it
 
 Tatty never edits a document on its own.
 
+## User Stories (the design mode)
+
+The design mode's board works on the design plugin's `tt-user-stories` skill.
+Tatty finds the plugin like core: under a `TATTY_TOOLBOX` checkout
+(`plugins/design`, or beside the plugin folder it names), through the pointer
+folder `${TT_PLUGINS_HOME:-~/.claude/tt-plugins}/design`, else at the
+`installPath` Claude Code recorded for `design@<marketplace>`. Without it the
+board says so and offers the modes page.
+
+A board is a folder `<root>/design/<name>/` that Tatty makes: it holds a copy of
+the design document the person picked (so the skill reads only inside the
+folder) and `<name> - User Stories.md`, which is the skill's document:
+
+| Command | When | Used in Tatty |
+|---|---|---|
+| `tt-user-stories/scripts/stories.sh init <design doc> <stories doc>` | a new board | starts the document |
+| `stories.sh list <doc> --tsv` | every time the board is read | the stories, groups and retired rows, and each story's hash; `problem:` lines on stderr mean a hand edit broke the layout |
+| `stories.sh edit <doc> <id> <spec> --if <hash>`, `accept`, `reject <reason>`, `group add\|describe\|rename\|remove` | a person's click: Save, ✓, 🗑, the group panel | the change; exit 3 (the story changed since it was read) is a 409 and the board reloads |
+
+The spec Tatty writes for an edit is the script's own format (`stories.sh
+--help`), from the fields the person filled in. Tatty never writes the
+document's markdown itself.
+
+To **write** stories, Tatty runs the skill headless, on a person's click
+(**Write stories**, **Look for more**, a new board, or **Ask for changes** on a
+Proposed card):
+
+```
+claude -p --output-format stream-json --verbose
+  --tools Bash,Read,Glob,Grep,Skill
+  --allowedTools Read Glob Grep Skill "Bash(bash *stories.sh*)"
+  --permission-mode dontAsk --setting-sources user --no-session-persistence
+  --strict-mcp-config --max-budget-usd <TATTY_STORIES_BUDGET, default 5>
+  [--plugin-dir <design> --plugin-dir <core>]   (only for a checkout)
+```
+
+with the prompt on stdin: `/design:tt-user-stories draft "<design doc>"
+"<stories doc>"`, or `/design:tt-user-stories alter "<stories doc>" <id>
+"<note file>"`. It runs in the board's folder, with the alteration note in a
+folder of Tatty's own (`<home>/runs/`, given with `--add-dir`, removed after).
+The run can read, and write only through `stories.sh` (the skill passes its
+specs on stdin): it has no Write or Edit tool, and anything else asked for is
+refused, never prompted. `TATTY_SESSION` is taken out of its environment, so the
+Tatty mod stays out of it; on Windows `CLAUDE_CODE_GIT_BASH_PATH` is set to the
+Git Bash the server uses, so the run has a Bash tool (without it a child claude
+may get PowerShell, where `bash stories.sh` can't run). One run at a time; Stop
+kills it. The page sees each tool call as a step, then which stories are new or
+rewritten and what the run cost.
+
 ## Commands Tatty starts
+
+(Besides the User Stories runs above.)
 
 **Start session** opens a new Claude session that runs one of the feature's
 next commands. That is the command `workflow-state.sh` names, or
@@ -237,6 +290,8 @@ toolbox has no part in it. What it does, and the limits it keeps:
   - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
     (`issues/<KEY>.json`), and which feature was started from which ticket
     (`started.tsv`);
+  - `boards/<key>.json`: where each card sits on a User Stories board, the view,
+    and each group's colour (never in the stories document);
   - `server.json` and `server.log`.
 - `%LOCALAPPDATA%\Tatty\`, on Windows:
   - the tray app's build;
@@ -245,4 +300,5 @@ toolbox has no part in it. What it does, and the limits it keeps:
 
 None of these are the toolbox's. The toolbox's settings and records (the event
 ledger, the workflow links) are never written, and its documents only on a
-person's Save in Edit mode, or the ticket's on Start workflow.
+person's Save in Edit mode, the ticket's on Start workflow, or a User Stories
+document through `stories.sh` on a person's click.

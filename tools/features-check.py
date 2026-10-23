@@ -3,10 +3,13 @@
 Chromium browser (or a companion's WebView2, with `attach <port>`) the way a
 person would: the home page's feature cards, one feature's overview (tracker,
 documents, work units, timeline), a document, a [[wikilink]] inside it, Back,
-and the production mode's Jira board (from a sample board). Uses page-check.py's DevTools client. Standard library only.
+the production mode's Jira board (from a sample board), and the design mode's
+User Stories board (check_stories). Uses page-check.py's DevTools client.
+Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature]
-       features-check.py attach <devtools port> [feature]
+usage: features-check.py <browser exe> <page url> [feature | --stories]
+       features-check.py attach <devtools port> [feature | --stories]
+--stories walks only the User Stories board (a root with a board under design/).
 Prints one JSON object of what it found at each step.
 """
 
@@ -265,6 +268,87 @@ def check_jira(p):
     return res
 
 
+def mouse(p, kind, x, y, **extra):
+    p.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button="left", buttons=1 if kind != "mouseReleased" else 0,
+           clickCount=1, **extra)
+
+
+def drag(p, x0, y0, x1, y1):
+    mouse(p, "mousePressed", x0, y0)
+    for i in range(1, 6):
+        mouse(p, "mouseMoved", x0 + (x1 - x0) * i / 5, y0 + (y1 - y0) * i / 5)
+    mouse(p, "mouseReleased", x1, y1)
+
+
+def check_stories(p):
+    """The User Stories board, with real mouse input: the boards list, a board's
+    notes and group panel, panning, zooming, a group in focus (with and without
+    reduced motion), a card opened and its edit form, and a note dragged and
+    dragged back. Changes nothing in the stories document."""
+    res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    p.js("location.hash = '#designs'; 1")
+    wait(p, "document.querySelectorAll('#page-designs .board-card, #page-designs .empty-state').length > 0")
+    res["list"] = p.js("[...document.querySelectorAll('#page-designs .board-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())")
+    if not res["list"]:
+        return {**res, "board": "no board to open"}
+    p.js("document.querySelector('#page-designs .board-card').click(); 1")
+    wait(p, "document.querySelectorAll('#board .scard').length > 0")
+    time.sleep(0.5)
+    res["board"] = p.js("""({ cards: document.querySelectorAll('#board .scard').length,
+                             proposed: document.querySelectorAll('#board .scard.proposed').length,
+                             colours: [...new Set([...document.querySelectorAll('#board .scard')].map(c => (c.className.match(/\\bg(\\d|u)\\b/) || [''])[0]))],
+                             groups: [...document.querySelectorAll('#group-panel .grow')].map(g => g.innerText.replace(/\\s+/g, ' ').trim()),
+                             panelPinned: getComputedStyle(document.querySelector('#group-panel')).position,
+                             zoom: document.querySelector('.zoom-pct').textContent,
+                             noteBg: getComputedStyle(document.querySelector('#board .scard')).backgroundColor })""")
+    box = p.js("(() => { const r = document.querySelector('#board').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()")
+    bx, by = box[0] + 30, box[1] + box[3] - 60  # the board's bottom-left, clear of notes and the panel
+    t0 = p.js("document.querySelector('#board-world').style.transform")
+    drag(p, bx + 40, by - 20, bx + 140, by - 70)
+    res["pan"] = {"before": t0, "after": p.js("document.querySelector('#board-world').style.transform")}
+    p.call("Input.dispatchMouseEvent", type="mouseWheel", x=box[0] + box[2] / 2, y=box[1] + box[3] / 2, deltaX=0, deltaY=-240)
+    time.sleep(0.2)
+    res["wheel"] = {"zoom": p.js("document.querySelector('.zoom-pct').textContent"),
+                    "transform": p.js("document.querySelector('#board-world').style.transform")}
+    # a group in focus: once as this machine has it (reduced motion: a jump), once with motion
+    for media in ("reduce", "no-preference"):
+        p.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": media}])
+        before = p.js("document.querySelector('#board-world').style.transform")
+        p.js("(() => { const g = document.querySelector('#group-panel .grow:not(.on) .gname'); if (g) g.click(); return 1; })()")
+        res["focus-" + media] = p.js(f"""({{ group: (document.querySelector('#group-panel .grow.on') || {{}}).dataset ? document.querySelector('#group-panel .grow.on').dataset.group : '',
+                                            hl: document.querySelectorAll('#board .scard.hl').length,
+                                            dimmed: document.querySelectorAll('#board .scard.dim').length,
+                                            frame: !document.querySelector('.gframe').hidden,
+                                            easing: document.querySelector('#board-world').classList.contains('easing'),
+                                            moved: document.querySelector('#board-world').style.transform !== {json.dumps(before)} }})""")
+        p.js("document.querySelector('#group-panel .grow.on .gname') && document.querySelector('#group-panel .grow.on .gname').click(); 1")
+    res["unfocus"] = p.js("document.querySelectorAll('#board .scard.hl, #board .scard.dim').length")
+    p.js("document.querySelector('#fit-all').click(); 1")
+    time.sleep(0.5)
+    # a note dragged, then dragged back (its place is Tatty's own, not the document's)
+    c = p.js("(() => { const n = document.querySelector('#board .scard'); const r = n.getBoundingClientRect(); return [n.dataset.id, r.left + 30, r.top + 20, n.style.left, n.style.top]; })()")
+    drag(p, c[1], c[2], c[1] + 80, c[2] + 50)
+    moved = p.js(f"(() => {{ const n = document.querySelector('#board .scard[data-id={json.dumps(c[0])}]'); return [n.style.left, n.style.top]; }})()")
+    drag(p, c[1] + 80, c[2] + 50, c[1], c[2])
+    res["drag"] = {"id": c[0], "from": c[3:5], "moved": moved, "overlay": p.js("!document.querySelector('#card-overlay').hidden")}
+    # a click (no movement) opens the note
+    mouse(p, "mousePressed", c[1], c[2])
+    mouse(p, "mouseReleased", c[1], c[2])
+    wait(p, "!document.querySelector('#card-overlay').hidden")
+    res["open"] = p.js("""({ hash: decodeURIComponent(location.hash), title: (document.querySelector('.ocard .otitle') || {}).textContent || '',
+                            criteria: document.querySelectorAll('.ocard .ocrit li').length,
+                            proposedButtons: !!document.querySelector('#card-accept') })""")
+    p.js("document.querySelector('#card-edit').click(); 1")
+    res["edit"] = p.js("""({ title: (document.querySelector('#edit-title') || {}).value || '', group: (document.querySelector('#edit-group') || {}).value || '',
+                            criteria: document.querySelectorAll('#edit-criteria input').length,
+                            groupsOffered: [...document.querySelectorAll('#edit-group option')].map(o => o.value) })""")
+    p.js("[...document.querySelectorAll('.oedit button')].find(b => b.textContent === 'Cancel').click(); 1")
+    p.js("document.querySelector('.oclose').click(); 1")
+    res["closed"] = {"overlay": p.js("document.querySelector('#card-overlay').hidden"), "hash": p.js("decodeURIComponent(location.hash)")}
+    return res
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -298,6 +382,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
+        if feature == "--stories":
+            out["stories"] = check_stories(p)
+            print(json.dumps(out, indent=1))
+            return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
         out["home"] = p.js("""({ cards: [...document.querySelectorAll('#page-home .fcard')].map(c => c.querySelector('strong').textContent + ' · ' + c.querySelector('.chip:not(.route)').textContent),
                                setup: !!document.querySelector('#page-home .root-setup'),
@@ -333,6 +421,7 @@ def main(argv):
         out["breakdown"] = check_breakdown(p, feature)
         out["ids"] = check_ids(p)
         out["jira"] = check_jira(p)
+        out["stories"] = check_stories(p)  # last: it sets the viewport and the motion setting
         print(json.dumps(out, indent=1))
         return 0
     finally:

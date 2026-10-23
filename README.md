@@ -18,6 +18,13 @@ visually:
     heading or item they name; View lays each kind out for reading (the
     Challenges as cards), Edit changes and saves the markdown;
   - a tracker of its steps, its work units and a timeline.
+- **User Stories (design mode):** pick a design document and Tatty has the
+  toolbox's `tt-user-stories` skill write its user stories in the background,
+  then lays them out as sticky notes on a board you can pan, zoom and rearrange.
+  Click a note to read it in full and edit it (the markdown document changes);
+  accept a proposed story with ✓, bin it with 🗑, or ask for changes and have it
+  rewritten. The pinned group panel colours each group, adds and removes groups,
+  and frames a group's notes when you click it.
 - **Start the next step:** opens a new Claude session that runs it, then
   watches that session live: what it's doing, how many tokens it has used,
   and its questions, which you answer right there.
@@ -48,7 +55,8 @@ visually:
 
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
-Edit mode, or a ticket's when you start a workflow from it) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
+Edit mode, a ticket's when you start a workflow from it, or a User Stories
+document through the toolbox's own script when you change a story) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
 
 ## Install
 
@@ -86,6 +94,7 @@ install from a local checkout, and how to work on Tatty itself.
 | run a feature's next step | its page → **Start…** → **Start session** |
 | see your Jira sprint | the production mode → **Jira** → **Refresh** |
 | start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |
+| turn a design document into user stories | design mode → **User Stories** → **New from a design document…** |
 | see one of his animations now | right-click Tatty → **Preview** → pick one |
 | keep Tatty out where you can see him | right-click Tatty → **Keep Tatty on the desktop** |
 | have him move, or keep still | right-click Tatty → **Animations** |

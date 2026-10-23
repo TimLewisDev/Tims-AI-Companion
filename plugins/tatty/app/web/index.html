@@ -6,6 +6,7 @@
 <title>Tatty</title>
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/stories.css">
 </head>
 <body>
 <!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
@@ -30,6 +31,7 @@
     <a href="#mode" data-page="mode">Home</a>
     <a href="#home" data-page="home" data-mode="engineering">Features</a>
     <a href="#jira" data-page="jira" data-mode="production">Jira</a>
+    <a href="#designs" data-page="designs" data-mode="design">User Stories</a>
     <a href="#toolbox" data-page="toolbox">Toolbox</a>
   </nav>
   <div class="where dim" id="cwd"></div>
@@ -52,6 +54,9 @@
   <section class="page" id="page-feature"></section>
   <!-- Jira: the production mode's board of your open-sprint tickets (jira.js). -->
   <section class="page" id="page-jira"></section>
+  <!-- User Stories: the design mode's boards, and one board of sticky notes (stories.js). -->
+  <section class="page" id="page-designs"></section>
+  <section class="page" id="page-design"></section>
   <!-- Settings: Tatty's own options and its updates (settings.js). -->
   <section class="page" id="page-settings"></section>
   <!-- Toolbox: status of any folder, connections and the toolbox's docs. -->
@@ -105,6 +110,7 @@
 <script src="/static/features.js"></script>
 <script src="/static/settings.js"></script>
 <script src="/static/jira.js"></script>
+<script src="/static/stories.js"></script>
 <script src="/static/ids.js"></script>
 </body>
 </html>

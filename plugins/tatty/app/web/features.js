@@ -5,10 +5,11 @@
 "use strict";
 
 const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
-  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira") };
+  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira"),
+  designs: $("#page-designs"), design: $("#page-design") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production" };
+const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", designs: "design", design: "design" };
 const featureCache = new Map(); // name -> the last /api/feature answer
 let homeTimer = null;
 
@@ -66,6 +67,7 @@ function copyable(text) {
 
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings · #jira
+// · #designs · #design/<name>[/card/<story id>] (stories.js)
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
@@ -73,6 +75,8 @@ function parseRoute() {
     const doc = parts[2] === "doc" ? parts[3] : null;
     return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null };
   }
+  if (parts[0] === "design" && parts[1]) return { page: "design", name: parts[1], card: parts[2] === "card" ? parts[3] : null };
+  if (parts[0] === "designs") return { page: "designs" };
   if (parts[0] === "toolbox") return { page: "toolbox" };
   if (parts[0] === "settings") return { page: "settings" };
   if (parts[0] === "jira") return { page: "jira" };
@@ -88,7 +92,7 @@ const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
-  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === (which === "feature" ? "home" : which));
+  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs" }[which] || which));
   $("#settings-link").classList.toggle("on", which === "settings");
   renderNav();
   clearInterval(homeTimer);
@@ -117,6 +121,8 @@ async function route() {
     else pageEls.jira.replaceChildren(el("p", { class: "pad st missing" },
       "The Jira board didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
   }
+  else if (r.page === "designs") await renderDesigns(pageEls.designs);
+  else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
 }
 
