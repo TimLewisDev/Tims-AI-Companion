@@ -27,8 +27,8 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   - It owns Tatty's root folder and launches sessions.
 - **`app/web`:** the page, with no libraries and no network beyond the server.
   - **Companion mode** is a compact speech bubble: the feed, questions and chat.
-  - **The full panel** has the Features, feature and Toolbox pages, with the
-    chat as a right-hand column.
+  - **The full panel** has the modes, mode home, Features, feature and Toolbox
+    pages, with the chat as a right-hand column.
   - It has its own small markdown renderer, which handles Obsidian links and
     block ids.
 - **`app/companion`:** the Windows tray app (.NET 9 WPF and WebView2).
@@ -69,6 +69,32 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   answer, listen). Any agent that can run a shell command can use it.
   **`scripts/tatty-root.sh`:** the root setting. It never accepts a root
   inside the Claude folder, whichever way the path is spelled.
+
+## Modes and colour
+
+A **mode** is one of the toolbox's discipline plugins: engineering, design or
+production (`installed_modes()` in `server.py`, from the toolbox's pointer
+folders; see [toolbox-contract.md](toolbox-contract.md)).
+
+- **The landing page** (`#modes`) offers the modes installed; with only one
+  there is nothing to pick, so it goes straight to that mode's home page
+  (`#mode`). The top bar has a radio over the modes, or the name of the only
+  one. The mode is the page's own choice, remembered in `localStorage`; the
+  server only says which plugins are installed (`/api/status`'s `modes`).
+- **Mode-scoped pages:** a nav item with a `data-mode` belongs to that mode and
+  is shown only in it (today Features, engineering's). Going to such a page
+  switches to its mode (`PAGE_MODE` and `switchMode` in `features.js`), so a
+  link never shows one mode's pages in another's colours. With no discipline
+  plugin installed, nothing is hidden.
+- **The colour** is all a mode changes: `theme.css` has the palette (every
+  mode's accent), the theme (the neutrals and states, with the dark override)
+  and the mode layer, which is only ever
+  `--accent: var(--accent-<mode>)` under `body[data-mode="…"]`. `style.css`
+  names `--accent`, `--accent-soft` and `--on-accent` and no colour of its own,
+  so a new mode is one block in the mode layer and a new theme (a light/dark
+  toggle of our own, say) one block in the theme layer. The tray app follows:
+  the page sends `mode`, and `App.xaml.cs` swaps the `TtAccent` brush Tatty is
+  drawn with.
 
 ## Features and the workflow
 
@@ -112,6 +138,10 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
+  `page-check.py` also covers the modes: the top bar, the landing page, what
+  switching mode does to the colour and the nav, and the mode being remembered
+  across a reload. Start the server with `TATTY_MODES` to drive more than the
+  one discipline installed.
 - `tools/window-check.py` reports what the shell makes of the companion's
   windows -- the styles that decide the taskbar and Alt-Tab, who holds the
   button, what is on top -- and asserts the lot for one view with

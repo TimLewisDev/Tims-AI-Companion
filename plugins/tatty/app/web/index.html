@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tatty</title>
+<link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,6 +12,10 @@
      (drag to move, double-click to maximise). -->
 <div id="companion-bar" title="">
   <span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong>
+  <!-- The mode: a radio over the discipline plugins installed (modes.js), which
+       sets the app's accent colour. The title bar's is the one normally shown;
+       the header has the same radio for a browser tab, which has no title bar. -->
+  <div class="mode-switch" data-slot="bar"></div>
   <span class="spacer"></span>
   <button type="button" id="expand" title="Your features, their status and documents">Full panel</button>
   <button type="button" id="min" title="Down into the taskbar">Minimise</button>
@@ -19,9 +24,11 @@
   <button type="button" id="hide" title="Tuck Tatty away until something happens">×</button>
 </div>
 <header>
-  <div class="brand"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong> <span class="dim">your TT toolbox companion</span></div>
+  <a class="brand" href="#modes" title="All the modes you have installed"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong></a>
+  <div class="mode-switch" data-slot="header"></div>
   <nav class="pnav">
-    <a href="#home" data-page="home">Features</a>
+    <a href="#mode" data-page="mode">Home</a>
+    <a href="#home" data-page="home" data-mode="engineering">Features</a>
     <a href="#toolbox" data-page="toolbox">Toolbox</a>
   </nav>
   <div class="where dim" id="cwd"></div>
@@ -33,6 +40,10 @@
 </header>
 
 <main>
+  <!-- Modes: the discipline plugins installed, to pick one (modes.js). -->
+  <section class="page" id="page-modes"></section>
+  <!-- One mode's home page. -->
+  <section class="page" id="page-mode"></section>
   <!-- Features: Tatty's root folder; one card per feature (features.js). -->
   <section class="page" id="page-home"></section>
   <!-- One feature: its documents on the left, where it stands on the right. -->
@@ -82,7 +93,9 @@
 </main>
 
 <script src="/static/app.js"></script>
+<script src="/static/modes.js"></script>
 <script src="/static/views.js"></script>
+<script src="/static/usage.js"></script>
 <script src="/static/features.js"></script>
 </body>
 </html>

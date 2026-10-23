@@ -29,7 +29,13 @@ function engine(on: any, open: boolean, answer: object, seen: string[], tag = ''
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
   })
   on('tool.call', () => ({ result: TERMINAL }))
+  on('turn.complete', (_: unknown, e: { answer: string }) => ({ text: e.answer }))
+  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 52000, window: 200000 }, cost: { usd: 0.42 } } }))
 }
+
+const TURN = (usage: object, extra: object = {}) =>
+  ({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't', reason: 'end_turn', usage: { model: 'm', ...usage }, ...extra }) as any
+const COUNTS = { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 5000, cache_creation_input_tokens: 300 }
 
 const START = { cwd: '/', surface: 'terminal', isInteractive: true } as const
 const attach = ($: any) => $.command.run({ command: 'tatty', args: 'attach' })
@@ -92,6 +98,35 @@ test('a session Tatty started joins by itself and reports its tool calls, tagged
   expect(acts[0].text).toBe('List the files')
   expect(acts.every(a => a.tag === 's-1')).toBe(true)
   expect(bodies.find(b => b.path === '/api/hello')?.tag).toBe('s-1')
+})
+
+test('a started session reports its running token total, the context and the cost', async ($, on) => {
+  const seen: string[] = []
+  const bodies: any[] = []
+  engine(on, true, {}, seen, 's-1', bodies)
+  await $.session.start(START)
+
+  await $.turn.complete(TURN(COUNTS))
+  await $.turn.complete(TURN(COUNTS))
+  await new Promise(r => setTimeout(r, 50))
+  const usage = bodies.filter(b => b.path === '/api/activity' && b.kind === 'usage').map(b => b.usage)
+  expect(usage.length).toBe(2)
+  expect(usage[0]).toEqual({
+    input: 100, output: 20, cacheRead: 5000, cacheWrite: 300, model: 'm',
+    context: { tokens: 52000, window: 200000 }, costUsd: 0.42,
+  })
+  expect(usage[1]).toEqual(expect.objectContaining({ input: 200, output: 40, cacheRead: 10000, cacheWrite: 600 }))
+})
+
+test('a session Tatty did not start reports no usage', async ($, on) => {
+  const seen: string[] = []
+  engine(on, true, {}, seen)
+  await $.session.start(START)
+  await attach($)
+
+  await $.turn.complete(TURN(COUNTS))
+  await new Promise(r => setTimeout(r, 50))
+  expect(seen).not.toContain('/api/activity')
 })
 
 test('an attached session that Tatty did not start reports no activity', async ($, on) => {

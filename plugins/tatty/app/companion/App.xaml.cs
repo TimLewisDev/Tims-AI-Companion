@@ -364,7 +364,19 @@ namespace TtCompanion
                 case "maximise": bubble.ToggleMaximise(); break;
                 case "minimise": bubble.Minimise(); break;
                 case "hide": TuckAway(); break;
+                // The mode on the page (engineering, design, production): Tatty
+                // himself is drawn in its colour too.
+                case "mode": SetAccent(arg); break;
             }
+        }
+
+        // TtAccent is what TattyWindow.xaml draws him with (App.xaml): swapping
+        // the brush redraws him, because every use is a DynamicResource.
+        private void SetAccent(string? mode)
+        {
+            var key = string.IsNullOrEmpty(mode) ? "TtAccentEngineering"
+                : "TtAccent" + char.ToUpperInvariant(mode[0]) + mode.Substring(1);
+            if (Resources[key] is Brush brush) Resources["TtAccent"] = brush;
         }
 
         private void PlaceTatty()

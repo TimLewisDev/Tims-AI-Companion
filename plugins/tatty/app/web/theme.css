@@ -1,0 +1,58 @@
+/* Tatty's colours, in three layers, so each can change on its own:
+
+   1. the palette: every mode's accent, named, whatever mode is on;
+   2. the theme: the neutrals and the states (one block per theme; today the
+      light values and a dark override by the system's setting);
+   3. the mode: the only thing a mode changes is which accent is --accent.
+
+   style.css (and everything in it) only ever names --accent / --accent-soft /
+   --on-accent, so adding a mode is one block in layer 3, and a new theme (a
+   light/dark toggle of our own, say) is one block in layer 2. */
+
+/* ---------------------------------------------------------------- 1. palette */
+:root {
+  --accent-engineering: #3b6ea8;
+  --accent-design: #a9641f;
+  --accent-production: #7d5bbd;
+  /* the soft tint of each accent: a selected row, your own message, a panel */
+  --accent-engineering-soft: #eaf2fb;
+  --accent-design-soft: #fbf1e6;
+  --accent-production-soft: #f1ecfb;
+}
+
+/* ---------------------------------------------------------------- 2. theme */
+:root {
+  --bg: #f7f6f3; --panel: #fff; --ink: #1f2328; --dim: #6a737d; --line: #e1e0dc;
+  --ok: #2e7d32; --warn: #b26a00; --bad: #c62828;
+  --on-accent: #fff; /* text on a filled accent */
+  --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181b; --panel: #1e2125; --ink: #e6e6e6; --dim: #9aa3ad; --line: #2e3238;
+    --ok: #6cc070; --warn: #e0a64a; --bad: #ef6b6b;
+    --on-accent: #16181b; /* the dark accents are light: dark text on them */
+    --accent-engineering: #7aa7da;
+    --accent-design: #e0a86a;
+    --accent-production: #b49ae6;
+    --accent-engineering-soft: #1f2a38;
+    --accent-design-soft: #332a1d;
+    --accent-production-soft: #272036;
+  }
+}
+
+/* ---------------------------------------------------------------- 3. mode
+   :root first, so the page looks the same before a mode is known (and with no
+   discipline plugin installed at all). */
+:root,
+body[data-mode="engineering"] { --accent: var(--accent-engineering); --accent-soft: var(--accent-engineering-soft); }
+body[data-mode="design"] { --accent: var(--accent-design); --accent-soft: var(--accent-design-soft); }
+body[data-mode="production"] { --accent: var(--accent-production); --accent-soft: var(--accent-production-soft); }
+
+/* Something that shows a mode which isn't the one on screen -- a dot in the top
+   bar's radio, a card on the landing page -- takes that mode's accent for
+   itself, so style.css can draw it with --accent like everything else. This is
+   the only place outside layer 3 that names a mode. */
+.mode-dot[data-mode="engineering"], .mode-card[data-mode="engineering"] { --accent: var(--accent-engineering); --accent-soft: var(--accent-engineering-soft); }
+.mode-dot[data-mode="design"], .mode-card[data-mode="design"] { --accent: var(--accent-design); --accent-soft: var(--accent-design-soft); }
+.mode-dot[data-mode="production"], .mode-card[data-mode="production"] { --accent: var(--accent-production); --accent-soft: var(--accent-production-soft); }

@@ -47,8 +47,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a checkout)
 WEB = HERE / "web"
-STATIC = {"index.html": "text/html", "app.js": "text/javascript", "features.js": "text/javascript",
-          "views.js": "text/javascript", "style.css": "text/css"}
+STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
+          "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
+          "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
 MAX_WAIT = 55  # seconds one long-poll request may wait server-side
@@ -115,6 +116,27 @@ def toolbox_script(rel):
     """A toolbox script, by its path under core's skills folder, or None."""
     core = toolbox_core()
     return core / rel if core and (core / rel).is_file() else None
+
+
+# The toolbox's discipline plugins: Tatty's modes. core is the base every
+# discipline installs, so it is not one of them. Each plugin points its own
+# folder under the pointer home at its install, so the pointers say which
+# disciplines are installed; TATTY_MODES names them instead (development, tests).
+MODES = ("engineering", "design", "production")
+
+
+def installed_modes():
+    """The discipline plugins installed, in MODES order (see docs/toolbox-contract.md)."""
+    forced = os.environ.get("TATTY_MODES")
+    if forced is not None:
+        want = {x.strip() for x in forced.split(",") if x.strip()}
+        return [m for m in MODES if m in want]
+    roots = []
+    own = os.environ.get("TATTY_TOOLBOX")
+    if own:
+        roots.append(Path(own) / "plugins")  # a toolbox checkout
+    roots.append(Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins"))
+    return [m for m in MODES if any((r / m).is_dir() for r in roots)]
 
 
 # ---------------------------------------------------------------- state
@@ -708,7 +730,7 @@ def start_session(state, folder, body):
         with state.cond:
             state.sessions[tag] = {"tag": tag, "feature": folder.name, "folder": folder.as_posix(), "name": name,
                                    "command": cmd, "project": project, "started": time.time(), "status": "starting",
-                                   "seen": 0.0, "claude": "", "doing": ""}
+                                   "seen": 0.0, "claude": "", "doing": "", "usage": None}
         state.session_event(tag)
     return 200, answer
 
@@ -788,6 +810,29 @@ def save_doc(p, text, expected):
 
 
 # ---------------------------------------------------------------- questions
+
+
+def clean_usage(body):
+    """A session's token usage as the mod reports it, made safe to keep and show:
+    counts are whole numbers >= 0; the context and the cost are left out unless given."""
+    def count(v):
+        try:
+            return max(0, int(v))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    body = body if isinstance(body, dict) else {}
+    out = {k: count(body.get(k)) for k in ("input", "output", "cacheRead", "cacheWrite")}
+    out["model"] = str(body.get("model", ""))[:60]
+    ctx = body.get("context")
+    if isinstance(ctx, dict) and count(ctx.get("window")):
+        out["context"] = {"window": count(ctx.get("window"))}
+        if ctx.get("tokens") is not None:
+            out["context"]["tokens"] = count(ctx.get("tokens"))
+    cost = body.get("costUsd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0 and cost == cost:
+        out["costUsd"] = float(cost)
+    return out
 
 
 def clean_questions(body):
@@ -887,7 +932,7 @@ class Handler(BaseHTTPRequestHandler):
         st.touch()
         if path == "/api/status":
             return self.send(200, {"open": True, "mod": st.mod_attached(), "cwd": st.cwd,
-                                   "session": st.mod_session})
+                                   "session": st.mod_session, "modes": installed_modes()})
         if path == "/api/events":
             since = int(q.get("since", ["0"])[0] or 0)
             with st.cond:
@@ -1006,8 +1051,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/activity":
             # What a started session is doing: a tool starting or finishing, a prompt, a reply.
             what = str(b.get("kind", ""))
+            if what == "usage":
+                # Not a row in the feed: the session's running total, for the page's usage widget.
+                if tag not in st.sessions:
+                    return self.send(404, {"error": "no such session"})
+                with st.cond:
+                    st.sessions[tag]["usage"] = clean_usage(b.get("usage"))
+                st.session_event(tag)
+                return self.send(200, {"ok": True})
             if what not in ("tool", "tool-done", "prompt", "reply", "note"):
-                return self.send(400, {"error": "kind: tool, tool-done, prompt, reply or note"})
+                return self.send(400, {"error": "kind: tool, tool-done, prompt, reply, note or usage"})
             text = str(b.get("text", ""))[:6000 if what == "reply" else 400]
             ev = st.emit("activity", tag=tag, kind=what, tool=str(b.get("tool", ""))[:60], text=text,
                          id=str(b.get("id", ""))[:80], ok=b.get("ok") is not False)

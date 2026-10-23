@@ -4,7 +4,11 @@
 // Uses app.js's $, el, api, markdown, cmdCell, say, loaded and loadStatus.
 "use strict";
 
-const pageEls = { home: $("#page-home"), feature: $("#page-feature"), toolbox: $("#page-toolbox") };
+const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
+  feature: $("#page-feature"), toolbox: $("#page-toolbox") };
+// A page of one mode's own: going to it switches to that mode, so a link never
+// shows a mode's pages in another mode's colours. The rest belong to every mode.
+const PAGE_MODE = { home: "engineering", feature: "engineering" };
 const featureCache = new Map(); // name -> the last /api/feature answer
 let homeTimer = null;
 
@@ -61,7 +65,7 @@ function copyable(text) {
 }
 
 // ------------------------------------------------------------- routing
-// #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox
+// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
@@ -70,7 +74,11 @@ function parseRoute() {
     return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null };
   }
   if (parts[0] === "toolbox") return { page: "toolbox" };
-  return { page: "home" };
+  if (parts[0] === "modes") return { page: "modes" };
+  if (parts[0] === "home") return { page: "home" };
+  // #mode, and nothing asked for: the mode's home page, or the landing page
+  // when there is no mode yet to show one of.
+  return { page: currentMode ? "mode" : "modes" };
 }
 // #feature/<name>[/doc/<file>[/at/<heading, or ^block>]], each part encoded
 const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
@@ -79,18 +87,41 @@ const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
   for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === (which === "feature" ? "home" : which));
+  renderNav();
   clearInterval(homeTimer);
 }
 
 async function route() {
   if (companion && !document.body.classList.contains("expanded")) return; // the bubble shows the feed only
   const r = parseRoute();
+  // A page of one mode's own is shown in that mode (modes.js).
+  const owner = PAGE_MODE[r.page];
+  if (owner && owner !== currentMode && installedModes.includes(owner)) applyMode(owner);
+  // With one mode installed there is nothing to pick: straight to its home page.
+  if (r.page === "modes" && installedModes.length === 1) { location.replace("#mode"); return; }
   showPage(r.page);
-  if (r.page === "home") {
+  if (r.page === "modes") renderLanding(pageEls.modes);
+  else if (r.page === "mode") renderModeHome(pageEls.mode);
+  else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
+}
+
+// The top bar's radio (modes.js): the mode changes, and a page of another
+// mode's own -- or the landing page, where picking a mode means going into it --
+// gives way to the new mode's home page.
+function switchMode(id) {
+  if (id === currentMode) return;
+  applyMode(id);
+  const r = parseRoute();
+  const owner = PAGE_MODE[r.page];
+  if (r.page === "modes" || (owner && owner !== id)) {
+    if (location.hash === "#mode") route(); else location.hash = "#mode";
+    return;
+  }
+  route();
 }
 
 window.addEventListener("hashchange", route);
@@ -450,11 +481,15 @@ const sessionEvents = new Map(); // tag -> [activity / ask / say events]
 const sessionInfo = new Map();   // tag -> the latest "session" event
 const LIVE = new Set(["starting", "running", "lost", "unseen"]);
 let livePanel = null;            // the panel on screen: { tag, update(ev) }
+let usageView = null;            // the usage widget on screen: { tag, update(usage) }
 
 document.addEventListener("tt-event", e => {
   const ev = e.detail;
   if (!ev.tag) return;
-  if (ev.type === "session") sessionInfo.set(ev.tag, ev);
+  if (ev.type === "session") {
+    sessionInfo.set(ev.tag, ev);
+    if (usageView && usageView.tag === ev.tag) usageView.update(ev.usage);
+  }
   else {
     if (!sessionEvents.has(ev.tag)) sessionEvents.set(ev.tag, []);
     sessionEvents.get(ev.tag).push(ev);
@@ -583,6 +618,7 @@ setInterval(async () => {
     for (const s of await api("/api/sessions?name=" + encodeURIComponent(parseRoute().name))) {
       const was = sessionInfo.get(s.tag);
       sessionInfo.set(s.tag, s);
+      if (usageView && usageView.tag === s.tag) usageView.update(s.usage);
       if (livePanel.tag === s.tag && (!was || was.status !== s.status)) livePanel.update({ type: "session", ...s });
     }
   } catch { /* the badge says so */ }
@@ -637,6 +673,15 @@ function overview(f) {
   const last = !live && (f.sessions || []).map(s => sessionInfo.get(s.tag) || s)[0];
   const ended = last && last.status === "ended" ? el("details", { class: "card ended-session" },
     el("summary", {}, `Last session: ${last.name}, ended`), sessionPanel(f, last, () => {}, true)) : "";
+  // What the live session has used so far, or the last one's final total: above the Timeline.
+  usageView = null;
+  const shown = live || last;
+  let usage = "";
+  if (shown) {
+    const w = usageWidget(shown.usage);
+    usageView = { tag: shown.tag, update: w.update };
+    usage = w.node;
+  }
   return el("div", { class: "overview" },
     el("div", { class: "ov-head" },
       el("h2", {}, f.name), chip(ROUTES[f.route] || f.route, "route"),
@@ -646,7 +691,7 @@ function overview(f) {
     el("div", { class: "dim small" }, copyable(f.folder)),
     tracker(f),
     process, ended,
-    units, events);
+    units, usage, events);
 }
 
 // A document is read in View (a viewer made for its kind, views.js; the plain
@@ -752,4 +797,5 @@ async function showDoc(f, file, main, at) {
 // ------------------------------------------------------------- start
 
 if (!companion) document.body.classList.add("full");
-route();
+// The first page comes once app.js's boot knows which modes are installed.
+booted.then(route);

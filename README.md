@@ -6,6 +6,10 @@ the engineer stays in control. The toolbox runs in the terminal. Tatty sits
 beside it, in your system tray and a window of its own, and shows the same work
 visually:
 
+- **Your modes:** the toolbox's discipline plugins you have installed
+  (engineering, design, production), each with a home page of its own and its
+  own colour, switched from the top bar. With one installed, Tatty opens
+  straight into it.
 - **Features:** every feature you're working on, where it stands in the
   workflow (exploring, planning, building, done), and its progress.
 - **A feature's page:**
@@ -51,6 +55,7 @@ install from a local checkout, and how to work on Tatty itself.
 | open Tatty, and have this session work with it | `/tatty open` |
 | have another session work with an open Tatty | `/tatty attach` (and `/tatty detach` to stop) |
 | close Tatty's window | `/tatty close`, or Tatty's tray menu |
+| switch between your modes | the radio in Tatty's top bar (or **Tatty** → the modes) |
 | see your features | Tatty's **Full panel** → **Features** |
 | start a new feature | **Features** → **New feature…** |
 | run a feature's next step | its page → **Start…** → **Start session** |

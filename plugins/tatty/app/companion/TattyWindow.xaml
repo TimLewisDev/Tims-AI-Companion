@@ -16,32 +16,32 @@
     </Canvas.Effect>
 
     <!-- antenna -->
-    <Line X1="52" Y1="10" X2="52" Y2="24" Stroke="#3B6EA8" StrokeThickness="3" StrokeStartLineCap="Round" />
-    <Ellipse Canvas.Left="47" Canvas.Top="4" Width="10" Height="10" Fill="#3B6EA8" />
+    <Line X1="52" Y1="10" X2="52" Y2="24" Stroke="{DynamicResource TtAccent}" StrokeThickness="3" StrokeStartLineCap="Round" />
+    <Ellipse Canvas.Left="47" Canvas.Top="4" Width="10" Height="10" Fill="{DynamicResource TtAccent}" />
 
     <!-- head -->
     <Rectangle Canvas.Left="18" Canvas.Top="24" Width="68" Height="56" RadiusX="12" RadiusY="12"
-               Fill="#FDFCF9" Stroke="#3B6EA8" StrokeThickness="3" />
+               Fill="#FDFCF9" Stroke="{DynamicResource TtAccent}" StrokeThickness="3" />
 
     <!-- eyes: ◉ ◉ -->
     <Canvas x:Name="Eyes">
       <Canvas.RenderTransform>
         <ScaleTransform x:Name="Blink" CenterY="48" ScaleY="1" />
       </Canvas.RenderTransform>
-      <Ellipse Canvas.Left="30" Canvas.Top="39" Width="18" Height="18" Stroke="#3B6EA8" StrokeThickness="2.5" />
+      <Ellipse Canvas.Left="30" Canvas.Top="39" Width="18" Height="18" Stroke="{DynamicResource TtAccent}" StrokeThickness="2.5" />
       <Ellipse Canvas.Left="35" Canvas.Top="44" Width="8" Height="8" Fill="#1F2328" />
-      <Ellipse Canvas.Left="56" Canvas.Top="39" Width="18" Height="18" Stroke="#3B6EA8" StrokeThickness="2.5" />
+      <Ellipse Canvas.Left="56" Canvas.Top="39" Width="18" Height="18" Stroke="{DynamicResource TtAccent}" StrokeThickness="2.5" />
       <Ellipse Canvas.Left="61" Canvas.Top="44" Width="8" Height="8" Fill="#1F2328" />
     </Canvas>
 
     <!-- mouth: ▽ -->
-    <Polygon Points="47,63 57,63 52,71" Fill="#3B6EA8" />
+    <Polygon Points="47,63 57,63 52,71" Fill="{DynamicResource TtAccent}" />
 
     <!-- legs: ╨ ╨ -->
-    <Line X1="38" Y1="80" X2="38" Y2="96" Stroke="#3B6EA8" StrokeThickness="4" StrokeEndLineCap="Round" />
-    <Line X1="66" Y1="80" X2="66" Y2="96" Stroke="#3B6EA8" StrokeThickness="4" StrokeEndLineCap="Round" />
-    <Line X1="30" Y1="98" X2="46" Y2="98" Stroke="#3B6EA8" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-    <Line X1="58" Y1="98" X2="74" Y2="98" Stroke="#3B6EA8" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+    <Line X1="38" Y1="80" X2="38" Y2="96" Stroke="{DynamicResource TtAccent}" StrokeThickness="4" StrokeEndLineCap="Round" />
+    <Line X1="66" Y1="80" X2="66" Y2="96" Stroke="{DynamicResource TtAccent}" StrokeThickness="4" StrokeEndLineCap="Round" />
+    <Line X1="30" Y1="98" X2="46" Y2="98" Stroke="{DynamicResource TtAccent}" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+    <Line X1="58" Y1="98" X2="74" Y2="98" Stroke="{DynamicResource TtAccent}" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
 
     <!-- something to answer -->
     <Grid x:Name="Badge" Canvas.Left="74" Canvas.Top="12" Width="22" Height="22" Visibility="Collapsed">

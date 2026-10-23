@@ -46,6 +46,23 @@ def open_doc(p, feature, kind):
     return found
 
 
+def check_usage(p, feature):
+    """The tokens-used widget: drawn from sample figures (nothing is started or
+    changed), and, when the feature has a session to show, where it sits."""
+    p.js(f"location.hash = '#feature/' + encodeURIComponent({json.dumps(feature)}); 1")
+    wait(p, "!!document.querySelector('#page-feature .overview')")
+    return p.js(r"""(() => {
+      const full = usageWidget({ input: 1200, output: 340, cacheRead: 50000, cacheWrite: 800, model: 'm',
+                                 context: { tokens: 150000, window: 200000 }, costUsd: 0.42 }).node;
+      const small = usageWidget({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }, { compact: true }).node;
+      const none = usageWidget(null).node;
+      const on = document.querySelector('.overview .usage');
+      return { full: full.innerText.replace(/\s+/g, ' ').trim(), bar: full.querySelector('.bar').className, barWidth: full.querySelector('.bar span').style.width,
+               compact: small.innerText.trim(), empty: none.innerText.replace(/\s+/g, ' ').trim(),
+               onPage: on ? { text: on.innerText.replace(/\s+/g, ' ').trim(), before: (on.nextElementSibling || {innerText: ''}).innerText.split('\n')[0] } : null };
+    })()""")
+
+
 def check_modes(p, feature):
     """A Challenges document in View (cards) and Edit (the markdown), and a document
     of another kind in View (the plain markdown). Edits nothing on disk."""
@@ -174,6 +191,7 @@ def main(argv):
         if url:
             p.call("Page.navigate", url=url)
             time.sleep(1)
+            p.js("location.hash = '#home'; 1")  # a window opens on its mode's home page
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
@@ -207,6 +225,7 @@ def main(argv):
         p.js("history.back(); history.back(); 1")
         time.sleep(1.2)
         out["back"] = {"hash": p.js("decodeURIComponent(location.hash)"), "overview": p.js("!!document.querySelector('.overview')")}
+        out["usage"] = check_usage(p, feature)
         out["modes"] = check_modes(p, feature)
         out["breakdown"] = check_breakdown(p, feature)
         print(json.dumps(out, indent=1))

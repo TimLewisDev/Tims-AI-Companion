@@ -27,6 +27,10 @@ printf '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && 
 export TATTY_PICKER="$T/picker.sh"
 # Start reports the session it would open instead of opening it.
 export TATTY_DRYRUN=1
+# The modes (the toolbox's discipline plugins) the server reports, instead of
+# whichever are installed on this machine. installed_modes() itself is checked
+# against real pointer folders further down.
+export TATTY_MODES=engineering,design
 trap 'bash "$W" close >/dev/null 2>&1; rm -rf "$T"' EXIT
 pass=0; fail=0
 
@@ -75,7 +79,12 @@ has "a fresh window greets" "$T/ev" '"title": "Tatty"'
 [ "$(code "$U/")" = 200 ] && ok "page served" || bad "page served"
 [ "$(code "$U/static/../server.py")" = 404 ] && ok "only the page's files" || bad "only the page's files"
 [ "$(code "$U/static/features.js")" = 200 ] && ok "features.js served" || bad "features.js served"
+[ "$(code "$U/static/modes.js")" = 200 ] && ok "modes.js served" || bad "modes.js served"
+[ "$(code "$U/static/theme.css")" = 200 ] && ok "theme.css served" || bad "theme.css served"
 [ "$(code -H "X-TT-Token: $K" "$U/api/view/rm")" = 404 ] && ok "unknown view refused" || bad "unknown view refused"
+get /api/status >"$T/st"
+[ "$(pick "$T/st" "','.join(d['modes'])")" = "engineering,design" ] &&
+	ok "status names the modes installed" || bad "status names the modes installed" "$(head -c 200 "$T/st")"
 
 expect "show" 0 bash -c "printf 'line one\r\n┌─┐ ◉\n' | bash '$W' show markdown 'A title'"
 get /api/events >"$T/ev"
@@ -121,6 +130,26 @@ expect "set --create" 0 env TATTY_HOME="$T/tr" bash "$TR" set "$T/myroot" --crea
 [ -d "$T/myroot/features" ] && ok "made the features folder" || bad "made the features folder"
 expect "features folder" 0 env TATTY_HOME="$T/tr" bash "$TR" features
 has "is under the root" "$T/out" "myroot/features"
+
+echo "# modes"
+# Each toolbox plugin points <pointer home>/<plugin> at its install, so the
+# pointers say which disciplines are installed; core is the base, not a mode.
+mkdir -p "$T/pointers/core" "$T/pointers/engineering" "$T/pointers/production"
+$PY - "$SRV" "$T/pointers" >"$T/m" 2>&1 <<'EOF'
+import importlib.util, os, sys
+for v in ("TATTY_MODES", "TATTY_TOOLBOX"): os.environ.pop(v, None)
+os.environ["TT_PLUGINS_HOME"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+print("pointers:", m.installed_modes())
+os.environ["TT_PLUGINS_HOME"] = sys.argv[2] + "-none"
+print("none:", m.installed_modes())
+os.environ["TATTY_MODES"] = "design, nope ,engineering"
+print("forced:", m.installed_modes())
+EOF
+has "the pointers say which are installed" "$T/m" "pointers: ['engineering', 'production']"
+has "none installed" "$T/m" "none: []"
+has "TATTY_MODES names them instead" "$T/m" "forced: ['engineering', 'design']"
 
 echo "# without the toolbox"
 $PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
@@ -258,6 +287,7 @@ BIG="$T/big.json"; $PY -c "import json, sys; print(json.dumps({'name': 'Draft', 
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary "@$BIG" "$U/api/doc/save")" = 400 ] &&
 	ok "a document over 1 MB is refused" || bad "a document over 1 MB is refused"
 [ "$(code "$U/static/views.js")" = 200 ] && ok "views.js is served" || bad "views.js is served"
+[ "$(code "$U/static/usage.js")" = 200 ] && ok "usage.js is served" || bad "usage.js is served"
 
 echo "# a new feature"
 post /api/new-feature '{"name":"Shiny Thing"}' >"$T/j"
@@ -340,6 +370,27 @@ pick "$T/j" "' '.join(e['kind'] + ':' + e['tool'] for e in d if e['type'] == 'ac
 has "its activity, tagged" "$T/f" "tool:Read tool-done:Read"
 get "/api/sessions?name=Demo" >"$T/j"
 has "what it is doing" "$T/j" '"doing": "Read Demo - Task Status.md"'
+pick "$T/j" "[s['usage'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "no usage before the first report" "$T/f" "None"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":1200,\"output\":340,\"cacheRead\":50000,\"cacheWrite\":800,\"model\":\"m\",\"context\":{\"tokens\":52000,\"window\":200000},\"costUsd\":0.42}}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+pick "$T/j" "[s['usage'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "its usage totals are kept" "$T/f" "'input': 1200, 'output': 340, 'cacheRead': 50000, 'cacheWrite': 800"
+has "the context window" "$T/f" "'context': {'window': 200000, 'tokens': 52000}"
+has "the cost" "$T/f" "'costUsd': 0.42"
+get /api/events >"$T/j"
+pick "$T/j" "[e['usage']['input'] for e in d if e['type'] == 'session' and e['tag'] == '$TAG' and e.get('usage')][-1]" >"$T/f"
+has "a session event carries it to the page" "$T/f" "1200"
+pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] == 'usage'])" >"$T/f"
+has "usage is not a row in the feed" "$T/f" "0"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":-5,\"output\":\"x\",\"cacheRead\":2.9,\"costUsd\":-1}}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+pick "$T/j" "[s['usage'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "bad counts are made safe" "$T/f" "'input': 0, 'output': 0, 'cacheRead': 2, 'cacheWrite': 0"
+hasnt "and a negative cost dropped" "$T/f" "costUsd"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"usage","usage":{}}' "$U/api/activity")" = 404 ] &&
+	ok "usage for an unknown session refused" || bad "usage for an unknown session refused"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":1200,\"output\":340,\"cacheRead\":50000,\"cacheWrite\":800,\"context\":{\"tokens\":52000,\"window\":200000},\"costUsd\":0.42}}" >/dev/null
 post /api/ask "{\"tag\":\"$TAG\",\"questions\":[{\"question\":\"Carry on?\",\"header\":\"Go\",\"options\":[\"Yes\",\"No\"]}]}" >/dev/null
 get /api/events >"$T/j"
 pick "$T/j" "[e['source'] + '|' + e['tag'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"

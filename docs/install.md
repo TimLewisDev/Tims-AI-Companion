@@ -114,6 +114,7 @@ for it to notice.
 | `TATTY_HOME` | Tatty's state (default `~/.claude/tatty`): the root setting, projects, server.json |
 | `TATTY_ROOT` | use this root folder instead of the setting |
 | `TATTY_TOOLBOX` | a toolbox checkout to use instead of the installed toolbox |
+| `TATTY_MODES` | the modes (discipline plugins) to offer, e.g. `engineering,design`, instead of the ones installed |
 | `TATTY_UI` | `browser` to use a browser tab even on Windows |
 | `TATTY_PYTHON` | the Python to run the server with |
 | `TATTY_IDLE` | seconds of no use before the server stops (default 7200) |

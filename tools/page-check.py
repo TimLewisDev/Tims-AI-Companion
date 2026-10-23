@@ -161,6 +161,36 @@ def main(argv):
             p.js(f"document.querySelector('#say').value = {json.dumps(say)}; document.querySelector('#chat').requestSubmit(); 'sent'")
             time.sleep(1)
             out["you_cards"] = p.js("document.querySelectorAll('#feed .card.you').length")
+        # The modes: the top bar (a radio over the discipline plugins installed,
+        # or the name of the only one), the landing page, a mode's home page,
+        # and that switching mode changes the app's accent colour and the nav.
+        # TATTY_MODES on the server fakes the plugins installed.
+        was = p.js("currentMode")
+        out["modes"] = p.js("""({ installed: installedModes, current: currentMode,
+            segments: [...document.querySelectorAll('#mode-switch .mode-seg')].map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
+            chip: (document.querySelector('#mode-switch .mode-chip') || {}).textContent || '',
+            nav: [...document.querySelectorAll('.pnav a')].filter(a => a.offsetParent !== null).map(a => a.textContent),
+            accent: getComputedStyle(document.body).getPropertyValue('--accent').trim() })""")
+        p.js("location.hash = '#modes'; 1")
+        time.sleep(0.6)
+        # with one mode installed there is nothing to pick: straight to its home page
+        out["landing"] = p.js("""({ hash: location.hash, heading: (document.querySelector('.page.on h2') || {}).textContent || '',
+            cards: [...document.querySelectorAll('#page-modes .mode-card')].map(a => a.dataset.mode) })""")
+        # the radio takes you into the mode you pick (a new page, so give the
+        # hash a moment), in that mode's colour and with that mode's nav
+        picked = p.js("""(() => {
+            const seg = [...document.querySelectorAll('#mode-switch .mode-seg')].filter(b => !b.classList.contains('on'));
+            const next = seg[seg.length - 1];
+            if (!next) return "one mode installed";
+            next.click();
+            return next.textContent;
+        })()""")
+        time.sleep(0.6)
+        out["switched"] = picked if picked == "one mode installed" else p.js("""({
+            picked: currentMode, mode: document.body.dataset.mode,
+            accent: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
+            page: [...document.querySelectorAll('.page.on')].map(s => s.id).join(),
+            nav: [...document.querySelectorAll('.pnav a')].filter(a => a.offsetParent !== null).map(a => a.textContent) })""")
         p.js("document.querySelector('.tabs button[data-tab=docs]').click()")
         for _ in range(30):
             time.sleep(0.5)
@@ -168,6 +198,13 @@ def main(argv):
                 break
         out["docs_headings"] = p.js("[...document.querySelectorAll('#docs-body h1,#docs-body h2,#docs-body h3,#docs-body h4')].map(h => h.textContent).slice(0, 5)")
         out["text"] = p.js("document.body.innerText")[:1500]
+        # The mode is remembered: it is the colour on screen before the server
+        # has said anything, and its home page is where a fresh window opens.
+        p.js("location.reload(); 1")
+        time.sleep(3)
+        out["remembered"] = p.js("""({ stored: localStorage.getItem('tt-mode'), mode: document.body.dataset.mode,
+            current: currentMode, page: [...document.querySelectorAll('.page.on')].map(s => s.id).join() })""")
+        p.js(f"localStorage.setItem('tt-mode', {json.dumps(was or '')}); 1")  # leave the mode as it was
         print(json.dumps(out, indent=1))  # ASCII, whatever the console's code page
         return 0
     finally:

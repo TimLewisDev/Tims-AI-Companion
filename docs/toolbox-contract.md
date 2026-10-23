@@ -42,6 +42,24 @@ Tatty looks in this order (`toolbox_core()` in `plugins/tatty/app/server.py`):
 When neither has `tt-common/scripts/workflow-state.sh`, Tatty still runs: its
 pages say "Tatty can't find the TT toolbox", and nothing else breaks.
 
+## Which disciplines are installed (Tatty's modes)
+
+The toolbox's discipline plugins -- `engineering`, `design`, `production` --
+are Tatty's **modes**: its landing page offers the ones installed, its top bar
+switches between them, and the mode is the only thing that sets the app's accent
+colour. `core` is the base every discipline installs, so it is not one of them.
+
+Tatty reads the same pointer folders the toolbox keeps for itself
+(`installed_modes()` in `plugins/tatty/app/server.py`): a discipline is
+installed when `${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tt-plugins}/<plugin>`
+is there, or `<TATTY_TOOLBOX>/plugins/<plugin>` in a checkout. Existence only:
+nothing inside is read for this. `TATTY_MODES` names the modes instead, for
+development and the tests.
+
+With no discipline plugin installed Tatty still shows everything it can drive
+from `core` alone: its landing page says which plugin to install, and no page is
+hidden.
+
 ## Scripts Tatty runs (read-only)
 
 All of these are under the core plugin's `skills/` folder.

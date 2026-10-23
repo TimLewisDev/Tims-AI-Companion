@@ -447,13 +447,26 @@ if (companion) {
 
 // ------------------------------------------------------------- start
 
-(async () => {
-  if (!token) { feed.append(el("div", { class: "card" }, "No token: open Tatty with /tatty open (or scripts/tatty.sh open).")); return; }
+// The pages wait for this: which page a bare #mode (or no hash at all) means
+// depends on the modes installed, which the server says here. features.js
+// routes once it resolves, however it went.
+const booted = (async () => {
+  if (!token) {
+    feed.append(el("div", { class: "card" }, "No token: open Tatty with /tatty open (or scripts/tatty.sh open)."));
+    return;
+  }
   try {
     const st = await api("/api/status");
     $("#cwd").textContent = st.cwd;
     setMod(st.mod);
+    setInstalledModes(st.modes); // which discipline plugins there are (modes.js)
   } catch (e) { feed.append(el("div", { class: "card" }, "Can't reach the window server: " + e)); }
   connect();
-  setInterval(async () => { try { setMod((await api("/api/status")).mod); } catch { /* the SSE badge says so */ } }, 15000);
+  setInterval(async () => {
+    try {
+      const st = await api("/api/status");
+      setMod(st.mod);
+      setInstalledModes(st.modes); // a plugin installed meanwhile turns up here
+    } catch { /* the SSE badge says so */ }
+  }, 15000);
 })();

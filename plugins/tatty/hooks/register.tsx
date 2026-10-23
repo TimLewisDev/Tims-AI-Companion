@@ -23,6 +23,9 @@ let polling = false
 let session = ''
 let tag = '' // set when Tatty started this session from a feature page
 let joined = false // this session works with Tatty (tagged, or /tatty open|attach)
+// What a started session has used so far, summed over its turns (the engine
+// answers per turn; the window and cost it has as a whole, see reportUsage).
+const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 async function home($: EngineInterface): Promise<string> {
   const own = await $.env.get('TATTY_HOME')
@@ -78,6 +81,27 @@ async function detach($: EngineInterface) {
 function report($: EngineInterface, body: Record<string, unknown>) {
   if (!tag || !attached) return
   void api($, attached, '/api/activity', body).catch(() => undefined)
+}
+
+// reportUsage: add a turn's token counts to the session's total, and tell the
+// feature page the total, the context window's fill and the cost. The total is
+// cumulative, so a repeat or a missed report costs nothing.
+async function reportUsage($: EngineInterface, turn: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model?: string } | undefined) {
+  if (!tag || !attached || !turn) return
+  spent.input += turn.input_tokens || 0
+  spent.output += turn.output_tokens || 0
+  spent.cacheRead += turn.cache_read_input_tokens || 0
+  spent.cacheWrite += turn.cache_creation_input_tokens || 0
+  const now = await $.session.usage()
+  report($, {
+    kind: 'usage',
+    usage: {
+      ...spent,
+      model: turn.model || '',
+      context: { tokens: now.context.tokens, window: now.context.window },
+      costUsd: now.cost?.usd,
+    },
+  })
 }
 
 // The few words that say what a tool call is about.
@@ -170,6 +194,7 @@ export const register: Register = on => {
     session = await $.session.id()
     tag = (await $.env.get('TATTY_SESSION')) || ''
     joined = Boolean(tag)
+    Object.assign(spent, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
     await $.command.register({
       name: 'tatty',
       description: 'Open Tatty, or have this session work with it (attach / detach), or close it',
@@ -238,6 +263,7 @@ export const register: Register = on => {
   // session's go to its feature page instead of the main feed.
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    await reportUsage($, e.usage).catch(() => undefined) // never fails the turn
     if (joined && attached && !e.agentId && !e.isAborted && e.answer.trim()) {
       if (tag) report($, { kind: 'reply', text: e.answer })
       else await api($, attached, '/api/show', { kind: 'reply', title: 'Tatty', body: e.answer }).catch(() => undefined)
