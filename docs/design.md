@@ -311,6 +311,99 @@ toolbox contract's "Jira" section; how it is built:
   `started.tsv` remembers the feature, so the card says so and the panel links
   to it.
 
+## Tasks (the production mode)
+
+The production mode's **Tasks** page (`#tasks`, `tasks.js` and `tasks.css`,
+server.py's "tasks" section) is a tracker of Tatty's own, for a project that
+doesn't use Jira, Trello or the like. The toolbox has no part in it.
+
+- **On disk:** `<root>/tasks/<board>/`, a folder per board:
+  - `board.json`: the columns (an id and a name each, left to right), the order
+    of the cards in the backlog and each column, the next ID, the options
+    (`autoCompleteDays`, `startColumn`, `project`, `celebrate`, `priorities`) and
+    the feature each started task became. Unknown keys are kept.
+  - `items/<ID> - <title>.md`: a markdown file per task, in the bullet style of
+    the toolbox's documents: the H1 (`# T-0042: Title`), a header of
+    `- **Status:**`, `Priority`, `Labels`, `Created` and `Done` (and `Feature`,
+    once a workflow is started), then `## Description` and any other sections.
+  - `.deleted/`: where Delete moves a task's file.
+
+  A file per task keeps each change to one small file, merges in git, and reads
+  and edits in Obsidian; the workflow plans straight from one.
+- **Which list a task is in is its file's say.** Its Status names a column by
+  name (in any case). `Backlog` (or none) is the backlog, `Completed` the
+  Completed page, and a status that names no column puts it under "Not on a
+  column", shown apart and never rewritten. The last column is the done one:
+  moving a task into it stamps `Done:`, moving it out clears it, and **Clear
+  done** sends its tasks to Completed. board.json's order only says where a task
+  sits in its list: the ids it orders that really are there, then the rest by
+  when they were made. So a move between columns writes the task's file and
+  board.json, a reorder board.json alone, and Completed is never in the order
+  (it is sorted by Done), which keeps board.json small however long the history.
+- **Hand edits are kept.** A file is read tolerantly (YAML front matter,
+  `* **status**:` in any case, unknown bullets and sections), and a change
+  rewrites only the value on its own line, or the Description's body, keeping
+  the file's line ends and BOM. A file is renamed only when its title is changed
+  in Tatty, never after a hand edit. A task's ID is the one in its file's name
+  (else its H1's). A file with none, or another file's, or whose name and title
+  disagree, is listed as a problem, and **Give it an ID of its own** fixes it.
+- **IDs** are `<prefix>-<4 digits>` (`T` unless board.json says otherwise).
+  Each is made under the board's lock with an exclusive create, past both
+  board.json's `nextId` and every ID in use, so neither a file copied in nor an
+  old board.json can make two tasks share one. (Two machines sharing a synced
+  folder still could: it shows as a problem.)
+- **Conflicts:** a save names the `rev` it was made from, a hash of the file's
+  bytes rather than its mtime (a junction to a FAT or network drive keeps
+  coarse times). A file changed since is a 409 that carries the task as it is
+  now, and the panel keeps what was typed. A board.json that won't parse
+  refuses every change rather than be written over.
+- **Thousands of tasks:** each board's index (`<home>/tasks-index/`) keeps every
+  file's size, mtime and summary, so a look at the board reads only the files
+  that changed, and only their headers; a cold start costs a directory listing.
+  The board sends its columns in full, the backlog's first 100 and Completed's
+  counts; the Backlog and Completed pages come a page at a time
+  (`/api/tasks/list`), the next as the end of the list comes into view.
+- **Outside edits:** `watch_tasks` looks every 2 s (longer on a slow drive) and
+  sends one `tasks` event per board whose files changed outside Tatty. Tatty's
+  own writes are in the index already, and the page ignores the events that
+  carry its own `client` id. The page reads the board again 250 ms later,
+  keeping its scroll, its focus and a half-typed quick add; during a drag it
+  waits for the drop, and an open task with changes typed in it asks before
+  taking the new one. Once an hour the watcher also applies each board's
+  `autoCompleteDays` (off by default).
+- **The board:** a column per column, the backlog as a rail at the left (hidden
+  with a click, remembered), "+ Add a task" at each foot, each column's ⋯ menu
+  (rename, move, and delete with where its tasks go), and "+ Add column", which
+  goes in before the done column. A card is dragged with pointer events, as the
+  User Stories notes are, with a 4 px threshold so that a click opens it. A
+  ghost follows the pointer, a placeholder shows where it will land, a list
+  scrolls when the pointer nears its edge, and Esc cancels. The drop tells the
+  server the list and the card it goes before (`/api/tasks/move`), so a second
+  window's stale list still lands right. Alt+←/→ moves a focused card a list
+  along and Alt+↑/↓ up or down its list, said in an `aria-live` region; `n` is
+  a new task and `/` the filter.
+- **The task panel** (`#tasks/<board>/task/<id>`, `/task/new`): the title,
+  status, priority, labels, and the description with Write and Preview; the
+  other fields and sections as they are; **Edit whole file** for the raw
+  markdown; Save (Ctrl+Enter) and Delete. Its classes are its own: jira.js takes
+  `.jticket` away on every change of page.
+- **Completed:** the total, this week, this month, the best week and the streak
+  of weeks; a bar for each of the last 12 weeks; a line that says how it's
+  going, whatever the motion setting; and the tasks by week, then by month, each
+  with **Reopen**. Finishing is celebrated with a `milestone` event
+  (`tasks.done`), as the toolbox's milestones are: small for a task into the
+  done column, mid for Clear done, big on crossing 10, 50 and each hundred
+  completed (none with the board's `celebrate` off). The tray app's Tatty
+  reacts by his own Animations setting. The page throws confetti only for one
+  that happens while it is open, since the event stream replays old events on
+  every load.
+- **Start workflow** (`/api/tasks/start`), as from a Jira ticket: the feature
+  `<ID> - <title>`, the task written into it as `<name> - Ticket.md`, the
+  workflow's own first step started on it, and the task moved on to the
+  board's start column (the option, else the first column that sounds under
+  way). The task's file and board.json name the feature before the session
+  starts, so a second Start is refused rather than making a second feature.
+
 ## User Stories (the design mode)
 
 - **Boards:** `<root>/design/<name>/`, each a copy of a design document and its
@@ -349,17 +442,28 @@ toolbox contract's "Jira" section; how it is built:
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  367 checks against a real toolbox (the User Stories board's with a stand-in
+  455 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
-  and a window that opens on a full ledger says nothing about it.
+  and a window that opens on a full ledger says nothing about it. So are the
+  task boards: a hand-made file kept byte for byte but for the line changed,
+  IDs made at once, moves and the order they keep, conflicts, the columns,
+  Clear done and its milestones, a hand edit reaching the page, problems and
+  adoption, Delete, Start workflow, a board.json that won't read, and a board
+  through a junction.
 - `claude plugin test plugins/tatty` covers the mod, including the joining
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
   `features-check.py` ends with the Jira board, drawn from a sample board in
-  the page (columns, a ticket's panel, Esc, the nav item per mode).
+  the page (columns, a ticket's panel, Esc, the nav item per mode), and the
+  task boards. `features-check.py ... --tasks` walks only those, on the
+  fixture's `Sample` board, with real mouse input: a card dragged to another
+  column and back, a reorder and back, one dragged in from the backlog rail and
+  back, Alt+arrows, the task panel (Write and Preview, Cancel, Esc), the backlog
+  and Completed with and without reduced motion. It leaves every task's file as
+  it was (it never uses the done column).
   `features-check.py ... --stories` walks only a User Stories board with real
   mouse input (pan, wheel zoom, a group in focus with and without reduced
   motion, a note dragged and back, a card opened and its edit form); it changes

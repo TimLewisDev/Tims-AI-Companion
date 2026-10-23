@@ -10,7 +10,7 @@
 const MODE_INFO = {
   engineering: { label: "Engineering", blurb: "Plan, build, debug and review code." },
   design: { label: "Design", blurb: "Turn design documents into user stories, and work them on a board." },
-  production: { label: "Production", blurb: "The production discipline's skills." },
+  production: { label: "Production", blurb: "Track the work: your Jira sprint, or task boards of Tatty's own." },
 };
 const MODE_ORDER = ["engineering", "design", "production"];
 
@@ -137,6 +137,7 @@ function renderModeHome(box) {
       currentMode === "engineering" ? el("a", { href: "#home" }, "Your features →") : "",
       currentMode === "design" ? el("a", { href: "#designs" }, "Your user story boards →") : "",
       currentMode === "production" ? el("a", { href: "#jira" }, "Your Jira board →") : "",
+      currentMode === "production" ? el("a", { href: "#tasks" }, "Your task boards →") : "",
       // always: the modes page is also where another discipline is added
       el("a", { href: "#modes" }, "All modes"))));
 }

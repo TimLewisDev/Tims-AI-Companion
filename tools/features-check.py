@@ -3,13 +3,14 @@
 Chromium browser (or a companion's WebView2, with `attach <port>`) the way a
 person would: the home page's feature cards, one feature's overview (tracker,
 documents, work units, timeline), a document, a [[wikilink]] inside it, Back,
-the production mode's Jira board (from a sample board), and the design mode's
-User Stories board (check_stories). Uses page-check.py's DevTools client.
-Standard library only.
+the production mode's Jira board (from a sample board) and task boards
+(check_tasks), and the design mode's User Stories board (check_stories). Uses
+page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories]
-       features-check.py attach <devtools port> [feature | --stories]
---stories walks only the User Stories board (a root with a board under design/).
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks]
+       features-check.py attach <devtools port> [feature | --stories | --tasks]
+--stories walks only the User Stories board (a root with a board under design/);
+--tasks only the task boards (a root with a board under tasks/: the fixture's Sample).
 Prints one JSON object of what it found at each step.
 """
 
@@ -349,6 +350,129 @@ def check_stories(p):
     return res
 
 
+def check_tasks(p):
+    """The production mode's task boards, with real mouse input: the boards list,
+    a board's columns, a card dragged to another column and back, a reorder in a
+    column and back, a backlog card dragged onto the board and back, Alt+arrows,
+    the task panel (Write/Preview, Cancel, Esc), the backlog list and the
+    Completed page under both motion settings. Every move is undone and the done
+    column is never used, so each task's file ends as it began (board.json's
+    order may not: Alt+left puts a card at the end of its column)."""
+    res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    was = p.js("({ modes: installedModes, mode: currentMode })")
+    p.js("setInstalledModes(['engineering', 'production']); applyMode('engineering'); 1")
+    res["navInEngineering"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
+    p.js("location.hash = '#tasks'; 1")
+    wait(p, "currentMode === 'production' && document.querySelectorAll('#page-tasks .task-board-card, #page-tasks .empty-state').length > 0")
+    res["navInProduction"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
+    res["list"] = p.js("[...document.querySelectorAll('#page-tasks .task-board-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())")
+    if not res["list"]:
+        return {**res, "board": "no board to open"}
+    name = p.js("document.querySelector('#page-tasks .task-board-card').dataset.board")
+    p.js("document.querySelector('#page-tasks .task-board-card').click(); 1")
+    wait(p, "document.querySelectorAll('#tasks-board .tcard').length > 0")
+    cols = "[...document.querySelectorAll('#tasks-board .tcol[data-col]')].map(c => c.dataset.col + ':' + [...c.querySelectorAll('.tcard')].map(x => x.dataset.id).join(','))"
+    res["board"] = {"columns": p.js("[...document.querySelectorAll('#tasks-board .tcol h3')].map(h => h.textContent)"), "cards": p.js(cols),
+                    "clear": p.js("document.querySelector('#tasks-clear').textContent")}
+    status = lambda tid: p.js(f"api('/api/tasks/task?name=' + encodeURIComponent({json.dumps(name)}) + '&id={tid}').then(d => d.status)")
+    centre = lambda sel: p.js(f"(() => {{ const n = document.querySelector({json.dumps(sel)}); if (!n) return null; const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()")
+    settle = lambda: (time.sleep(0.6), wait(p, "!document.querySelector('.tghost')"))
+
+    # a card dragged from the first column to the second, then back
+    first, second = p.js("[...document.querySelectorAll('#tasks-board .tcol[data-col^=c]')].slice(0, 2).map(c => c.dataset.col)")
+    tid = p.js(f"document.querySelector('.tcol[data-col={first}] .tcard').dataset.id")
+    a, b = centre(f".tcol[data-col={first}] .tcard[data-id='{tid}']"), centre(f".tcol[data-col={second}] .tcards")
+    drag(p, a[0], a[1], b[0], b[1])
+    settle()
+    res["dragAcross"] = {"id": tid, "status": status(tid), "inSecond": p.js(f"!!document.querySelector('.tcol[data-col={second}] .tcard[data-id=\"{tid}\"]')"),
+                         "live": p.js("document.querySelector('#tasks-live').textContent")}
+    a, b = centre(f".tcard[data-id='{tid}']"), centre(f".tcol[data-col={first}] .tcard")
+    drag(p, a[0], a[1], b[0], b[1] - 12)  # onto the top half of the first card: before it
+    settle()
+    res["dragBack"] = {"status": status(tid), "cards": p.js(cols)}
+
+    # a reorder in the first column, and back
+    ids = p.js(f"[...document.querySelectorAll('.tcol[data-col={first}] .tcard')].map(x => x.dataset.id)")
+    if len(ids) >= 2:
+        a, b = centre(f".tcard[data-id='{ids[0]}']"), p.js(f"(() => {{ const r = document.querySelector('.tcard[data-id=\"{ids[1]}\"]').getBoundingClientRect(); return [r.left + r.width / 2, r.bottom - 4]; }})()")
+        drag(p, a[0], a[1], b[0], b[1] + 2)
+        settle()
+        res["reorder"] = p.js(f"[...document.querySelectorAll('.tcol[data-col={first}] .tcard')].map(x => x.dataset.id)")
+        a, b = centre(f".tcard[data-id='{ids[0]}']"), centre(f".tcard[data-id='{ids[1]}']")
+        drag(p, a[0], a[1], b[0], b[1] - 12)
+        settle()
+        res["reorderBack"] = p.js(f"[...document.querySelectorAll('.tcol[data-col={first}] .tcard')].map(x => x.dataset.id)")
+
+    # the backlog rail: a card onto the board, and back
+    if p.js("!document.querySelector('.tcol.trail')"):
+        p.js("document.querySelector('#tasks-rail').click(); 1")
+    back = p.js("(document.querySelector('.tcol.trail .tcard') || {}).dataset?.id || ''")
+    if back:
+        a, b = centre(f".tcol.trail .tcard[data-id='{back}']"), centre(f".tcol[data-col={first}] .tcards")
+        drag(p, a[0], a[1], b[0], b[1] + 200)
+        settle()
+        res["fromBacklog"] = {"id": back, "status": status(back)}
+        a, b = centre(f".tcard[data-id='{back}']"), centre(".tcol.trail .tcard")
+        drag(p, a[0], a[1], b[0], b[1] - 12)
+        settle()
+        res["toBacklog"] = {"status": status(back), "railFirst": p.js("document.querySelector('.tcol.trail .tcard').dataset.id")}
+
+    # Alt+→ and Alt+← on a focused card
+    def key(k, code, vk):
+        for kind in ("rawKeyDown", "keyUp"):
+            p.call("Input.dispatchKeyEvent", type=kind, key=k, code=code, windowsVirtualKeyCode=vk, modifiers=1)
+    p.js(f"document.querySelector('.tcard[data-id=\"{tid}\"]').focus(); 1")
+    key("ArrowRight", "ArrowRight", 39)
+    time.sleep(0.8)
+    res["altRight"] = {"status": status(tid), "focused": p.js("(document.activeElement || {}).dataset?.id || ''"),
+                       "live": p.js("document.querySelector('#tasks-live').textContent")}
+    key("ArrowLeft", "ArrowLeft", 37)
+    time.sleep(0.8)
+    res["altLeft"] = {"status": status(tid), "cards": p.js(cols)}
+
+    # a click (no movement) opens the panel; Write / Preview; Cancel; Esc
+    a = centre(f".tcard[data-id='{tid}']")
+    mouse(p, "mousePressed", a[0], a[1])
+    mouse(p, "mouseReleased", a[0], a[1])
+    wait(p, "!!document.querySelector('.tpanel #task-title')")
+    res["panel"] = p.js("""({ hash: decodeURIComponent(location.hash), title: document.querySelector('#task-title').value,
+                             status: document.querySelector('#task-status').selectedOptions[0].textContent,
+                             preview: !document.querySelector('#task-preview').hidden, previewText: document.querySelector('#task-preview').innerText.slice(0, 60),
+                             start: !!document.querySelector('#task-start'), sections: document.querySelectorAll('.tsection').length })""")
+    p.js("document.querySelector('#task-write').click(); document.querySelector('#task-desc').value += ' (typed)'; 1")
+    res["write"] = p.js("({ textarea: !document.querySelector('#task-desc').hidden, preview: document.querySelector('#task-preview').hidden })")
+    p.js("document.querySelector('#task-show').click(); 1")
+    res["previewTyped"] = p.js("document.querySelector('#task-preview').innerText.includes('(typed)')")
+    p.js("window.confirm = () => true; document.querySelector('#task-cancel').click(); 1")
+    res["cancelled"] = p.js("!document.querySelector('.tpanel') && !decodeURIComponent(location.hash).includes('/task/')")
+    p.js("location.hash = location.hash + '/task/new'; 1")
+    wait(p, "!!document.querySelector('.tpanel #task-title')")
+    res["new"] = p.js("({ save: document.querySelector('#task-save').textContent, focus: document.activeElement.id })")
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
+    res["closedByEsc"] = p.js("!document.querySelector('.tpanel') && !document.querySelector('.tshade')")
+
+    # the backlog list, and Completed (its cheer is there whatever the motion setting)
+    p.js("document.querySelector('.ttab[data-view=backlog]').click(); 1")
+    wait(p, "!!document.querySelector('.tlist-page')")
+    res["backlog"] = p.js("[...document.querySelectorAll('.tlist .tcard')].map(x => x.dataset.id)")
+    for media in ("reduce", "no-preference"):
+        p.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": media}])
+        p.js("location.hash = '#tasks/' + encodeURIComponent(" + json.dumps(name) + ") + '/completed'; 1")
+        wait(p, "!!document.querySelector('#tasks-cheer')")
+        res["completed-" + media] = p.js("""({ total: document.querySelector('#tasks-total').textContent,
+                                               stats: [...document.querySelectorAll('.tstat')].map(s => s.innerText.replace(/\\s+/g, ' ')),
+                                               cheer: document.querySelector('#tasks-cheer').textContent,
+                                               bars: document.querySelectorAll('#tasks-weeks .tbar').length,
+                                               barHeights: [...document.querySelectorAll('#tasks-weeks .tbar')].map(b => b.style.height).filter(h => h !== '3px'),
+                                               rows: [...document.querySelectorAll('.tdone-list .tcard')].map(x => x.dataset.id),
+                                               groups: [...document.querySelectorAll('.tgroup')].map(g => g.textContent) })""")
+        p.js("location.hash = '#tasks/' + encodeURIComponent(" + json.dumps(name) + "); 1")
+        wait(p, "!!document.querySelector('#tasks-board')")
+    p.js(f"setInstalledModes({json.dumps(was['modes'])}); applyMode({json.dumps(was['mode'])}); location.hash = '#home'; 1")
+    return res
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -382,8 +506,8 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature == "--stories":
-            out["stories"] = check_stories(p)
+        if feature in ("--stories", "--tasks"):
+            out[feature[2:]] = (check_stories if feature == "--stories" else check_tasks)(p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
@@ -421,6 +545,7 @@ def main(argv):
         out["breakdown"] = check_breakdown(p, feature)
         out["ids"] = check_ids(p)
         out["jira"] = check_jira(p)
+        out["tasks"] = check_tasks(p)
         out["stories"] = check_stories(p)  # last: it sets the viewport and the motion setting
         print(json.dumps(out, indent=1))
         return 0

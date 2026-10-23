@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/stories.css">
+<link rel="stylesheet" href="/static/tasks.css">
 </head>
 <body>
 <!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
@@ -31,6 +32,7 @@
     <a href="#mode" data-page="mode">Home</a>
     <a href="#home" data-page="home" data-mode="engineering">Features</a>
     <a href="#jira" data-page="jira" data-mode="production">Jira</a>
+    <a href="#tasks" data-page="tasks" data-mode="production">Tasks</a>
     <a href="#designs" data-page="designs" data-mode="design">User Stories</a>
     <a href="#toolbox" data-page="toolbox">Toolbox</a>
   </nav>
@@ -54,6 +56,9 @@
   <section class="page" id="page-feature"></section>
   <!-- Jira: the production mode's board of your open-sprint tickets (jira.js). -->
   <section class="page" id="page-jira"></section>
+  <!-- Tasks: the production mode's own task boards, and one board (tasks.js). -->
+  <section class="page" id="page-tasks"></section>
+  <section class="page" id="page-taskboard"></section>
   <!-- User Stories: the design mode's boards, and one board of sticky notes (stories.js). -->
   <section class="page" id="page-designs"></section>
   <section class="page" id="page-design"></section>
@@ -111,6 +116,7 @@
 <script src="/static/settings.js"></script>
 <script src="/static/jira.js"></script>
 <script src="/static/stories.js"></script>
+<script src="/static/tasks.js"></script>
 <script src="/static/ids.js"></script>
 </body>
 </html>

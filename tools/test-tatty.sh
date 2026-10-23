@@ -204,6 +204,47 @@ has "a failed add says what claude said" "$T/mi" "network is down"
 has "and what to run by hand" "$T/mi" "/plugin install production@tims-ai-toolbox"
 rm -f "$T/claude-fail"
 
+echo "# task files"
+# A task's file is a person's too (they may edit it in Obsidian): Tatty changes
+# only the line or the section it means to, and keeps the rest byte for byte.
+$PY - "$SRV" "$T/task.md" >"$T/tf" 2>&1 <<'EOF'
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+src = ("---\r\ntags: [game]\r\n---\r\n# t-0007 - Hand made\r\n\r\n* **status**: in review\r\n- **Estimate:** 3\r\n"
+       "\r\n## Notes\r\n\r\nkeep me\r\n").encode("utf-8")
+text, bom, crlf = m.task_decode(src)
+s = m.task_summary("t-0007 - Hand made.md", text)
+print("summary:", s["id"], "|", s["title"], "|", s["status"], "|", s["problems"])
+new = m.task_edit(text, {"Status": "Done"})
+a, b = text.split("\n"), new.split("\n")
+print("changed lines:", [i for i in range(max(len(a), len(b))) if a[i:i + 1] != b[i:i + 1]], repr(b[5]))
+p = pathlib.Path(sys.argv[2]); p.write_bytes(src)
+m.task_write(p, new, bom, crlf)
+data = p.read_bytes()
+print("crlf kept:", data.count(b"\r\n") == data.count(b"\n"), "rest kept:", data.replace(b"* **status**: Done", b"* **status**: in review") == src)
+print("field added:", repr(m.task_edit(text, {"Done": "2026-10-23"}).split("\n")[7]))
+d = m.task_parse(m.task_edit(text, description="Hello"))
+print("description:", repr(d["description"]), [x["heading"] for x in d["sections"]])
+print("labels:", m.task_labels("ui, UI , input,,"))
+s = m.task_summary("T-0009 - x.md", "# Just a title\n")
+print("H1 without an ID:", s["id"], "|", s["title"], "|", s["problems"])
+print("disagree:", m.task_summary("T-0001 - a.md", "# T-0002: a\n")["problems"])
+print("no ID:", m.task_summary("Untitled.md", "")["problems"])
+print("file name:", m.task_file_name("T-0003", 'What? A "quick" one: #2 / [draft]'))
+EOF
+has "a hand-made file is read" "$T/tf" "summary: T-0007 | Hand made | in review | []"
+has "a change touches one line" "$T/tf" "changed lines: [5] '* **status**: Done'"
+has "keeping its key as written" "$T/tf" "'* **status**: Done'"
+has "its line ends and everything else" "$T/tf" "crlf kept: True rest kept: True"
+has "a field it hasn't got goes after the last" "$T/tf" "field added: '- **Done:** 2026-10-23'"
+has "a missing Description is added, before the other sections" "$T/tf" "description: 'Hello' ['Notes']"
+has "labels once each" "$T/tf" "labels: ['ui', 'input']"
+has "the name gives the ID when the title has none" "$T/tf" "H1 without an ID: T-0009 | Just a title | []"
+has "a name and title that disagree are a problem" "$T/tf" "its name says T-0001 but its title says T-0002"
+has "so is a file with no ID" "$T/tf" "no ID: ['has no task ID in its name or its title']"
+has "a title makes a file name" "$T/tf" "file name: T-0003 - What A quick one 2 draft.md"
+
 echo "# without the toolbox"
 $PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
 import importlib.util, os, sys
@@ -739,6 +780,145 @@ post /api/jira/move '{"key":"ABC-2"}' >/dev/null; jira_wait
 get /api/events >"$T/ev"
 has "and the page is told so" "$T/ev" "ABC-2 is already In Review"
 [ "$(code "$U/static/jira.js")" = 200 ] && ok "jira.js served" || bad "jira.js served"
+
+echo "# task boards"
+[ "$(code "$U/static/tasks.js")" = 200 ] && ok "tasks.js served" || bad "tasks.js served"
+[ "$(code "$U/static/tasks.css")" = 200 ] && ok "tasks.css served" || bad "tasks.css served"
+# tk <what> <body>: POST /api/tasks/<what>; the answer in $T/tk, the HTTP code printed
+tk() { curl -s -o "$T/tk" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/tasks/$1"; }
+# taskfile <ID>: the task's file on the Game board
+taskfile() { ls "$GB/items/$1"*.md 2>/dev/null | head -1; }
+get /api/tasks >"$T/j"
+has "boards live in the root's tasks folder" "$T/j" "fxroot/tasks"
+[ "$(pick "$T/j" "[(b['name'], b['board'], b['backlog'], b['completed']) for b in d['boards']]")" = "[('Sample', 4, 2, 1)]" ] &&
+	ok "the fixture's board, counted" || bad "the fixture's board, counted" "$(head -c 300 "$T/j")"
+[ "$(tk new-board '{"name":"a/b"}')" = 400 ] && ok "a board's name is a folder's" || bad "a board's name is a folder's"
+[ "$(tk new-board '{"name":"Sample"}')" = 409 ] && ok "a board isn't made over another" || bad "a board isn't made over another"
+[ "$(tk new-board '{"name":"Game","columns":["To Do","backlog"]}')" = 400 ] && ok "Backlog isn't a column's name" || bad "Backlog isn't a column's name"
+[ "$(tk new-board '{"name":"Game","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "a new board" || bad "a new board" "$(cat "$T/tk")"
+GB="$FX/tasks/Game"
+[ -f "$GB/board.json" ] && [ -d "$GB/items" ] && ok "a board.json and an items folder" || bad "a board.json and an items folder"
+for i in 1 2 3 4 5; do post /api/tasks/create "{\"name\":\"Game\",\"title\":\"Task $i\",\"labels\":\"ui, UI , input\"}" >"$T/c$i" & done; wait
+[ "$($PY -c "import json, sys; print(sorted(json.load(open(f))['task']['id'] for f in sys.argv[1:]))" "$T"/c[1-5])" = "['T-0001', 'T-0002', 'T-0003', 'T-0004', 'T-0005']" ] &&
+	ok "five made at once have five IDs" || bad "five made at once have five IDs" "$(cat "$T"/c[1-5])"
+[ "$(ls "$GB/items" | wc -l | tr -d ' ')" = 5 ] && ok "and five files" || bad "and five files" "$(ls "$GB/items")"
+[ "$(tk create '{"name":"Game","title":"  "}')" = 400 ] && ok "a task needs a title" || bad "a task needs a title"
+[ "$(tk create '{"name":"Game","title":"Pause: menu?","priority":"High","description":"Esc opens it."}')" = 200 ] && ok "a task with a description" || bad "a task with a description"
+[ "$(pick "$T/tk" "d['task']['file']")" = "T-0006 - Pause menu.md" ] && ok "named for its ID and title" || bad "named for its ID and title" "$(cat "$T/tk")"
+printf '# T-0006: Pause: menu?\n\n- **Status:** Backlog\n- **Priority:** High\n- **Labels:**\n- **Created:** %s\n- **Done:**\n\n## Description\n\nEsc opens it.\n' "$(date +%F)" >"$T/want"
+cmp -s "$T/want" "$(taskfile T-0006)" && ok "the file is the task's template" || bad "the file is the task's template" "$(cat "$(taskfile T-0006)")"
+has "labels once each" "$(taskfile T-0001)" "- **Labels:** ui, input"
+get "/api/tasks/board?name=Game" >"$T/j"
+C1=$(pick "$T/j" "d['columns'][0]['id']"); CD=$(pick "$T/j" "d['done']")
+[ "$(pick "$T/j" "(d['backlog']['total'], [c['name'] for c in d['columns']], d['options']['startColumn'] == d['columns'][1]['id'])")" = "(6, ['To Do', 'Doing', 'Done'], True)" ] &&
+	ok "new tasks wait in the backlog; the start column sounds under way" || bad "new tasks wait in the backlog; the start column sounds under way" "$(head -c 400 "$T/j")"
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$C1\"}" >/dev/null
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0002\",\"to\":\"$C1\",\"before\":\"T-0001\"}" >/dev/null
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "[t['id'] for t in d['columns'][0]['tasks']]")" = "['T-0002', 'T-0001']" ] && ok "a move lands before the card it was dropped on" || bad "a move lands before the card it was dropped on" "$(head -c 400 "$T/j")"
+has "the file says its column" "$(taskfile T-0001)" "- **Status:** To Do"
+sum=$(sha1sum <"$(taskfile T-0001)")
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$C1\",\"before\":\"T-0002\"}" >/dev/null
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "[t['id'] for t in d['columns'][0]['tasks']]")" = "['T-0001', 'T-0002']" ] && ok "a reorder" || bad "a reorder"
+[ "$(sha1sum <"$(taskfile T-0001)")" = "$sum" ] && ok "writes board.json only" || bad "writes board.json only"
+[ "$(tk move '{"name":"Game","id":"T-0001","to":"nowhere"}')" = 400 ] && ok "only to a list there is" || bad "only to a list there is"
+[ "$(tk move '{"name":"Game","id":"T-0099","to":"backlog"}')" = 404 ] && ok "only a task there is" || bad "only a task there is"
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$CD\"}" >/dev/null
+has "into the done column stamps Done" "$(taskfile T-0001)" "- **Done:** $(date +%F)"
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$C1\"}" >/dev/null
+grep -qxF -- '- **Done:**' "$(taskfile T-0001)" && ok "out of it clears it" || bad "out of it clears it" "$(cat "$(taskfile T-0001)")"
+# a save is made over the file the page read, or refused
+get "/api/tasks/task?name=Game&id=T-0003" >"$T/j"
+REV=$(pick "$T/j" "d['rev']")
+printf 'by hand\n' >>"$(taskfile T-0003)"
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0003\",\"rev\":\"$REV\",\"title\":\"Nope\"}")" = 409 ] && ok "a save over a changed file is refused" || bad "a save over a changed file is refused"
+has "with the task as it is now" "$T/tk" "by hand"
+hasnt "and the file left alone" "$(taskfile T-0003)" "Nope"
+get "/api/tasks/task?name=Game&id=T-0005" >"$T/j"
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0005\",\"rev\":\"$(pick "$T/j" "d['rev']")\",\"title\":\"Renamed five\",\"labels\":\"x\",\"description\":\"New words\"}")" = 200 ] &&
+	ok "a save" || bad "a save" "$(cat "$T/tk")"
+[ "$(basename "$(taskfile T-0005)")" = "T-0005 - Renamed five.md" ] && ok "a new title renames the file" || bad "a new title renames the file" "$(ls "$GB/items")"
+has "its H1" "$(taskfile T-0005)" "# T-0005: Renamed five"
+has "its description" "$(taskfile T-0005)" "New words"
+$PY -c "import sys; p=sys.argv[1]; d=open(p,'rb').read(); open(p,'wb').write(d.replace(b'\r\n',b'\n').replace(b'\n',b'\r\n'))" "$(taskfile T-0004)"
+get "/api/tasks/task?name=Game&id=T-0004" >"$T/j"
+REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$REV\",\"text\":\"# T-0005: Not mine\\n\"}")" = 400 ] && ok "the whole file, but not its ID" || bad "the whole file, but not its ID"
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$REV\",\"text\":\"# T-0004: Task 4\\n\\n- **Status:** Backlog\\n\\n## Description\\n\\nRaw.\\n\"}")" = 200 ] &&
+	ok "the whole file saved" || bad "the whole file saved" "$(cat "$T/tk")"
+$PY -c "import sys; d=open(sys.argv[1],'rb').read(); sys.exit(not (b'Raw.\r\n' in d and d.count(b'\r\n') == d.count(b'\n')))" "$(taskfile T-0004)" &&
+	ok "with the file's own line ends" || bad "with the file's own line ends"
+# columns: a rename rewrites its tasks' Status; a delete sends them somewhere
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"rename\",\"id\":\"$C1\",\"value\":\"Doing\"}")" = 400 ] && ok "no two columns of a name" || bad "no two columns of a name"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"rename\",\"id\":\"$C1\",\"value\":\"Ready\"}")" = 200 ] && ok "a column renamed" || bad "a column renamed"
+has "its tasks say so" "$(taskfile T-0002)" "- **Status:** Ready"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"add\",\"value\":\"QA\",\"index\":2}")" = 200 ] && ok "a column added" || bad "a column added"
+[ "$(pick "$T/tk" "[c['name'] for c in d['columns']]")" = "['Ready', 'Doing', 'QA', 'Done']" ] && ok "where it was put" || bad "where it was put" "$(head -c 300 "$T/tk")"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"remove\",\"id\":\"$C1\",\"to\":\"completed\"}")" = 400 ] && ok "a column's tasks don't go to Completed by a delete" || bad "a column's tasks don't go to Completed by a delete"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"remove\",\"id\":\"$C1\"}")" = 200 ] && ok "a column deleted" || bad "a column deleted"
+has "its tasks back in the backlog" "$(taskfile T-0002)" "- **Status:** Backlog"
+# Clear done: the done column's tasks go to Completed, and Tatty celebrates
+get /api/events >"$T/ev0"; n0=$(pick "$T/ev0" "len(d)")
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0003\",\"to\":\"$CD\"}" >/dev/null
+[ "$(tk clear '{"name":"Game"}')" = 200 ] && [ "$(pick "$T/tk" "d['cleared']")" = 1 ] && ok "Clear done" || bad "Clear done" "$(head -c 300 "$T/tk")"
+has "the task is Completed" "$(taskfile T-0003)" "- **Status:** Completed"
+get "/api/tasks/list?name=Game&in=completed" >"$T/j"
+[ "$(pick "$T/j" "([t['id'] for t in d['items']], d['stats']['total'], d['stats']['thisWeek'])")" = "(['T-0003'], 1, 1)" ] && ok "on the Completed list, counted" || bad "on the Completed list, counted" "$(head -c 300 "$T/j")"
+get "/api/events?since=$n0" >"$T/ev"
+has "a milestone for the move into Done" "$T/ev" '"label": "Task done"'
+has "and one for the clear" "$T/ev" '"label": "1 task completed"'
+has "which Tatty celebrates" "$T/ev" '"event": "tasks.done"'
+# a hand edit, and a file without an ID, reach the board
+get /api/events >"$T/ev0"; n0=$(pick "$T/ev0" "len(d)")
+sleep 1.6; printf 'more by hand\n' >>"$(taskfile T-0006)"
+for _ in $(seq 1 40); do get "/api/events?since=$n0" >"$T/ev"; grep -q '"disk": true' "$T/ev" && break; sleep 0.25; done
+has "a change on disk is an event" "$T/ev" '"disk": true'
+has "naming the task" "$T/ev" '"T-0006"'
+printf '# Some idea\n' >"$GB/items/Untitled.md"
+get "/api/tasks/board?name=Game" >"$T/j"
+has "a file without an ID is a problem" "$T/j" '"file": "Untitled.md"'
+[ "$(tk adopt '{"name":"Game","file":"../board.json"}')" = 404 ] && ok "only a file of the board's items is adopted" || bad "only a file of the board's items is adopted"
+[ "$(tk adopt '{"name":"Game","file":"Untitled.md"}')" = 200 ] && ok "adopted" || bad "adopted" "$(cat "$T/tk")"
+[ -f "$GB/items/T-0007 - Some idea.md" ] && ok "named for its new ID" || bad "named for its new ID" "$(ls "$GB/items")"
+has "which its title says too" "$GB/items/T-0007 - Some idea.md" "# T-0007: Some idea"
+[ "$(code -H "X-TT-Token: $K" "$U/api/tasks/task?name=Game&id=..%2Fboard")" = 404 ] && ok "a task's ID is only an ID" || bad "a task's ID is only an ID"
+[ "$(code -H "X-TT-Token: $K" "$U/api/tasks/board?name=..%2Ffeatures")" = 404 ] && ok "a board's name is only a name" || bad "a board's name is only a name"
+# delete: out of the way, never gone
+get "/api/tasks/task?name=Game&id=T-0004" >"$T/j"
+[ "$(tk delete "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$(pick "$T/j" "d['rev']")\"}")" = 200 ] && ok "a task deleted" || bad "a task deleted"
+[ -z "$(taskfile T-0004)" ] && [ -f "$GB/.deleted/T-0004 - Task 4.md" ] && ok "into the board's .deleted folder" || bad "into the board's .deleted folder" "$(ls -a "$GB" "$GB/.deleted")"
+# Start workflow, as from a Jira ticket
+[ "$(tk start '{"name":"Game","id":"T-0006"}')" = 400 ] && ok "a workflow needs a project" || bad "a workflow needs a project"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from a task" || bad "a workflow starts from a task" "$(cat "$T/tk")"
+has "as a feature named for it" "$T/tk" '"feature": "T-0006 - Pause menu"'
+TK="$FX/features/T-0006 - Pause menu/T-0006 - Pause menu - Ticket.md"
+[ -f "$TK" ] && ok "the task is written into its folder" || bad "the task is written into its folder"
+has "as its ticket" "$TK" "# T-0006: Pause: menu?"
+has "with where it came from" "$TK" '- **Task:** T-0006 on the Tasks board "Game"'
+has "the workflow's own first step, on the task" "$T/tk" "Prompt: /tt-adversarial-plan the task T-0006 in"
+has "the task moves on" "$T/tk" '"moved": "Doing"'
+has "its file says so" "$(taskfile T-0006)" "- **Status:** Doing"
+has "and names its feature" "$(taskfile T-0006)" "- **Feature:** T-0006 - Pause menu"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 409 ] && ok "not started twice" || bad "not started twice"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "(d['started'].get('T-0006'), d['options']['project'])")" = "('T-0006 - Pause menu', '$HERE')" ] && ok "the board remembers the feature and the project" || bad "the board remembers the feature and the project" "$(pick "$T/j" "(d['started'], d['options'])")"
+# a board.json that won't read is never written over
+cp "$GB/board.json" "$T/board.json"; printf '{ nope' >"$GB/board.json"
+[ "$(tk create '{"name":"Game","title":"x"}')" = 409 ] && ok "a broken board.json refuses changes" || bad "a broken board.json refuses changes"
+get "/api/tasks/board?name=Game" >"$T/j"
+has "and says so" "$T/j" '"broken": true'
+[ "$(cat "$GB/board.json")" = "{ nope" ] && ok "leaving it as it is" || bad "leaving it as it is"
+cp "$T/board.json" "$GB/board.json"
+ls "$TATTY_HOME/tasks-index/"*.json >/dev/null 2>&1 && ok "the index is kept in Tatty's home" || bad "the index is kept in Tatty's home"
+# a board that is a junction to a folder elsewhere (Windows)
+if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/elsewhere/Linked/items" && cp "$T/board.json" "$T/elsewhere/Linked/" &&
+	MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$FX/tasks/Linked")" "$(cygpath -w "$T/elsewhere/Linked")" >/dev/null 2>&1; then
+	[ "$(tk create '{"name":"Linked","title":"Through a junction"}')" = 200 ] && ls "$T/elsewhere/Linked/items/"*"Through a junction.md" >/dev/null 2>&1 &&
+		ok "a board through a junction" || bad "a board through a junction" "$(cat "$T/tk")"
+else
+	echo "skip  a board through a junction: no mklink here"
+fi
 echo "# user stories"
 if [ ! -f "$TATTY_TOOLBOX/plugins/design/skills/tt-user-stories/scripts/stories.sh" ] && [ ! -f "$TATTY_TOOLBOX/../design/skills/tt-user-stories/scripts/stories.sh" ]; then
 	echo "skip  the User Stories board: the toolbox has no design plugin with tt-user-stories"
