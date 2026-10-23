@@ -1788,6 +1788,8 @@ STORIES_TIMEOUT = float(os.environ.get("TATTY_STORIES_TIMEOUT", "1800"))
 STORIES_BUDGET = os.environ.get("TATTY_STORIES_BUDGET", "5")  # US dollars, at most, per headless run
 PALETTE = 8  # group colours: .g0 ... .g7 in stories.css
 MAX_NOTE = 4000
+_BOARD_LAYOUT_LOCKS = {}
+_BOARD_LAYOUT_LOCKS_GUARD = threading.Lock()
 
 
 def toolbox_plugin(name):
@@ -1901,6 +1903,12 @@ def board_path(folder):
     return home() / "boards" / f"{key}.json"
 
 
+def board_layout_lock(folder):
+    p = board_path(folder)
+    with _BOARD_LAYOUT_LOCKS_GUARD:
+        return _BOARD_LAYOUT_LOCKS.setdefault(p, threading.RLock())
+
+
 def board_layout(folder):
     try:
         got = json.loads(board_path(folder).read_text(encoding="utf-8"))
@@ -1946,8 +1954,9 @@ def design_view(state, folder):
     intake = design_intake(folder, doc)
     got = read_stories(state, doc) if view["plugin"] else {"meta": {}, "groups": [], "stories": [], "retired": [],
                                                            "problems": [], "error": DESIGN_MISSING}
-    layout = board_layout(folder)
-    group_colours(folder, layout, got["groups"])
+    with board_layout_lock(folder):
+        layout = board_layout(folder)
+        group_colours(folder, layout, got["groups"])
     return {**view, **got, "doc": doc.name, "intake": intake.name if intake else "",
             "updated": doc.stat().st_mtime, "layout": {"cards": layout["cards"], "view": layout["view"]}}
 
@@ -2083,29 +2092,31 @@ def stories_change(state, folder, b):
     if code != 0:
         return (400 if code == 1 else 500), {"error": msg}
     if action == "group" and b.get("op") == "rename":
-        layout = board_layout(folder)  # the colour follows the group
-        old, new = " ".join(str(b.get("group", "")).split()).lower(), " ".join(str(b.get("value", "")).split()).lower()
-        if old in layout["colours"]:
-            layout["colours"][new] = layout["colours"].pop(old)
-            save_layout(folder, layout)
+        with board_layout_lock(folder):
+            layout = board_layout(folder)  # the colour follows the group
+            old, new = " ".join(str(b.get("group", "")).split()).lower(), " ".join(str(b.get("value", "")).split()).lower()
+            if old in layout["colours"]:
+                layout["colours"][new] = layout["colours"].pop(old)
+                save_layout(folder, layout)
     state.emit("stories", name=folder.name, changed=True)
     return 200, design_view(state, folder)
 
 
 def move_cards(folder, b):
     """Where the person put the cards (and the view): merged into <home>/boards."""
-    layout = board_layout(folder)
-    for sid, at in (b.get("cards") or {}).items():
-        if not re.fullmatch(r"US-\d+", str(sid)):
-            continue
-        if at is None:
-            layout["cards"].pop(sid, None)
-        elif isinstance(at, list) and len(at) == 2 and all(isinstance(v, (int, float)) for v in at):
-            layout["cards"][sid] = [round(float(at[0]), 1), round(float(at[1]), 1)]
-    v = b.get("view")
-    if isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) for k in ("x", "y", "z")):
-        layout["view"] = {k: round(float(v[k]), 3) for k in ("x", "y", "z")}
-    save_layout(folder, layout)
+    with board_layout_lock(folder):
+        layout = board_layout(folder)
+        for sid, at in (b.get("cards") or {}).items():
+            if not re.fullmatch(r"US-\d+", str(sid)):
+                continue
+            if at is None:
+                layout["cards"].pop(sid, None)
+            elif isinstance(at, list) and len(at) == 2 and all(isinstance(v, (int, float)) for v in at):
+                layout["cards"][sid] = [round(float(at[0]), 1), round(float(at[1]), 1)]
+        v = b.get("view")
+        if isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) for k in ("x", "y", "z")):
+            layout["view"] = {k: round(float(v[k]), 3) for k in ("x", "y", "z")}
+        save_layout(folder, layout)
 
 
 # -- the headless run
