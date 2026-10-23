@@ -217,6 +217,17 @@ folders; see [toolbox-contract.md](toolbox-contract.md)).
   textarea whose Save posts to `/api/doc/save`: the path guard `doc_path`, a
   modified-time check against the version the page read (409 if it moved on),
   and an atomic write. To add a viewer, add a parser and a function to `VIEWS`.
+- **Planning IDs** (`ids.js`): `linkIds(node, feature)` turns the IDs the
+  feature defines into links, in questions (`askCard`), replies and documents in
+  View. It runs over the rendered text, so plain text, markdown and the custom
+  viewers all get it; definitions, headings, code and existing links are left
+  alone. The feature's IDs come from `/api/items` (the toolbox's `ids.sh index`,
+  cached on the documents' modified times), an item's card from `/api/item`
+  (`item_of` in `server.py`). A question's feature is `session_feature`'s: the
+  started session's, else the one its project is linked to. Hovering any link
+  that names an ID (an ID link, or a wikilink to `^r12` or `CH3 — …`) shows the
+  card, positioned from JS because the CSP refuses inline styles; `findId`
+  focuses the item when the link is followed.
 - **New feature…** makes the folder. **Start** then runs the workflow's own
   `/tt-workflow "<folder>"`, so the toolbox links and starts the feature.
   Tatty never changes the workflow's records.
@@ -246,7 +257,7 @@ folders; see [toolbox-contract.md](toolbox-contract.md)).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  222 checks against a real toolbox, with a toolbox-free part when there's no
+  236 checks against a real toolbox, with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
   and a window that opens on a full ledger says nothing about it.

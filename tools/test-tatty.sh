@@ -419,6 +419,48 @@ has "ended" "$T/f" "ended"
 get /api/features >"$T/j"
 pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['live']" >"$T/f"
 hasnt "no longer live" "$T/f" "$TAG"
+get /api/events >"$T/j"
+pick "$T/j" "[e['feature'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
+has "a started session's question is about its feature" "$T/f" "Demo"
+
+echo "# planning IDs"
+# (the Challenges as the fixture has them, not as the editing checks left them: a changed file is read again)
+cp "$root/tools/fixtures/tatty-root/features/Draft/Draft - Challenges.md" "$FX/features/Draft/"
+get "/api/items?name=Draft" >"$T/j"
+if grep -q '"ids": {}' "$T/j"; then
+	echo "skip  planning IDs: this toolbox's ids.sh has no index command"
+else
+	pick "$T/j" "' '.join(k + ':' + v['form'] + ':' + v['file'] for k, v in sorted(d['ids'].items()))" >"$T/f"
+	has "a challenge is its heading in the Challenges" "$T/f" "CH1:heading:Draft - Challenges.md"
+	has "a requirement is a plan item" "$T/f" "R1:item:Draft - Comprehensive Tech Plan.md"
+	has "a decision is a plan row" "$T/f" "CD1:row:Draft - Comprehensive Tech Plan.md"
+	has "a proposal is its heading in the Tech Proposals" "$T/f" "P1:heading:Draft - Tech Proposals.md"
+	hasnt "an ID only cited isn't an item" "$T/f" "S1:"
+	get "/api/item?name=Draft&id=CH1" >"$T/j"
+	pick "$T/j" "d['doc'] + '|' + d['title'] + '|' + str('**Severity:** blocking' in d['block'])" >"$T/f"
+	has "a challenge's card is its section" "$T/f" "Challenges|What happens when the disk is full?|True"
+	hasnt "and stops at the next challenge" "$T/j" "CH2"
+	get "/api/item?name=Draft&id=CD1" >"$T/j"
+	pick "$T/j" "dict(d['fields'])['Outcome']" >"$T/f"
+	has "a row's card has its cells by column" "$T/f" "It is shown, never retried"
+	get "/api/item?name=Demo&id=R1" >"$T/j"
+	pick "$T/j" "d['form'] + '|' + d['block']" >"$T/f"
+	has "a requirement without a block id is still found" "$T/f" "item|- **R1:** Settings are kept between runs."
+	get "/api/item?name=Demo&id=T01" >"$T/j"
+	pick "$T/j" "d['doc'] + '|' + d['title']" >"$T/f"
+	has "a task is its card in the breakdown" "$T/f" "Task Breakdown|Add the settings store"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/item?name=Draft&id=R9")" = 404 ] && ok "an ID the feature doesn't define: 404" || bad "an ID the feature doesn't define: 404"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/items?name=Nope")" = 404 ] && ok "items of no feature: 404" || bad "items of no feature: 404"
+fi
+# A session Tatty didn't start: its project (the folder it runs in, from its
+# <pid>.json) is linked to a feature by tt-workflow, so its questions are about that one.
+printf '{"pid":2,"sessionId":"sess-ids","cwd":"%s/plugins/tatty"}' "$HERE" >"$CLAUDE_CONFIG_DIR/sessions/2.json"
+post /api/ask '{"session":"sess-ids","questions":[{"question":"Is R1 done?","options":["Yes","No"]}]}' >/dev/null
+post /api/ask '{"session":"sess-elsewhere","questions":[{"question":"Is R2 done?","options":["Yes","No"]}]}' >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "' '.join([repr(e['feature']) for e in d if e['type'] == 'ask'][-2:])" >"$T/f"
+has "a linked project's question is about its feature, one elsewhere about none" "$T/f" "'Demo' ''"
+rm -f "$CLAUDE_CONFIG_DIR/sessions/2.json"
 
 echo "# the desktop app"
 # boot is what the Desktop shortcut runs: it reuses the open window and starts

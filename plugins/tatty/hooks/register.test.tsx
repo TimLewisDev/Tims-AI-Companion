@@ -80,6 +80,19 @@ test('after /tatty attach a question is answered in Tatty', async ($, on) => {
   expect(seen).toContain('/api/ask')
 })
 
+test("a question carries the session's id, which tells Tatty the feature it is about", async ($, on) => {
+  const bodies: any[] = []
+  engine(on, true, { status: 'answered', answers: { 'Go ahead?': 'No' } }, [], '', bodies)
+  await $.session.start(START)
+  await attach($)
+
+  await $.tool.call({ tool: 'AskUserQuestion', questions: QUESTIONS } as any)
+  const ask = bodies.find(b => b.path === '/api/ask')
+  expect(ask.session).toBe('s1')
+  expect(ask.questions).toEqual(QUESTIONS)
+  expect('tag' in ask).toBe(false) // an untagged session sends no tag
+})
+
 test('"answer in terminal instead" falls back to the dialog', async ($, on) => {
   engine(on, true, { status: 'declined' }, [])
   await $.session.start(START)

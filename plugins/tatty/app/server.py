@@ -56,6 +56,7 @@ WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript",
+          "ids.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -1097,6 +1098,175 @@ def save_doc(p, text, expected):
     return 200, {"updated": p.stat().st_mtime}
 
 
+# ---------------------------------------------------------------- planning IDs
+# R12, CH5, P3, CD2, §4, T07, ...: the toolbox defines each ID once, in the
+# document that owns its prefix, as a heading, a bullet or a table row, and
+# ids.sh index lists them (see docs/toolbox-contract.md). The page makes an ID a
+# link to its item, and shows the item when the link is hovered.
+
+ID_RE = re.compile(r"(?:CD|CH|NB|WU|[RASCPTHD])\d+[a-z]?|§\d+[a-z]?")
+HEADING_RE = re.compile(r"^(#{1,6})\s")
+BULLET_RE = re.compile(r"^(\s*)([-*+]|\d+\.)\s")
+item_cache = {}  # feature folder -> (the files read and their times, {ID: {file, line, form, gloss}})
+item_lock = threading.Lock()
+
+
+def id_sources(folder):
+    """The files ids.sh index reads, with their modified times: when one changes, look again."""
+    files = [d["file"] for d in docs_of(folder)] + [n["file"] for n in notes_of(folder) if n["file"].endswith("/debug-log.md")]
+    out = []
+    for f in files:
+        try:
+            out.append((f, (folder / f).stat().st_mtime))
+        except OSError:
+            pass
+    return tuple(sorted(out))
+
+
+def item_index(state, folder):
+    """{ID: {file, line, form, gloss}} for every ID the feature's documents define,
+    from the toolbox's ids.sh index; {} without a toolbox that has it."""
+    script = toolbox_script("tt-common/scripts/ids.sh")
+    if not script:
+        return {}
+    stamp = id_sources(folder)
+    with item_lock:
+        hit = item_cache.get(folder.as_posix())
+    if hit and hit[0] == stamp:
+        return hit[1]
+    try:
+        p = quiet_run(state, [state.bash, str(script), "index", folder.as_posix()], cwd=str(folder))
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    ids = {}
+    for line in p.stdout.splitlines():
+        c = line.split("\t")
+        if len(c) >= 5 and ID_RE.fullmatch(c[0]) and c[2].isdigit() and c[3] in ("heading", "item", "row"):
+            ids[c[0]] = {"file": c[1], "line": int(c[2]), "form": c[3], "gloss": c[4]}
+    with item_lock:
+        item_cache[folder.as_posix()] = (stamp, ids)
+    return ids
+
+
+def table_cells(line):
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+
+
+def item_block(lines, i, form):
+    """The lines of the item that starts at lines[i]: a heading and its section (up
+    to the next heading as high), a bullet and what is indented under it, or a
+    table row under its table's header."""
+    if form == "heading":
+        level = len(lines[i]) - len(lines[i].lstrip("#"))
+        j, fence = i + 1, False
+        while j < len(lines) and j - i < 80:
+            if lines[j].lstrip().startswith("```"):
+                fence = not fence
+            m = not fence and HEADING_RE.match(lines[j])
+            if m and len(m.group(1)) <= level:
+                break
+            j += 1
+        return lines[i:j]
+    if form == "row":
+        top = i
+        while top > 0 and lines[top - 1].lstrip().startswith("|"):
+            top -= 1
+        return [lines[top], lines[top + 1], lines[i]] if top + 1 < i else [lines[i]]
+    m = BULLET_RE.match(lines[i])
+    indent = len(m.group(1)) if m else 0
+    j = i + 1
+    while j < len(lines) and j - i < 40:
+        l = lines[j]
+        b = BULLET_RE.match(l)
+        if not l.strip() or HEADING_RE.match(l) or l.lstrip().startswith("|") or (b and len(b.group(1)) <= indent):
+            break
+        j += 1
+    return lines[i:j]
+
+
+def item_of(state, folder, id_):
+    """One item for its card: the document it is in, its title and its markdown
+    (and a table row's cells, by column), or None."""
+    it = item_index(state, folder).get(id_)
+    p = it and doc_path(folder, it["file"])
+    if not p:
+        return None
+    lines = p.read_text(encoding="utf-8", errors="replace").replace("\r", "").split("\n")
+    i = it["line"] - 1
+    if not 0 <= i < len(lines):
+        return None
+    block = item_block(lines, i, it["form"])
+    stem = Path(it["file"]).stem
+    title = it["gloss"]
+    if it["form"] == "heading":
+        title = re.sub(r"^#+\s+\S+\s*[—–:.-]*\s*", "", lines[i]).strip() or title
+    out = {"id": id_, "file": it["file"], "doc": "Debug Log" if stem == "debug-log" else stem.rpartition(" - ")[2],
+           "form": it["form"], "title": title, "gloss": it["gloss"], "block": "\n".join(block)[:8000],
+           "updated": p.stat().st_mtime}
+    if it["form"] == "row" and len(block) == 3:
+        out["fields"] = [[h, v] for h, v in zip(table_cells(block[0]), table_cells(block[2]))]
+    return out
+
+
+session_cwds = {}  # Claude session id -> the folder it runs in
+
+
+def session_cwd(session):
+    """The folder a Claude session runs in, from its <pid>.json (sessionId, cwd)."""
+    if not session:
+        return ""
+    if session not in session_cwds:
+        for f in (config_dir() / "sessions").glob("*.json"):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if d.get("sessionId") == session and d.get("cwd"):
+                session_cwds[session] = str(d["cwd"])
+                break
+        else:
+            return ""
+    return session_cwds[session]
+
+
+def git_root(path):
+    p = Path(path)
+    return next((d for d in [p, *p.parents] if (d / ".git").exists()), p)
+
+
+def linked_feature(project):
+    """The feature under Tatty's root that a project is linked to by tt-workflow(-lite)
+    (links.tsv: project, feature folder, date; the newest link wins), or ""."""
+    if not project:
+        return ""
+    base = tatty_root()[0] / "features"
+    links = Path(os.environ.get("TT_WORKFLOW_HOME") or config_dir() / "tt-workflow")
+    root, best = git_root(project), None
+    for name in ("links.tsv", "lite-links.tsv"):
+        try:
+            rows = (links / name).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in rows:
+            cols = line.split("\t")
+            if len(cols) >= 2 and (same_folder(cols[0], root) or same_folder(cols[0], project)):
+                date = cols[2] if len(cols) > 2 else ""
+                if not best or date >= best[1]:
+                    best = (cols[1], date)
+    if not best or not base.is_dir():
+        return ""
+    return next((d.name for d in base.iterdir() if d.is_dir() and is_folder(best[0], d)), "")
+
+
+def session_feature(state, tag, session=""):
+    """The feature a session's questions and replies are about: the one Start opened
+    it for, else the one its project is linked to; "" when neither says."""
+    s = state.sessions.get(tag) if tag else None
+    if s and s.get("feature"):
+        return s["feature"]
+    return linked_feature(session_cwd(session or (s.get("claude", "") if s else state.mod_session)))
+
+
 # ---------------------------------------------------------------- questions
 
 
@@ -1271,6 +1441,15 @@ class Handler(BaseHTTPRequestHandler):
             if not hit:
                 return self.send(404, {"error": "no document by that name under Tatty's root"})
             return self.send(200, {"name": hit[0], "file": hit[1]})
+        if path in ("/api/items", "/api/item"):
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            if path == "/api/items":
+                return self.send(200, {"ids": {k: {"file": v["file"], "form": v["form"], "gloss": v["gloss"]}
+                                               for k, v in item_index(st, folder).items()}})
+            hit = item_of(st, folder, q.get("id", [""])[0])
+            return self.send(200, hit) if hit else self.send(404, {"error": "no such item in this feature"})
         if path in ("/api/feature", "/api/doc"):
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -1330,13 +1509,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": str(e)})
         # Which session sent this: a tag Start gave the session ("" is the main one).
         tag = str(b.get("tag", ""))[:20] if isinstance(b, dict) else ""
+        # and its Claude session id, which says which feature its words are about
+        session = str(b.get("session", ""))[:80] if isinstance(b, dict) else ""
         if tag and tag in st.sessions:
             st.sessions[tag]["seen"] = time.time()
         if path == "/api/show":
             kind = b.get("kind", "text")
             if kind not in KINDS:
                 return self.send(400, {"error": f"kind must be one of {sorted(KINDS)}"})
-            ev = st.emit("card", kind=kind, title=str(b.get("title", "")), body=str(b.get("body", "")), tag=tag)
+            ev = st.emit("card", kind=kind, title=str(b.get("title", "")), body=str(b.get("body", "")), tag=tag,
+                         feature=session_feature(st, tag, session) if kind in ("markdown", "reply") else "")
             return self.send(200, {"seq": ev["seq"]})
         if path == "/api/activity":
             # What a started session is doing: a tool starting or finishing, a prompt, a reply.
@@ -1353,7 +1535,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": "kind: tool, tool-done, prompt, reply, note or usage"})
             text = str(b.get("text", ""))[:6000 if what == "reply" else 400]
             ev = st.emit("activity", tag=tag, kind=what, tool=str(b.get("tool", ""))[:60], text=text,
-                         id=str(b.get("id", ""))[:80], ok=b.get("ok") is not False)
+                         id=str(b.get("id", ""))[:80], ok=b.get("ok") is not False,
+                         feature=session_feature(st, tag, session) if what == "reply" else "")
             if tag in st.sessions and what in ("tool", "prompt"):
                 st.sessions[tag]["doing"] = (str(b.get("tool", "")) + " " + text).strip()[:200]
             return self.send(200, {"seq": ev["seq"]})
@@ -1368,7 +1551,7 @@ class Handler(BaseHTTPRequestHandler):
             source = str(b.get("source", ""))
             if tag in st.sessions:
                 source = st.sessions[tag]["name"]
-            st.emit("ask", id=qid, questions=qs, source=source, tag=tag)
+            st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=session_feature(st, tag, session))
             return self.send(200, {"id": qid})
         if path == "/api/reply":
             qid = str(b.get("id", ""))

@@ -40,7 +40,8 @@ async function api($: EngineInterface, info: Info, path: string, body?: Record<s
   const r = await $.http.fetch(`http://127.0.0.1:${info.port}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: { 'X-TT-Token': info.token, 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(tag ? { ...body, tag } : body),
+    // the Claude session id goes with every post: it tells Tatty which feature its words are about
+    body: body === undefined ? undefined : JSON.stringify({ session, ...body, ...(tag ? { tag } : {}) }),
   })
   if (!r.ok) throw new Error(`Tatty: ${path} answered ${r.status}`)
   return JSON.parse(r.text)

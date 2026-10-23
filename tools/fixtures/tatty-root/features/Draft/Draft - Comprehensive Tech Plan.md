@@ -43,3 +43,8 @@ Not yet.
 | Item | See |
 |---|---|
 | CH1 | [[Draft - Challenges\|the challenge]] |
+
+## Resolved Critical Decisions
+| # | Decision | Outcome | Proposal |
+|---|---|---|---|
+| CD1 | Where a failed save goes | It is shown, never retried | P1 |

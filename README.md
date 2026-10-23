@@ -30,6 +30,9 @@ visually:
   **Animations**, **Sound**, **Effects** and **Keep Tatty on the desktop** are
   all in his tray menu. If your system is set to show less motion he keeps still
   until you tick **Animations** yourself.
+- **Planning IDs as links:** an `R12`, `CH5` or `P3` in a question, a reply or a
+  document opens the item it names, and hovering it shows the item as a card,
+  so you don't have to go and find it.
 
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
