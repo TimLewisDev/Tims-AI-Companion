@@ -430,7 +430,46 @@ body.asking::after {
 }
 @keyframes asking { 0% { opacity: 0; } 30% { opacity: .9; } 100% { opacity: 0; } }
 
+/* The Jira board (jira.js): a column per status, the ticket in a panel at the right */
+.jira-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.jira-page > .home-note { padding: 0 20px; }
+.jira-page .jql { font-family: var(--mono); font-size: 11.5px; margin-top: 2px; }
+.jboard { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding: 12px 20px 24px; }
+.jcol { flex: 0 0 260px; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; }
+.jcol h3 { margin: 2px 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+.jcol[data-cat="inprogress"] h3 { color: var(--accent); }
+.jcol[data-cat="done"] h3 { color: var(--ok); }
+.jcard { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--ink); text-decoration: none; }
+.jcard:hover, .jcard:focus-visible { border-color: var(--accent); box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+.jcard-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.jkey { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.jsum { font-size: 13px; }
+.jstarted { color: var(--accent); }
+.jprogress { color: var(--accent); }
+.jprogress::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%;
+  background: var(--accent); animation: jpulse 1.2s ease-in-out infinite; }
+@keyframes jpulse { 50% { opacity: .25; } }
+.jshade { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.25); }
+.jticket { position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(600px, calc(100vw - 24px)); overflow: auto;
+  display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; background: var(--panel);
+  border-left: 2px solid var(--accent); box-shadow: -4px 0 18px rgba(0,0,0,.15); }
+.jticket-head { display: flex; gap: 8px; align-items: center; }
+.jticket-head a { color: var(--accent); font-weight: 600; }
+.jticket h3 { margin: 0; font-size: 16px; }
+.jticket h4 { margin: 10px 0 4px; font-size: 13px; }
+.jfacts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.jfacts dd { margin: 0; }
+.jdesc { border-top: 1px solid var(--line); padding-top: 6px; }
+.jfetched { margin-top: 6px; }
+.jname { display: flex; flex-direction: column; gap: 2px; }
+.jname input { width: 100%; }
+.settings-page .field-row { display: grid; grid-template-columns: 120px 1fr; gap: 2px 10px; align-items: center; margin: 8px 0; }
+.settings-page .field-row > .dim { grid-column: 2; }
+
 /* Less motion asked for: the cards say it all without anything flying about. */
 @media (prefers-reduced-motion: reduce) {
   .burst, body.asking::after { display: none; }
+  .jprogress::before { animation: none; } /* the seconds still count */
 }

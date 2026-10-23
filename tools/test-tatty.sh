@@ -33,10 +33,26 @@ export TATTY_DRYRUN=1
 export TATTY_CLAUDE="$T/claude.sh" TATTY_UPDATE_FIRST=100000
 cat >"$T/claude.sh" <<'EOS'
 #!/usr/bin/env bash
-# a headless run (the User Stories board's): the stand-in is claude-p.sh, made with its tests
-[ "${1:-}" = -p ] && exec bash "$(dirname "$0")/claude-p.sh" "$@"
+# a User Stories headless run (it may run stories.sh): the stand-in is claude-p.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
 echo "$*" >>"$(dirname "$0")/claude.log"
 [ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
+# A headless run for the Jira board: which job it is shows in the one MCP tool
+# it may use; it keeps its arguments (one a line) and answers with the canned
+# jira-<job>.out (jira-fail: Jira refuses; jira-slow: it takes a while).
+if [ "$1" = -p ]; then
+	d=$(dirname "$0")
+	case "$*" in
+	*mcp__atlassian__searchJiraIssuesUsingJql*) job=board ;;
+	*mcp__atlassian__getJiraIssue*) job=issue ;;
+	*mcp__atlassian__transitionJiraIssue*) job=move ;;
+	*) job=other ;;
+	esac
+	printf '%s\n' "$@" >"$d/jira-$job.args"
+	[ -f "$d/jira-slow" ] && sleep 2
+	if [ -f "$d/jira-fail" ]; then echo '{"is_error":true,"result":"Failed to search issues: Forbidden"}'; else cat "$d/jira-$job.out"; fi
+	exit 0
+fi
 if [ "$1 $2" = "plugin update" ]; then
 	sed -i -E "s/(\"$3\":\[\{\"scope\":\"user\",\"version\":\")[^\"]*/\199.0.0/" "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
 fi
@@ -639,6 +655,90 @@ post /api/update '{"action":"check"}' >/dev/null; upd_wait
 has "with claude's words" "$T/set" "network is down"
 rm -f "$T/claude-fail"
 
+echo "# the Jira board"
+# The claude stand-in answers the headless runs (see claude.sh above): a board of
+# three good tickets and one with no proper key, a ticket's detail, and a move.
+cat >"$T/jira-board.out" <<'EOJ'
+{"is_error":false,"total_cost_usd":0.02,"usage":{"input_tokens":10,"cache_read_input_tokens":15000,"output_tokens":500},
+ "structured_output":{"site":"https://example.atlassian.net/","cloudId":"c-1","issues":[
+  {"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open","statusCategory":"todo","priority":"P2","parentKey":"ABC-9","parentSummary":"The epic"},
+  {"key":"ABC-2","summary":"Under way","type":"Story","status":"In Review","statusCategory":"inprogress"},
+  {"key":"ABC-3","summary":"Done one","type":"Task","status":"Closed","statusCategory":"done"},
+  {"key":"not a key","summary":"x","type":"Bug","status":"Open","statusCategory":"todo"}]}}
+EOJ
+cat >"$T/jira-issue.out" <<'EOJ'
+{"is_error":false,"usage":{"input_tokens":5},"structured_output":{"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open",
+ "description":"### Steps\n\n1. Open it\n\n![](blob:https://media.example/abc)","labels":["ui"],
+ "transitions":[{"id":"7","name":"Start work","to":"In Progress"},{"id":"3","name":"Closed","to":"Closed"}]}}
+EOJ
+echo '{"is_error":false,"usage":{},"structured_output":{"ok":true}}' >"$T/jira-move.out"
+printf '{"mcpServers":{"atlassian":{"type":"http","url":"https://mcp.example/v1/mcp"},"other":{"type":"http","url":"https://x"}}}' >"$CLAUDE_CONFIG_DIR/.claude.json"
+jira_wait() { for _ in $(seq 1 50); do get /api/jira >"$T/jb"; [ "$(pick "$T/jb" "len(d['busy'])")" = 0 ] && return 0; sleep 0.2; done; return 1; }
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "(d['fetchedAt'], len(d['issues']))")" = "(0, 0)" ] && ok "no board until it is fetched" || bad "no board until it is fetched" "$(head -c 200 "$T/jb")"
+hasnt "looking spends nothing" "$T/claude.log" "-p "
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/jira/refresh")" = 202 ] && ok "refresh starts" || bad "refresh starts"
+jira_wait && ok "and finishes" || bad "and finishes"
+[ "$(pick "$T/jb" "','.join(i['key'] for i in d['issues'])")" = "ABC-1,ABC-2,ABC-3" ] && ok "only well-formed tickets are kept, in Jira's order" || bad "only well-formed tickets are kept, in Jira's order" "$(head -c 400 "$T/jb")"
+[ -f "$TATTY_HOME/jira/board.json" ] && ok "the board is kept in Tatty's home" || bad "the board is kept in Tatty's home"
+[ "$(pick "$T/jb" "d['issues'][0]['url']")" = "https://example.atlassian.net/browse/ABC-1" ] && ok "each ticket links to Jira" || bad "each ticket links to Jira" "$(pick "$T/jb" "d['issues'][0]")"
+[ "$(pick "$T/jb" "d['usage']['tokens']")" = 15510 ] && ok "the tokens it took are kept" || bad "the tokens it took are kept"
+has "the board run may search" "$T/jira-board.args" "mcp__atlassian__searchJiraIssuesUsingJql"
+hasnt "but not move tickets" "$T/jira-board.args" "mcp__atlassian__transitionJiraIssue"
+has "with no built-in tools" "$T/jira-board.args" "--tools"
+has "on the small model" "$T/jira-board.args" "haiku"
+has "loading only the Jira server" "$T/jira-board.args" '{"mcpServers": {"atlassian": {"type": "http", "url": "https://mcp.example/v1/mcp"}}}'
+has "and only that" "$T/jira-board.args" "--strict-mcp-config"
+has "with the JQL from Settings" "$T/jira-board.args" "sprint in openSprints()"
+touch "$T/jira-slow"
+post /api/jira/refresh '{}' >/dev/null
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/jira/refresh")" = 409 ] && ok "one refresh at a time" || bad "one refresh at a time"
+jira_wait; rm -f "$T/jira-slow"
+has "the next run knows the site" "$T/jira-board.args" "cloudId c-1"
+touch "$T/jira-fail"
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "len(d['issues'])")" = 3 ] && ok "a failed refresh keeps the board" || bad "a failed refresh keeps the board"
+has "and says why" "$T/jb" "Forbidden"
+rm -f "$T/jira-fail"
+get "/api/jira/issue?key=ABC-1" >"$T/ji"
+has "a ticket isn't loaded until asked" "$T/ji" '"cached": false'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ZZZ-1"}' "$U/api/jira/issue")" = 400 ] && ok "only tickets on the board are loaded" || bad "only tickets on the board are loaded"
+[ "$(code -H "X-TT-Token: $K" "$U/api/jira/issue?key=..%2Fboard")" = 400 ] && ok "a ticket key is only a key" || bad "a ticket key is only a key"
+post /api/jira/issue '{"key":"ABC-1"}' >/dev/null; jira_wait
+get "/api/jira/issue?key=ABC-1" >"$T/ji"
+has "a ticket loaded" "$T/ji" "### Steps"
+has "its pictures stay in Jira" "$T/ji" "(picture in Jira)"
+hasnt "as links only" "$T/ji" "blob:"
+hasnt "the ticket run may only read" "$T/jira-issue.args" "mcp__atlassian__transitionJiraIssue"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ABC-2"}' "$U/api/jira/start")" = 400 ] && ok "a workflow needs the ticket loaded" || bad "a workflow needs the ticket loaded"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ABC-1"}' "$U/api/jira/start")" = 400 ] && ok "and a project" || bad "and a project"
+post /api/jira/start "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" >"$T/js"
+has "a workflow starts from a ticket" "$T/js" '"ok": true'
+has "as a feature named for it" "$T/js" '"feature": "ABC-1 - Fix the thing"'
+TK="$FX/features/ABC-1 - Fix the thing/ABC-1 - Fix the thing - Ticket.md"
+[ -f "$TK" ] && ok "the ticket is written into its folder" || bad "the ticket is written into its folder"
+has "as a document" "$TK" "# ABC-1: Fix the thing"
+has "with its description" "$TK" "1. Open it"
+has "and its link" "$TK" "(https://example.atlassian.net/browse/ABC-1)"
+has "the workflow's own first step, on the ticket" "$T/js" "Prompt: /tt-adversarial-plan the Jira ticket ABC-1 in"
+has "naming the folder and prefix as tt-workflow does" "$T/js" "Prefix: ABC-1 - Fix the thing"
+has "the ticket moves" "$T/js" '"moving": true'
+jira_wait
+has "by the transition to In Progress" "$T/jira-move.args" "transition id 7"
+has "the move run may move" "$T/jira-move.args" "mcp__atlassian__transitionJiraIssue"
+hasnt "and do nothing else" "$T/jira-move.args" "mcp__atlassian__getJiraIssue"
+[ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "In Progress/inprogress" ] && ok "the board shows it moved" || bad "the board shows it moved" "$(pick "$T/jb" "d['issues'][0]")"
+[ "$(pick "$T/jb" "d['started'].get('ABC-1')")" = "ABC-1 - Fix the thing" ] && ok "the board knows its feature" || bad "the board knows its feature"
+[ "$(pick "$T/jb" "d['project']")" = "$(cd "$root" && { pwd -W 2>/dev/null || pwd; })" ] && ok "the project is remembered for the next" || bad "the project is remembered for the next" "$(pick "$T/jb" "d['project']")"
+get "/api/feature?name=$($PY -c 'import urllib.parse; print(urllib.parse.quote("ABC-1 - Fix the thing"))')" >"$T/j"
+has "it is one of the features, its ticket first" "$T/j" '"doc": "Ticket"'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" "$U/api/jira/start")" = 409 ] && ok "not started twice into the same folder" || bad "not started twice into the same folder"
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-2"}' >/dev/null; jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "a ticket under way isn't moved" || bad "a ticket under way isn't moved"
+get /api/events >"$T/ev"
+has "and the page is told so" "$T/ev" "ABC-2 is already In Review"
+[ "$(code "$U/static/jira.js")" = 200 ] && ok "jira.js served" || bad "jira.js served"
 echo "# user stories"
 if [ ! -f "$TATTY_TOOLBOX/plugins/design/skills/tt-user-stories/scripts/stories.sh" ] && [ ! -f "$TATTY_TOOLBOX/../design/skills/tt-user-stories/scripts/stories.sh" ]; then
 	echo "skip  the User Stories board: the toolbox has no design plugin with tt-user-stories"

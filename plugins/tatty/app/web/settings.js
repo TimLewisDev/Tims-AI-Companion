@@ -1,7 +1,8 @@
-// Tatty's Settings page (#settings, the gear beside the connection badge): for now
-// the updates -- the version running, whether Tatty keeps itself up to date, and
-// buttons to look and to install by hand. The server does the work
-// (server.py's "updates") and says how it went as "update" events.
+// Tatty's Settings page (#settings, the gear beside the connection badge): the
+// updates -- the version running, whether Tatty keeps itself up to date, and
+// buttons to look and to install by hand -- and what the Jira board reads. The
+// server does the work (server.py's "updates") and says how it went as "update"
+// events.
 // Uses app.js's $, el and api, and features.js's pageEls and ago.
 "use strict";
 
@@ -58,7 +59,27 @@ function drawSettings() {
           el("td", {}, r.available || "?"), el("td", { class: "dim small" }, { ready: "installed, not in use yet", available: "update waiting", current: "up to date" }[r.status] || "")))) : null,
       el("p", { class: "upd-status " + u.status, id: "update-status" }, words !== undefined && words !== "" ? words : (u.message || "")),
       el("p", { class: "dim small" }, when),
-      el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null))));
+      el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null)),
+    jiraSettings(s)));
+}
+
+// The Jira board's reading (jira.js): which tickets, through which MCP server
+// and model. Each is saved when the box is left; the next Refresh uses it.
+function jiraSettings(s) {
+  const field = (key, label, hint, wide) => {
+    const input = el("input", { id: "set-" + key, value: s[key], class: wide ? "wide" : "", "aria-label": label });
+    input.addEventListener("change", async () => {
+      try { settingsNow = await api("/api/settings", { [key]: input.value.trim() }); } catch (e) { alert(String(e)); }
+    });
+    return el("label", { class: "field-row" }, el("strong", {}, label), input, el("span", { class: "dim small" }, hint));
+  };
+  return el("section", {},
+    el("h3", {}, "Jira"),
+    el("p", { class: "dim small" }, "The production mode's board reads your tickets through Claude, using the Atlassian MCP server you signed in to with /mcp."),
+    field("jiraJql", "Tickets (JQL)", "Which tickets the board shows.", true),
+    field("jiraServer", "MCP server", "Its name in claude mcp list."),
+    field("jiraSite", "Site", "Only when your sign-in reaches several, e.g. example.atlassian.net. Blank: the first."),
+    field("jiraModel", "Model", "The model that reads Jira; a small one keeps it cheap."));
 }
 
 // What the server says about an update, as it happens.

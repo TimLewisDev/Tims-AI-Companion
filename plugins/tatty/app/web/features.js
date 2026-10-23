@@ -5,11 +5,11 @@
 "use strict";
 
 const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
-  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"),
+  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering", designs: "design", design: "design" };
+const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", designs: "design", design: "design" };
 const featureCache = new Map(); // name -> the last /api/feature answer
 let homeTimer = null;
 
@@ -66,7 +66,7 @@ function copyable(text) {
 }
 
 // ------------------------------------------------------------- routing
-// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings
+// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js)
 
 function parseRoute() {
@@ -79,6 +79,7 @@ function parseRoute() {
   if (parts[0] === "designs") return { page: "designs" };
   if (parts[0] === "toolbox") return { page: "toolbox" };
   if (parts[0] === "settings") return { page: "settings" };
+  if (parts[0] === "jira") return { page: "jira" };
   if (parts[0] === "modes") return { page: "modes" };
   if (parts[0] === "home") return { page: "home" };
   // #mode, and nothing asked for: the mode's home page, or the landing page
@@ -114,6 +115,12 @@ async function route() {
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at);
   else if (r.page === "settings") renderSettings(pageEls.settings);
+  else if (r.page === "jira") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderJira === "function") renderJira(pageEls.jira);
+    else pageEls.jira.replaceChildren(el("p", { class: "pad st missing" },
+      "The Jira board didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
   else if (r.page === "designs") await renderDesigns(pageEls.designs);
   else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }

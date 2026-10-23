@@ -136,6 +136,7 @@ function renderModeHome(box) {
     el("div", { class: "mode-home-links" },
       currentMode === "engineering" ? el("a", { href: "#home" }, "Your features →") : "",
       currentMode === "design" ? el("a", { href: "#designs" }, "Your user story boards →") : "",
+      currentMode === "production" ? el("a", { href: "#jira" }, "Your Jira board →") : "",
       // always: the modes page is also where another discipline is added
       el("a", { href: "#modes" }, "All modes"))));
 }

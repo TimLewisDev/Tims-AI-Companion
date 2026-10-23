@@ -2,9 +2,10 @@
 """features-check.py: walk Tatty's Features pages in a headless
 Chromium browser (or a companion's WebView2, with `attach <port>`) the way a
 person would: the home page's feature cards, one feature's overview (tracker,
-documents, work units, timeline), a document, a [[wikilink]] inside it, and
-Back; then the design mode's User Stories board (check_stories). Uses
-page-check.py's DevTools client. Standard library only.
+documents, work units, timeline), a document, a [[wikilink]] inside it, Back,
+the production mode's Jira board (from a sample board), and the design mode's
+User Stories board (check_stories). Uses page-check.py's DevTools client.
+Standard library only.
 
 usage: features-check.py <browser exe> <page url> [feature | --stories]
        features-check.py attach <devtools port> [feature | --stories]
@@ -217,6 +218,56 @@ def check_ids(p, feature="Draft"):
     return res
 
 
+def check_jira(p):
+    """The Jira board, drawn from a sample board in the page (nothing is fetched
+    from Jira, nothing started): its columns, a ticket's panel, Esc, and the nav
+    item shown in the production mode only."""
+    res = {}
+    was = p.js("({ modes: installedModes, mode: currentMode })")
+    p.js("setInstalledModes(['engineering', 'production']); applyMode('engineering'); 1")
+    res["navInEngineering"] = p.js("!document.querySelector('.pnav a[data-page=jira]').classList.contains('hidden')")
+    p.js("location.hash = '#jira'; 1")
+    # the page's own (empty) board first, so the sample isn't drawn over by it
+    wait(p, "currentMode === 'production' && !!document.querySelector('#page-jira.on .jira-page')")
+    res["mode"] = p.js("currentMode")
+    res["navInProduction"] = p.js("!document.querySelector('.pnav a[data-page=jira]').classList.contains('hidden')")
+    p.js("""(() => {
+      const t = (key, status, cat, type) => ({ key, summary: 'Sample ' + key, type, status, statusCategory: cat, priority: 'P3',
+                                              parent: { key: 'S-9', summary: 'The epic' }, url: 'https://example.atlassian.net/browse/' + key });
+      jiraNow = { fetchedAt: Date.now() / 1000 - 120, site: 'example.atlassian.net', jql: 'assignee = currentUser()',
+                  usage: { tokens: 16000, seconds: 18 }, busy: [], started: { 'S-4': 'S-4 - Sample S-4' }, project: '', cached: [],
+                  issues: [t('S-1', 'Closed', 'done', 'Task'), t('S-2', 'Open', 'todo', 'Bug'), t('S-3', 'In Review', 'inprogress', 'Story'),
+                           t('S-4', 'Open', 'todo', 'Story')] };
+      jiraDetail.set('S-2', { key: 'S-2', description: '### Steps\\n\\n1. Open it', labels: ['ui'], fetchedAt: Date.now() / 1000 });
+      drawJira(); })(); 1""")
+    res["columns"] = p.js("[...document.querySelectorAll('#jira-board .jcol')].map(c => c.querySelector('h3').textContent)")
+    res["cards"] = p.js("[...document.querySelectorAll('#jira-board .jcol')].map(c => c.querySelectorAll('.jcard').length)")
+    res["startedCard"] = p.js("(document.querySelector('.jcard[data-key=S-4] .jstarted') || {}).textContent || ''")
+    p.js("document.querySelector('.jcard[data-key=S-2]').click(); 1")
+    wait(p, "!!document.querySelector('.jticket')")
+    res["panel"] = p.js("""({ title: (document.querySelector('.jticket h3') || {}).textContent,
+                             desc: (document.querySelector('.jticket .jdesc h3') || {}).textContent,
+                             link: (document.querySelector('.jticket-head a') || {}).href,
+                             name: (document.querySelector('#jira-name') || {}).value,
+                             startDisabled: (document.querySelector('#jira-start') || {}).disabled })""")
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
+    res["closedByEsc"] = p.js("!document.querySelector('.jticket') && !document.querySelector('.jshade')")
+    p.js("document.querySelector('.jcard[data-key=S-3]').click(); 1")
+    wait(p, "!!document.querySelector('.jticket')")
+    res["notLoaded"] = p.js("""({ load: (document.querySelector('#jira-load') || {}).textContent, start: !!document.querySelector('#jira-start') })""")
+    p.js("closeTicket(); 1")
+    # a refresh running: what it is doing, and for how long
+    p.js("jiraNow.busy = ['board']; jiraNow.since = { board: Date.now() / 1000 - 5 }; drawJira(); 1")
+    res["progress"] = p.js("(document.querySelector('#jira-progress') || {}).textContent || ''")
+    res["refreshDisabled"] = p.js("document.querySelector('#jira-refresh').disabled")
+    # a page whose script didn't load says so, rather than staying blank
+    p.js("window.renderJiraWas = renderJira; renderJira = undefined; route(); 1")
+    res["staleServer"] = p.js("document.querySelector('#page-jira').textContent.slice(0, 40)")
+    p.js("renderJira = window.renderJiraWas; 1")
+    p.js(f"setInstalledModes({json.dumps(was['modes'])}); applyMode({json.dumps(was['mode'])}); jiraNow = null; jiraDetail.clear(); location.hash = '#home'; 1")
+    return res
+
+
 def mouse(p, kind, x, y, **extra):
     p.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button="left", buttons=1 if kind != "mouseReleased" else 0,
            clickCount=1, **extra)
@@ -369,7 +420,8 @@ def main(argv):
         out["modes"] = check_modes(p, feature)
         out["breakdown"] = check_breakdown(p, feature)
         out["ids"] = check_ids(p)
-        out["stories"] = check_stories(p)
+        out["jira"] = check_jira(p)
+        out["stories"] = check_stories(p)  # last: it sets the viewport and the motion setting
         print(json.dumps(out, indent=1))
         return 0
     finally:
