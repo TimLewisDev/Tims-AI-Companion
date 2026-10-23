@@ -1940,7 +1940,9 @@ def design_view(state, folder):
     view = {"name": folder.name, "folder": folder.as_posix(), "plugin": stories_script() is not None,
             "run": stories_run_view(state, folder.name)}
     if not doc:
-        return {**view, "doc": "", "error": "This board has no User Stories document yet."}
+        return {**view, "doc": "", "intake": "", "meta": {}, "groups": [], "stories": [],
+                "retired": [], "problems": [], "layout": {"cards": {}, "view": {}},
+                "error": "This board has no User Stories document yet."}
     intake = design_intake(folder, doc)
     got = read_stories(state, doc) if view["plugin"] else {"meta": {}, "groups": [], "stories": [], "retired": [],
                                                            "problems": [], "error": DESIGN_MISSING}
