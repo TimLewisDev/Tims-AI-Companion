@@ -140,6 +140,8 @@ const { renderDesigns, renderBoard } = (() => {
       el("h2", {}, b.name),
       el("span", { class: "dim small" }, d.doc ? `${d.stories.length} stor${d.stories.length === 1 ? "y" : "ies"} · ${d.doc}` : ""),
       el("span", { class: "spacer" }),
+      d.doc && d.stories.some(s => s.status === "Accepted") ? el("button", { type: "button", id: "export-tasks", onclick: openExport,
+        title: "Copy accepted stories into a Tasks board's backlog, one task each" }, "Export to Tasks") : "",
       d.plugin && d.doc ? el("button", { type: "button", id: "write-stories", onclick: () => run({ mode: "draft" }),
         title: d.stories.length ? "Read the design again and add what's missing (new stories wait as Proposed)" : "Write the stories from the design document" },
       d.stories.length ? "Look for more" : "Write stories") : "");
@@ -179,10 +181,15 @@ const { renderDesigns, renderBoard } = (() => {
     for (const s of b.data.stories) {
       const [x, y] = b.data.layout.cards[s.id];
       const proposed = s.status === "Proposed";
+      const went = (b.data.exported || {})[s.id];
       const n = el("div", { class: `scard ${colourOf(s.group)} ${tilt(s.id)}${proposed ? " proposed" : ""}${b.fresh.has(s.id) ? " fresh" : ""}${b.busy.has(s.id) ? " busy" : ""}`,
         "data-id": s.id, tabindex: "0", role: "button", "aria-label": `${s.id}: ${s.title}` },
       el("div", { class: "scard-top" }, el("span", { class: "sid" }, s.id), el("span", { class: "sgroup" }, s.group),
-        proposed ? el("span", { class: "sbadge" }, "Proposed") : ""),
+        proposed ? el("span", { class: "sbadge" }, "Proposed") : "",
+        went ? el("button", { type: "button", class: "stask" + (went.changed ? " changed" : ""),
+          title: `${went.task} on the Tasks board "${went.board}"` + (went.changed ? " (the story changed after it went)" : ""),
+          onclick: e => { e.stopPropagation(); location.hash = tasksHref(went.board, "", went.task); } },
+        went.task, went.changed ? " ✎" : "") : ""),
       el("div", { class: "stitle" }, s.title),
       el("div", { class: "sline" }, `As ${s.article} ${s.as}, I want ${s.want}, so that ${s.soThat}.`),
       el("div", { class: "sfoot" }, `${s.criteria.length} criteri${s.criteria.length === 1 ? "on" : "a"}`,
@@ -366,6 +373,7 @@ const { renderDesigns, renderBoard } = (() => {
   function openCard(id) {
     if (!b || !b.overlay) return;
     b.editing = false;
+    b.exporting = null;
     const s = id && story(id);
     if (!s) { b.overlay.hidden = true; return; }
     b.open = id;
@@ -376,6 +384,7 @@ const { renderDesigns, renderBoard } = (() => {
   function closeCard() {
     b.overlay.hidden = true;
     b.open = "";
+    b.exporting = null;
     if (location.hash !== designHref(b.name)) history.replaceState(null, "", designHref(b.name));
   }
 
@@ -472,6 +481,83 @@ const { renderDesigns, renderBoard } = (() => {
     if (await change({ action: "reject", id: s.id, hash: s.hash, reason }, msg) && b.open === s.id) closeCard();
   }
 
+  // ----------------------------------------------------------- export to Tasks
+
+  // The accepted stories not yet on a Tasks board, ticked, to go into one board's
+  // backlog as a task each. The server writes the tasks itself: no headless run.
+  async function openExport() {
+    b.open = "";
+    b.exporting = { boards: null };
+    b.overlay.replaceChildren(el("div", { class: "ocard xcard", role: "dialog", "aria-label": "Export to Tasks" },
+      el("p", { class: "dim" }, "Finding your task boards…")));
+    b.overlay.hidden = false;
+    let boards = [];
+    try { boards = (await api("/api/tasks")).boards.map(x => x.name); } catch { /* none to offer: a new one is */ }
+    if (!b.exporting) return;
+    b.exporting.boards = boards;
+    drawExport();
+  }
+
+  function drawExport(note) {
+    const d = b.data, went = d.exported || {}, boards = b.exporting.boards;
+    const open = d.stories.filter(s => s.status === "Accepted" && !went[s.id]);
+    const msg = el("p", { class: "small st missing", id: "export-msg" }, note || "");
+    const ticks = [];
+    const go = el("button", { type: "button", class: "primary", id: "export-go" });
+    const count = () => {
+      const n = ticks.filter(c => c.checked).length;
+      go.disabled = !n;
+      go.textContent = `Export ${n} stor${n === 1 ? "y" : "ies"}`;
+    };
+    const groups = [...d.groups.map(g => g.name), "Ungrouped"]
+      .map(g => ({ g, list: open.filter(s => s.group === g) })).filter(x => x.list.length);
+    const list = el("div", { class: "xlist", id: "export-list" }, groups.map(({ g, list }) =>
+      el("fieldset", { class: "xgroup" }, el("legend", {}, g), list.map(s => {
+        const c = el("input", { type: "checkbox", checked: true, "data-id": s.id, onchange: count });
+        ticks.push(c);
+        return el("label", { class: "xrow" }, c, el("span", { class: "sid" }, s.id), el("span", {}, s.title));
+      }))));
+    const fresh = !boards.includes(b.name);
+    const pick = el("select", { id: "export-board", "aria-label": "Tasks board" },
+      fresh ? el("option", { value: "", selected: true }, `New board: ${b.name}`) : "",
+      boards.map(n => el("option", { value: n, selected: n === b.name }, n)));
+    go.addEventListener("click", async () => {
+      const ids = {};
+      for (const c of ticks) if (c.checked) ids[c.dataset.id] = story(c.dataset.id).hash;
+      go.disabled = true;
+      msg.textContent = "";
+      try {
+        const r = await api("/api/stories/export", { name: b.name, ids, board: pick.value || b.name, newBoard: !pick.value });
+        const x = r.export;
+        take(r);
+        b.overlay.replaceChildren(el("div", { class: "ocard xcard", role: "dialog", "aria-label": "Exported" },
+          el("div", { class: "ocard-head" }, el("strong", {}, "Exported"), el("span", { class: "spacer" }),
+            el("button", { type: "button", class: "oclose", title: "Close", "aria-label": "Close", onclick: closeCard }, "×")),
+          el("p", {}, `${x.created.length} task${x.created.length === 1 ? "" : "s"} added to the backlog of "${x.board}"`,
+            x.skipped.length ? ` (${x.skipped.length} already there)` : "", "."),
+          el("div", { class: "row" },
+            el("button", { type: "button", class: "primary", id: "export-open", onclick: () => { location.hash = tasksHref(x.board, "backlog"); } }, "Open the backlog →"),
+            el("button", { type: "button", onclick: closeCard }, "Stay here"))));
+        b.exporting = null;
+      } catch (e) {
+        if (e.status === 409) { b.exporting.note = String(e.message || e); reload(); } else msg.textContent = String(e.message || e);
+        go.disabled = false;
+      }
+    });
+    const all = on => () => { for (const c of ticks) c.checked = on; count(); };
+    b.overlay.replaceChildren(el("div", { class: "ocard xcard", role: "dialog", "aria-label": "Export to Tasks" },
+      el("div", { class: "ocard-head" }, el("strong", {}, "Export to Tasks"), el("span", { class: "spacer" }),
+        el("button", { type: "button", class: "oclose", title: "Close", "aria-label": "Close", onclick: closeCard }, "×")),
+      open.length
+        ? [el("p", { class: "dim small" }, "Each story becomes a task in the board's backlog: its title, its group as a label, the story and its details as the description, and its acceptance criteria. Proposed stories wait until they're accepted."),
+          el("div", { class: "row small" }, el("button", { type: "button", onclick: all(true) }, "All"), el("button", { type: "button", onclick: all(false) }, "None")),
+          list,
+          el("div", { class: "row" }, el("label", { class: "small" }, "Into ", pick), el("span", { class: "spacer" }), go)]
+        : el("p", {}, "Every accepted story is on a Tasks board already."),
+      msg));
+    count();
+  }
+
   // ----------------------------------------------------------- changes and runs
 
   // One change through the server (stories.sh): the answer is the board again.
@@ -509,6 +595,11 @@ const { renderDesigns, renderBoard } = (() => {
     drawCards();
     drawPanel();
     if (b.open) { const s = story(b.open); if (s && !b.editing) drawOpen(s); else if (!s) closeCard(); }
+    if (b.exporting && b.exporting.boards && b.exporting.note !== undefined) {
+      const note = b.exporting.note;
+      delete b.exporting.note;
+      drawExport(note);
+    }
   }
 
   let reloadTimer = null;
@@ -544,6 +635,9 @@ const { renderDesigns, renderBoard } = (() => {
 
   document.addEventListener("tt-event", e => {
     const ev = e.detail;
+    // A task deleted on a board this one exported to frees its story to go again.
+    if (ev.type === "tasks" && b && b.data && b.box.classList.contains("on") && ev.name
+      && Object.values(b.data.exported || {}).some(x => x.board === ev.name)) { reload(); return; }
     if (ev.type !== "stories") return;
     if (listBox && listBox.classList.contains("on")) { if (ev.done || ev.run) renderDesigns(listBox); return; }
     if (!b || ev.name !== b.name || !b.box.classList.contains("on")) return;

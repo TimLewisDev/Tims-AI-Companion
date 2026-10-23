@@ -134,3 +134,14 @@
 .ecrit li input { flex: 1; }
 .ecrit li button { padding: 2px 6px; }
 .elab > button { align-self: flex-start; }
+
+/* export to Tasks: a story's task, on its card, and the panel that picks them */
+.stask { margin-left: auto; padding: 0 6px; font: 700 10px var(--mono); line-height: 1.6; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--note-edge); color: var(--accent); }
+.stask.changed { color: var(--warn); }
+.xcard .row { padding: 6px 0 0; }
+.xlist { max-height: 50vh; overflow: auto; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.xgroup { margin: 0; padding: 4px 10px 6px; border: 1px solid var(--note-edge); border-radius: 6px; }
+.xgroup legend { font-size: 12px; font-weight: 700; color: var(--dim); padding: 0 4px; }
+.xrow { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; font-size: 13px; cursor: pointer; }
+.xrow .sid { flex: none; }

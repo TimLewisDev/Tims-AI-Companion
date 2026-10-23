@@ -326,6 +326,8 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
     the toolbox's documents: the H1 (`# T-0042: Title`), a header of
     `- **Status:**`, `Priority`, `Labels`, `Created` and `Done` (and `Feature`,
     once a workflow is started), then `## Description` and any other sections.
+    A task exported from a User Stories board also has `- **Story:**` (which
+    story, on which design board) and an `## Acceptance criteria` section.
   - `.deleted/`: where Delete moves a task's file.
 
   A file per task keeps each change to one small file, merges in git, and reads
@@ -438,11 +440,27 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   group in focus: its notes outlined, the rest dimmed, a labelled frame round
   them, and the view framed on them. The framing eases with motion on and jumps
   with reduced motion; either way it happens.
+- **Export to Tasks** (the board's top bar) puts accepted stories on a Tasks
+  board's backlog (see "Tasks"), a task each, for the production mode to
+  schedule. The panel lists the Accepted stories not yet on a board, all ticked,
+  grouped, and the board to put them on (one of the same name, else a new one
+  of that name). `/api/stories/export` (`stories_export`) reads the stories with
+  `stories.sh list`, refuses (409) a story that is no longer Accepted or whose
+  hash changed since the page read it, and writes the task files itself, under
+  the board's lock, in the stories' order: no headless run, so no tokens. A
+  task gets the story's title, its group as its label, the story sentence and
+  its details as the Description (details under `### Details`), a `## Acceptance
+  criteria` section, and `- **Story:** US-NN on the design board "<name>"`. Which
+  task each story became, and the story's hash then, are kept with the board's
+  layout in `<home>/boards/` (`exported`), never in the stories document. A
+  story whose task is still on that board shows its task's ID on its note (a
+  click opens the task; ✎ when the story changed after it went) and isn't
+  offered again; delete the task and it is.
 
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  455 checks against a real toolbox (the User Stories board's with a stand-in
+  488 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
@@ -451,7 +469,9 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   IDs made at once, moves and the order they keep, conflicts, the columns,
   Clear done and its milestones, a hand edit reaching the page, problems and
   adoption, Delete, Start workflow, a board.json that won't read, and a board
-  through a junction.
+  through a junction. And Export to Tasks: Proposed and changed stories
+  refused, the task files it writes, a story skipped once exported and offered
+  again once its task is deleted, and a workflow started from one.
 - `claude plugin test plugins/tatty` covers the mod, including the joining
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
@@ -468,6 +488,10 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   mouse input (pan, wheel zoom, a group in focus with and without reduced
   motion, a note dragged and back, a card opened and its edit form); it changes
   nothing in the stories document.
+  `features-check.py ... --export` clicks through Export to Tasks on the first
+  User Stories board (the panel, two stories exported, their IDs on the notes,
+  the backlog, a task's panel, the panel again). It writes task files, so run
+  it only on a throwaway root.
   `page-check.py` also covers the modes: the top bar, the landing page, what
   switching mode does to the colour and the nav, and the mode being remembered
   across a reload. Start the server with `TATTY_MODES` to drive more than the

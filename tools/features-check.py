@@ -7,10 +7,12 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks]
-       features-check.py attach <devtools port> [feature | --stories | --tasks]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export]
 --stories walks only the User Stories board (a root with a board under design/);
---tasks only the task boards (a root with a board under tasks/: the fixture's Sample).
+--tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
+--export only Export to Tasks from the first User Stories board. It writes task
+files, so only ever on a throwaway root.
 Prints one JSON object of what it found at each step.
 """
 
@@ -350,6 +352,52 @@ def check_stories(p):
     return res
 
 
+def check_export(p):
+    """Export to Tasks, clicked through: the panel on the first User Stories board
+    (its accepted stories ticked, the boards offered), two of them exported, the
+    task IDs on their notes, the backlog they land in, one task's panel, and the
+    panel again without them. Writes task files: a throwaway root only."""
+    res = {}
+    p.js("location.hash = '#designs'; 1")
+    wait(p, "document.querySelectorAll('#page-designs .board-card').length > 0")
+    p.js("document.querySelector('#page-designs .board-card').click(); 1")
+    if not wait(p, "!!document.querySelector('#export-tasks')"):
+        return {"export": "no Export to Tasks button"}
+    design = p.js("location.hash")
+    p.js("document.querySelector('#export-tasks').click(); 1")
+    wait(p, "!!document.querySelector('#export-go')")
+    panel = """({ rows: [...document.querySelectorAll('#export-list .xrow')].map(r => r.innerText.replace(/\\s+/g, ' ').trim()),
+                 groups: [...document.querySelectorAll('#export-list legend')].map(l => l.textContent),
+                 ticked: document.querySelectorAll('#export-list input:checked').length,
+                 boards: [...document.querySelectorAll('#export-board option')].map(o => o.textContent),
+                 button: (document.querySelector('#export-go') || {}).textContent || '' })"""
+    res["panel"] = p.js(panel)
+    p.js("[...document.querySelectorAll('#export-list input')].slice(2).forEach(c => c.click()); 1")
+    res["picked"] = p.js("document.querySelector('#export-go').textContent")
+    p.js("document.querySelector('#export-go').click(); 1")
+    wait(p, "!!document.querySelector('#export-open')")
+    res["done"] = p.js("(document.querySelector('.xcard p') || {}).textContent || ''")
+    wait(p, "document.querySelectorAll('#board .stask').length >= 2")
+    res["chips"] = p.js("[...document.querySelectorAll('#board .stask')].map(c => c.closest('.scard').dataset.id + ':' + c.textContent)")
+    p.js("document.querySelector('#export-open').click(); 1")
+    wait(p, "document.querySelectorAll('#page-taskboard .trow').length > 0")
+    res["backlog"] = {"hash": p.js("decodeURIComponent(location.hash)"), "mode": p.js("currentMode"),
+                      "rows": p.js("[...document.querySelectorAll('#page-taskboard .trow')].map(r => r.dataset.id + ' ' + r.getAttribute('aria-label'))")}
+    p.js("location.hash += '/task/' + document.querySelector('#page-taskboard .trow').dataset.id; 1")
+    wait(p, "!!document.querySelector('.tpanel .tsection')")
+    res["task"] = p.js("""({ sections: [...document.querySelectorAll('.tpanel .tsection h4')].map(h => h.textContent),
+                            facts: [...document.querySelectorAll('.tpanel .jfacts dt')].map(d => d.textContent),
+                            labels: (document.querySelector('#task-labels') || {}).value || '' })""")
+    p.js(f"location.hash = {json.dumps(design)}; 1")
+    wait(p, "!!document.querySelector('#export-tasks')")
+    p.js("document.querySelector('#export-tasks').click(); 1")
+    wait(p, "!!document.querySelector('#export-go') || !!document.querySelector('.xcard p')")
+    time.sleep(0.3)
+    res["again"] = p.js(panel)
+    p.js("document.querySelector('.xcard .oclose').click(); 1")
+    return res
+
+
 def check_tasks(p):
     """The production mode's task boards, with real mouse input: the boards list,
     a board's columns, a card dragged to another column and back, a reorder in a
@@ -506,8 +554,8 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks"):
-            out[feature[2:]] = (check_stories if feature == "--stories" else check_tasks)(p)
+        if feature in ("--stories", "--tasks", "--export"):
+            out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
