@@ -2246,6 +2246,8 @@ def stories_run_work(state, folder, doc, argv, prompt, before, run_dir):
                                  encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW,
                                  start_new_session=os.name != "nt")
             r["proc"] = p
+            if r.get("cancelled"):
+                kill_tree(p)
             timer = threading.Timer(STORIES_TIMEOUT, lambda: (r.update(timedOut=True), kill_tree(p)))
             timer.start()
             try:
