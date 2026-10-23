@@ -24,7 +24,13 @@ visually:
   Click a note to read it in full and edit it (the markdown document changes);
   accept a proposed story with ✓, bin it with 🗑, or ask for changes and have it
   rewritten. The pinned group panel colours each group, adds and removes groups,
-  and frames a group's notes when you click it.
+  and frames a group's notes when you click it. Add a story where you click
+  (written by hand, or said in a line for the skill to write), and put text,
+  comments and lines between things on the same board.
+- **Whiteboards:** the same board on its own, for any planning (design mode →
+  **Whiteboards**), and one for each feature beside its documents (the
+  feature's **Whiteboard**): text fields, comments pinned to a card or a spot,
+  and lines that join any two things and follow them when they move.
 - **Start the next step:** opens a new Claude session that runs it, then
   watches that session live: what it's doing, how many tokens it has used,
   and its questions, which you answer right there.
@@ -104,6 +110,10 @@ install from a local checkout, and how to work on Tatty itself.
 | see your Jira sprint | the production mode → **Jira** → **Refresh** |
 | start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |
 | turn a design document into user stories | design mode → **User Stories** → **New from a design document…** |
+| add a story on the board | the **＋** tool (S), then click where it goes |
+| plan on a blank board | design mode → **Whiteboards** → **New whiteboard** |
+| sketch next to a feature's plan | the feature's page → **Whiteboard** |
+| write, comment or join things on a board | the **T** (text), **💬** (comment) and **↗** (line) tools, or double-click for text |
 | keep tasks without Jira | the production mode → **Tasks** → **New board…** |
 | add a task | **+ New task**, or type in **+ Add a task** under a column and press Enter |
 | move a task | drag its card to another column (or focus it and press Alt+→ / Alt+←) |

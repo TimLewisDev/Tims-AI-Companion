@@ -6,6 +6,7 @@
 <title>Tatty</title>
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/whiteboard.css">
 <link rel="stylesheet" href="/static/stories.css">
 <link rel="stylesheet" href="/static/tasks.css">
 </head>
@@ -34,6 +35,7 @@
     <a href="#jira" data-page="jira" data-mode="production">Jira</a>
     <a href="#tasks" data-page="tasks" data-mode="production">Tasks</a>
     <a href="#designs" data-page="designs" data-mode="design">User Stories</a>
+    <a href="#whiteboards" data-page="whiteboards" data-mode="design">Whiteboards</a>
     <a href="#toolbox" data-page="toolbox">Toolbox</a>
   </nav>
   <div class="where dim" id="cwd"></div>
@@ -62,6 +64,9 @@
   <!-- User Stories: the design mode's boards, and one board of sticky notes (stories.js). -->
   <section class="page" id="page-designs"></section>
   <section class="page" id="page-design"></section>
+  <!-- Whiteboards: blank boards to plan on, and one board (whiteboards.js, on whiteboard.js). -->
+  <section class="page" id="page-whiteboards"></section>
+  <section class="page" id="page-whiteboard"></section>
   <!-- Settings: Tatty's own options and its updates (settings.js). -->
   <section class="page" id="page-settings"></section>
   <!-- Toolbox: status of any folder, connections and the toolbox's docs. -->
@@ -115,7 +120,9 @@
 <script src="/static/features.js"></script>
 <script src="/static/settings.js"></script>
 <script src="/static/jira.js"></script>
+<script src="/static/whiteboard.js"></script>
 <script src="/static/stories.js"></script>
+<script src="/static/whiteboards.js"></script>
 <script src="/static/tasks.js"></script>
 <script src="/static/ids.js"></script>
 </body>

@@ -195,10 +195,14 @@ folder) and `<name> - User Stories.md`, which is the skill's document:
 | `tt-user-stories/scripts/stories.sh init <design doc> <stories doc>` | a new board | starts the document |
 | `stories.sh list <doc> --tsv` | every time the board is read | the stories, groups and retired rows, and each story's hash; `problem:` lines on stderr mean a hand edit broke the layout |
 | `stories.sh edit <doc> <id> <spec> --if <hash>`, `accept`, `reject <reason>`, `group add\|describe\|rename\|remove` | a person's click: Save, ✓, 🗑, the group panel | the change; exit 3 (the story changed since it was read) is a 409 and the board reloads |
+| `stories.sh add <doc> <spec> [--proposed]` | a new story's Save on the board (`--proposed` for Write it for me) | the new story's ID, on stdout |
 
 The spec Tatty writes for an edit is the script's own format (`stories.sh
 --help`), from the fields the person filled in. Tatty never writes the
 document's markdown itself.
+
+**Write it for me** (a new story said in a line) is `stories.sh add --proposed`
+of a placeholder, then the `alter` run below on it, with the line in its note.
 
 **Export to Tasks** only reads the document (`stories.sh list --tsv`): the
 tasks it makes are Tatty's own files on a Tasks board (see "Tasks"), and which
@@ -319,9 +323,12 @@ has no part in it:
   - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
     (`issues/<KEY>.json`), and which feature was started from which ticket
     (`started.tsv`);
-  - `boards/<key>.json`: where each card sits on a User Stories board, the view,
+  - `boards/<key>.json`: a User Stories board's or a feature's whiteboard:
+    where each card sits, the view, the text fields, comments and lines on it,
     each group's colour, and which task each exported story became (never in
     the stories document);
+  - `whiteboards/<name>.json`: a blank whiteboard (`.deleted/` holds the
+    deleted ones);
   - `tasks-index/<key>.json`: each task board's index (each task file's size,
     time and summary), so a big board opens without reading every file;
   - `server.json` and `server.log`.

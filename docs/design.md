@@ -423,19 +423,24 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   says which stories are new or rewritten, the cost, or the error. Stop
   (`/api/stories/cancel`) kills the process tree. `state.touch()` on every line
   keeps the idle watchdog off a long run.
+- **Adding a story:** the board's **＋** tool (S) opens a blank story where it
+  was clicked. Save posts `action: add` with the fields and `at` (the card's
+  place): `stories.sh add`, Accepted, no tokens. **Write it for me** posts the
+  person's line instead: `stories.sh add --proposed` of a placeholder (the line
+  as its title and want, "(to be written)" for the rest), then the skill's own
+  `alter` run on it, with the note "Write this story properly from the
+  designer's note: …". The story waits as Proposed; nothing in the toolbox is
+  new for it.
 - **Changes:** Save, ✓, 🗑 and the group panel post to `/api/stories`, which
   writes a spec and calls `stories.sh` with the story's hash (`--if`), so a
   story changed elsewhere is a 409 and the board reloads. No change is taken
   while a run is writing the same board. `watch_designs` sends a `stories`
   event whenever a board's document changes on disk (the skill's writes, a hand
   edit in Obsidian), and the page reloads.
-- **The board:** a viewport (`.board`) and a `.world` it moves with
-  `transform: translate() scale()`, set through the DOM (the CSP refuses inline
-  styles). Dragging the background pans, the wheel zooms about the pointer,
-  dragging a note moves it, and a click that didn't move opens it. Notes with no
-  place yet go in a column per group. Places, the view and each group's colour
-  (`.g0`–`.g7`, kept once given so removing a group recolours nothing) are
-  Tatty's own, in `<home>/boards/` (`/api/stories/layout`).
+- **The board** is the whiteboard (see "Whiteboards"), the notes its cards.
+  Notes with no place yet go in a column per group. Each group's colour
+  (`.g0`–`.g7`, kept once given so removing a group recolours nothing) is kept
+  with the board's whiteboard in `<home>/boards/`.
 - **The group panel** is pinned top right, over the board. A click puts the
   group in focus: its notes outlined, the rest dimmed, a labelled frame round
   them, and the view framed on them. The framing eases with motion on and jumps
@@ -457,10 +462,47 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   click opens the task; ✎ when the story changed after it went) and isn't
   offered again; delete the task and it is.
 
+## Whiteboards
+
+`whiteboard.js` (and `whiteboard.css`) is the board the User Stories page draws
+its notes on, and the board of a blank whiteboard and of a feature. A host page
+makes one with `makeWhiteboard(o)`: where it saves (`key: {kind, ref}`), what
+the server gave it, its own cards (`setCards([{id, node, w, h}])`: nodes it
+built, which the board places and drags), what a click on a card does
+(`onOpen`), its own placing tools (`tools`, e.g. the Story tool), and a panel
+to pin top right (`corner`). The board does the rest: pan, wheel zoom about
+the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
+
+- **What a person adds:** text fields (markdown, edited on double-click, a
+  width handle, a colour), comments (a marker on a card's or a text's corner
+  that follows it, or on a spot; Resolve, and a toggle that hides resolved
+  ones), and lines (between any two things, edge to edge, an arrowhead and a
+  label, redrawn as either end moves; an end that is gone hides the line,
+  never deletes it). Tools: Select `V`, Text `T` (or double-click the
+  background), Comment `C`, Line `L`, then the host's; Esc goes back to Select,
+  Delete removes what is selected. A host card is never removed from here.
+- **Saving:** each change shows at once and goes to `POST /api/whiteboard` as
+  a small batch (cards' places, the view, items and lines upserted or
+  removed), applied under the board's lock and refused whole if any of it is
+  bad. Removing an item takes its lines and lets go of the comments on it. A
+  `whiteboard` event tells other windows, which read the board again (not
+  while a text or a comment is being written there).
+- **Where:** Tatty's own, never in a document: `<home>/boards/<key>.json` for a
+  folder's (a User Stories board, keyed as before; a feature), with any other
+  keys kept as they are (a stories board's colours and exports), and
+  `<home>/whiteboards/<name>.json` for a blank one. The ids of items and lines
+  are the page's (`n` + base 36); a card's is the host's (`US-01`, a
+  document's file name).
+- **Blank whiteboards** (`whiteboards.js`): design mode → **Whiteboards**
+  (`#whiteboards`; one is `#whiteboard/<name>`), New and Delete (into
+  `<home>/whiteboards/.deleted/`).
+- **A feature's whiteboard** (`#feature/<name>/whiteboard`, the **Whiteboard**
+  item in its left rail): its documents are the cards, and a click opens one.
+
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  488 checks against a real toolbox (the User Stories board's with a stand-in
+  530 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
@@ -492,6 +534,12 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   User Stories board (the panel, two stories exported, their IDs on the notes,
   the backlog, a task's panel, the panel again). It writes task files, so run
   it only on a throwaway root.
+  `features-check.py ... --whiteboard` makes a blank whiteboard and writes on it
+  with real mouse and keys (a text by the Text tool, one by double-click, a
+  comment pinned to the first, a labelled line between them, a drag the comment
+  and the line follow, a reload, Delete), adds a story with the Story tool where
+  it was clicked, and opens a document from the Demo feature's whiteboard. It
+  writes too: a throwaway root and home only.
   `page-check.py` also covers the modes: the top bar, the landing page, what
   switching mode does to the colour and the nav, and the mode being remembered
   across a reload. Start the server with `TATTY_MODES` to drive more than the

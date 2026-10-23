@@ -6,11 +6,12 @@
 
 const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira"),
-  designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard") };
+  designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
+  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
 const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", tasks: "production", taskboard: "production",
-  designs: "design", design: "design" };
+  designs: "design", design: "design", whiteboards: "design", whiteboard: "design" };
 const featureCache = new Map(); // name -> the last /api/feature answer
 let homeTimer = null;
 
@@ -67,16 +68,19 @@ function copyable(text) {
 }
 
 // ------------------------------------------------------------- routing
-// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings · #jira
-// · #designs · #design/<name>[/card/<story id>] (stories.js)
+// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard
+// · #toolbox · #settings · #jira
+// · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard" };
   }
+  if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
+  if (parts[0] === "whiteboards") return { page: "whiteboards" };
   if (parts[0] === "design" && parts[1]) return { page: "design", name: parts[1], card: parts[2] === "card" ? parts[3] : null };
   if (parts[0] === "designs") return { page: "designs" };
   if (parts[0] === "tasks" && parts[1]) {
@@ -97,10 +101,11 @@ function parseRoute() {
 // #feature/<name>[/doc/<file>[/at/<heading, or ^block>]], each part encoded
 const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
   (doc ? "/doc/" + encodeURIComponent(doc) + (at ? "/at/" + encodeURIComponent(at) : "") : "");
+const featureBoardHref = name => "#feature/" + encodeURIComponent(name) + "/whiteboard";
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
-  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks" }[which] || which));
+  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks", whiteboard: "whiteboards" }[which] || which));
   $("#settings-link").classList.toggle("on", which === "settings");
   renderNav();
   clearInterval(homeTimer);
@@ -121,7 +126,7 @@ async function route() {
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -138,6 +143,8 @@ async function route() {
   }
   else if (r.page === "designs") await renderDesigns(pageEls.designs);
   else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);
+  else if (r.page === "whiteboards") await renderWhiteboards(pageEls.whiteboards);
+  else if (r.page === "whiteboard") await renderWhiteboard(pageEls.whiteboard, r.name);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
 }
 
@@ -366,7 +373,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at) {
+async function renderFeature(name, doc, at, board) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -385,13 +392,14 @@ async function renderFeature(name, doc, at) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, featureNav(f, doc), main));
-  if (doc) {
+  box.replaceChildren(el("div", { class: "fpage" }, featureNav(f, doc, board), main));
+  if (board) await featureBoard(f, main);
+  else if (doc) {
     if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
   } else main.append(overview(f));
 }
 
-function featureNav(f, current) {
+function featureNav(f, current, board) {
   const item = (label, href, on, sub) => el("a", { class: "fnav-item" + (on ? " on" : ""), href }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
   const docs = f.docList.map(d => item(d.doc, featureHref(f.name, d.file), current === d.file, (f.docList.some(o => o.prefix !== d.prefix) ? d.prefix + " · " : "") + ago(d.updated)));
   const groups = new Map();
@@ -400,13 +408,42 @@ function featureNav(f, current) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current),
+    item("Overview", featureHref(f.name), !current && !board),
+    item("Whiteboard", featureBoardHref(f.name), !!board),
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
       el("summary", {}, `Working notes (${f.notes.length})`),
       [...groups].map(([g, ns]) => el("div", {}, el("div", { class: "dim small" }, g),
         ns.map(n => item(n.name, featureHref(f.name, n.file), current === n.file))))) : "");
+}
+
+// A feature's whiteboard (#feature/<name>/whiteboard): its documents as cards on
+// whiteboard.js, with whatever is sketched round them (text, comments, lines;
+// Tatty's own, in <home>/boards). A click on a document opens it.
+async function featureBoard(f, main) {
+  main.classList.add("fmain-board");
+  main.replaceChildren(el("p", { class: "dim pad" }, "Opening the whiteboard…"));
+  let d;
+  try { d = await api(`/api/whiteboard?kind=feature&ref=${encodeURIComponent(f.name)}`); } catch (e) {
+    main.replaceChildren(el("p", { class: "st missing pad" }, String(e.message || e)));
+    return;
+  }
+  const W = 210, H = 86;
+  const note = el("p", { class: "small st missing wb-note" });
+  const wb = makeWhiteboard({ id: "fboard", key: { kind: "feature", ref: f.name }, data: d,
+    // a new document goes under the ones already placed, four to a row
+    place: (id, pos) => {
+      const placed = d.docs.filter(x => x.file !== id && Array.isArray(pos[x.file])).length;
+      return [(placed % 4) * (W + 30), Math.floor(placed / 4) * (H + 30)];
+    },
+    onOpen: id => { location.hash = featureHref(f.name, id); },
+    onError: t => { note.textContent = t; },
+    empty: "No documents yet. Sketch the plan here: T for text (or double-click), 💬 for a comment, ↗ to join two things." });
+  main.replaceChildren(el("div", { class: "board-page" }, note, wb.element));
+  wb.setCards(d.docs.map(x => ({ id: x.file, w: W, h: H,
+    node: el("div", { class: "wbdoc", tabindex: "0", role: "button", "aria-label": `Open ${x.doc}` },
+      el("div", { class: "dim small" }, x.prefix || "Working note"), el("strong", {}, x.doc), el("div", { class: "dim small" }, `updated ${ago(x.updated)}`)) })));
 }
 
 // The steps of the feature's route, and which one it is on.

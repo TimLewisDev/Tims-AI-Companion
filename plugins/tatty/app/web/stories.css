@@ -1,29 +1,7 @@
-/* The User Stories boards (stories.js): the board of sticky notes, its pinned
-   group panel and the opened card. Group colours are this file's own palette,
-   .g0 to .g7 (the server gives each group one and keeps it), and .gu for
-   Ungrouped; everything else uses theme.css's tokens. */
-
-/* ---------------------------------------------------------------- the group palette */
-.g0 { --note: #fff3a8; --note-edge: #e0c84a; }
-.g1 { --note: #ffd6c9; --note-edge: #e59a82; }
-.g2 { --note: #cfeecf; --note-edge: #7fbf7f; }
-.g3 { --note: #cde4ff; --note-edge: #78a9e0; }
-.g4 { --note: #ead7ff; --note-edge: #ab86da; }
-.g5 { --note: #ffd9ec; --note-edge: #e08bb5; }
-.g6 { --note: #d3f3f1; --note-edge: #6fc2bb; }
-.g7 { --note: #ffe2b8; --note-edge: #e0a454; }
-.gu { --note: #eceae4; --note-edge: #b9b5aa; }
-@media (prefers-color-scheme: dark) {
-  .g0 { --note: #4a4421; --note-edge: #a8962e; }
-  .g1 { --note: #4d3029; --note-edge: #b06a55; }
-  .g2 { --note: #263f27; --note-edge: #5c9a5c; }
-  .g3 { --note: #233650; --note-edge: #5a87bd; }
-  .g4 { --note: #382a4d; --note-edge: #8a6ab8; }
-  .g5 { --note: #4a2a3b; --note-edge: #b8698f; }
-  .g6 { --note: #213f3d; --note-edge: #4f9a93; }
-  .g7 { --note: #4a3820; --note-edge: #b88440; }
-  .gu { --note: #2c2f34; --note-edge: #5d636b; }
-}
+/* The User Stories boards (stories.js): the sticky notes on the whiteboard
+   (whiteboard.css: the board itself, and the palette .g0 to .g7 a group's notes
+   take, the server giving each group one and keeping it; .gu for Ungrouped),
+   the pinned group panel and the opened card. */
 
 /* ---------------------------------------------------------------- the page */
 .board-page { display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative; }
@@ -42,15 +20,7 @@
   animation: spin 0.8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------------------------------------------------------------- the board */
-.board { position: relative; flex: 1; min-height: 320px; overflow: hidden; cursor: grab; outline: none;
-  background-color: var(--bg); border-top: 1px solid var(--line);
-  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px;
-  touch-action: none; user-select: none; }
-.board.panning { cursor: grabbing; }
-.world { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
-.world.easing { transition: transform 0.35s ease; }
-
+/* ---------------------------------------------------------------- the notes */
 .scard { position: absolute; width: 230px; height: 156px; box-sizing: border-box; padding: 10px 12px 8px;
   display: flex; flex-direction: column; gap: 4px; cursor: pointer; overflow: hidden;
   background: var(--note); color: var(--ink); border-bottom: 3px solid var(--note-edge); border-radius: 2px 2px 6px 2px;
@@ -80,10 +50,6 @@
 .sacts .s-reject:hover { border-color: var(--bad); }
 .scard.fresh .sacts { bottom: 22px; }
 
-/* A group in focus: a labelled frame round its cards, in its colour. */
-.gframe { position: absolute; border: 2px dashed var(--note-edge); border-radius: 10px; background: color-mix(in srgb, var(--note) 25%, transparent);
-  pointer-events: none; padding: 4px 10px; box-sizing: border-box; font-size: 13px; font-weight: 700; color: var(--dim); }
-
 /* ---------------------------------------------------------------- the group panel (pinned) */
 .gpanel { position: absolute; top: 10px; right: 10px; z-index: 10; width: 230px; max-height: calc(100% - 70px); overflow: auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; cursor: default;
@@ -102,10 +68,6 @@
 .gremove:hover { color: var(--bad); }
 .gadd { display: flex; gap: 4px; margin-top: 6px; }
 .gadd input { flex: 1; min-width: 0; }
-
-.zoomctl { position: absolute; left: 10px; bottom: 10px; z-index: 10; display: flex; align-items: center; gap: 4px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; cursor: default; }
-.zoom-pct { min-width: 44px; text-align: center; font-size: 12px; color: var(--dim); }
 
 /* ---------------------------------------------------------------- an opened card */
 .scard-overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: flex-start; justify-content: center;
