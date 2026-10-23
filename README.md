@@ -35,13 +35,20 @@ visually:
   **Animations**, **Sound**, **Effects** and **Keep Tatty on the desktop** are
   there too. If your system is set to show less motion he keeps still until you
   tick **Animations** yourself.
+- **Your Jira sprint, in the production mode:** your tickets in the open sprints
+  on a board, a column per status. Open one to read it, and **Start workflow**
+  makes it a feature: a folder with the ticket written into it, a Claude session
+  that starts planning from it, and the ticket moved to In Progress in Jira.
+  Tatty reads Jira through the Atlassian MCP server you signed in to in Claude
+  Code (`/mcp`). That spends tokens, so it keeps what it fetched and only
+  fetches again when you press **Refresh**.
 - **Planning IDs as links:** an `R12`, `CH5` or `P3` in a question, a reply or a
   document opens the item it names, and hovering it shows the item as a card,
   so you don't have to go and find it.
 
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
-Edit mode) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
+Edit mode, or a ticket's when you start a workflow from it) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
 
 ## Install
 
@@ -77,6 +84,8 @@ install from a local checkout, and how to work on Tatty itself.
 | see your features | Tatty's **Full panel** → **Features** |
 | start a new feature | **Features** → **New feature…** |
 | run a feature's next step | its page → **Start…** → **Start session** |
+| see your Jira sprint | the production mode → **Jira** → **Refresh** |
+| start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |
 | see one of his animations now | right-click Tatty → **Preview** → pick one |
 | keep Tatty out where you can see him | right-click Tatty → **Keep Tatty on the desktop** |
 | have him move, or keep still | right-click Tatty → **Animations** |

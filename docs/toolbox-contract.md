@@ -6,10 +6,11 @@ way:
 
 - **Tatty reads the toolbox.** It reads the toolbox's documents and records and
   runs a few of its scripts, read-only. The one thing it writes is a feature's
-  own document, and only when a person saves it in Edit mode (see below). It can
-  also ask Claude Code to install one of the toolbox's discipline plugins, on a
-  person's click (see below); that is Claude Code's doing, and changes nothing
-  of the toolbox's.
+  own document, and only when a person saves it in Edit mode (see below), or a
+  ticket's document into a new feature folder made for it on Start workflow
+  (see "Jira"). It can also ask Claude Code to install one of the toolbox's
+  discipline plugins, on a person's click (see below); that is Claude Code's
+  doing, and changes nothing of the toolbox's.
 - **The toolbox never knows about Tatty.** Nothing in the toolbox calls Tatty,
   checks for it or waits for it. Every skill works the same with or without
   Tatty installed.
@@ -182,11 +183,60 @@ workflow itself. Those are the toolbox's own skills, run as a person would run
 them. Tatty's launcher (`launch()` in `server.py`) only opens the terminal: it
 names the session, sets `TATTY_SESSION`, and starts `claude` in the project.
 
+**Start workflow** on a Jira ticket (below) starts the toolbox's own first step
+for a new folder, the command `workflow-state.sh` names for it
+(`/tt-adversarial-plan <idea, spec or ticket>`), with its placeholder filled the
+way `tt-workflow` hands a new folder to planning: `the Jira ticket <KEY> in
+"<ticket document>". Folder: <folder>. Prefix: <name>`.
+
+## Jira
+
+The production mode's **Jira** page shows the person's tickets in the open
+sprints as a board, and starts a workflow from one. This is Tatty's own: the
+toolbox has no part in it. What it does, and the limits it keeps:
+
+- **Through Claude Code, never directly.** Tatty can't call an MCP server, so it
+  runs `claude -p` headless (`jira_claude` in `server.py`) over the Atlassian MCP
+  server the person signed in to with `/mcp` (`jiraServer` in Settings,
+  `atlassian` by default). The sign-in stays Claude Code's; Tatty never sees,
+  stores or refreshes a token.
+- **Only the tools the job needs.** Each run allows named tools of that one
+  server and no built-in tools (`--tools ""`): the board
+  `getAccessibleAtlassianResources` and `searchJiraIssuesUsingJql`, a ticket
+  `getJiraIssue` and `getTransitionsForJiraIssue`, the move
+  `transitionJiraIssue` alone. The run loads only that server
+  (`--strict-mcp-config`, its entry copied from Claude Code's
+  `~/.claude.json`), with a short system prompt and no slash commands, on a
+  small model (`jiraModel`, `haiku`). That keeps each turn's context to about
+  16k tokens, most of them cached: a board refresh comes to about 60k over its
+  turns, about $0.04. Without that entry the run loads the person's servers as
+  any session would.
+- **Only on a click.** Each run spends tokens, so nothing is fetched on a timer:
+  **Refresh** reads the board (the JQL in Settings, `jiraJql`), **Load ticket**
+  reads one ticket and its transitions, and the page otherwise shows what was
+  kept. The answer is checked against a schema and cleaned again by the server
+  (a ticket without a proper key is dropped; a picture becomes a note, since
+  its link opens only in a signed-in browser).
+- **One change in Jira.** On **Start workflow** Tatty moves the ticket to
+  **In Progress**, and only after the session has opened: by the transition
+  whose target (or name) is In Progress, found in the ticket's transitions,
+  never a fixed id, with no other fields. A ticket already under way is left
+  alone. If no terminal could be opened, the page offers **Move to In
+  Progress** by hand.
+- **One document written.** Start workflow makes `<root>/features/<KEY> -
+  <summary>` (refused if it exists and isn't empty) and writes `<name> -
+  Ticket.md` in it: the ticket's fields, its description, sub-tasks and links.
+  The workflow plans from it; Tatty never touches it again.
+
 ## What Tatty keeps of its own
 
 - `${TATTY_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tatty}/`:
   - `root`: Tatty's root folder, whose `features` folder Tatty lists;
   - `projects.tsv`: the projects chosen per feature;
+  - `settings.json`: what the Settings page sets;
+  - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
+    (`issues/<KEY>.json`), and which feature was started from which ticket
+    (`started.tsv`);
   - `server.json` and `server.log`.
 - `%LOCALAPPDATA%\Tatty\`, on Windows:
   - the tray app's build;
@@ -195,4 +245,4 @@ names the session, sets `TATTY_SESSION`, and starts `claude` in the project.
 
 None of these are the toolbox's. The toolbox's settings and records (the event
 ledger, the workflow links) are never written, and its documents only on a
-person's Save in Edit mode.
+person's Save in Edit mode, or the ticket's on Start workflow.
