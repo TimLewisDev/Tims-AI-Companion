@@ -784,6 +784,8 @@ has "and the page is told so" "$T/ev" "ABC-2 is already In Review"
 echo "# task boards"
 [ "$(code "$U/static/tasks.js")" = 200 ] && ok "tasks.js served" || bad "tasks.js served"
 [ "$(code "$U/static/tasks.css")" = 200 ] && ok "tasks.css served" || bad "tasks.css served"
+# wbc <what> <body>: POST /api/<what> (a whiteboard's); the answer in $T/wb, the HTTP code printed
+wbc() { curl -s -o "$T/wb" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/$1"; }
 # tk <what> <body>: POST /api/tasks/<what>; the answer in $T/tk, the HTTP code printed
 tk() { curl -s -o "$T/tk" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/tasks/$1"; }
 # taskfile <ID>: the task's file on the Game board
@@ -887,7 +889,7 @@ has "which its title says too" "$GB/items/T-0007 - Some idea.md" "# T-0007: Some
 # delete: out of the way, never gone
 get "/api/tasks/task?name=Game&id=T-0004" >"$T/j"
 [ "$(tk delete "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$(pick "$T/j" "d['rev']")\"}")" = 200 ] && ok "a task deleted" || bad "a task deleted"
-[ -z "$(taskfile T-0004)" ] && [ -f "$GB/.deleted/T-0004 - Task 4.md" ] && ok "into the board's .deleted folder" || bad "into the board's .deleted folder" "$(ls -a "$GB" "$GB/.deleted")"
+[ -z "$(taskfile T-0004)" ] && ls "$GB/.deleted/T-0004 - Task "*.md >/dev/null 2>&1 && ok "into the board's .deleted folder" || bad "into the board's .deleted folder" "$(ls -a "$GB" "$GB/.deleted")"
 # Start workflow, as from a Jira ticket
 [ "$(tk start '{"name":"Game","id":"T-0006"}')" = 400 ] && ok "a workflow needs a project" || bad "a workflow needs a project"
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from a task" || bad "a workflow starts from a task" "$(cat "$T/tk")"
@@ -1147,7 +1149,82 @@ get "/api/design?name=Inventory" >"$T/j"
 ITK="$FX/features/T-0002 - Grab items from the floor/T-0002 - Grab items from the floor - Ticket.md"
 has "its Ticket has the story" "$ITK" "- **Story:** US-02 on the design board"
 has "and its acceptance criteria" "$ITK" "## Acceptance criteria"
+# the whiteboard under the notes: what's added is kept with the cards, and so is the rest
+[ "$(wbc whiteboard '{"kind":"design","ref":"Inventory","items":{"upsert":[{"id":"nt1","type":"text","x":1,"y":2,"text":"Note"}]}}')" = 200 ] &&
+	ok "a text on a stories board" || bad "a text on a stories board" "$(cat "$T/wb")"
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "d['layout']['items']['nt1']['text']")" = Note ] && ok "the board's view has it" || bad "the board's view has it"
+[ "$(pick "$T/j" "'US-02' in d['exported'] and len(d['groups']) > 0")" = True ] && ok "the exports are kept beside it" || bad "the exports are kept beside it"
+post /api/stories/layout '{"name":"Inventory","cards":{"US-02":[31,41]}}' >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "('nt1' in d['layout']['items'], d['layout']['cards']['US-02'], 'US-02' in d['exported'])")" = "(True, [31.0, 41.0], True)" ] &&
+	ok "the older layout call keeps the rest" || bad "the older layout call keeps the rest" "$(pick "$T/j" "d['layout']")"
+# a story added where the Story tool was clicked (stories.sh add, no run)
+[ "$(st_post '{"name":"Inventory","action":"add","title":"Throw an item","as":"player","want":"to throw items","soThat":"I can hit things","criteria":["Given an item, when I throw it, then it flies"],"at":[400,500]}')" = 200 ] &&
+	ok "add a story" || bad "add a story" "$(head -c 300 "$T/j")"
+NEW=$(pick "$T/j" "d['added']")
+has "it is in the document" "$BD/Inventory - User Stories.md" "### $NEW: Throw an item"
+[ "$(pick "$T/j" "([s['status'] for s in d['stories'] if s['id'] == '$NEW'][0], d['layout']['cards']['$NEW'])")" = "('Accepted', [400.0, 500.0])" ] &&
+	ok "accepted, where it was clicked" || bad "accepted, where it was clicked" "$(head -c 300 "$T/j")"
+[ "$(st_post '{"name":"Inventory","action":"add","title":"No criteria","as":"player","want":"x","soThat":"y","criteria":[]}')" = 400 ] &&
+	ok "a new story needs its fields" || bad "a new story needs its fields"
+# Write it for me: a Proposed story from the line, then the skill's alter run on it
+[ "$(st_post '{"name":"Inventory","action":"add","note":"players can juggle items","at":[10,10]}')" = 200 ] &&
+	ok "a story from a line" || bad "a story from a line" "$(head -c 300 "$T/j")"
+JUG=$(pick "$T/j" "d['added']")
+[ "$(pick "$T/j" "[s['status'] for s in d['stories'] if s['id'] == '$JUG'][0]")" = Proposed ] && ok "it waits as Proposed" || bad "it waits as Proposed"
+runs_done 4 && ok "the alter run ends" || bad "the alter run ends"
+has "the skill rewrites it" "$T/claude-prompt" "/design:tt-user-stories alter \"Inventory - User Stories.md\" $JUG"
+has "from the person's line" "$T/claude-note" "Write this story properly from the designer's note: players can juggle items"
 fi
+
+echo "# whiteboards"
+for f in whiteboard.js whiteboard.css whiteboards.js; do [ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"; done
+get /api/whiteboards >"$T/j"
+has "no whiteboards yet" "$T/j" '"boards": []'
+[ "$(wbc whiteboards/new '{"name":"a/b"}')" = 400 ] && ok "a whiteboard's name is a file's" || bad "a whiteboard's name is a file's"
+[ "$(wbc whiteboards/new '{"name":"Plan"}')" = 200 ] && ok "a new whiteboard" || bad "a new whiteboard" "$(cat "$T/wb")"
+[ "$(wbc whiteboards/new '{"name":"Plan"}')" = 409 ] && ok "not made twice" || bad "not made twice"
+[ -f "$TATTY_HOME/whiteboards/Plan.json" ] && ok "kept in Tatty's home" || bad "kept in Tatty's home"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"na1","type":"text","x":10,"y":20,"text":"Hello"},{"id":"nb2","type":"comment","x":0,"y":0,"text":"Why?","pin":"na1"},{"id":"nc3","type":"text","x":300,"y":20,"text":"Two","colour":3}]},"lines":{"upsert":[{"id":"nl1","from":"na1","to":"nc3","label":"then"}]}}')" = 200 ] &&
+	ok "texts, a comment and a line" || bad "texts, a comment and a line" "$(cat "$T/wb")"
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "(len(d['items']), d['items']['nb2']['pin'], d['items']['nc3']['colour'], d['lines']['nl1']['arrow'], d['lines']['nl1']['label'])")" = "(3, 'na1', 3, True, 'then')" ] &&
+	ok "read back" || bad "read back" "$(head -c 400 "$T/j")"
+wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"na1","x":50}]}}' >/dev/null
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "(d['items']['na1']['x'], d['items']['na1']['text'])")" = "(50.0, 'Hello')" ] && ok "a change keeps the rest of the item" || bad "a change keeps the rest of the item"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"x1","type":"text","x":0,"y":0}]}}')" = 400 ] && ok "item ids are the page's own form" || bad "item ids are the page's own form"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"nz9","type":"box","x":0,"y":0}]}}')" = 400 ] && ok "only texts and comments" || bad "only texts and comments"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"nz9","type":"text","x":"a","y":0}]}}')" = 400 ] && ok "a place is numbers" || bad "a place is numbers"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","lines":{"upsert":[{"id":"nl2","from":"na1","to":"na1"}]}}')" = 400 ] && ok "a line joins two things" || bad "a line joins two things"
+[ "$(wbc whiteboard '{"kind":"nope","ref":"Plan"}')" = 400 ] && ok "a known kind of board" || bad "a known kind of board"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Nope"}')" = 404 ] && ok "an unknown whiteboard" || bad "an unknown whiteboard"
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/before"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"nq1","type":"text","x":0,"y":0,"text":"fine"},{"id":"bad","type":"text","x":0,"y":0}]}}')" = 400 ] &&
+	get "/api/whiteboard?kind=blank&ref=Plan" >"$T/after" && cmp -s "$T/before" "$T/after" && ok "a refused batch changes nothing" || bad "a refused batch changes nothing"
+$PY -c "import json; print(json.dumps({'kind': 'blank', 'ref': 'Plan', 'items': {'upsert': [{'id': 'nlong', 'type': 'text', 'x': 0, 'y': 0, 'text': 'x' * 5000}]}}))" >"$T/long.json"
+curl -s -o /dev/null -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/long.json" "$U/api/whiteboard"
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "len(d['items']['nlong']['text'])")" = 4000 ] && ok "a text is cut at 4000 characters" || bad "a text is cut at 4000 characters"
+wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"remove":["na1","nlong"]}}' >/dev/null
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "(sorted(d['items']), d['lines'], d['items']['nb2']['pin'])")" = "(['nb2', 'nc3'], {}, None)" ] &&
+	ok "a removed item takes its lines and lets go of its comments" || bad "a removed item takes its lines and lets go of its comments" "$(head -c 300 "$T/j")"
+get /api/events >"$T/ev"
+has "a change is an event" "$T/ev" '"type": "whiteboard"'
+get /api/whiteboards >"$T/j"
+[ "$(pick "$T/j" "[(b['name'], b['items'], b['lines']) for b in d['boards']]")" = "[('Plan', 2, 0)]" ] && ok "listed, counted" || bad "listed, counted" "$(head -c 300 "$T/j")"
+[ "$(wbc whiteboards/delete '{"name":"Plan"}')" = 200 ] && ok "a whiteboard deleted" || bad "a whiteboard deleted"
+[ -f "$TATTY_HOME/whiteboards/.deleted/Plan.json" ] && [ ! -f "$TATTY_HOME/whiteboards/Plan.json" ] && ok "out of the way, not gone" || bad "out of the way, not gone"
+[ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=blank&ref=Plan")" = 404 ] && ok "and no longer there" || bad "and no longer there"
+# a feature's whiteboard: its documents are the cards
+[ "$(wbc whiteboard '{"kind":"feature","ref":"Demo","cards":{"Demo - Task Status.md":[5,6]}}')" = 200 ] && ok "a feature's whiteboard" || bad "a feature's whiteboard" "$(cat "$T/wb")"
+get "/api/whiteboard?kind=feature&ref=Demo" >"$T/j"
+[ "$(pick "$T/j" "('Demo - Task Status.md' in [x['file'] for x in d['docs']], d['cards']['Demo - Task Status.md'])")" = "(True, [5.0, 6.0])" ] &&
+	ok "its documents, and where they sit" || bad "its documents, and where they sit" "$(head -c 300 "$T/j")"
+ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in <home>/boards" || bad "in <home>/boards"
+[ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=feature&ref=Nope")" = 404 ] && ok "an unknown feature" || bad "an unknown feature"
 
 echo "# close"
 expect "close" 0 bash "$W" close

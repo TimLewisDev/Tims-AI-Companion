@@ -3,10 +3,13 @@
 // "<name> - User Stories.md", which the toolbox's tt-user-stories skill writes:
 // the server runs the skill headless to draft and alter stories, and changes
 // them through its stories.sh when you click (server.py, "design"). Here the
-// stories are sticky notes on a board you can pan, zoom and rearrange; where
-// each note sits is Tatty's own (saved per board), never in the document.
-// Uses app.js's $, el, api, markdown, calm, host and tell, and features.js's
-// pageEls, ago, chip, copyable, pickRoot and pendingPick.
+// stories are sticky notes on a whiteboard (whiteboard.js) you can pan, zoom
+// and rearrange, and add stories, text, comments and lines to; where each note
+// sits, and what else is on the board, is Tatty's own (saved per board), never
+// in the document.
+// Uses app.js's $, el, api, markdown, host and tell, features.js's pageEls,
+// ago, chip, copyable, pickRoot and pendingPick, and whiteboard.js's
+// makeWhiteboard.
 "use strict";
 
 const designHref = (name, card) => "#design/" + encodeURIComponent(name) + (card ? "/card/" + encodeURIComponent(card) : "");
@@ -21,9 +24,8 @@ async function pickFile(title, start) {
 
 const { renderDesigns, renderBoard } = (() => {
   const CARD_W = 230, CARD_H = 156, GAP_X = 40, GAP_Y = 22;
-  const ZMIN = 0.2, ZMAX = 2.5;
   let listBox = null;
-  let b = null; // the board on screen: { name, box, data, view, world, cards, focus, ... }
+  let b = null; // the board on screen: { name, box, data, wb, cards, focus, ... }
 
   // ----------------------------------------------------------- the list of boards
 
@@ -104,14 +106,10 @@ const { renderDesigns, renderBoard } = (() => {
       return;
     }
     b = { name, box, data, focus: "", fresh: new Set(), cards: new Map(), busy: new Set(), run: data.run, runNote: "", editing: false };
-    const v = data.layout.view || {};
-    b.view = { x: num(v.x, 40), y: num(v.y, 30), z: clampZ(num(v.z, 1)) };
     drawBoard();
     openCard(card);
   }
 
-  const num = (v, d) => (typeof v === "number" && isFinite(v) ? v : d);
-  const clampZ = z => Math.min(ZMAX, Math.max(ZMIN, z));
   const story = id => b && b.data.stories.find(s => s.id === id);
   const colourOf = g => {
     const hit = b.data.groups.find(x => x.name === g);
@@ -122,19 +120,18 @@ const { renderDesigns, renderBoard } = (() => {
 
   function drawBoard() {
     const d = b.data;
-    b.world = el("div", { class: "world", id: "board-world" });
-    b.frame = el("div", { class: "gframe", hidden: true });
-    b.world.append(b.frame);
     b.strip = el("div", { class: "run-strip", id: "run-strip" });
     b.panel = el("div", { class: "gpanel", id: "group-panel" });
-    b.zoom = el("span", { class: "zoom-pct" });
-    const board = el("div", { class: "board", id: "board", tabindex: "0" }, b.world, b.panel,
-      el("div", { class: "zoomctl" },
-        el("button", { type: "button", title: "Zoom out", onclick: () => zoomBy(1 / 1.25) }, "−"), b.zoom,
-        el("button", { type: "button", title: "Zoom in", onclick: () => zoomBy(1.25) }, "+"),
-        el("button", { type: "button", title: "Show every story", id: "fit-all", onclick: () => frame(d.stories.map(s => s.id), true) }, "Fit")));
-    b.board = board;
     b.overlay = el("div", { class: "scard-overlay", id: "card-overlay", hidden: true, onclick: e => { if (e.target === b.overlay) closeCard(); } });
+    b.wb = makeWhiteboard({
+      id: "board", key: { kind: "design", ref: b.name }, data: d.layout, place, corner: b.panel,
+      onOpen: id => { location.hash = designHref(b.name, id); },
+      onMoved: () => { if (b.focus) focusGroup(b.focus, false); },
+      onEscape: () => { if (b.focus) focusGroup("", false); },
+      onError: text => stripSay(text, true),
+      tools: d.plugin && d.doc ? [{ id: "story", label: "＋", key: "s", title: "Story: click where it goes (S)", at: newStory }] : [],
+    });
+    b.board = b.wb.element;
     const top = el("div", { class: "board-bar" },
       el("a", { href: "#designs", class: "small" }, "← All boards"),
       el("h2", {}, b.name),
@@ -149,37 +146,26 @@ const { renderDesigns, renderBoard } = (() => {
       ? el("div", { class: "card toolbox-missing board-problems" }, el("strong", {}, d.error ? d.error + " " : "The document was edited out of its layout: "),
         (d.problems || []).slice(0, 4).join("; "), (d.problems || []).length ? el("span", { class: "dim small" }, " (run stories.sh tidy, or fix it by hand)") : "")
       : "";
-    b.box.replaceChildren(el("div", { class: "board-page" }, top, problems, b.strip, board, b.overlay));
+    b.box.replaceChildren(el("div", { class: "board-page" }, top, problems, b.strip, b.board, b.overlay));
     drawCards();
     drawPanel();
     drawStrip();
-    applyView(false);
-    wire(board);
   }
 
-  // Cards that have no place yet go in a column for their group, under the
-  // ones already there; their places are saved so they stay.
-  function place() {
-    const pos = b.data.layout.cards;
-    const order = [...b.data.groups.map(g => g.name), "Ungrouped"];
-    const added = {};
-    for (const s of b.data.stories) {
-      if (Array.isArray(pos[s.id])) continue;
-      const col = Math.max(0, order.indexOf(s.group));
-      const x = col * (CARD_W + GAP_X);
-      const below = b.data.stories.filter(o => o.group === s.group && Array.isArray(pos[o.id])).map(o => pos[o.id][1] + CARD_H + GAP_Y);
-      pos[s.id] = [x, below.length ? Math.max(...below) : 0];
-      added[s.id] = pos[s.id];
-    }
-    if (Object.keys(added).length) api("/api/stories/layout", { name: b.name, cards: added }).catch(() => {});
+  // A card with no place yet goes in a column for its group, under the ones
+  // already there (the whiteboard saves the place, so it stays).
+  function place(id, pos) {
+    const s = story(id);
+    const group = s ? s.group : "Ungrouped";
+    const col = Math.max(0, [...b.data.groups.map(g => g.name), "Ungrouped"].indexOf(group));
+    const below = b.data.stories.filter(o => o.id !== id && o.group === group && Array.isArray(pos[o.id])).map(o => pos[o.id][1] + CARD_H + GAP_Y);
+    return [col * (CARD_W + GAP_X), below.length ? Math.max(...below) : 0];
   }
 
   function drawCards() {
-    place();
-    for (const n of b.cards.values()) n.remove();
     b.cards.clear();
+    const list = [];
     for (const s of b.data.stories) {
-      const [x, y] = b.data.layout.cards[s.id];
       const proposed = s.status === "Proposed";
       const went = (b.data.exported || {})[s.id];
       const n = el("div", { class: `scard ${colourOf(s.group)} ${tilt(s.id)}${proposed ? " proposed" : ""}${b.fresh.has(s.id) ? " fresh" : ""}${b.busy.has(s.id) ? " busy" : ""}`,
@@ -197,11 +183,10 @@ const { renderDesigns, renderBoard } = (() => {
       proposed ? el("div", { class: "sacts" },
         el("button", { type: "button", class: "s-accept", title: "Accept", "aria-label": `Accept ${s.id}`, onclick: e => { e.stopPropagation(); accept(s); } }, "✓"),
         el("button", { type: "button", class: "s-reject", title: "Reject (bin it)", "aria-label": `Reject ${s.id}`, onclick: e => { e.stopPropagation(); reject(s, ""); } }, "🗑")) : "");
-      n.style.left = x + "px";
-      n.style.top = y + "px";
       b.cards.set(s.id, n);
-      b.world.append(n);
+      list.push({ id: s.id, node: n, w: CARD_W, h: CARD_H });
     }
+    b.wb.setCards(list);
     focusGroup(b.focus, false);
   }
 
@@ -243,47 +228,6 @@ const { renderDesigns, renderBoard } = (() => {
     input.select();
   }
 
-  // ----------------------------------------------------------- the view
-
-  function applyView(ease) {
-    const w = b.world;
-    w.classList.toggle("easing", !!ease && !calm());
-    w.style.transform = `translate(${b.view.x}px, ${b.view.y}px) scale(${b.view.z})`;
-    b.zoom.textContent = Math.round(b.view.z * 100) + "%";
-    if (ease) setTimeout(() => w.classList.remove("easing"), 400);
-  }
-
-  let viewTimer = null;
-  function saveView() {
-    clearTimeout(viewTimer);
-    const name = b.name, view = { ...b.view };
-    viewTimer = setTimeout(() => api("/api/stories/layout", { name, view }).catch(() => {}), 600);
-  }
-
-  // Zoom about a point of the board (its centre by default), keeping it still.
-  function zoomBy(f, cx, cy) {
-    const r = b.board.getBoundingClientRect();
-    if (cx === undefined) { cx = r.width / 2; cy = r.height / 2; }
-    const z = clampZ(b.view.z * f), k = z / b.view.z;
-    b.view = { x: cx - (cx - b.view.x) * k, y: cy - (cy - b.view.y) * k, z };
-    applyView(false);
-    saveView();
-  }
-
-  // Frame the cards: zoom and pan so they fill the board (the group panel's
-  // corner left clear).
-  function frame(ids, ease) {
-    const pos = ids.map(id => b.data.layout.cards[id]).filter(Array.isArray);
-    if (!pos.length) return;
-    const minX = Math.min(...pos.map(p => p[0])), minY = Math.min(...pos.map(p => p[1]));
-    const maxX = Math.max(...pos.map(p => p[0])) + CARD_W, maxY = Math.max(...pos.map(p => p[1])) + CARD_H;
-    const r = b.board.getBoundingClientRect(), pad = 48, right = Math.min(260, r.width * 0.3);
-    const z = clampZ(Math.min(1.4, (r.width - right - pad * 2) / (maxX - minX), (r.height - pad * 2) / (maxY - minY)));
-    b.view = { z, x: pad + ((r.width - right - pad * 2) - (maxX - minX) * z) / 2 - minX * z, y: pad + ((r.height - pad * 2) - (maxY - minY) * z) / 2 - minY * z };
-    applyView(ease);
-    saveView();
-  }
-
   // A group in focus: its cards outlined and in front, the rest dimmed, and a
   // frame drawn round them; frame=true also brings them into view.
   function focusGroup(name, frameIt) {
@@ -294,86 +238,18 @@ const { renderDesigns, renderBoard } = (() => {
       n.classList.toggle("dim", !!name && !ids.includes(id));
     }
     for (const li of b.panel.querySelectorAll(".grow")) li.classList.toggle("on", li.dataset.group === name);
-    const pos = ids.map(id => b.data.layout.cards[id]).filter(Array.isArray);
-    b.frame.hidden = !pos.length;
-    if (pos.length) {
-      const minX = Math.min(...pos.map(p => p[0])) - 14, minY = Math.min(...pos.map(p => p[1])) - 30;
-      b.frame.className = "gframe " + colourOf(name);
-      b.frame.style.left = minX + "px";
-      b.frame.style.top = minY + "px";
-      b.frame.style.width = Math.max(...pos.map(p => p[0])) + CARD_W + 14 - minX + "px";
-      b.frame.style.height = Math.max(...pos.map(p => p[1])) + CARD_H + 14 - minY + "px";
-      b.frame.textContent = name;
-      if (frameIt) frame(ids, true);
-    }
-  }
-
-  // Pan by dragging the background, zoom with the wheel (or a pinch, which
-  // arrives as a wheel with ctrl), move a card by dragging it; a click that
-  // didn't move opens the card.
-  function wire(board) {
-    let drag = null;
-    board.addEventListener("pointerdown", e => {
-      if (e.button !== 0 || e.target.closest(".gpanel, .zoomctl, button, input, textarea, select")) return;
-      const card = e.target.closest(".scard");
-      drag = { id: card ? card.dataset.id : "", x0: e.clientX, y0: e.clientY, moved: false, card,
-        start: card ? [...b.data.layout.cards[card.dataset.id]] : [b.view.x, b.view.y] };
-      try { board.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer: no capture needed */ }
-      if (!card) board.classList.add("panning");
-    });
-    board.addEventListener("pointermove", e => {
-      if (!drag) return;
-      const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
-      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-      drag.moved = true;
-      if (drag.card) {
-        const at = [drag.start[0] + dx / b.view.z, drag.start[1] + dy / b.view.z];
-        b.data.layout.cards[drag.id] = at;
-        drag.card.style.left = at[0] + "px";
-        drag.card.style.top = at[1] + "px";
-        drag.card.classList.add("dragging");
-      } else {
-        b.view.x = drag.start[0] + dx;
-        b.view.y = drag.start[1] + dy;
-        applyView(false);
-      }
-    });
-    const end = () => {
-      if (!drag) return;
-      const d = drag;
-      drag = null;
-      board.classList.remove("panning");
-      if (d.card) {
-        d.card.classList.remove("dragging");
-        if (d.moved) {
-          api("/api/stories/layout", { name: b.name, cards: { [d.id]: b.data.layout.cards[d.id] } }).catch(() => {});
-          if (b.focus) focusGroup(b.focus, false);
-        } else location.hash = designHref(b.name, d.id);
-      } else if (d.moved) saveView();
-    };
-    board.addEventListener("pointerup", end);
-    board.addEventListener("pointercancel", end);
-    board.addEventListener("wheel", e => {
-      if (e.target.closest(".gpanel")) return;
-      e.preventDefault();
-      const r = board.getBoundingClientRect();
-      zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
-    }, { passive: false });
-    board.addEventListener("keydown", e => {
-      const card = e.target.closest && e.target.closest(".scard");
-      if (card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); location.hash = designHref(b.name, card.dataset.id); }
-      else if (e.key === "Escape" && b.focus) focusGroup("", false);
-      else if (e.key === "+" || e.key === "=") zoomBy(1.25);
-      else if (e.key === "-") zoomBy(1 / 1.25);
-    });
+    b.wb.outline(ids, name, colourOf(name));
+    if (frameIt && ids.length) b.wb.frame(ids, true);
   }
 
   // ----------------------------------------------------------- one card, opened
 
   function openCard(id) {
     if (!b || !b.overlay) return;
+    if (b.adding && !id) return; // the new story's form stays open
     b.editing = false;
     b.exporting = null;
+    b.adding = null;
     const s = id && story(id);
     if (!s) { b.overlay.hidden = true; return; }
     b.open = id;
@@ -385,6 +261,8 @@ const { renderDesigns, renderBoard } = (() => {
     b.overlay.hidden = true;
     b.open = "";
     b.exporting = null;
+    b.adding = null;
+    b.editing = false;
     if (location.hash !== designHref(b.name)) history.replaceState(null, "", designHref(b.name));
   }
 
@@ -414,7 +292,39 @@ const { renderDesigns, renderBoard } = (() => {
       el("ul", { class: "ocrit" }, s.criteria.map(c => el("li", {}, c))));
   }
 
-  function editForm(s, msg) {
+  // A blank story's form where the Story tool was clicked: written here (stories.sh
+  // add, no tokens), or said in a line for the headless skill to write.
+  function newStory(x, y) {
+    b.open = "";
+    b.exporting = null;
+    b.adding = [Math.round(x - CARD_W / 2), Math.round(y - 20)];
+    const at = b.adding;
+    const blank = { id: "", title: "", group: b.focus || "Ungrouped", article: "a", as: "", want: "", soThat: "", source: "", details: "", criteria: [""], hash: "" };
+    const msg = el("p", { class: "small st missing", id: "card-msg" });
+    const note = el("input", { id: "story-note", "aria-label": "The story in a line", placeholder: "or say it in a line, e.g. players can drop what they carry" });
+    const write = el("button", { type: "button", id: "story-write", onclick: async () => {
+      if (!note.value.trim()) { msg.textContent = "Say the story in a line first."; return; }
+      write.disabled = true;
+      const d = await change({ action: "add", note: note.value, at }, msg);
+      write.disabled = false;
+      if (d) { if (d.added) b.busy.add(d.added); drawCards(); closeCard(); stripSay(d.runError || "", !!d.runError); }
+    } }, "Write it for me");
+    b.overlay.replaceChildren(el("div", { class: "ocard gu", role: "dialog", "aria-label": "New story" },
+      el("div", { class: "ocard-head" }, el("strong", {}, "New story"), el("span", { class: "spacer" }),
+        el("button", { type: "button", class: "oclose", title: "Close", "aria-label": "Close", onclick: closeCard }, "×")),
+      editForm(blank, msg, body => ({ ...body, action: "add", at }), d => { if (d.added) b.fresh.add(d.added); drawCards(); closeCard(); }, closeCard),
+      b.data.claude ? el("div", { class: "oacts" }, el("div", { class: "alter" }, note, write),
+        el("p", { class: "dim small" }, "Tatty has the user-stories skill write it from your line (a headless Claude run, about $0.10). It waits as Proposed for you.")) : "",
+      msg));
+    b.overlay.hidden = false;
+  }
+
+  // The story's fields. make(fields): the change to send (an edit of s by default);
+  // saved(answer) and cancel(): what follows.
+  function editForm(s, msg, make, saved, cancel) {
+    make = make || (body => ({ ...body, action: "edit", id: s.id, hash: s.hash }));
+    saved = saved || (() => { b.editing = false; const now = story(s.id); if (now) drawOpen(now); });
+    cancel = cancel || (() => { b.editing = false; drawOpen(s); });
     const f = {
       title: el("input", { value: s.title, id: "edit-title", "aria-label": "Title" }),
       group: el("select", { id: "edit-group", "aria-label": "Group" },
@@ -441,11 +351,11 @@ const { renderDesigns, renderBoard } = (() => {
       e.preventDefault();
       save.disabled = true;
       const role = f.as.value.trim();
-      const ok = await change({ action: "edit", id: s.id, hash: s.hash, title: f.title.value, group: f.group.value,
-        as: role === s.as ? `${s.article} ${role}` : role, want: f.want.value, soThat: f.soThat.value, source: f.source.value,
-        details: f.details.value, criteria: [...crit.querySelectorAll("input")].map(i => i.value).filter(v => v.trim()) }, msg);
+      const d = await change(make({ title: f.title.value, group: f.group.value,
+        as: role === s.as && s.as ? `${s.article} ${role}` : role, want: f.want.value, soThat: f.soThat.value, source: f.source.value,
+        details: f.details.value, criteria: [...crit.querySelectorAll("input")].map(i => i.value).filter(v => v.trim()) }), msg);
       save.disabled = false;
-      if (ok) { b.editing = false; const now = story(s.id); if (now) drawOpen(now); }
+      if (d) saved(d);
     } },
       lab("Title", f.title), lab("Group", f.group),
       el("div", { class: "eline" }, lab(`As ${s.article}`, f.as), lab("I want", f.want), lab("so that", f.soThat)),
@@ -453,7 +363,7 @@ const { renderDesigns, renderBoard } = (() => {
       el("div", { class: "elab" }, el("span", {}, "Acceptance criteria"), crit,
         el("button", { type: "button", onclick: () => { const r = critRow(""); crit.append(r); r.querySelector("input").focus(); } }, "+ Add a criterion")),
       lab("Source", f.source),
-      el("div", { class: "row" }, save, el("button", { type: "button", onclick: () => { b.editing = false; drawOpen(s); } }, "Cancel")));
+      el("div", { class: "row" }, save, el("button", { type: "button", onclick: cancel }, "Cancel")));
   }
   const lab = (text, input) => el("label", { class: "elab" }, el("span", {}, text), input);
 
@@ -560,17 +470,19 @@ const { renderDesigns, renderBoard } = (() => {
 
   // ----------------------------------------------------------- changes and runs
 
-  // One change through the server (stories.sh): the answer is the board again.
+  // One change through the server (stories.sh): the answer is the board again
+  // (null when it was refused).
   async function change(body, msg) {
     try {
       const d = await api("/api/stories", { name: b.name, ...body });
       take(d);
-      return true;
+      if (d.run) { b.run = d.run; drawStrip(); }
+      return d;
     } catch (e) {
       const text = String(e.message || e);
       if (msg) msg.textContent = text; else stripSay(text, true);
       if (e.status === 409) reload();
-      return false;
+      return null;
     }
   }
 
@@ -589,9 +501,8 @@ const { renderDesigns, renderBoard } = (() => {
   }
 
   function take(d) {
-    const keep = b.data.layout;
     b.data = d;
-    b.data.layout.cards = { ...keep.cards, ...d.layout.cards };
+    b.wb.reload(d.layout);
     drawCards();
     drawPanel();
     if (b.open) { const s = story(b.open); if (s && !b.editing) drawOpen(s); else if (!s) closeCard(); }

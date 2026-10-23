@@ -7,12 +7,15 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard]
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
 files, so only ever on a throwaway root.
+--whiteboard only the whiteboard: a new blank board with text, a comment and a
+line, then a story added on the first User Stories board. It writes too: a
+throwaway root and home only.
 Prints one JSON object of what it found at each step.
 """
 
@@ -327,7 +330,7 @@ def check_stories(p):
                                             moved: document.querySelector('#board-world').style.transform !== {json.dumps(before)} }})""")
         p.js("document.querySelector('#group-panel .grow.on .gname') && document.querySelector('#group-panel .grow.on .gname').click(); 1")
     res["unfocus"] = p.js("document.querySelectorAll('#board .scard.hl, #board .scard.dim').length")
-    p.js("document.querySelector('#fit-all').click(); 1")
+    p.js("document.querySelector('#board-fit').click(); 1")
     time.sleep(0.5)
     # a note dragged, then dragged back (its place is Tatty's own, not the document's)
     c = p.js("(() => { const n = document.querySelector('#board .scard'); const r = n.getBoundingClientRect(); return [n.dataset.id, r.left + 30, r.top + 20, n.style.left, n.style.top]; })()")
@@ -395,6 +398,143 @@ def check_export(p):
     time.sleep(0.3)
     res["again"] = p.js(panel)
     p.js("document.querySelector('.xcard .oclose').click(); 1")
+    return res
+
+
+def click(p, x, y):
+    mouse(p, "mousePressed", x, y)
+    mouse(p, "mouseReleased", x, y)
+
+
+def key(p, name, code):
+    for kind in ("keyDown", "keyUp"):
+        p.call("Input.dispatchKeyEvent", type=kind, key=name, code=name, windowsVirtualKeyCode=code)
+
+
+def check_whiteboard(p):
+    """The whiteboard, with real mouse and keys: a new blank board, a text field
+    written by the Text tool, a second by double-click, a comment pinned to the
+    first, a line between the two texts with a label, the first text dragged
+    (its comment and the line follow), all of it again after a reload, then the
+    second text deleted (its line with it). Then on the first User Stories
+    board, a story added with the Story tool where it was clicked. Writes: a
+    throwaway root and home only."""
+    res = {}
+    try:
+        whiteboard_steps(p, res)
+    except Exception as e:  # report how far it got
+        res["error"] = str(e)[:400]
+    return res
+
+
+def whiteboard_steps(p, res):
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    p.js("location.hash = '#whiteboards'; 1")
+    wait(p, "!!document.querySelector('#new-wb')")
+    res["nav"] = p.js("currentMode + ':' + !document.querySelector('.pnav a[data-page=whiteboards]').classList.contains('hidden')")
+    p.js("document.querySelector('#new-wb').click(); document.querySelector('#wb-name').value = 'Plan'; document.querySelector('#wb-create').click(); 1")
+    if not wait(p, "!!document.querySelector('#wboard')"):
+        return {**res, "board": "the new whiteboard didn't open: " + p.js("document.querySelector('#wb-msg') ? document.querySelector('#wb-msg').textContent : location.hash")}
+    res["empty"] = p.js("!document.querySelector('#wboard .wbempty').hidden")
+    box = p.js("(() => { const r = document.querySelector('#wboard').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()")
+    ax, ay = box[0] + 300, box[1] + 160
+    bx, by = box[0] + 700, box[1] + 360
+    server = "(async () => JSON.stringify(await api('/api/whiteboard?kind=blank&ref=Plan')))()"
+    # a text field: the Text tool, a click, words, and a click away
+    p.js("document.querySelector('#wboard .wbtool[data-tool=text]').click(); 1")
+    click(p, ax, ay)
+    res.setdefault("focused", []).append(wait(p, "document.activeElement && document.activeElement.classList.contains('wbtext-edit')"))
+    p.call("Input.insertText", text="Hello **board**")
+    click(p, box[0] + 900, box[1] + 560)
+    wait(p, "!!document.querySelector('#wboard .wbtext .md strong')")
+    # a second, by double-click on the background
+    mouse(p, "mousePressed", bx, by)
+    mouse(p, "mouseReleased", bx, by)
+    p.call("Input.dispatchMouseEvent", type="mousePressed", x=bx, y=by, button="left", buttons=1, clickCount=2)
+    p.call("Input.dispatchMouseEvent", type="mouseReleased", x=bx, y=by, button="left", buttons=0, clickCount=2)
+    res.setdefault("focused", []).append(wait(p, "document.activeElement && document.activeElement.classList.contains('wbtext-edit')"))
+    p.call("Input.insertText", text="Second")
+    click(p, box[0] + 900, box[1] + 560)
+    wait(p, "document.querySelectorAll('#wboard .wbtext').length === 2 && !document.querySelector('.wbtext-edit')")
+    res["texts"] = p.js("[...document.querySelectorAll('#wboard .wbtext')].map(n => n.innerText.trim())")
+    # a comment on the first text
+    p.js("document.querySelector('#wboard .wbtool[data-tool=comment]').click(); 1")
+    click(p, ax + 20, ay + 4)
+    res["focused"].append(wait(p, "document.activeElement === document.querySelector('#wboard .wbbubble textarea')"))
+    p.call("Input.insertText", text="Check this")
+    res["commentTyped"] = p.js("({ active: (document.activeElement || {}).tagName, value: (document.querySelector('#wboard .wbbubble textarea') || {}).value })")
+    p.js("document.querySelector('#wboard .wbbubble .primary').click(); 1")
+    wait(p, "!document.querySelector('#wboard .wbbubble')")
+    # a line from the first text to the second, then a label
+    p.js("document.querySelector('#wboard .wbtool[data-tool=line]').click(); 1")
+    click(p, ax + 40, ay + 6)
+    click(p, bx + 20, by + 6)
+    wait(p, "document.querySelectorAll('#wboard .wbline').length === 1")
+    res["line"] = p.js("""({ lines: document.querySelectorAll('#wboard .wbline').length, arrow: !!document.querySelector('#wboard .wbstroke[marker-end]'),
+                            pop: !document.querySelector('#wboard .wbpop').hidden, tool: document.querySelector('#wboard').dataset.tool })""")
+    p.js("(() => { const i = document.querySelector('#wboard .wblabel-in'); i.value = 'leads to'; i.dispatchEvent(new Event('change')); return 1; })()")
+    time.sleep(0.4)
+    res["label"] = p.js("(document.querySelector('#wboard .wblabel') || {}).textContent || ''")
+    saved = json.loads(p.js(server))
+    res["saved"] = {"items": sorted((v["type"], v["text"]) for v in saved["items"].values()),
+                    "pinned": any(v["pin"] in saved["items"] for v in saved["items"].values() if v["type"] == "comment"),
+                    "lines": [(l["label"], l["arrow"]) for l in saved["lines"].values()]}
+    # drag the first text: its comment and the line's end follow
+    before = p.js("""({ d: document.querySelector('#wboard .wbstroke').getAttribute('d'), c: document.querySelector('#wboard .wbcomment').style.left })""")
+    drag(p, ax + 60, ay + 6, ax + 60, ay + 126)
+    time.sleep(0.4)
+    after = p.js("""({ d: document.querySelector('#wboard .wbstroke').getAttribute('d'), c: document.querySelector('#wboard .wbcomment').style.top })""")
+    res["drag"] = {"lineMoved": before["d"] != after["d"], "commentTop": after["c"]}
+    # after a reload, all of it is still there
+    p.js("location.reload(); 1")
+    time.sleep(1.5)
+    wait(p, "document.querySelectorAll('#wboard .wbtext').length === 2")
+    res["reloaded"] = p.js("""({ texts: document.querySelectorAll('#wboard .wbtext').length, comments: document.querySelectorAll('#wboard .wbcomment').length,
+                                lines: document.querySelectorAll('#wboard .wbline').length, label: (document.querySelector('#wboard .wblabel') || {}).textContent || '' })""")
+    # delete the second text: select it, Delete; its line goes too
+    c2 = p.js("(() => { const n = [...document.querySelectorAll('#wboard .wbtext')].find(n => n.innerText.includes('Second')); const r = n.getBoundingClientRect(); return [r.left + 20, r.top + 10]; })()")
+    click(p, c2[0], c2[1])
+    key(p, "Delete", 46)
+    time.sleep(0.5)
+    res["deleted"] = p.js("({ texts: document.querySelectorAll('#wboard .wbtext').length, lines: document.querySelectorAll('#wboard .wbline').length })")
+    # a story where the Story tool was clicked, on the first User Stories board
+    p.js("location.hash = '#designs'; 1")
+    wait(p, "document.querySelectorAll('#page-designs .board-card').length > 0")
+    p.js("document.querySelector('#page-designs .board-card').click(); 1")
+    if not wait(p, "!!document.querySelector('#board .wbtool[data-tool=story]')"):
+        return {**res, "story": "no Story tool"}
+    n0 = p.js("document.querySelectorAll('#board .scard').length")
+    r = p.js("(() => { const r = document.querySelector('#board').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()")
+    spot = None
+    for fx, fy in ((0.55, 0.92), (0.35, 0.92), (0.75, 0.92), (0.5, 0.6)):
+        x, y = r[0] + r[2] * fx, r[1] + r[3] * fy
+        if p.js(f"(() => {{ const t = document.elementFromPoint({x}, {y}); return !!t && !t.closest('.scard, .wbui, .wbtext, .wbcomment'); }})()"):
+            spot = (x, y)
+            break
+    p.js("document.querySelector('#board .wbtool[data-tool=story]').click(); 1")
+    click(p, *spot)
+    wait(p, "!!document.querySelector('#edit-title')")
+    p.js("""(() => { const set = (sel, v) => { const n = document.querySelector(sel); n.value = v; };
+                   set('#edit-title', 'Throw an item'); set('.oedit input[aria-label="As a"]', 'player');
+                   set('.oedit input[aria-label="I want"]', 'to throw items'); set('.oedit input[aria-label="so that"]', 'I can hit things');
+                   set('#edit-criteria input', 'Given an item, when I throw it, then it flies');
+                   document.querySelector('#edit-save').click(); return 1; })()""")
+    wait(p, f"document.querySelectorAll('#board .scard').length === {n0 + 1}")
+    res["story"] = p.js(f"""(() => {{ const n = [...document.querySelectorAll('#board .scard')].find(c => c.innerText.includes('Throw an item'));
+                                    if (!n) return null; const r = n.getBoundingClientRect();
+                                    return {{ id: n.dataset.id, dx: Math.round(r.left + r.width / 2 - {spot[0]}), overlayHidden: document.querySelector('#card-overlay').hidden }}; }})()""")
+    # a feature's whiteboard: its documents as cards; a click opens one
+    p.js("location.hash = '#feature/Demo/whiteboard'; 1")
+    if wait(p, "document.querySelectorAll('#fboard .wbdoc').length > 0"):
+        time.sleep(0.3)
+        res["feature"] = p.js("""({ docs: document.querySelectorAll('#fboard .wbdoc').length, mode: currentMode,
+                                  nav: (document.querySelector('.fnav-item.on') || {}).textContent || '' })""")
+        c = p.js("(() => { const r = document.querySelector('#fboard .wbdoc').getBoundingClientRect(); return [r.left + 30, r.top + 20]; })()")
+        click(p, *c)
+        wait(p, "location.hash.includes('/doc/')")
+        res["feature"]["opened"] = p.js("decodeURIComponent(location.hash)")
+    else:
+        res["feature"] = "no document cards"
     return res
 
 
@@ -554,8 +694,9 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export"):
-            out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export}[feature](p)
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard"):
+            out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
+                                "--whiteboard": check_whiteboard}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
@@ -573,7 +714,7 @@ def main(argv):
                                   timeline: [...document.querySelectorAll('.timeline li')].map(li => li.innerText.replace(/\\s+/g, ' ').trim()),
                                   stand: (document.querySelector('.stand') || {}).innerText || '' })""")
         # open the first document from the left rail
-        p.js("document.querySelectorAll('.fnav > .fnav-item')[1].click(); 1")
+        p.js("document.querySelector('.fnav > .fnav-item[href*=\"/doc/\"]').click(); 1")
         wait(p, "!!document.querySelector('.fmain .doc-head')")
         out["doc"] = p.js("""({ hash: decodeURIComponent(location.hash), title: document.querySelector('.doc-head h2').textContent,
                               headings: document.querySelectorAll('.fmain .md h1, .fmain .md h2, .fmain .md h3').length,

@@ -60,6 +60,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
           "tasks.js": "text/javascript", "tasks.css": "text/css",
+          "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
@@ -1791,7 +1792,6 @@ STORIES_TIMEOUT = float(os.environ.get("TATTY_STORIES_TIMEOUT", "1800"))
 STORIES_BUDGET = os.environ.get("TATTY_STORIES_BUDGET", "5")  # US dollars, at most, per headless run
 PALETTE = 8  # group colours: .g0 ... .g7 in stories.css
 MAX_NOTE = 4000
-_BOARD_LAYOUT_LOCKS = {}
 _BOARD_LAYOUT_LOCKS_GUARD = threading.Lock()
 
 
@@ -1901,35 +1901,21 @@ def read_stories(state, doc):
 
 
 def board_path(folder):
-    import hashlib
+    """A folder's whiteboard file in <home>/boards: a User Stories board's, or a feature's."""
     key = hashlib.sha1(folder.resolve().as_posix().lower().encode("utf-8")).hexdigest()[:16]
     return home() / "boards" / f"{key}.json"
 
 
 def board_layout_lock(folder):
-    p = board_path(folder)
-    with _BOARD_LAYOUT_LOCKS_GUARD:
-        return _BOARD_LAYOUT_LOCKS.setdefault(p, threading.RLock())
+    return wb_lock(board_path(folder))
 
 
 def board_layout(folder):
-    try:
-        got = json.loads(board_path(folder).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        got = {}
-    got = got if isinstance(got, dict) else {}
-    return {"cards": got.get("cards") if isinstance(got.get("cards"), dict) else {},
-            "colours": got.get("colours") if isinstance(got.get("colours"), dict) else {},
-            "view": got.get("view") if isinstance(got.get("view"), dict) else {},
-            "exported": got.get("exported") if isinstance(got.get("exported"), dict) else {}}
+    return wb_read(board_path(folder))
 
 
 def save_layout(folder, layout):
-    p = board_path(folder)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(layout, indent=1), encoding="utf-8")
-    os.replace(tmp, p)
+    wb_write(board_path(folder), layout)
 
 
 def group_colours(folder, layout, groups):
@@ -1950,10 +1936,10 @@ def group_colours(folder, layout, groups):
 def design_view(state, folder):
     doc = stories_doc(folder)
     view = {"name": folder.name, "folder": folder.as_posix(), "plugin": stories_script() is not None,
-            "run": stories_run_view(state, folder.name)}
+            "claude": claude_path() is not None, "run": stories_run_view(state, folder.name)}
     if not doc:
         return {**view, "doc": "", "intake": "", "meta": {}, "groups": [], "stories": [],
-                "retired": [], "problems": [], "layout": {"cards": {}, "view": {}}, "exported": {},
+                "retired": [], "problems": [], "layout": {"cards": {}, "view": {}, "items": {}, "lines": {}}, "exported": {},
                 "error": "This board has no User Stories document yet."}
     intake = design_intake(folder, doc)
     got = read_stories(state, doc) if view["plugin"] else {"meta": {}, "groups": [], "stories": [], "retired": [],
@@ -1962,7 +1948,8 @@ def design_view(state, folder):
         layout = board_layout(folder)
         group_colours(folder, layout, got["groups"])
     return {**view, **got, "doc": doc.name, "intake": intake.name if intake else "",
-            "updated": doc.stat().st_mtime, "layout": {"cards": layout["cards"], "view": layout["view"]},
+            "updated": doc.stat().st_mtime,
+            "layout": {k: layout[k] for k in ("cards", "view", "items", "lines")},
             "exported": story_exports(layout, got["stories"])}
 
 
@@ -2046,9 +2033,10 @@ def spec_text(b):
 
 def stories_change(state, folder, b):
     """One change a person made on the board, through stories.sh: (http code, answer).
-    action: edit (the story's fields), accept, reject (reason), group (op: add,
-    describe, rename, remove; name; value or to). A story change carries the hash
-    the page read, so a story that changed meanwhile is refused (409)."""
+    action: add (a new story's fields, or a note for Write it for me; at: where
+    its card goes), edit (the story's fields), accept, reject (reason), group (op:
+    add, describe, rename, remove; name; value or to). A story change carries the
+    hash the page read, so a story that changed meanwhile is refused (409)."""
     doc = stories_doc(folder)
     if not doc:
         return 404, {"error": "This board has no User Stories document."}
@@ -2068,6 +2056,18 @@ def stories_change(state, folder, b):
         home().mkdir(parents=True, exist_ok=True)
         spec.write_text(text, encoding="utf-8")
         args = ["edit", doc, sid, spec] + guard
+    elif action == "add":
+        note = " ".join(str(b.get("note", "")).split())[:MAX_NOTE]
+        if note and not claude_path():
+            return 501, {"error": "There's no claude command on this machine's PATH, so Tatty can't write it for you."}
+        try:
+            text = story_placeholder(note) if note else spec_text(b)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        spec = home() / f"spec-{secrets.token_hex(4)}.txt"
+        home().mkdir(parents=True, exist_ok=True)
+        spec.write_text(text, encoding="utf-8")
+        args = ["add", doc, spec] + (["--proposed"] if note else [])
     elif action == "accept":
         args = ["accept", doc, sid] + guard
     elif action == "reject":
@@ -2084,9 +2084,9 @@ def stories_change(state, folder, b):
         if op == "remove" and value:
             args += ["--to", value]
     else:
-        return 400, {"error": "action: edit, accept, reject or group"}
+        return 400, {"error": "action: add, edit, accept, reject or group"}
     try:
-        code, _, err = run_stories(state, args, cwd=str(folder))
+        code, out, err = run_stories(state, args, cwd=str(folder))
     finally:
         if spec:
             spec.unlink(missing_ok=True)
@@ -2103,24 +2103,47 @@ def stories_change(state, folder, b):
             if old in layout["colours"]:
                 layout["colours"][new] = layout["colours"].pop(old)
                 save_layout(folder, layout)
+    if action == "add":
+        return story_added(state, folder, b, out)
     state.emit("stories", name=folder.name, changed=True)
     return 200, design_view(state, folder)
 
 
+def story_placeholder(note):
+    """The spec of a story to be written from a note (Write it for me): Proposed,
+    so the headless alter run that follows can rewrite it."""
+    return (f"title: {note[:80].rstrip()}\nas: user\nwant: {note}\nso_that: (to be written)\n"
+            "criteria:\n  - (to be written)\n")
+
+
+def story_added(state, folder, b, out):
+    """After stories.sh add: the new card where the person clicked, and for a
+    note, the alter run that writes the story from it."""
+    nid = next((ln.strip() for ln in reversed(out.splitlines()) if re.fullmatch(r"US-\d+", ln.strip())), "")
+    at = b.get("at")
+    if nid and isinstance(at, list):
+        with board_layout_lock(folder):
+            layout = board_layout(folder)
+            wb_apply(layout, {"cards": {nid: at}})
+            save_layout(folder, layout)
+    note = " ".join(str(b.get("note", "")).split())[:MAX_NOTE]
+    why = ""
+    if nid and note:
+        code, answer = start_stories_run(state, folder, {"mode": "alter", "id": nid,
+                                                         "note": f"Write this story properly from the designer's note: {note}"})
+        why = "" if code == 200 else answer.get("error", "The run didn't start.")
+    state.emit("stories", name=folder.name, changed=True)
+    return 200, {**design_view(state, folder), "added": nid, **({"runError": why} if why else {})}
+
+
 def move_cards(folder, b):
-    """Where the person put the cards (and the view): merged into <home>/boards."""
+    """Where the person put the cards (and the view): merged into <home>/boards.
+    The older call for what POST /api/whiteboard does; only story IDs are cards."""
+    cards = {k: v for k, v in (b.get("cards") or {}).items() if re.fullmatch(r"US-\d+", str(k))} \
+        if isinstance(b.get("cards"), dict) else {}
     with board_layout_lock(folder):
         layout = board_layout(folder)
-        for sid, at in (b.get("cards") or {}).items():
-            if not re.fullmatch(r"US-\d+", str(sid)):
-                continue
-            if at is None:
-                layout["cards"].pop(sid, None)
-            elif isinstance(at, list) and len(at) == 2 and all(isinstance(v, (int, float)) for v in at):
-                layout["cards"][sid] = [round(float(at[0]), 1), round(float(at[1]), 1)]
-        v = b.get("view")
-        if isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) for k in ("x", "y", "z")):
-            layout["view"] = {k: round(float(v[k]), 3) for k in ("x", "y", "z")}
+        wb_apply(layout, {"cards": cards, "view": b.get("view")})
         save_layout(folder, layout)
 
 
@@ -2456,6 +2479,230 @@ def watch_designs(state):
                 seen[d.name] = m
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------- whiteboards
+# The board the User Stories page draws its notes on is web/whiteboard.js, and
+# so are a feature's whiteboard and the blank ones. What a person puts on one
+# (where each card sits, the view, text fields, comments and the lines between
+# things) is Tatty's own, one JSON per board: <home>/boards/<key>.json for a
+# folder's (a User Stories board, a feature), <home>/whiteboards/<name>.json for a
+# blank one. A card is the host page's (a story, a document), named by its id;
+# items and lines get ids from the page. Keys this section doesn't know (a
+# stories board's colours and exports) are kept as they are.
+
+WB_KINDS = ("design", "feature", "blank")
+WB_ITEM_ID = re.compile(r"^n[0-9a-z]{1,24}$")
+WB_REF_MAX = 200     # a card id, or what an item or a line points at
+WB_TEXT_MAX = 4000
+WB_MAX = 2000        # items, and lines, on one board
+_WB_LOCKS = {}
+
+
+def wb_lock(p):
+    with _BOARD_LAYOUT_LOCKS_GUARD:
+        return _WB_LOCKS.setdefault(str(p).lower(), threading.RLock())
+
+
+def wb_read(p):
+    """A board's file, each part it must have filled in: unknown keys kept."""
+    try:
+        got = json.loads(Path(p).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        got = {}
+    out = dict(got) if isinstance(got, dict) else {}
+    for k in ("cards", "colours", "view", "exported", "items", "lines"):
+        out[k] = out.get(k) if isinstance(out.get(k), dict) else {}
+    return out
+
+
+def wb_write(p, data):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def wb_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e7
+
+
+def wb_ref(v):
+    return isinstance(v, str) and 0 < len(v) <= WB_REF_MAX and not any(ord(c) < 32 for c in v)
+
+
+def wb_item(raw, old):
+    """An item the page sent, over the one it replaces: (item, None), or (None, why)."""
+    if not isinstance(raw, dict):
+        return None, "an item is an object"
+    it = dict(old or {})
+    t = raw.get("type", it.get("type"))
+    if t not in ("text", "comment"):
+        return None, "an item is a text or a comment"
+    it["type"] = t
+    for k in ("x", "y"):
+        v = raw.get(k, it.get(k))
+        if not wb_num(v):
+            return None, f"an item needs {k} as a number"
+        it[k] = round(float(v), 1)
+    w = raw.get("w", it.get("w", 220))
+    it["w"] = min(1200, max(80, round(float(w)))) if wb_num(w) else 220
+    text = raw.get("text", it.get("text", ""))
+    if not isinstance(text, str):
+        return None, "an item's text is a string"
+    it["text"] = text.replace("\r\n", "\n")[:WB_TEXT_MAX]
+    pin = raw.get("pin", it.get("pin"))
+    it["pin"] = pin if t == "comment" and wb_ref(pin) else None
+    it["resolved"] = bool(raw.get("resolved", it.get("resolved", False))) if t == "comment" else False
+    c = raw.get("colour", it.get("colour", 0))
+    it["colour"] = c if isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 8 else 0  # 0 plain, 1-8 .g0-.g7
+    it["at"] = it.get("at") or time.strftime("%Y-%m-%d %H:%M")
+    return it, None
+
+
+def wb_line(raw, old):
+    if not isinstance(raw, dict):
+        return None, "a line is an object"
+    ln = dict(old or {})
+    for k in ("from", "to"):
+        v = raw.get(k, ln.get(k))
+        if not wb_ref(v):
+            return None, f"a line needs {k}: what it joins"
+        ln[k] = v
+    if ln["from"] == ln["to"]:
+        return None, "a line joins two things"
+    ln["arrow"] = bool(raw.get("arrow", ln.get("arrow", True)))
+    label = raw.get("label", ln.get("label", ""))
+    ln["label"] = " ".join(str(label).split())[:200]
+    return ln, None
+
+
+def wb_apply(data, b):
+    """One batch of changes from the page, onto a board's data: None, or why not
+    (and then nothing is changed). cards {id: [x, y] | null}, view {x, y, z},
+    items and lines {upsert: [{id, ...}], remove: [id]}. Removing an item takes
+    its lines with it and lets go of the comments pinned to it."""
+    cards, items, lines = dict(data["cards"]), dict(data["items"]), dict(data["lines"])
+    view = data["view"]
+    for cid, at in (b.get("cards") or {}).items() if isinstance(b.get("cards"), dict) else ():
+        if not wb_ref(cid):
+            continue
+        if at is None:
+            cards.pop(cid, None)
+        elif isinstance(at, list) and len(at) == 2 and all(wb_num(v) for v in at):
+            cards[cid] = [round(float(at[0]), 1), round(float(at[1]), 1)]
+    v = b.get("view")
+    if isinstance(v, dict) and all(wb_num(v.get(k)) for k in ("x", "y", "z")):
+        view = {k: round(float(v[k]), 3) for k in ("x", "y", "z")}
+    for part, store, make in (("items", items, wb_item), ("lines", lines, wb_line)):
+        ops = b.get(part)
+        if ops is None:
+            continue
+        if not isinstance(ops, dict):
+            return f"{part}: {{upsert: [...], remove: [...]}}"
+        for raw in ops.get("upsert") or []:
+            iid = raw.get("id") if isinstance(raw, dict) else None
+            if not isinstance(iid, str) or not WB_ITEM_ID.match(iid):
+                return f"{part}: each one needs an id like n1a2b"
+            got, why = make(raw, store.get(iid))
+            if why:
+                return why
+            store[iid] = got
+        for iid in map(str, ops.get("remove") or []):
+            store.pop(iid, None)
+            if part == "items":  # its lines go too, even when it was never saved (a line drawn to it first)
+                for lid in [k for k, ln in lines.items() if iid in (ln.get("from"), ln.get("to"))]:
+                    lines.pop(lid)
+                for it in items.values():
+                    if it.get("pin") == iid:
+                        it["pin"] = None
+        if len(store) > WB_MAX:
+            return f"A board holds at most {WB_MAX} {part}."
+    data.update(cards=cards, view=view, items=items, lines=lines)
+    return None
+
+
+def wb_file(kind, ref):
+    """(the board's file, the folder it belongs to or None), or (None, None): a
+    blank board's file must have been made (wb_new); a folder must exist."""
+    ref = str(ref or "")
+    if kind == "blank":
+        if not ref or NAME_REFUSED.search(ref) or ref.startswith("."):
+            return None, None
+        p = home() / "whiteboards" / f"{ref}.json"
+        return (p, None) if p.is_file() else (None, None)
+    folder = design_dir(ref) if kind == "design" else feature_dir(ref) if kind == "feature" else None
+    return (board_path(folder), folder) if folder else (None, None)
+
+
+def wb_view(kind, ref):
+    p, folder = wb_file(kind, ref)
+    if not p:
+        return None
+    with wb_lock(p):
+        d = wb_read(p)
+    out = {"kind": kind, "ref": ref, "cards": d["cards"], "view": d["view"], "items": d["items"], "lines": d["lines"]}
+    if kind == "feature":
+        out["docs"] = [{k: x[k] for k in ("file", "doc", "prefix", "updated")} for x in docs_of(folder)]
+    return out
+
+
+def wb_change(state, b):
+    kind, ref = str(b.get("kind", "")), str(b.get("ref", ""))
+    if kind not in WB_KINDS:
+        return 400, {"error": "kind: design, feature or blank"}
+    p, _ = wb_file(kind, ref)
+    if not p:
+        return 404, {"error": "no such whiteboard"}
+    with wb_lock(p):
+        d = wb_read(p)
+        why = wb_apply(d, b)
+        if why:
+            return 400, {"error": why}
+        wb_write(p, d)
+    state.emit("whiteboard", kind=kind, ref=ref, client=str(b.get("client", ""))[:40])
+    return 200, {"ok": True}
+
+
+def wb_list():
+    """The blank whiteboards, newest first."""
+    base = home() / "whiteboards"
+    out = []
+    if base.is_dir():
+        for p in base.glob("*.json"):
+            d = wb_read(p)
+            out.append({"name": p.stem, "items": len(d["items"]), "lines": len(d["lines"]),
+                        "updated": p.stat().st_mtime})
+    return {"folder": base.as_posix(), "boards": sorted(out, key=lambda x: -x["updated"])}
+
+
+def wb_new(state, name):
+    name = " ".join(str(name).split())
+    if not name or NAME_REFUSED.search(name) or name.startswith(".") or len(name) > 80:
+        return 400, {"error": "Not a usable name (no / \\ : * ? \" < > |)."}
+    p = home() / "whiteboards" / f"{name}.json"
+    if p.exists():
+        return 409, {"error": f"There's a whiteboard called {name} already."}
+    wb_write(p, {"version": 1, "cards": {}, "view": {}, "items": {}, "lines": {}})
+    state.emit("whiteboard", list=True)
+    return 200, {"name": name}
+
+
+def wb_delete(state, name):
+    """Out of the way, never gone: into <home>/whiteboards/.deleted."""
+    p, _ = wb_file("blank", name)
+    if not p:
+        return 404, {"error": "no such whiteboard"}
+    trash = p.parent / ".deleted"
+    trash.mkdir(exist_ok=True)
+    dest, n = trash / p.name, 1
+    while dest.exists():
+        n += 1
+        dest = trash / f"{p.stem} ({n}).json"
+    with wb_lock(p):
+        os.replace(p, dest)
+    state.emit("whiteboard", list=True)
+    return 200, {"deleted": p.stem}
 
 
 # ---------------------------------------------------------------- tasks
@@ -3741,6 +3988,11 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such board"})
             return self.send(200, design_view(st, folder))
+        if path == "/api/whiteboards":
+            return self.send(200, wb_list())
+        if path == "/api/whiteboard":
+            got = wb_view(q.get("kind", [""])[0], q.get("ref", [""])[0])
+            return self.send(200, got) if got else self.send(404, {"error": "no such whiteboard"})
         if path == "/api/tasks" or path.startswith("/api/tasks/"):
             code, answer = tasks_get(st, path, q)
             return self.send(code, answer)
@@ -3931,6 +4183,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/stories/cancel":
             return self.send(200, {"ok": cancel_stories_run(st)})
+        if path == "/api/whiteboard":
+            code, answer = wb_change(st, b)
+            return self.send(code, answer)
+        if path in ("/api/whiteboards/new", "/api/whiteboards/delete"):
+            code, answer = (wb_new if path.endswith("/new") else wb_delete)(st, b.get("name", ""))
+            return self.send(code, answer)
         if path in ("/api/stories", "/api/stories/layout", "/api/stories/run", "/api/stories/export"):
             folder = design_dir(str(b.get("name", "")))
             if not folder:

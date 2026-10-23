@@ -1,0 +1,120 @@
+/* The whiteboard (whiteboard.js): a board you pan and zoom, the host's cards on
+   it, and what a person adds: text fields, comments and the lines between
+   things. The note palette, .g0 to .g7 (and .gu for "none"), is shared by the
+   stories' notes, the group frames and the text fields' colours; everything
+   else uses theme.css's tokens. */
+
+/* ---------------------------------------------------------------- the note palette */
+.g0 { --note: #fff3a8; --note-edge: #e0c84a; }
+.g1 { --note: #ffd6c9; --note-edge: #e59a82; }
+.g2 { --note: #cfeecf; --note-edge: #7fbf7f; }
+.g3 { --note: #cde4ff; --note-edge: #78a9e0; }
+.g4 { --note: #ead7ff; --note-edge: #ab86da; }
+.g5 { --note: #ffd9ec; --note-edge: #e08bb5; }
+.g6 { --note: #d3f3f1; --note-edge: #6fc2bb; }
+.g7 { --note: #ffe2b8; --note-edge: #e0a454; }
+.gu { --note: #eceae4; --note-edge: #b9b5aa; }
+@media (prefers-color-scheme: dark) {
+  .g0 { --note: #4a4421; --note-edge: #a8962e; }
+  .g1 { --note: #4d3029; --note-edge: #b06a55; }
+  .g2 { --note: #263f27; --note-edge: #5c9a5c; }
+  .g3 { --note: #233650; --note-edge: #5a87bd; }
+  .g4 { --note: #382a4d; --note-edge: #8a6ab8; }
+  .g5 { --note: #4a2a3b; --note-edge: #b8698f; }
+  .g6 { --note: #213f3d; --note-edge: #4f9a93; }
+  .g7 { --note: #4a3820; --note-edge: #b88440; }
+  .gu { --note: #2c2f34; --note-edge: #5d636b; }
+}
+
+/* ---------------------------------------------------------------- the board */
+.board { position: relative; flex: 1; min-height: 320px; overflow: hidden; cursor: grab; outline: none;
+  background-color: var(--bg); border-top: 1px solid var(--line);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px;
+  touch-action: none; user-select: none; }
+.board.panning { cursor: grabbing; }
+.board[data-tool="text"], .board[data-tool="comment"], .board[data-tool="line"], .board[data-tool="story"] { cursor: crosshair; }
+.world { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+.world.easing { transition: transform 0.35s ease; }
+.wblayer { position: absolute; left: 0; top: 0; }
+.wbcard.linefrom, .wbtext.linefrom, .wbcomment.linefrom { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+/* A labelled frame round some things (a stories group in focus), in its colour. */
+.gframe { position: absolute; border: 2px dashed var(--note-edge, var(--line)); border-radius: 10px;
+  background: color-mix(in srgb, var(--note, var(--panel)) 25%, transparent);
+  pointer-events: none; padding: 4px 10px; box-sizing: border-box; font-size: 13px; font-weight: 700; color: var(--dim); }
+
+/* ---------------------------------------------------------------- the controls over the board */
+.zoomctl, .wbtools { position: absolute; z-index: 10; display: flex; align-items: center; gap: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; cursor: default; }
+.zoomctl { left: 10px; bottom: 10px; }
+.zoom-pct { min-width: 44px; text-align: center; font-size: 12px; color: var(--dim); }
+.wbtools { left: 10px; top: 10px; flex-direction: column; }
+.wbtool { width: 32px; height: 30px; padding: 0; font-size: 15px; line-height: 1; }
+.wbtool.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.wbsep { width: 22px; height: 1px; background: var(--line); margin: 2px 0; }
+.wbhint { position: absolute; left: 56px; top: 12px; z-index: 10; padding: 4px 10px; border-radius: 6px; font-size: 13px;
+  background: var(--accent-soft); border: 1px solid var(--line); pointer-events: none; }
+.wbhint[hidden] { display: none; }
+.wbempty { position: absolute; left: 50%; top: 40%; translate: -50% -50%; text-align: center; max-width: 360px; pointer-events: none; }
+.wbempty[hidden] { display: none; }
+
+/* What can be done to the selected line or text, over it (screen-sized). */
+.wbpop { position: absolute; z-index: 12; display: flex; align-items: center; gap: 3px; padding: 3px; translate: -50% 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16); cursor: default; }
+.wbpop.above { translate: 0 -100%; }
+.wbpop[hidden] { display: none; }
+.wbpop button { padding: 2px 7px; }
+.wbpop .on { background: var(--accent-soft); border-color: var(--accent); }
+.wblabel-in { width: 120px; font-size: 13px; }
+.wbswatch { width: 20px; height: 20px; padding: 0 !important; border-radius: 4px; background: var(--note); border: 1px solid var(--note-edge); }
+.wbswatch.plain { background: var(--panel); border: 1px dashed var(--dim); }
+.wbswatch.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------------------------------------------------------------- lines */
+.wblines { position: absolute; left: -10000px; top: -10000px; overflow: visible; pointer-events: none; }
+.wbline .wbhit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
+.wbline .wbstroke { stroke: var(--dim); stroke-width: 2; fill: none; }
+.wbline.sel .wbstroke { stroke: var(--accent); stroke-width: 3; }
+.wbarrowhead { fill: var(--dim); }
+.wbline.sel .wbarrowhead { fill: var(--accent); }
+.wblabel { font-size: 13px; fill: var(--ink); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+
+/* ---------------------------------------------------------------- text fields */
+.wbtext { position: absolute; box-sizing: border-box; min-height: 34px; padding: 6px 10px; border-radius: 6px; cursor: move;
+  color: var(--ink); border: 1px solid transparent; font-size: 14px; line-height: 1.4; }
+.wbtext:hover { border-color: var(--line); }
+.wbtext.filled { background: var(--note); border-color: var(--note-edge); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1); }
+.wbtext.sel { border-color: var(--accent); }
+.wbtext.dragging { opacity: 0.85; }
+.wbtext .md > :first-child { margin-top: 0; }
+.wbtext .md > :last-child { margin-bottom: 0; }
+.wbtext-edit { width: 100%; box-sizing: border-box; font: inherit; resize: none; cursor: text; user-select: text; }
+.wbgrip { position: absolute; right: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+
+/* ---------------------------------------------------------------- comments */
+.wbcomment { position: absolute; z-index: 3; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50% 50% 50% 4px; background: var(--panel); border: 1px solid var(--accent); cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); font-size: 13px; }
+.wbcomment.resolved { opacity: 0.45; border-color: var(--line); }
+.wbcomment.sel, .wbcomment.open { outline: 2px solid var(--accent); outline-offset: 2px; opacity: 1; }
+.wbcomment[hidden] { display: none; }
+.wbbubble { position: absolute; left: 32px; top: 0; z-index: 4; width: 260px; display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: default;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); }
+.wbbubble textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; user-select: text; }
+.wbbubble-acts { display: flex; gap: 4px; align-items: center; }
+.wbbubble-acts .spacer { flex: 1; }
+
+/* ---------------------------------------------------------------- the pages it is on */
+.fmain.fmain-board { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.wb-note { margin: 0 16px 6px; }
+.wb-note:empty { display: none; }
+.wb-card .linkish { border: none; background: none; padding: 0; color: var(--dim); text-decoration: underline; cursor: pointer; font: inherit; }
+.wb-card .linkish:hover { color: var(--bad); }
+/* a feature's document, as a card on its whiteboard */
+.wbdoc { position: absolute; width: 210px; height: 86px; box-sizing: border-box; padding: 8px 12px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 4px 10px rgba(0, 0, 0, 0.08); overflow: hidden; }
+.wbdoc strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wbdoc:hover, .wbdoc:focus-visible { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.16), 0 10px 22px rgba(0, 0, 0, 0.18); }
+.wbdoc.dragging { cursor: grabbing; }
