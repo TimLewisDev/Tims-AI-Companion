@@ -8,7 +8,8 @@ way:
   runs a few of its scripts, read-only. It writes a document only on a
   person's action: a feature's document when it is saved in Edit mode (see
   below), a ticket's document into a new feature folder made for it on Start
-  workflow (see "Jira"), and a User Stories document, through the toolbox's own
+  workflow (see "Jira"), a task's document into a new feature folder made for
+  it on Start workflow (see "Tasks"), and a User Stories document, through the toolbox's own
   `stories.sh`, when a person changes a story on the board (see "User
   Stories"). It can also ask Claude Code to install one of the toolbox's
   discipline plugins, on a person's click (see below); that is Claude Code's
@@ -242,6 +243,10 @@ for a new folder, the command `workflow-state.sh` names for it
 way `tt-workflow` hands a new folder to planning: `the Jira ticket <KEY> in
 "<ticket document>". Folder: <folder>. Prefix: <name>`.
 
+**Start workflow** on a task (see "Tasks") does the same, with the task as the
+ticket: `the task <ID> in "<ticket document>". Folder: <folder>. Prefix:
+<name>`.
+
 ## Jira
 
 The production mode's **Jira** page shows the person's tickets in the open
@@ -281,6 +286,25 @@ toolbox has no part in it. What it does, and the limits it keeps:
   Ticket.md` in it: the ticket's fields, its description, sub-tasks and links.
   The workflow plans from it; Tatty never touches it again.
 
+## Tasks
+
+The production mode's **Tasks** page keeps task boards for a project that uses
+no tracker of its own. Like the Jira board it is Tatty's own, and the toolbox
+has no part in it:
+
+- **Boards live in Tatty's root,** `<root>/tasks/<board>/`: a `board.json` and
+  an `items` folder of markdown files, one per task. Unlike `features/`, this is
+  Tatty's own content, written whenever a person changes a task. It is never the
+  toolbox's: no skill reads or writes it.
+- **The files are a person's too.** They can be edited by hand (in Obsidian,
+  say) and Tatty keeps up. A change Tatty makes rewrites only the field or the
+  section it is changing.
+- **One document written for the toolbox.** **Start workflow** makes
+  `<root>/features/<ID> - <title>` (refused if it exists and isn't empty) and
+  writes `<name> - Ticket.md` in it: the task's fields, its description and its
+  other sections. The workflow plans from it; Tatty never touches it again.
+  The task's own file then names the feature (`- **Feature:**`).
+
 ## What Tatty keeps of its own
 
 - `${TATTY_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tatty}/`:
@@ -292,13 +316,17 @@ toolbox has no part in it. What it does, and the limits it keeps:
     (`started.tsv`);
   - `boards/<key>.json`: where each card sits on a User Stories board, the view,
     and each group's colour (never in the stories document);
+  - `tasks-index/<key>.json`: each task board's index (each task file's size,
+    time and summary), so a big board opens without reading every file;
   - `server.json` and `server.log`.
 - `%LOCALAPPDATA%\Tatty\`, on Windows:
   - the tray app's build;
   - its WebView2 data;
   - the full panel's last size and position.
+- `<root>/tasks/`: the task boards (see "Tasks").
 
 None of these are the toolbox's. The toolbox's settings and records (the event
 ledger, the workflow links) are never written, and its documents only on a
-person's Save in Edit mode, the ticket's on Start workflow, or a User Stories
+person's Save in Edit mode, the ticket's on Start workflow (from a Jira ticket
+or a task), or a User Stories
 document through `stories.sh` on a person's click.

@@ -6,10 +6,11 @@
 
 const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira"),
-  designs: $("#page-designs"), design: $("#page-design") };
+  designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", designs: "design", design: "design" };
+const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", tasks: "production", taskboard: "production",
+  designs: "design", design: "design" };
 const featureCache = new Map(); // name -> the last /api/feature answer
 let homeTimer = null;
 
@@ -68,6 +69,7 @@ function copyable(text) {
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js)
+// · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
@@ -77,6 +79,12 @@ function parseRoute() {
   }
   if (parts[0] === "design" && parts[1]) return { page: "design", name: parts[1], card: parts[2] === "card" ? parts[3] : null };
   if (parts[0] === "designs") return { page: "designs" };
+  if (parts[0] === "tasks" && parts[1]) {
+    const view = parts[2] === "backlog" || parts[2] === "completed" ? parts[2] : "board";
+    const at = view === "board" ? 2 : 3;
+    return { page: "taskboard", name: parts[1], view, task: parts[at] === "task" ? parts[at + 1] || null : null };
+  }
+  if (parts[0] === "tasks") return { page: "tasks" };
   if (parts[0] === "toolbox") return { page: "toolbox" };
   if (parts[0] === "settings") return { page: "settings" };
   if (parts[0] === "jira") return { page: "jira" };
@@ -92,7 +100,7 @@ const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
-  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs" }[which] || which));
+  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks" }[which] || which));
   $("#settings-link").classList.toggle("on", which === "settings");
   renderNav();
   clearInterval(homeTimer);
@@ -120,6 +128,13 @@ async function route() {
     if (typeof renderJira === "function") renderJira(pageEls.jira);
     else pageEls.jira.replaceChildren(el("p", { class: "pad st missing" },
       "The Jira board didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "tasks" || r.page === "taskboard") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderTasks !== "function") pageEls[r.page].replaceChildren(el("p", { class: "pad st missing" },
+      "The task boards didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+    else if (r.page === "tasks") await renderTasks(pageEls.tasks);
+    else await renderTaskBoard(pageEls.taskboard, r.name, r.view, r.task);
   }
   else if (r.page === "designs") await renderDesigns(pageEls.designs);
   else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);

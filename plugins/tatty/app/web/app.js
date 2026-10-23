@@ -363,7 +363,9 @@ function feedEvent(ev) {
   // A milestone belongs to the feature, not to a session, so it is shown
   // wherever Tatty is: before the tag test, which is what keeps a started
   // session's own chatter out of this feed.
-  else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); confetti(ev.tier); }
+  // (The stream replays every event when the page connects: only what happens
+  // from now on throws confetti, or each reload would be a party for old news.)
+  else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); if (ev.ts * 1000 >= pageOpened - 5000) confetti(ev.tier); }
   else if (ev.tag) return;
   else if (ev.type === "card") feed.append(card(ev));
   else if (ev.type === "say") feed.append(el("div", { class: "card you" }, el("pre", {}, ev.text)));
@@ -382,6 +384,7 @@ function milestoneCard(ev) {
             el("p", {}, whose || "That's another one done."));
 }
 
+const pageOpened = Date.now();
 const FESTIVE = ["#E5A32B", "#4CAF50", "#E05263", "#7D5BBD", "#3B9BD6", "#F2C94C"];
 
 // Confetti over the page, in step with Tatty's own (Effects.cs). Each piece is a

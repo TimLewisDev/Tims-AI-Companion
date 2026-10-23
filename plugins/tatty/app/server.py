@@ -36,6 +36,8 @@ Exit: 0 ok, 1 not open, 2 usage, 5 no answer yet, 6 declined (ask in the termina
 """
 
 import collections
+import datetime
+import hashlib
 import json
 import os
 import re
@@ -57,6 +59,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
+          "tasks.js": "text/javascript", "tasks.css": "text/css",
           "ids.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
@@ -529,7 +532,7 @@ def root_info():
     root, is_set = tatty_root()
     features = root / "features"
     return {"root": root.as_posix(), "features": features.as_posix(), "design": (root / "design").as_posix(),
-            "isSet": is_set,
+            "tasks": (root / "tasks").as_posix(), "isSet": is_set,
             "exists": features.is_dir(), "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
 
 
@@ -2344,6 +2347,1115 @@ def watch_designs(state):
             pass
 
 
+# ---------------------------------------------------------------- tasks
+# The production mode's own task boards, for a project that keeps no tracker of
+# its own: <root>/tasks/<board>/, each a board.json (its columns, the order of the
+# cards, a few options) and items/, one markdown file per task. The files are the
+# tasks, and a person may edit one in Obsidian at any time, so Tatty reads them
+# tolerantly and changes only the line or the section it means to. A task's
+# Status names its column by name; Backlog and Completed are the two that aren't
+# columns, and the last column is the done one. Which list a task is in is its
+# file's say; board.json's order only says where it sits in that list. The
+# toolbox has no part in any of it. See docs/design.md, "Tasks".
+
+TASK_ID = re.compile(r"^([A-Z][A-Z0-9]*)-(\d+)$")
+TASK_NAME_ID = re.compile(r"^([A-Za-z][A-Za-z0-9]*-\d+)(?![A-Za-z0-9])")
+TASK_H1 = re.compile(r"^#\s+(?:([A-Za-z][A-Za-z0-9]*-\d+)(?![A-Za-z0-9])\s*[:–—-]?\s*)?(.*?)\s*$")
+TASK_FIELD = re.compile(r"^(\s*[-*]\s+\*\*)([^*\n]+?)(:\*\*|\*\*:)(.*)$")
+TASK_FIELDS = ("Status", "Priority", "Labels", "Created", "Done", "Feature")
+TASK_COLUMNS = ("To Do", "In Progress", "In Review", "Done")
+TASK_PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"]
+TASK_RESERVED = ("backlog", "completed", "not on a column")
+TASK_HEAD = 16384  # bytes of a file the index reads: its header is all a card needs
+TASK_PAGE = 100
+TASK_INDEX_VERSION = 1
+_TASKS = {}  # a board's resolved folder -> its store: lock, index, what changed on disk
+_TASKS_GUARD = threading.Lock()
+
+
+class BoardBroken(Exception):
+    """board.json is there but can't be read: nothing is written over it."""
+
+
+def tasks_root():
+    return tatty_root()[0] / "tasks"
+
+
+def tasks_dir(name):
+    return area_dir("tasks", name)
+
+
+def task_store(folder):
+    """The board's store: an RLock every read and write of the board holds, its
+    index ({file: [mtime_ns, size, summary]}, None until first read), and the
+    files changed on disk since the watcher last looked ("news")."""
+    key = folder.resolve().as_posix().lower()
+    with _TASKS_GUARD:
+        s = _TASKS.get(key)
+        if s is None:
+            s = _TASKS[key] = {"key": key, "lock": threading.RLock(), "items": None, "saved": 0.0,
+                               "dirty": False, "board": None, "news": set()}
+        return s
+
+
+def task_line(v, cap=200):
+    return " ".join(str(v if v is not None else "").split())[:cap]
+
+
+def task_labels(v):
+    """Labels as a list: trimmed, each once (whatever its case), in the order given."""
+    out, seen = [], set()
+    for p in (v if isinstance(v, list) else str(v or "").split(",")):
+        p = task_line(p, 40)
+        if p and p.lower() not in seen:
+            seen.add(p.lower())
+            out.append(p)
+    return out
+
+
+def task_today():
+    return datetime.date.today().isoformat()
+
+
+def id_key(tid):
+    m = TASK_ID.match(tid or "")
+    return (m.group(1), int(m.group(2))) if m else (tid or "", 0)
+
+
+def task_rev(data):
+    """What the page must send back to save over a task: the file's content, not
+    its mtime (a junction to a FAT or network drive keeps coarse times)."""
+    return hashlib.sha1(data).hexdigest()[:16]
+
+
+def task_decode(data):
+    """A file's bytes as (text with \\n line ends, had a BOM, had CRLF line ends)."""
+    bom = data.startswith(b"\xef\xbb\xbf")
+    text = data[3 if bom else 0:].decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n"), bom, "\r\n" in text
+
+
+def task_write(path, text, bom=False, crlf=False, new=False):
+    """Write a task, its own line ends and BOM kept. new: only if there is no such
+    file yet (FileExistsError otherwise), which is what makes an ID once only."""
+    data = (b"\xef\xbb\xbf" if bom else b"") + (text.replace("\n", "\r\n") if crlf else text).encode("utf-8")
+    if new:
+        with open(path, "xb") as fh:
+            fh.write(data)
+        return
+    tmp = path.with_name(f".{path.name}.tatty-tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def task_parse(text):
+    """A task's text (\\n line ends) in parts, and where each is, so task_edit can
+    change only what it must: YAML front matter, the H1 (id and title), the header's
+    fields up to the first "## " (the known ones by lower-case key, the rest in
+    order), the Description section and the other sections."""
+    lines = text.split("\n")
+    trail = bool(lines) and lines[-1] == ""
+    if trail:
+        lines.pop()
+    start = 0
+    if lines and lines[0].strip() == "---":
+        end = next((j for j in range(1, len(lines)) if lines[j].strip() in ("---", "...")), None)
+        if end is not None:
+            start = end + 1
+    sec = next((j for j in range(start, len(lines)) if lines[j].startswith("## ")), len(lines))
+    h1 = next((j for j in range(start, sec) if re.match(r"^#\s", lines[j])), None)
+    fields, extra, last = {}, [], None
+    known = {k.lower() for k in TASK_FIELDS}
+    for j in range(h1 + 1 if h1 is not None else start, sec):
+        m = TASK_FIELD.match(lines[j])
+        if not m:
+            continue
+        last = j
+        key, value = m.group(2).strip(), m.group(4).strip()
+        if key.lower() in known and key.lower() not in fields:
+            fields[key.lower()] = (j, value)
+        else:
+            extra.append([key, value])
+    hid, title = "", ""
+    if h1 is not None:
+        m = TASK_H1.match(lines[h1])
+        hid, title = (m.group(1) or "").upper(), m.group(2)
+    heads = [j for j in range(sec, len(lines)) if lines[j].startswith("## ")]
+    desc, description, sections = None, "", []
+    for n, j in enumerate(heads):
+        end = heads[n + 1] if n + 1 < len(heads) else len(lines)
+        name, body = lines[j][3:].strip(), "\n".join(lines[j + 1:end]).strip("\n").rstrip()
+        if desc is None and name.lower() == "description":
+            desc, description = (j, end), body
+        else:
+            sections.append({"heading": name, "text": body})
+    return {"lines": lines, "trail": trail, "start": start, "sec": sec, "h1": h1, "hid": hid, "title": title,
+            "fields": fields, "extra": extra, "last": last, "desc": desc, "description": description,
+            "sections": sections}
+
+
+def task_edit(text, fields=None, title=None, tid="", description=None):
+    """The text with only these changed: each field's value on its own line (its
+    key as the file spells it; a field it hasn't got goes after the last one), the
+    H1 (when title is given), the Description section's body. Everything else is
+    left exactly as it was. Changes are made from the bottom up, so the line
+    numbers task_parse gave stay right."""
+    p = task_parse(text)
+    lines = p["lines"]
+    if description is not None:
+        desc = description.replace("\r\n", "\n").strip("\n").rstrip()
+        body = [""] + desc.split("\n") if desc else []
+        if p["desc"]:
+            j, end = p["desc"]
+            lines[j + 1:end] = body + ([""] if end < len(lines) else [])
+        else:
+            at = p["sec"]
+            block = ["## Description"] + body + ([""] if at < len(lines) else [])
+            if at > 0 and lines[at - 1].strip():
+                block.insert(0, "")
+            lines[at:at] = block
+    new = []
+    for name, value in (fields or {}).items():
+        value = task_line(value, 300)
+        hit = p["fields"].get(name.lower())
+        if hit:
+            m = TASK_FIELD.match(lines[hit[0]])
+            lines[hit[0]] = m.group(1) + m.group(2) + m.group(3) + (" " + value if value else "")
+        else:
+            new.append(f"- **{name}:**" + (" " + value if value else ""))
+    if new:
+        if p["last"] is not None:
+            lines[p["last"] + 1:p["last"] + 1] = new
+        else:
+            at = p["h1"] + 1 if p["h1"] is not None else p["start"]
+            lines[at:at] = [""] + new + ([""] if at < len(lines) and lines[at].strip() else [])
+    if title is not None:
+        h1 = f"# {tid}: {title}" if tid else f"# {title}"
+        if p["h1"] is not None:
+            lines[p["h1"]] = h1
+        else:
+            lines[p["start"]:p["start"]] = [h1, ""]
+    return "\n".join(lines) + ("\n" if p["trail"] or not text else "")
+
+
+def task_new_text(tid, title, status, priority, labels, created, done, description):
+    fields = [("Status", status), ("Priority", priority), ("Labels", ", ".join(labels)), ("Created", created),
+              ("Done", done)]
+    out = [f"# {tid}: {title}", ""] + [f"- **{k}:**" + (f" {v}" if v else "") for k, v in fields]
+    out += ["", "## Description"] + (["", description] if description else [])
+    return "\n".join(out) + "\n"
+
+
+def task_summary(name, text):
+    """What a card shows of a task, from its file's name and header. Its ID is in
+    the file's name (else its H1's), and the name wins when the two disagree."""
+    p = task_parse(text)
+    f = {k: v for k, (_, v) in p["fields"].items()}
+    m = TASK_NAME_ID.match(name)
+    fid = m.group(1).upper() if m else ""
+    tid = fid or p["hid"]
+    problems = []
+    if not tid:
+        problems.append("has no task ID in its name or its title")
+    elif fid and p["hid"] and fid != p["hid"]:
+        problems.append(f"its name says {fid} but its title says {p['hid']}")
+    stem = name[:-3] if name.lower().endswith(".md") else name
+    title = p["title"] or stem[len(fid):].strip(" -–—:") or stem
+    return {"id": tid, "title": title, "status": f.get("status", ""), "priority": f.get("priority", ""),
+            "labels": task_labels(f.get("labels", "")), "created": f.get("created", ""), "done": f.get("done", ""),
+            "feature": f.get("feature", ""), "file": name, "problems": problems}
+
+
+def task_file_name(tid, title):
+    """T-0042 - <title>.md, the title cleaned as a file may be named (and as Obsidian
+    can link to it), and kept short for Windows' path limit."""
+    t = " ".join(re.sub(r'[/\\:*?"<>|#^\[\]]', " ", title).split()).strip(" .")[:60].rstrip(" .-")
+    return f"{tid} - {t}.md" if t else f"{tid}.md"
+
+
+# -- the index
+
+def task_index_path(s):
+    return home() / "tasks-index" / (hashlib.sha1(s["key"].encode("utf-8")).hexdigest()[:16] + ".json")
+
+
+def task_index_save(s):
+    p = task_index_path(s)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps({"version": TASK_INDEX_VERSION, "items": s["items"]}, separators=(",", ":")),
+                   encoding="utf-8")
+    os.replace(tmp, p)
+    s["saved"], s["dirty"] = time.time(), False
+
+
+def task_index(folder):
+    """The board's tasks, {file: [mtime_ns, size, summary]}, brought up to date:
+    only a file whose size or time changed is read again, and only its header. On
+    a cold start the index saved in <home>/tasks-index is the starting point, so
+    thousands of tasks cost a directory listing. Hold the store's lock."""
+    s = task_store(folder)
+    fresh = s["items"] is None
+    if fresh:
+        got = read_json(task_index_path(s), {})
+        items = got.get("items") if got.get("version") == TASK_INDEX_VERSION else None
+        s["items"] = {k: v for k, v in (items if isinstance(items, dict) else {}).items()
+                      if isinstance(v, list) and len(v) == 3 and isinstance(v[2], dict)}
+    items, seen, changed = s["items"], set(), set()
+    try:
+        entries = list(os.scandir(folder / "items"))
+    except OSError:
+        entries = []
+    for e in entries:
+        if e.name.startswith(".") or not e.name.lower().endswith(".md"):
+            continue
+        try:
+            if not e.is_file():
+                continue
+            st = e.stat()  # on Windows, from the listing itself
+        except OSError:
+            continue
+        seen.add(e.name)
+        old = items.get(e.name)
+        if old and old[0] == st.st_mtime_ns and old[1] == st.st_size:
+            continue
+        try:
+            with open(e.path, "rb") as fh:
+                head = fh.read(TASK_HEAD)
+        except OSError:
+            continue
+        items[e.name] = [st.st_mtime_ns, st.st_size, task_summary(e.name, task_decode(head)[0])]
+        changed.add(e.name)
+    for gone in [k for k in items if k not in seen]:
+        del items[gone]
+        changed.add(gone)
+    if changed:
+        s["dirty"] = True
+        if not fresh:  # what changed while Tatty wasn't looking is the board itself, not news
+            s["news"] |= changed
+    if s["dirty"] and time.time() - s["saved"] > 5:
+        try:
+            task_index_save(s)
+        except OSError:
+            pass
+    return items
+
+
+def task_noted(folder, path, text, old=None):
+    """Tatty wrote this task: its index entry now, so the watcher doesn't take
+    Tatty's own write for a hand edit. Returns the task's summary."""
+    s = task_store(folder)
+    if old and old != path.name:
+        s["items"].pop(old, None)
+    st = path.stat()
+    s["items"][path.name] = [st.st_mtime_ns, st.st_size, task_summary(path.name, text)]
+    s["dirty"] = True
+    return s["items"][path.name][2]
+
+
+def task_ids(items):
+    """id -> summary, and the board's problems. An ID used twice is the first
+    file's, by name; the others are problems until adopted."""
+    by, problems = {}, []
+    for name in sorted(items, key=str.lower):
+        t = items[name][2]
+        problems += [{"file": name, "problem": p} for p in t["problems"]]
+        if not t["id"]:
+            continue
+        if t["id"] in by:
+            problems.append({"file": name, "problem": f"its ID {t['id']} is {by[t['id']]['file']}'s too"})
+            continue
+        by[t["id"]] = t
+    return by, problems
+
+
+# -- the board
+
+def task_board(folder, strict=False):
+    """board.json with everything it needs filled in (unknown keys kept). With
+    none, the defaults. One that won't parse reads as the defaults, marked
+    _broken; strict (every write) refuses it rather than write over it."""
+    p = folder / "board.json"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("it isn't a JSON object")
+    except FileNotFoundError:
+        raw = {}
+    except (OSError, ValueError) as e:
+        if strict:
+            raise BoardBroken(f"This board's board.json can't be read ({e}). Fix it or move it away first.")
+        raw = {"_broken": f"board.json can't be read ({e})"}
+    return task_board_fill(raw)
+
+
+def task_board_fill(raw):
+    b = dict(raw)
+    cols = b.get("columns")
+    if isinstance(cols, list):
+        cols = [{**c, "name": task_line(c["name"], 40)} for c in cols if isinstance(c, dict)
+                and isinstance(c.get("id"), str) and isinstance(c.get("name"), str) and c["name"].strip()]
+    else:
+        cols = [{"id": f"c{i + 1}", "name": n} for i, n in enumerate(TASK_COLUMNS)]
+    b["columns"] = cols
+    b["version"] = b.get("version") if isinstance(b.get("version"), int) else 1
+    b["prefix"] = b["prefix"] if isinstance(b.get("prefix"), str) and re.fullmatch(r"[A-Z][A-Z0-9]*", b["prefix"]) else "T"
+    b["nextId"] = b["nextId"] if isinstance(b.get("nextId"), int) and b["nextId"] > 0 else 1
+    order = b.get("order") if isinstance(b.get("order"), dict) else {}
+    b["order"] = {k: [str(i).upper() for i in v if isinstance(i, str)] for k, v in order.items() if isinstance(v, list)}
+    o = dict(b.get("options")) if isinstance(b.get("options"), dict) else {}
+    days = o.get("autoCompleteDays")
+    o["autoCompleteDays"] = min(365, max(0, days)) if isinstance(days, int) and not isinstance(days, bool) else 0
+    o["startColumn"] = o["startColumn"] if isinstance(o.get("startColumn"), str) else ""
+    o["project"] = o["project"] if isinstance(o.get("project"), str) else ""
+    o["celebrate"] = o["celebrate"] if isinstance(o.get("celebrate"), bool) else True
+    pr = o.get("priorities")
+    o["priorities"] = [task_line(x, 40) for x in pr if task_line(x, 40)][:12] if isinstance(pr, list) and pr else list(TASK_PRIORITIES)
+    b["options"] = o
+    started = b.get("started") if isinstance(b.get("started"), dict) else {}
+    b["started"] = {str(k).upper(): v for k, v in started.items() if isinstance(v, str)}
+    return b
+
+
+def task_board_save(folder, b):
+    write_json(folder / "board.json", {k: v for k, v in b.items() if not k.startswith("_")})
+    task_store(folder)["board"] = (folder / "board.json").stat().st_mtime_ns
+
+
+def task_place(b, status):
+    """Which list a status puts a task in: backlog, completed, a column's id, or
+    unsorted (a status that names no column: shown apart, never rewritten)."""
+    s = " ".join(str(status).split()).lower()
+    if s in ("", "backlog"):
+        return "backlog"
+    if s == "completed":
+        return "completed"
+    return next((c["id"] for c in b["columns"] if c["name"].lower() == s), "unsorted")
+
+
+def task_done_column(b):
+    return b["columns"][-1]["id"] if b["columns"] else ""
+
+
+def task_start_column(b):
+    """Where a task goes when a workflow is started from it: the option, else the
+    first column that sounds under way, else the first."""
+    ids = [c["id"] for c in b["columns"]]
+    if b["options"]["startColumn"] in ids:
+        return b["options"]["startColumn"]
+    return next((c["id"] for c in b["columns"] if re.search(r"progress|doing", c["name"], re.I)), ids[0] if ids else "")
+
+
+def task_lists(b, by):
+    """Each list in order. The backlog and each column: the ids board.json orders
+    that really are in it, then the rest by when they were made. Unsorted by ID;
+    completed newest done first."""
+    members = collections.defaultdict(list)
+    for t in by.values():
+        members[task_place(b, t["status"])].append(t)
+    out = {}
+    for key in ["backlog"] + [c["id"] for c in b["columns"]]:
+        mem = {t["id"]: t for t in members.get(key, [])}
+        hint = list(dict.fromkeys(i for i in b["order"].get(key, []) if i in mem))
+        placed = set(hint)
+        rest = sorted((t for i, t in mem.items() if i not in placed), key=lambda t: (t["created"], id_key(t["id"])))
+        out[key] = [mem[i] for i in hint] + rest
+    out["unsorted"] = sorted(members.get("unsorted", []), key=lambda t: id_key(t["id"]))
+    out["completed"] = sorted(members.get("completed", []), key=lambda t: (t["done"], id_key(t["id"])), reverse=True)
+    return out
+
+
+def task_put(b, lists, tid, to, before=None):
+    """board.json's order with tid in list `to`, before `before` (else at the end),
+    and out of every other; ids no longer in a list are dropped from its order."""
+    keep = ["backlog"] + [c["id"] for c in b["columns"]]
+    order = {}
+    for k in keep:
+        ids = {t["id"] for t in lists.get(k, [])}
+        order[k] = [i for i in dict.fromkeys(b["order"].get(k, [])) if i in ids and i != tid]
+    if to in keep:
+        cur = [t["id"] for t in lists.get(to, []) if t["id"] != tid]
+        before = str(before or "").upper()
+        cur.insert(cur.index(before) if before in cur else len(cur), tid)
+        order[to] = cur
+    b["order"] = {k: v for k, v in order.items() if v}
+
+
+def task_status_fields(b, t, to):
+    """The fields a task's file needs to be in list `to`: its Status, and Done,
+    stamped going into the done column or Completed and cleared coming out."""
+    name = {"backlog": "Backlog", "completed": "Completed"}.get(to) or next(c["name"] for c in b["columns"] if c["id"] == to)
+    out = {"Status": name} if t["status"] != name else {}
+    finishing = to == "completed" or to == task_done_column(b)
+    if finishing and not t["done"]:
+        out["Done"] = task_today()
+    elif not finishing and t["done"]:
+        out["Done"] = ""
+    return out
+
+
+def task_rewrite(folder, t, fields=None, **kw):
+    """A change to one task's file, made on what is on disk now. Its new summary."""
+    p = folder / "items" / t["file"]
+    text, bom, crlf = task_decode(p.read_bytes())
+    new = task_edit(text, fields, **kw)
+    if new == text:
+        return t
+    task_write(p, new, bom, crlf)
+    return task_noted(folder, p, new)
+
+
+def task_said(state, folder, client, ids):
+    state.emit("tasks", name=folder.name, ids=[i for i in ids if i][:50], client=client)
+
+
+def task_celebrate(state, b, folder, before, after, label, qualifier, tier):
+    """Something finished: a milestone, which the tray app's Tatty celebrates by its
+    own Animations setting, and the feed shows as a card. Crossing 10, 50 or a
+    hundred completed is a big one."""
+    if not b["options"]["celebrate"]:
+        return
+    marks = sorted({10, 50, *range(100, after + 1, 100)})
+    crossed = next((m for m in reversed(marks) if before < m <= after), None)
+    if crossed:
+        tier, label = "big", f"{crossed} tasks completed!"
+    state.emit("milestone", event="tasks.done", label=label, tier=tier, prefix=folder.name, qualifier=qualifier,
+               folder="", route="")
+
+
+def task_targets(b):
+    return {"backlog", "completed", *(c["id"] for c in b["columns"])}
+
+
+def task_next_id(b, by):
+    """The next free number: board.json's count, but past every ID already used
+    (a file copied in by hand, a board.json restored from an old copy)."""
+    used = [id_key(i)[1] for i in by if id_key(i)[0] == b["prefix"]]
+    return max(b["nextId"], 1 + max(used, default=0))
+
+
+# -- the views
+
+def task_stats(done):
+    """How the finishing has gone: this week, this month, the best week, the
+    streak of weeks with something finished, and the last twelve weeks."""
+    today = datetime.date.today()
+    weeks, month = collections.Counter(), 0
+    for t in done:
+        try:
+            d = datetime.date.fromisoformat(t["done"][:10])
+        except ValueError:
+            continue
+        weeks[tuple(d.isocalendar()[:2])] += 1
+        month += (d.year, d.month) == (today.year, today.month)
+    monday = today - datetime.timedelta(days=today.weekday())
+    week = lambda k: tuple((monday - datetime.timedelta(weeks=k)).isocalendar()[:2])
+    last = []
+    for k in range(11, -1, -1):
+        y, w = week(k)
+        last.append({"week": f"{y}-W{w:02d}", "start": (monday - datetime.timedelta(weeks=k)).isoformat(),
+                     "count": weeks[(y, w)]})
+    k = 0 if weeks[week(0)] else 1  # a week not over yet doesn't break the streak
+    streak = 0
+    while weeks[week(k)]:
+        streak, k = streak + 1, k + 1
+    return {"total": len(done), "thisWeek": weeks[week(0)], "thisMonth": month,
+            "bestWeek": max(weeks.values(), default=0), "streakWeeks": streak, "weeks": last}
+
+
+def task_read(folder):
+    """(board, its tasks by id, the problems), brought up to date."""
+    with task_store(folder)["lock"]:
+        b = task_board(folder)
+        by, problems = task_ids(task_index(folder))
+    if b.get("_broken"):
+        problems.insert(0, {"file": "board.json", "problem": b["_broken"]})
+    return b, by, problems
+
+
+def task_board_view(folder):
+    b, by, problems = task_read(folder)
+    lists = task_lists(b, by)
+    stats = task_stats(lists["completed"])
+    return {"name": folder.name, "folder": folder.as_posix(), "prefix": b["prefix"],
+            "columns": [{"id": c["id"], "name": c["name"], "tasks": lists[c["id"]]} for c in b["columns"]],
+            "done": task_done_column(b), "unsorted": lists["unsorted"],
+            "backlog": {"total": len(lists["backlog"]), "items": lists["backlog"][:TASK_PAGE]},
+            "completed": {"total": stats["total"], "thisWeek": stats["thisWeek"]},
+            "options": {**b["options"], "startColumn": task_start_column(b)}, "started": b["started"],
+            "problems": problems, "broken": bool(b.get("_broken"))}
+
+
+def task_list_view(folder, which, offset, limit, q):
+    b, by, _ = task_read(folder)
+    lists = task_lists(b, by)
+    rows = lists[which]
+    words = q.lower().split()
+    if words:
+        rows = [t for t in rows if all(w in " ".join([t["id"], t["title"], *t["labels"]]).lower() for w in words)]
+    out = {"in": which, "total": len(rows), "offset": offset, "items": rows[offset:offset + limit]}
+    if which == "completed":
+        out["stats"] = task_stats(lists["completed"])
+    return out
+
+
+def task_detail(folder, t):
+    """One task in full, for the panel: its fields, description, the fields and
+    sections Tatty doesn't edit, the whole text, and the rev a save must name."""
+    p = folder / "items" / t["file"]
+    data = p.read_bytes()
+    text = task_decode(data)[0]
+    parts = task_parse(text)
+    return {**task_summary(t["file"], text), "description": parts["description"], "extra": parts["extra"],
+            "sections": parts["sections"], "text": text, "rev": task_rev(data), "updated": p.stat().st_mtime}
+
+
+def tasks_list():
+    """The boards under <root>/tasks, most recently changed first, with their counts."""
+    base = tasks_root()
+    root, is_set = tatty_root()
+    out = []
+    if base.is_dir():
+        for d in base.iterdir():
+            folder = tasks_dir(d.name) if d.is_dir() and not d.name.startswith(".") else None
+            if not folder:
+                continue
+            try:
+                b, by, problems = task_read(folder)
+                times = [p.stat().st_mtime for p in (folder / "board.json", folder / "items") if p.exists()]
+                updated = max(times, default=folder.stat().st_mtime)
+            except OSError:
+                continue
+            lists = task_lists(b, by)
+            stats = task_stats(lists["completed"])
+            out.append({"name": folder.name, "columns": [c["name"] for c in b["columns"]],
+                        "backlog": len(lists["backlog"]), "completed": stats["total"], "thisWeek": stats["thisWeek"],
+                        "board": sum(len(lists[c["id"]]) for c in b["columns"]) + len(lists["unsorted"]),
+                        "problems": len(problems), "updated": updated})
+    return {"root": root.as_posix(), "isSet": is_set, "folder": base.as_posix(), "picker": picker_argv() is not None,
+            "columns": list(TASK_COLUMNS), "boards": sorted(out, key=lambda x: -x["updated"])}
+
+
+# -- the changes
+
+def task_column_name(b, v, keep=""):
+    """(the name, None) for a usable column name, else (None, why not)."""
+    name = task_line(v, 40)
+    if not name:
+        return None, "A column needs a name."
+    if name.lower() in TASK_RESERVED:
+        return None, f"{name} can't be a column's name: it's a list of its own."
+    if any(c["name"].lower() == name.lower() and c["id"] != keep for c in b["columns"]):
+        return None, f"There's a {name} column already."
+    return name, None
+
+
+def new_task_board(name, columns):
+    name = " ".join(str(name).split())
+    if not name or NAME_REFUSED.search(name) or name.startswith("."):
+        return 400, {"error": "Not a usable folder name (no / \\ : * ? \" < > |)."}
+    root, is_set = tatty_root()
+    if not is_set or not root.is_dir():
+        return 400, {"error": "Set Tatty's root folder first."}
+    b = task_board_fill({"columns": []})
+    for n in (columns if isinstance(columns, list) and columns else TASK_COLUMNS):
+        if not task_line(n):
+            continue
+        col, why = task_column_name(b, n)
+        if why:
+            return 400, {"error": why}
+        b["columns"].append({"id": f"c{len(b['columns']) + 1}", "name": col})
+    if not b["columns"]:
+        return 400, {"error": "A board needs at least one column."}
+    d = tasks_root() / name
+    if d.exists() and (not d.is_dir() or any(d.iterdir())):
+        return 409, {"error": f"{name} already exists and isn't empty."}
+    (d / "items").mkdir(parents=True, exist_ok=True)
+    with task_store(d)["lock"]:
+        task_board_save(d, b)
+    return 200, {"name": name, "folder": d.as_posix()}
+
+
+def task_create(state, folder, body, client):
+    title = task_line(body.get("title"))
+    if not title:
+        return 400, {"error": "A task needs a title."}
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        by, _ = task_ids(task_index(folder))
+        to = str(body.get("to") or "backlog")
+        if to not in task_targets(b):
+            return 400, {"error": "Put it in the backlog, a column or Completed."}
+        fields = task_status_fields(b, {"status": "", "done": ""}, to)
+        desc = str(body.get("description") or "").replace("\r\n", "\n").strip("\n").rstrip()
+        n = task_next_id(b, by)
+        (folder / "items").mkdir(parents=True, exist_ok=True)
+        while True:
+            tid = f"{b['prefix']}-{n:04d}"
+            if tid in by:
+                n += 1
+                continue
+            path = folder / "items" / task_file_name(tid, title)
+            text = task_new_text(tid, title, fields.get("Status", "Backlog"), task_line(body.get("priority"), 40),
+                                 task_labels(body.get("labels")), task_today(), fields.get("Done", ""), desc)
+            try:
+                task_write(path, text, new=True)
+                break
+            except FileExistsError:
+                n += 1
+        b["nextId"] = n + 1
+        t = task_noted(folder, path, text)
+        task_put(b, task_lists(b, by), tid, to, body.get("before"))
+        task_board_save(folder, b)
+    task_said(state, folder, client, [tid])
+    return 200, {"task": t}
+
+
+def task_move_locked(state, folder, b, by, t, to, before):
+    """Move a task (the store's lock held): its file if its list changes, board.json
+    for where it sits. Returns its new summary."""
+    lists = task_lists(b, by)
+    was, done = task_place(b, t["status"]), task_done_column(b)
+    fields = task_status_fields(b, t, to)
+    t2 = task_rewrite(folder, t, fields) if fields else t
+    task_put(b, lists, t["id"], to, before)
+    task_board_save(folder, b)
+    if to != was and to in ("completed", done) and was not in ("completed", done):
+        total = len(lists["completed"])
+        task_celebrate(state, b, folder, total, total + (to == "completed"), "Task done",
+                       f"{t['id']}: {t['title']}", "small")
+    return t2
+
+
+def task_move(state, folder, body, client):
+    tid = str(body.get("id", "")).strip().upper()
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        by, _ = task_ids(task_index(folder))
+        t = by.get(tid)
+        if not t:
+            return 404, {"error": f"There's no task {tid} on this board."}
+        to = str(body.get("to") or "")
+        if to not in task_targets(b):
+            return 400, {"error": "Move it to the backlog, a column or Completed."}
+        t = task_move_locked(state, folder, b, by, t, to, body.get("before"))
+    task_said(state, folder, client, [tid])
+    return 200, {"task": t}
+
+
+def task_save(state, folder, body, client):
+    """Save the panel's changes to a task: only the fields sent (title, priority,
+    labels, description), or the whole file's text; then, with `to`, move it.
+    Refused (409, with the task as it is now) if the file changed since the page
+    read it (rev)."""
+    tid = str(body.get("id", "")).strip().upper()
+    with task_store(folder)["lock"]:
+        by, _ = task_ids(task_index(folder))
+        t = by.get(tid)
+        if not t:
+            return 404, {"error": f"There's no task {tid} on this board."}
+        p = folder / "items" / t["file"]
+        data = p.read_bytes()
+        if task_rev(data) != str(body.get("rev", "")):
+            return 409, {"error": "This task changed on disk since you opened it.", "task": task_detail(folder, t)}
+        text, bom, crlf = task_decode(data)
+        title = None
+        if isinstance(body.get("text"), str):
+            new = body["text"].replace("\r\n", "\n")
+            hid = task_parse(new)["hid"]
+            if hid and hid != tid:
+                return 400, {"error": f"Keep its ID, {tid}, in the title: a task's ID never changes."}
+        else:
+            fields = {}
+            if "priority" in body:
+                fields["Priority"] = task_line(body["priority"], 40)
+            if "labels" in body:
+                fields["Labels"] = ", ".join(task_labels(body["labels"]))
+            if "title" in body:
+                title = task_line(body["title"])
+                if not title:
+                    return 400, {"error": "A task needs a title."}
+            desc = str(body["description"]) if "description" in body else None
+            new = task_edit(text, fields, title=title, tid=tid, description=desc)
+        to = str(body.get("to") or "")
+        b = task_board(folder, strict=bool(to))
+        if to and to not in task_targets(b):
+            return 400, {"error": "Move it to the backlog, a column or Completed."}
+        if new != text:
+            task_write(p, new, bom, crlf)
+        # A title changed here renames the file to match. (A hand edit never does:
+        # Tatty doesn't rename a file under Obsidian's feet.)
+        old = p.name
+        if title is not None and title != t["title"]:
+            want = folder / "items" / task_file_name(tid, title)
+            if want.name != p.name and (not want.exists() or os.path.samefile(want, p)):
+                try:
+                    os.rename(p, want)
+                    p = want
+                except OSError:
+                    pass
+        t = task_noted(folder, p, new, old=old)
+        if to and to != task_place(b, t["status"]):
+            by, _ = task_ids(task_index(folder))
+            t = task_move_locked(state, folder, b, by, by[tid], to, None)
+        answer = task_detail(folder, t)
+    task_said(state, folder, client, [tid])
+    return 200, {"task": answer}
+
+
+def task_delete(state, folder, body, client):
+    """Move a task's file into the board's .deleted folder (a dot-folder, which
+    Obsidian ignores): out of the way, never gone."""
+    tid = str(body.get("id", "")).strip().upper()
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        items = task_index(folder)
+        by, _ = task_ids(items)
+        t = by.get(tid)
+        if not t:
+            return 404, {"error": f"There's no task {tid} on this board."}
+        p = folder / "items" / t["file"]
+        if task_rev(p.read_bytes()) != str(body.get("rev", "")):
+            return 409, {"error": "This task changed on disk since you opened it.", "task": task_detail(folder, t)}
+        trash = folder / ".deleted"
+        trash.mkdir(exist_ok=True)
+        dest, n = trash / p.name, 1
+        while dest.exists():
+            n += 1
+            dest = trash / f"{p.stem} ({n}).md"
+        os.replace(p, dest)
+        lists = task_lists(b, by)
+        items.pop(t["file"], None)
+        task_store(folder)["dirty"] = True
+        task_put(b, lists, tid, "")  # in no list's order
+        task_board_save(folder, b)
+    task_said(state, folder, client, [tid])
+    return 200, {"deleted": tid, "to": dest.as_posix()}
+
+
+def task_adopt(state, folder, body, client):
+    """Give a file in items/ with no ID (or another file's ID) an ID of its own:
+    in its name and its H1."""
+    name = str(body.get("file", ""))
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        items = task_index(folder)
+        if name not in items:
+            return 404, {"error": "There's no such file in this board's items folder."}
+        by, _ = task_ids(items)
+        t = items[name][2]
+        if t["id"] and by.get(t["id"]) is t and not t["problems"]:
+            return 400, {"error": f"{name} is {t['id']} already."}
+        p = folder / "items" / name
+        text, bom, crlf = task_decode(p.read_bytes())
+        n = task_next_id(b, by)
+        while True:
+            tid = f"{b['prefix']}-{n:04d}"
+            want = folder / "items" / task_file_name(tid, t["title"])
+            if tid not in by and not want.exists():
+                break
+            n += 1
+        new = task_edit(text, title=t["title"], tid=tid)
+        task_write(p, new, bom, crlf)
+        os.rename(p, want)
+        b["nextId"] = n + 1
+        t = task_noted(folder, want, new, old=name)
+        task_board_save(folder, b)
+    task_said(state, folder, client, [tid])
+    return 200, {"task": t}
+
+
+def task_columns(state, folder, body, client):
+    """Change the columns: add (value, index), rename (id, value), move (id,
+    index), remove (id, to: where its tasks go, the backlog by default), or the
+    board's options (value)."""
+    op = str(body.get("op", ""))
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        by, _ = task_ids(task_index(folder))
+        lists = task_lists(b, by)
+        col = next((c for c in b["columns"] if c["id"] == body.get("id")), None)
+        moved = []
+        try:
+            index = int(body.get("index", len(b["columns"])))
+        except (TypeError, ValueError):
+            index = len(b["columns"])
+        if op == "add":
+            name, why = task_column_name(b, body.get("value"))
+            if why:
+                return 400, {"error": why}
+            n = 1 + max((int(c["id"][1:]) for c in b["columns"] if re.fullmatch(r"c\d+", c["id"])), default=0)
+            b["columns"].insert(max(0, min(index, len(b["columns"]))), {"id": f"c{n}", "name": name})
+        elif op in ("rename", "move", "remove") and not col:
+            return 404, {"error": "There's no such column."}
+        elif op == "rename":
+            name, why = task_column_name(b, body.get("value"), keep=col["id"])
+            if why:
+                return 400, {"error": why}
+            col["name"] = name
+            for t in lists[col["id"]]:  # each of its tasks says the new name
+                moved.append(task_rewrite(folder, t, {"Status": name})["id"])
+        elif op == "move":
+            b["columns"].remove(col)
+            b["columns"].insert(max(0, min(index, len(b["columns"]))), col)
+        elif op == "remove":
+            if len(b["columns"]) == 1:
+                return 400, {"error": "A board needs at least one column."}
+            to = str(body.get("to") or "backlog")
+            if to == col["id"] or to not in task_targets(b) - {"completed"}:
+                return 400, {"error": "Say where its tasks go: the backlog or another column."}
+            b["columns"].remove(col)
+            for t in lists[col["id"]]:
+                moved.append(task_rewrite(folder, t, task_status_fields(b, t, to))["id"])
+            kept = [i for i in b["order"].get(to, []) if i not in moved]
+            b["order"][to] = kept + moved
+            b["order"].pop(col["id"], None)
+            if b["options"]["startColumn"] == col["id"]:
+                b["options"]["startColumn"] = ""
+        elif op == "options":
+            v = body.get("value") if isinstance(body.get("value"), dict) else {}
+            o = b["options"]
+            if "autoCompleteDays" in v:
+                try:
+                    o["autoCompleteDays"] = min(365, max(0, int(v["autoCompleteDays"])))
+                except (TypeError, ValueError):
+                    return 400, {"error": "autoCompleteDays is a number of days (0: never)."}
+            if "startColumn" in v:
+                o["startColumn"] = str(v["startColumn"]) if v["startColumn"] in [c["id"] for c in b["columns"]] else ""
+            if "celebrate" in v:
+                o["celebrate"] = bool(v["celebrate"])
+            if isinstance(v.get("priorities"), list):
+                o["priorities"] = [task_line(x, 40) for x in v["priorities"] if task_line(x, 40)][:12] or list(TASK_PRIORITIES)
+        else:
+            return 400, {"error": "op: add, rename, move, remove or options"}
+        task_board_save(folder, b)
+    task_said(state, folder, client, moved)
+    return 200, task_board_view(folder)
+
+
+def task_clear(state, folder, body, client):
+    """Clear done: every task in the done column goes to Completed, and Tatty
+    celebrates them."""
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        if not b["columns"]:
+            return 400, {"error": "This board has no columns."}
+        by, _ = task_ids(task_index(folder))
+        lists = task_lists(b, by)
+        done = task_done_column(b)
+        cleared = [task_rewrite(folder, t, {"Status": "Completed", "Done": t["done"] or task_today()})
+                   for t in lists[done]]
+        b["order"].pop(done, None)
+        task_board_save(folder, b)
+        before = len(lists["completed"])
+    if cleared:
+        n = len(cleared)
+        task_celebrate(state, b, folder, before, before + n, f"{n} task{'s' if n != 1 else ''} completed",
+                       f"{cleared[0]['id']}: {cleared[0]['title']}" if n == 1 else f"{before + n} completed so far", "mid")
+        task_said(state, folder, client, [t["id"] for t in cleared])
+    return 200, {"cleared": len(cleared), **task_board_view(folder)}
+
+
+def task_auto_complete(state, folder):
+    """A board's autoCompleteDays (0, the default: never): a task that has been in
+    the done column that long goes to Completed by itself."""
+    old = []
+    with task_store(folder)["lock"]:
+        try:
+            b = task_board(folder, strict=True)
+        except BoardBroken:
+            return
+        days = b["options"]["autoCompleteDays"]
+        if days <= 0 or not b["columns"]:
+            return
+        cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+        by, _ = task_ids(task_index(folder))
+        done = task_done_column(b)
+        old = [t for t in task_lists(b, by)[done] if t["done"] and t["done"][:10] <= cutoff]
+        for t in old:
+            task_rewrite(folder, t, {"Status": "Completed"})
+        if old:
+            b["order"][done] = [i for i in b["order"].get(done, []) if i not in {t["id"] for t in old}]
+            task_board_save(folder, b)
+    if old:
+        task_said(state, folder, "", [t["id"] for t in old])
+
+
+def task_feature_name(t):
+    title = " ".join(re.sub(r'[/\\:*?"<>|]', " ", t["title"]).split()).strip(" .")
+    return f"{t['id']} - {title}"[:70].rstrip(" .-") if title else t["id"]
+
+
+def task_ticket_md(board, d):
+    """The task as a feature's Ticket document: what the workflow plans from."""
+    meta = [("Status", d["status"] or "Backlog"), ("Priority", d["priority"]), ("Labels", ", ".join(d["labels"])),
+            ("Created", d["created"])] + [tuple(x) for x in d["extra"]] + \
+        [("Task", f'{d["id"]} on the Tasks board "{board}"'),
+         ("Copied from Tatty Tasks", time.strftime("%Y-%m-%d %H:%M"))]
+    out = [f"# {d['id']}: {d['title']}", ""] + [f"- **{k}:** {v}" for k, v in meta if v]
+    out += ["", "## Description", "", d["description"] or "*(none)*", ""]
+    for s in d["sections"]:
+        out += [f"## {s['heading']}", ""] + ([s["text"], ""] if s["text"] else [])
+    return "\n".join(out)
+
+
+def task_start(state, folder, body, client):
+    """Start a workflow from a task, as from a Jira ticket: a feature folder with the
+    task in it as its Ticket document, a session started on it (the workflow's own
+    first command), and the task moved on to the board's start column. The task
+    says which feature it became before the session starts, so a second Start is
+    refused rather than making a second feature."""
+    tid = str(body.get("id", "")).strip().upper()
+    project = str(body.get("project") or "").strip()
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        by, _ = task_ids(task_index(folder))
+        t = by.get(tid)
+        if not t:
+            return 404, {"error": f"There's no task {tid} on this board."}
+        if b["started"].get(tid) or t["feature"]:
+            return 409, {"error": "A workflow was started from this task already.",
+                         "feature": b["started"].get(tid) or t["feature"]}
+        if not project or not os.path.isdir(project):
+            return 400, {"error": "Choose the project (repo) the session should run in."}
+        detail = task_detail(folder, t)
+        code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t))
+        if code != 200:
+            return code, made
+        feature = feature_dir(made["name"])
+        doc = feature / f"{made['name']} - Ticket.md"
+        doc.write_text(task_ticket_md(folder.name, detail), encoding="utf-8")
+        b["started"][tid] = made["name"]
+        b["options"]["project"] = Path(project).as_posix()
+        task_rewrite(folder, t, {"Feature": made["name"]})
+        task_board_save(folder, b)
+    # The folder holds only the ticket, so the workflow's own first step names a
+    # <placeholder> for what the feature is: the task, said as jira_start says it.
+    rows = workflow_rows(state, feature)
+    first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
+    said = f'the task {tid} in "{doc.as_posix()}". Folder: {feature.as_posix()}. Prefix: {made["name"]}'
+    values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
+    code, answer = start_session(state, feature, {"row": 0 if first else "workflow", "values": values, "project": project})
+    answer = {**answer, "feature": made["name"], "ticket": doc.name}
+    if code == 200 and answer.get("ok"):
+        with task_store(folder)["lock"]:
+            b = task_board(folder, strict=True)
+            by, _ = task_ids(task_index(folder))
+            t, start = by.get(tid), task_start_column(b)
+            cols = [c["id"] for c in b["columns"]]
+            was = task_place(b, t["status"]) if t else ""
+            # only ever forward: from the backlog, or a column before the start column
+            if t and start and (was in ("backlog", "unsorted") or (was in cols and cols.index(was) < cols.index(start))):
+                task_move_locked(state, folder, b, by, t, start, None)
+                answer["moved"] = next(c["name"] for c in b["columns"] if c["id"] == start)
+    task_said(state, folder, client, [tid])
+    return code, answer
+
+
+def tasks_get(st, path, q):
+    one = lambda k, d="": q.get(k, [d])[0]
+    if path == "/api/tasks":
+        return 200, tasks_list()
+    folder = tasks_dir(one("name"))
+    if not folder:
+        return 404, {"error": "no such board"}
+    if path == "/api/tasks/board":
+        return 200, task_board_view(folder)
+    if path == "/api/tasks/list":
+        which = one("in", "backlog")
+        if which not in ("backlog", "completed"):
+            return 400, {"error": "in: backlog or completed"}
+        try:
+            offset, limit = max(0, int(one("offset", "0"))), min(500, max(1, int(one("limit", str(TASK_PAGE)))))
+        except ValueError:
+            return 400, {"error": "offset and limit are numbers"}
+        return 200, task_list_view(folder, which, offset, limit, one("q")[:200])
+    if path == "/api/tasks/task":
+        with task_store(folder)["lock"]:
+            t = task_ids(task_index(folder))[0].get(one("id").strip().upper())
+            if not t:
+                return 404, {"error": "no such task on this board"}
+            return 200, task_detail(folder, t)
+    return 404, {"error": "not found"}
+
+
+TASK_POSTS = {"/api/tasks/create": task_create, "/api/tasks/save": task_save, "/api/tasks/move": task_move,
+              "/api/tasks/columns": task_columns, "/api/tasks/clear": task_clear, "/api/tasks/delete": task_delete,
+              "/api/tasks/adopt": task_adopt, "/api/tasks/start": task_start}
+
+
+def tasks_post(st, path, b):
+    if not isinstance(b, dict):
+        return 400, {"error": "a JSON object, please"}
+    if path == "/api/tasks/new-board":
+        code, answer = new_task_board(b.get("name", ""), b.get("columns"))
+        if code == 200:
+            st.emit("tasks", list=True, client=str(b.get("client", ""))[:40])
+        return code, answer
+    work = TASK_POSTS.get(path)
+    if not work:
+        return 404, {"error": "not found"}
+    folder = tasks_dir(str(b.get("name", "")))
+    if not folder:
+        return 404, {"error": "no such board"}
+    try:
+        return work(st, folder, b, str(b.get("client", ""))[:40])
+    except BoardBroken as e:
+        return 409, {"error": str(e)}
+    except OSError as e:
+        return 500, {"error": f"couldn't write the task: {e}"}
+
+
+def watch_tasks(state):
+    """Hand edits reach the boards: one "tasks" event per board whose task files or
+    board.json changed on disk since the last look (Tatty's own writes are in the
+    index already, so they aren't news), and one when boards come or go. Each
+    look keeps the index warm too, so the page's reads are quick, and once an hour
+    it applies each board's autoCompleteDays. A slow look (a board on a network
+    drive) makes the next one wait longer."""
+    boards, wait, auto_at = None, 2.0, 0.0
+    while True:
+        time.sleep(wait)
+        began = time.time()
+        base = tasks_root()
+        try:
+            names = sorted(d.name for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")) \
+                if base.is_dir() else []
+        except OSError:
+            continue
+        if boards is not None and names != boards:
+            state.emit("tasks", list=True, disk=True)
+        boards = names
+        auto = time.time() - auto_at > 3600
+        for name in names:
+            folder = tasks_dir(name)
+            if not folder:
+                continue
+            s = task_store(folder)
+            try:
+                with s["lock"]:
+                    items = task_index(folder)
+                    news, s["news"] = s["news"], set()
+                    p = folder / "board.json"
+                    m = p.stat().st_mtime_ns if p.exists() else 0
+                    moved = s["board"] is not None and s["board"] != m
+                    s["board"] = m
+                if auto:
+                    task_auto_complete(state, folder)
+            except OSError:
+                continue
+            if news or moved:
+                ids = sorted({items[f][2]["id"] for f in news if f in items and items[f][2]["id"]})
+                state.emit("tasks", name=name, ids=ids[:50], disk=True)
+        if auto:
+            auto_at = time.time()
+        wait = min(10.0, wait * 2) if time.time() - began > 0.2 else 2.0
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -2503,6 +3615,9 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such board"})
             return self.send(200, design_view(st, folder))
+        if path == "/api/tasks" or path.startswith("/api/tasks/"):
+            code, answer = tasks_get(st, path, q)
+            return self.send(code, answer)
         if path.startswith("/api/view/"):
             res = run_view(st, path[len("/api/view/"):], q)
             return self.send(200, res) if res is not None else self.send(404, {"error": "no such view"})
@@ -2699,6 +3814,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True})
             code, answer = (start_stories_run if path == "/api/stories/run" else stories_change)(st, folder, b)
             return self.send(code, answer)
+        if path.startswith("/api/tasks/"):
+            code, answer = tasks_post(st, path, b)
+            return self.send(code, answer)
         if path == "/api/doc/save":
             folder = feature_dir(str(b.get("name", "")))
             if not folder:
@@ -2786,6 +3904,7 @@ def serve(cwd, bash):
     threading.Thread(target=watch_ledger, args=(state,), daemon=True).start()
     threading.Thread(target=watch_updates, args=(state,), daemon=True).start()
     threading.Thread(target=watch_designs, args=(state,), daemon=True).start()
+    threading.Thread(target=watch_tasks, args=(state,), daemon=True).start()
     try:
         httpd.serve_forever(poll_interval=0.5)
     finally:

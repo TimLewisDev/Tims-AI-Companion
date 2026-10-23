@@ -49,13 +49,22 @@ visually:
   Tatty reads Jira through the Atlassian MCP server you signed in to in Claude
   Code (`/mcp`). That spends tokens, so it keeps what it fetched and only
   fetches again when you press **Refresh**.
+- **Your tasks, kept on disk, in the production mode:** for a project with no
+  Jira (or Trello, or Asana), **Tasks** keeps boards of its own: a backlog, a
+  board whose columns you choose, and a Completed page of everything you've
+  finished, with this week's count, your best week and your streak, to see how
+  far you've come. Drag a card between columns to change its status (or use
+  Alt+arrows), and open one to write or edit it. Each task is a markdown file
+  in your root's `tasks` folder, so you can edit it in Obsidian too, and the
+  board keeps up. **Start workflow** makes a task a feature, as a Jira ticket
+  does, and Tatty celebrates each one you finish.
 - **Planning IDs as links:** an `R12`, `CH5` or `P3` in a question, a reply or a
   document opens the item it names, and hovering it shows the item as a card,
   so you don't have to go and find it.
 
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
-Edit mode, a ticket's when you start a workflow from it, or a User Stories
+Edit mode, a ticket's when you start a workflow from a Jira ticket or a task, or a User Stories
 document through the toolbox's own script when you change a story) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
 
 ## Install
@@ -95,6 +104,12 @@ install from a local checkout, and how to work on Tatty itself.
 | see your Jira sprint | the production mode → **Jira** → **Refresh** |
 | start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |
 | turn a design document into user stories | design mode → **User Stories** → **New from a design document…** |
+| keep tasks without Jira | the production mode → **Tasks** → **New board…** |
+| add a task | **+ New task**, or type in **+ Add a task** under a column and press Enter |
+| move a task | drag its card to another column (or focus it and press Alt+→ / Alt+←) |
+| send finished tasks to Completed | **Clear done** on the board |
+| see how far you've come | the board's **Completed** tab |
+| start a workflow from a task | open the task → **Start workflow** |
 | see one of his animations now | right-click Tatty → **Preview** → pick one |
 | keep Tatty out where you can see him | right-click Tatty → **Keep Tatty on the desktop** |
 | have him move, or keep still | right-click Tatty → **Animations** |

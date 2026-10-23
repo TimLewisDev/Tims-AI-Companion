@@ -1,0 +1,116 @@
+/* Tatty's task boards (tasks.js): the board's columns of cards, the backlog and
+   Completed lists, and the task panel at the right. Everything uses theme.css's
+   tokens; the card's look follows the Jira board's (style.css, .jcard). */
+
+/* ---------------------------------------------------------------- the page */
+.tasks-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.tasks-bar { align-items: center; flex-wrap: wrap; }
+.tasks-bar input[type="search"] { width: 180px; }
+.ttabs { display: flex; gap: 2px; }
+.ttab { padding: 3px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; border: 1px solid transparent; }
+.ttab:hover { border-color: var(--line); }
+.ttab.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tasks-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tproblems { margin: 0 16px 6px; padding: 6px 10px; }
+.tproblems ul { margin: 6px 0 0; padding-left: 18px; }
+.tproblems li { margin: 2px 0; }
+.tfield { display: flex; flex-direction: column; gap: 2px; margin: 6px 0; }
+.tfield input, .tfield select, .tfield textarea { width: 100%; box-sizing: border-box; }
+.tasks-page select, .tpanel select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 6px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.task-board-card .chip { margin-right: 4px; }
+
+/* ---------------------------------------------------------------- the board */
+.tboard-tools { display: flex; align-items: center; gap: 10px; padding: 0 16px 6px; }
+.tboard { flex: 1; min-height: 0; display: flex; gap: 12px; align-items: stretch; overflow: auto; padding: 4px 16px 16px; }
+.tcol { flex: 0 0 264px; display: flex; flex-direction: column; gap: 6px; min-height: 0; max-height: 100%; padding: 8px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-sizing: border-box; }
+.tcol.trail { flex-basis: 240px; border-style: dashed; }
+.tcol.tunsorted { border-color: var(--warn); }
+.tcol.tdone .tcol-head h3 { color: var(--ok); }
+.tcol.tnewcol { flex-basis: 200px; background: none; border-style: dashed; align-self: flex-start; }
+.tcol-head { position: relative; display: flex; align-items: center; gap: 6px; }
+.tcol-head h3 { flex: 1; margin: 2px 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+.tcol-rename { flex: 1; }
+.tcol-menu { padding: 0 8px; line-height: 1.4; }
+.tmenu { position: absolute; z-index: 30; top: 100%; right: 0; display: flex; flex-direction: column; gap: 2px; min-width: 170px;
+  padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.15); }
+.tmenu button { text-align: left; border-color: transparent; }
+.tmenu button:hover:not([disabled]) { border-color: var(--accent); }
+.tmenu select { margin: 4px 0; }
+.tcards { flex: 1 1 auto; min-height: 36px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px; }
+.tquick { width: 100%; box-sizing: border-box; background: transparent; border-style: dashed; }
+.tquick:focus { background: var(--panel); border-style: solid; }
+.tall { color: var(--accent); padding: 0 4px; }
+
+/* a card: it is the drag handle too, so no touch scrolling starts on it */
+.tcard { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--ink); cursor: grab; touch-action: none; user-select: none; }
+.tcard:hover, .tcard:focus-visible { border-color: var(--accent); box-shadow: 0 1px 6px rgba(0,0,0,.08); outline: none; }
+.tcard[hidden] { display: none; }
+.tcard-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tsum { font-size: 13px; overflow-wrap: anywhere; }
+.tlabels { display: flex; flex-wrap: wrap; gap: 4px; }
+.tlabel { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.tdragging { display: none; }
+.tplace { flex: none; border: 2px dashed var(--accent); border-radius: 6px; background: var(--accent-soft); box-sizing: border-box; }
+.tghost { position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none; opacity: .92; cursor: grabbing;
+  box-shadow: 0 8px 24px rgba(0,0,0,.22); rotate: 1.5deg; }
+body.tdrag-on, body.tdrag-on * { cursor: grabbing !important; user-select: none; }
+
+/* ---------------------------------------------------------------- the lists */
+.tlist-page, .tdone-page { padding: 4px 20px 24px; max-width: 980px; }
+.tlist-page > .tquick { margin: 4px 0 10px; }
+.tlist { overflow: visible; }
+.trow { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.trow .tcard-top { flex: 0 0 auto; }
+.trow .tsum { flex: 1 1 260px; }
+.trow-acts { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.trow-acts button { padding: 1px 8px; font-size: 12px; }
+.tmore { padding: 10px 2px; }
+
+/* ---------------------------------------------------------------- completed */
+.tdone-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 28px; margin: 8px 0 4px; }
+.tbig strong { font-size: 40px; line-height: 1; color: var(--ok); }
+.tbig span { font-size: 15px; }
+.tstats { display: flex; gap: 10px; flex-wrap: wrap; }
+.tstat { display: flex; flex-direction: column; align-items: center; min-width: 78px; padding: 6px 10px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; }
+.tstat strong { font-size: 20px; }
+.tcheer { margin: 10px 0; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent); font-size: 14px; }
+.tweeks { display: flex; align-items: flex-end; gap: 6px; height: 96px; margin: 6px 0 14px; padding: 0 2px; }
+.tweek { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px; flex: 1; min-width: 0; height: 100%; }
+.tbar { display: block; width: 100%; max-width: 34px; border-radius: 4px 4px 0 0; background: var(--ok); }
+.tbar.zero { background: var(--line); }
+.tbar-n { color: var(--dim); min-height: 1.2em; }
+.tiny { font-size: 10px; white-space: nowrap; }
+.tgroup { margin: 14px 0 6px; font-size: 13px; color: var(--dim); }
+
+/* ---------------------------------------------------------------- the task panel
+   (its own classes, not the Jira panel's: jira.js takes those away on every
+   change of page) */
+.tshade { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.25); }
+.tpanel { position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(640px, calc(100vw - 24px)); overflow: auto;
+  display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; background: var(--panel); box-sizing: border-box;
+  border-left: 2px solid var(--accent); box-shadow: -4px 0 18px rgba(0,0,0,.15); outline: none; }
+.tpanel .jticket-head .spacer, .tactions .spacer { flex: 1; }
+.tpanel h4 { margin: 10px 0 4px; font-size: 13px; }
+.trow2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tdesc-head { display: flex; align-items: center; justify-content: space-between; }
+.tdesc-tabs { display: flex; gap: 2px; }
+.tdesc-tabs button { padding: 1px 10px; font-size: 12px; }
+.tdesc-tabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.tpreview { min-height: 120px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: text; }
+.tpreview[hidden], .tfield textarea[hidden] { display: none; }
+.traw { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 12.5px; }
+.tsection { border-top: 1px solid var(--line); padding-top: 4px; }
+.tbanner { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--warn); background: var(--accent-soft); font-size: 13px; }
+.tbanner[hidden] { display: none; }
+.tbanner button { margin-left: 4px; }
+.tactions { flex-wrap: wrap; }
+button.tdanger:hover { border-color: var(--bad); color: var(--bad); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tghost { rotate: none; }
+}
