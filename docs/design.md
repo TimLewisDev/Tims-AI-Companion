@@ -274,10 +274,47 @@ folders and Claude Code's own install records; see
   activity feed. Nothing is read from the transcript files, and a session
   Tatty didn't start reports nothing.
 
+## The Jira board
+
+The production mode's page (`#jira`, `jira.js`). The rules it keeps are in the
+toolbox contract's "Jira" section; how it is built:
+
+- **Reading Jira costs tokens.** Tatty can only reach the Atlassian MCP server
+  through Claude, so the server runs `claude -p` (`jira_claude`) with a JSON
+  schema for the answer, and keeps what comes back under `<home>/jira`. The
+  page reads that (`GET /api/jira`, free) and asks for a run only on a click:
+  `POST /api/jira/refresh`, `/api/jira/issue`, `/api/jira/move`, each a job on
+  a thread of its own (`jira_job`), one of a kind at a time (409 otherwise),
+  announced as `jira` events when it starts and ends.
+- **Keeping the runs small.** Measured on a real board: loading every MCP
+  server and the default system prompt put about 80k tokens in each turn's
+  context; the one Jira server (`--strict-mcp-config` with its entry from
+  `~/.claude.json`), a one-line system prompt and `--tools ""` put about 16k,
+  most of it cached between runs. A board of six tickets took about 20 s and
+  60k tokens over its turns ($0.04); a ticket about 20 s and 40k ($0.035).
+  `--bare` would be smaller still, but it drops the MCP servers.
+- **The board** is a column per status, ordered by the status's category (to
+  do, under way, done) and then by Jira's rank. The MCP server can't read a
+  board's own column setup, so statuses are the columns.
+- **A ticket** opens in a panel at the right. Its detail is loaded on its own
+  (description in markdown, sub-tasks, links, and the transitions it offers),
+  and kept.
+- **Start workflow** (`POST /api/jira/start`, `jira_start`):
+  1. makes `<KEY> - <summary>` with `new_feature`;
+  2. writes the ticket into it as `<name> - Ticket.md`;
+  3. starts the folder's first step with `start_session`, its placeholder
+     naming the ticket document;
+  4. once the session is open, moves the ticket by the transition to In
+     Progress named in its detail.
+
+  The page then goes to the feature's page, which shows the session live.
+  `started.tsv` remembers the feature, so the card says so and the panel links
+  to it.
+
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  249 checks against a real toolbox, with a toolbox-free part when there's no
+  297 checks against a real toolbox, with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
   and a window that opens on a full ledger says nothing about it.
@@ -285,6 +322,8 @@ folders and Claude Code's own install records; see
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
+  `features-check.py` ends with the Jira board, drawn from a sample board in
+  the page (columns, a ticket's panel, Esc, the nav item per mode).
   `page-check.py` also covers the modes: the top bar, the landing page, what
   switching mode does to the colour and the nav, and the mode being remembered
   across a reload. Start the server with `TATTY_MODES` to drive more than the

@@ -5,10 +5,10 @@
 "use strict";
 
 const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
-  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings") };
+  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering" };
+const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production" };
 const featureCache = new Map(); // name -> the last /api/feature answer
 let homeTimer = null;
 
@@ -65,7 +65,7 @@ function copyable(text) {
 }
 
 // ------------------------------------------------------------- routing
-// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings
+// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings · #jira
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
@@ -75,6 +75,7 @@ function parseRoute() {
   }
   if (parts[0] === "toolbox") return { page: "toolbox" };
   if (parts[0] === "settings") return { page: "settings" };
+  if (parts[0] === "jira") return { page: "jira" };
   if (parts[0] === "modes") return { page: "modes" };
   if (parts[0] === "home") return { page: "home" };
   // #mode, and nothing asked for: the mode's home page, or the landing page
@@ -110,6 +111,7 @@ async function route() {
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at);
   else if (r.page === "settings") renderSettings(pageEls.settings);
+  else if (r.page === "jira") renderJira(pageEls.jira);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
 }
 
