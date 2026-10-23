@@ -161,14 +161,38 @@ def main(argv):
             p.js(f"document.querySelector('#say').value = {json.dumps(say)}; document.querySelector('#chat').requestSubmit(); 'sent'")
             time.sleep(1)
             out["you_cards"] = p.js("document.querySelectorAll('#feed .card.you').length")
-        # The modes: the top bar (a radio over the discipline plugins installed,
-        # or the name of the only one), the landing page, a mode's home page,
-        # and that switching mode changes the app's accent colour and the nav.
-        # TATTY_MODES on the server fakes the plugins installed.
+        # A section finished: the card naming it, and the confetti over the page
+        # (app.js's milestoneCard and confetti). The milestone is asked for
+        # through the page's own api(), so no token is needed out here. The
+        # pieces take themselves away as they land, which is checked after.
+        # A headless browser asks for less motion by default, which is exactly
+        # the path with no confetti in it, so say otherwise for this one check.
+        p.call("Emulation.setEmulatedMedia",
+               features=[{"name": "prefers-reduced-motion", "value": "no-preference"}])
+        p.js("api('/api/milestone', { event: 'build.complete', prefix: 'Checked' })")
+        time.sleep(0.6)
+        out["milestone"] = p.js("""({
+            cards: [...document.querySelectorAll('#feed .card.milestone')].map(c => c.innerText.replace(/\\s+/g, ' ')),
+            big: document.querySelectorAll('#feed .card.milestone.big').length,
+            confetti: document.querySelectorAll('.burst span').length,
+            calm: window.matchMedia('(prefers-reduced-motion: reduce)').matches })""")
+        time.sleep(3)
+        out["confetti_cleared"] = p.js("document.querySelectorAll('.burst').length") == 0
+
+        # The modes: the radio over the discipline plugins installed (the one on
+        # screen -- the title bar's in the companion, the header's in a browser
+        # tab), the landing page, a mode's home page, and that switching mode
+        # changes the app's accent colour and the nav. TATTY_MODES on the server
+        # fakes the plugins installed.
         was = p.js("currentMode")
+        # the segments of the radio a person can see and click
+        segs = "[...document.querySelectorAll('.mode-switch .mode-seg')].filter(b => b.offsetParent !== null)"
         out["modes"] = p.js("""({ installed: installedModes, current: currentMode,
-            segments: [...document.querySelectorAll('#mode-switch .mode-seg')].map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
-            chip: (document.querySelector('#mode-switch .mode-chip') || {}).textContent || '',
+            slots: [...document.querySelectorAll('.mode-switch')].filter(s => s.offsetParent !== null).map(s => s.dataset.slot),
+            segments: """ + segs + """.map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
+            pressed: """ + segs + """.filter(b => b.classList.contains('on')).map(b => { const s = getComputedStyle(b);
+                       return { colour: s.color, background: s.backgroundColor, inset: s.boxShadow.includes('inset') }; }),
+            dots: document.querySelectorAll('.mode-switch .mode-dot').length,
             nav: [...document.querySelectorAll('.pnav a')].filter(a => a.offsetParent !== null).map(a => a.textContent),
             accent: getComputedStyle(document.body).getPropertyValue('--accent').trim() })""")
         p.js("location.hash = '#modes'; 1")
@@ -179,7 +203,7 @@ def main(argv):
         # the radio takes you into the mode you pick (a new page, so give the
         # hash a moment), in that mode's colour and with that mode's nav
         picked = p.js("""(() => {
-            const seg = [...document.querySelectorAll('#mode-switch .mode-seg')].filter(b => !b.classList.contains('on'));
+            const seg = """ + segs + """.filter(b => !b.classList.contains('on'));
             const next = seg[seg.length - 1];
             if (!next) return "one mode installed";
             next.click();
@@ -190,7 +214,10 @@ def main(argv):
             picked: currentMode, mode: document.body.dataset.mode,
             accent: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
             page: [...document.querySelectorAll('.page.on')].map(s => s.id).join(),
-            nav: [...document.querySelectorAll('.pnav a')].filter(a => a.offsetParent !== null).map(a => a.textContent) })""")
+            nav: [...document.querySelectorAll('.pnav a')].filter(a => a.offsetParent !== null).map(a => a.textContent),
+            segments: """ + segs + """.map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
+            pressed: """ + segs + """.filter(b => b.classList.contains('on')).map(b => { const s = getComputedStyle(b);
+                       return { colour: s.color, background: s.backgroundColor, inset: s.boxShadow.includes('inset') }; }) })""")
         p.js("document.querySelector('.tabs button[data-tab=docs]').click()")
         for _ in range(30):
             time.sleep(0.5)

@@ -14,7 +14,14 @@
     <AssemblyName>TtCompanion</AssemblyName>
     <RootNamespace>TtCompanion</RootNamespace>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Tatty's face (assets/tatty.ico; the build copies it next to the sources):
+         the exe's icon in the shell, and the one the tray and windows load. -->
+    <ApplicationIcon>tatty.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="tatty.ico" LogicalName="tatty.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />

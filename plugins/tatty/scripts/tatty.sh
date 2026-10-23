@@ -9,6 +9,10 @@ set -u
 usage() {
 	cat >&2 <<'EOF'
 usage: tatty.sh open [--no-browser]     start Tatty (if needed) and show it; prints the URL
+       tatty.sh boot [--project DIR]    what the Desktop shortcut runs: the server, the tray app and
+                                        Tatty's own Claude session (resumed, its terminal minimised)
+       tatty.sh install                 Desktop and Start menu shortcuts for Tatty (Windows)
+       tatty.sh uninstall               take them away
        tatty.sh status                  attached | attached (claude mod) | not open
        tatty.sh url                     the window's URL
        tatty.sh show <kind> <title>     show the text on stdin; kind: text markdown table status reply
@@ -16,6 +20,8 @@ usage: tatty.sh open [--no-browser]     start Tatty (if needed) and show it; pri
                                         prints "<header><TAB><answer>" per question
        tatty.sh answer <id> [--wait S]  keep waiting on an earlier ask
        tatty.sh listen [--wait S]       the next message typed in the window
+       tatty.sh cheer [<event>]         celebrate a milestone now, as the toolbox's ledger would
+                                        (default build.complete); --prefix names the feature
        tatty.sh close                   stop Tatty's window
 
 --wait is in seconds (default 100, under a 120 s shell-tool limit).
@@ -57,7 +63,10 @@ cmd=$1; shift
 case $cmd in
 open)
 	exec $PY "$(winpath "$SERVER")" open --cwd "$(winpath "$PWD")" --bash "$(winpath "${BASH:-$(command -v bash)}")" "$@" ;;
+boot | install)
+	exec $PY "$(winpath "$SERVER")" "$cmd" --bash "$(winpath "${BASH:-$(command -v bash)}")" "$@" ;;
 close) exec $PY "$(winpath "$SERVER")" stop ;;
-status | url | show | ask | answer | listen) exec $PY "$(winpath "$SERVER")" "$cmd" "$@" ;;
+uninstall) exec $PY "$(winpath "$SERVER")" uninstall ;;
+status | url | show | ask | answer | listen | cheer) exec $PY "$(winpath "$SERVER")" "$cmd" "$@" ;;
 *) usage; exit 2 ;;
 esac

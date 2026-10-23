@@ -352,14 +352,66 @@ function onEvent(ev) {
 }
 
 function feedEvent(ev) {
-  if (ev.type === "ask") feed.append(questionCard(ev));
+  if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); }
   else if (ev.type === "answered") answered(ev);
+  // A milestone belongs to the feature, not to a session, so it is shown
+  // wherever Tatty is: before the tag test, which is what keeps a started
+  // session's own chatter out of this feed.
+  else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); confetti(ev.tier); }
   else if (ev.tag) return;
   else if (ev.type === "card") feed.append(card(ev));
   else if (ev.type === "say") feed.append(el("div", { class: "card you" }, el("pre", {}, ev.text)));
   else if (ev.type === "status") setMod(!!ev.mod);
   scrollFeed();
 }
+
+// ------------------------------------------------------- finishing something
+
+// A milestone the toolbox recorded (server.py's MILESTONES): what was finished,
+// and which feature's work unit it was.
+function milestoneCard(ev) {
+  const whose = [ev.prefix, ev.qualifier].filter(Boolean).join(" · ");
+  return el("div", { class: "card milestone" + (ev.tier === "big" ? " big" : "") },
+            el("h4", {}, ev.label || "Finished"),
+            el("p", {}, whose || "That's another one done."));
+}
+
+const FESTIVE = ["#E5A32B", "#4CAF50", "#E05263", "#7D5BBD", "#3B9BD6", "#F2C94C"];
+
+// Confetti over the page, in step with Tatty's own (Effects.cs). Each piece is a
+// span with a CSS animation and its own drift and spin; the layer takes itself
+// away when the last one has fallen. Nothing moves for a person who has asked
+// for less motion -- the card says it just as well.
+function confetti(tier) {
+  if (calm()) return;
+  const count = tier === "big" ? 34 : 18;
+  const layer = el("div", { class: "burst" });
+  for (let i = 0; i < count; i++) {
+    const bit = el("span", {});
+    bit.style.left = Math.random() * 100 + "%";
+    bit.style.background = FESTIVE[i % FESTIVE.length];
+    bit.style.setProperty("--drift", Math.round((Math.random() * 2 - 1) * 90) + "px");
+    bit.style.setProperty("--spin", Math.round((Math.random() * 2 - 1) * 720) + "deg");
+    bit.style.animationDuration = (1.2 + Math.random() * (tier === "big" ? 1 : 0.5)).toFixed(2) + "s";
+    bit.style.animationDelay = (Math.random() * 0.25).toFixed(2) + "s";
+    layer.append(bit);
+  }
+  let falling = count;
+  layer.addEventListener("animationend", () => { if (--falling <= 0) layer.remove(); });
+  document.body.append(layer);
+}
+
+// Something waits for an answer: the page flashes its edge, for the times the
+// bubble is in the corner of an eye.
+function ring() {
+  if (calm()) return;
+  document.body.classList.remove("asking");
+  void document.body.offsetWidth; // so a second question restarts the animation
+  document.body.classList.add("asking");
+  setTimeout(() => document.body.classList.remove("asking"), 2400);
+}
+
+function calm() { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
 
 function connect() {
   const es = new EventSource("/events?token=" + encodeURIComponent(token));

@@ -40,6 +40,10 @@ trap 'bash "$W" close >/dev/null 2>&1' EXIT
 
 # WebView2 reads this itself; page-check.py and window-check.py attach to it.
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$PORT"
+# Tatty keeps still on a machine whose animations are off (Settings ▸
+# Accessibility ▸ Visual effects), and this test has to see him move. The
+# companion inherits this from the server it is started by.
+export TATTY_ANIMATE=1
 if ! bash "$W" open >/dev/null 2>&1; then
 	echo "skip  Tatty wouldn't open (no toolbox, or the build failed)"
 	exit 0
@@ -91,6 +95,23 @@ step "compact again" compact compact
 step "tucked away: nothing on screen, the proxy has the button back" hidden hidden
 wake "popped up"
 step "popped up compact again" compact
+
+echo
+echo "# a section finished"
+# The confetti has a window of its own, click-through so it can cover far more
+# than Tatty does without taking a click off the desktop (every step above has
+# already asserted that much). Here: it is seen while something is flying, and
+# gone again once the last piece has landed.
+stage() {
+	"$PY" "$CHECK" 2>/dev/null | "$PY" -c 'import json, sys
+found = [w for w in json.load(sys.stdin).get("windows", []) if w["role"] == "effects"]
+print("missing" if len(found) != 1 else ("up" if found[0]["style"]["visible"] else "away"))'
+}
+bash "$W" cheer build.complete >/dev/null 2>&1
+sleep 1
+[ "$(stage)" = up ] && ok "the confetti is up" || bad "the confetti is up" "the stage is $(stage)"
+sleep 5
+[ "$(stage)" = away ] && ok "and away again once it has landed" || bad "and away again once it has landed" "the stage is $(stage)"
 
 echo
 echo "# nothing was rebuilt on the way"

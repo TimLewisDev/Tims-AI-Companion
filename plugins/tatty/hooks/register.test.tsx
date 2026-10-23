@@ -7,14 +7,15 @@ const TERMINAL = { questions: QUESTIONS, answers: { 'Go ahead?': 'from the termi
 
 // engine: the hooks that stand for the engine beneath the mod. `answer` is what
 // Tatty's /api/answer says; `open` whether server.json is there; `tag` the
-// session's TATTY_SESSION (a session Tatty started from a feature page);
+// session's TATTY_SESSION (a session Tatty started from a feature page); `join`
+// its TATTY_JOIN (Tatty's own session, started by the Desktop app);
 // `bodies` collects what was POSTed.
-function engine(on: any, open: boolean, answer: object, seen: string[], tag = '', bodies: any[] = []) {
+function engine(on: any, open: boolean, answer: object, seen: string[], tag = '', bodies: any[] = [], join = false) {
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
   on('command.register', () => ({ value: { command: 'tatty' } }))
   on('env.get', (_: unknown, e: { name: string }) => ({
-    value: e.name === 'TATTY_HOME' ? '/h' : e.name === 'TATTY_SESSION' && tag ? tag : undefined,
+    value: e.name === 'TATTY_HOME' ? '/h' : e.name === 'TATTY_SESSION' && tag ? tag : e.name === 'TATTY_JOIN' && join ? '1' : undefined,
   }))
   on('fs.read', () => (open ? { value: JSON.stringify({ port: 9, token: 't', url: 'http://127.0.0.1:9/#token=t' }) } : { deny: 'no such file' }))
   on('http.fetch', (_: unknown, e: { url: string; init?: { body?: string } }) => {
@@ -50,6 +51,21 @@ test('a session that has not joined Tatty is left alone', async ($, on) => {
   await new Promise(r => setTimeout(r, 50))
   expect((got as any).result.answers).toEqual(TERMINAL.answers)
   expect(seen).toEqual([]) // not one request to Tatty
+})
+
+test("Tatty's own session (TATTY_JOIN) joins by itself, untagged, and asks in Tatty", async ($, on) => {
+  const seen: string[] = []
+  const bodies: any[] = []
+  engine(on, true, { status: 'answered', answers: { 'Go ahead?': 'No' } }, seen, '', bodies, true)
+  await $.session.start(START)
+
+  const got = await $.tool.call({ tool: 'AskUserQuestion', questions: QUESTIONS } as any)
+  await $.tool.call({ tool: 'Bash', command: 'ls' } as any)
+  await new Promise(r => setTimeout(r, 50))
+  expect((got as any).result.answers).toEqual({ 'Go ahead?': 'No' })
+  expect(seen).toContain('/api/hello')
+  expect(bodies.every(b => b.tag === undefined)).toBe(true) // the main feed, not a feature's page
+  expect(seen).not.toContain('/api/activity') // and no per-tool reports
 })
 
 test('after /tatty attach a question is answered in Tatty', async ($, on) => {

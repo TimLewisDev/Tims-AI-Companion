@@ -23,11 +23,15 @@ namespace TtCompanion
     public partial class App : Application
     {
         private Mutex? single;
+        private EventWaitHandle? wake;
         private TattyWindow tatty = null!;
         private BubbleWindow bubble = null!;
+        private Effects effects = null!;
         private TaskbarProxy proxy = null!;
         private Forms.NotifyIcon tray = null!;
         private HttpClient http = null!;
+        private readonly Sounds sounds = new Sounds();
+        private Settings settings = new Settings();
         private readonly DispatcherTimer poll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         private readonly DispatcherTimer tuck = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         private readonly HashSet<string> openAsks = new HashSet<string>();
@@ -58,18 +62,33 @@ namespace TtCompanion
 
             string dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Tatty", "webview2");
             var face = MakeIcon(); // the one icon, before anything asks for it
+            settings = Settings.Load();
+            sounds.Enabled = settings.Sound;
+            Motion.Chosen = settings.Lively;
             tatty = new TattyWindow();
             bubble = new BubbleWindow(PageUrl(info.Value), dataDir);
+            // The confetti, the pulses and the Z's: a click-through window of its
+            // own around Tatty, so it can cover more ground than he does without
+            // taking any of the desktop out of use.
+            effects = new Effects { Enabled = settings.Effects };
+            // Z's only while there is a Tatty to see them over: he keeps dozing
+            // off while tucked away, which is nobody's business but his.
+            tatty.PoseChanged += pose => effects.Sleeping(pose == Pose.Asleep && tatty.IsVisible);
             // The same face in the taskbar, in Alt-Tab and in the tray.
             tatty.Icon = bubble.Icon = WindowIcon();
             // The button that is always there, whether or not anything is on screen.
             proxy = new TaskbarProxy(WindowIcon());
             proxy.Chosen += OnProxyChosen;
-            proxy.Dismissed += TuckAway;
+            proxy.Dismissed += HideEverything;
             bubble.PanelOwnsButton += panelHasOne => { if (panelHasOne) proxy.HideButton(); else proxy.ShowAsButton(); };
             proxy.ShowAsButton();
             tatty.Clicked += ToggleBubble;
-            tatty.Moved += () => { tattyPlaced = true; if (bubble.IsShown && !bubble.IsExpanded) PlaceBubble(); };
+            tatty.Moved += () =>
+            {
+                tattyPlaced = true;
+                effects.PlaceOn(tatty);
+                if (bubble.IsShown && !bubble.IsExpanded) PlaceBubble();
+            };
             bubble.PageMessage += OnPageMessage;
             // A collapse lands a frame later; the full panel places itself.
             bubble.SizeChanged += (_, _) => { if (bubble.IsShown && !bubble.IsExpanded) PlaceBubbleOnce(); };
@@ -78,13 +97,14 @@ namespace TtCompanion
             // Down into the taskbar: remember where the panel was while we can.
             bubble.WentToTaskbar += () => { tuck.Stop(); bubble.SaveBounds(); };
             bubble.Woken += () => tuck.Stop();
-            bubble.AskedToClose += TuckAway;
+            bubble.AskedToClose += HideEverything;
             tuck.Tick += (_, _) => TryTuck();
 
             Native.OnForegroundChanged(OnForegroundChanged);
 
             tray = MakeTray(face);
             PopUp(activate: false);
+            WatchForWake();
             poll.Tick += async (_, _) => await Poll();
             poll.Start();
         }
@@ -93,10 +113,8 @@ namespace TtCompanion
         {
             bubble?.SaveBounds();
             Native.StopForegroundHook();
-            // The icon's handle is only nobody's once the tray and the windows
-            // have all stopped using it.
-            if (tray != null) { tray.Visible = false; tray.Dispose(); }
-            if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
+            if (tray != null) { tray.Visible = false; tray.Icon?.Dispose(); tray.Dispose(); }
+            wake?.Dispose();
             single?.Dispose();
             base.OnExit(e);
         }
@@ -164,18 +182,28 @@ namespace TtCompanion
                 using var doc = JsonDocument.Parse(text);
                 var events = doc.RootElement;
                 bool first = since < 0;
-                bool attention = false, question = false;
+                bool attention = false, question = false, anything = false;
+                string? finished = null; // the loudest milestone in this batch
                 foreach (var ev in events.EnumerateArray())
                 {
                     since = ev.GetProperty("seq").GetInt32();
+                    anything = true;
                     string type = ev.GetProperty("type").GetString() ?? "";
                     if (type == "ask") { openAsks.Add(ev.GetProperty("id").GetString() ?? ""); question = true; }
                     else if (type == "answered") openAsks.Remove(ev.GetProperty("id").GetString() ?? "");
                     else if (type == "card" && ev.TryGetProperty("kind", out var kind) && kind.GetString() == "reply") attention = true;
+                    else if (type == "milestone") finished = Louder(finished, Tier(ev));
                 }
-                if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; attention = false; }
+                // The first poll is the backlog, not the news: it says what is
+                // still waiting and nothing else, or a window opened beside a
+                // day's work would arrive mid-party.
+                if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; attention = false; finished = null; anything = false; }
+                if (anything) tatty.Poke();
                 tatty.HasBadge = openAsks.Count > 0;
-                if (question || attention) PopUp(activate: false);
+                if (question || attention || finished != null) PopUp(activate: false);
+                if (finished != null) Celebrate(finished == "big");
+                else if (question) Asked();
+                effects.Asking(openAsks.Count > 0);
                 if (openAsks.Count == 0 && bubble.IsShown && !tuck.IsEnabled) tuck.Start();
                 if (openAsks.Count > 0) tuck.Stop();
             }
@@ -193,10 +221,62 @@ namespace TtCompanion
             finally { polling = false; }
         }
 
+        private static string Tier(JsonElement ev) =>
+            ev.TryGetProperty("tier", out var tier) ? tier.GetString() ?? "small" : "small";
+
+        // Of two milestones in the same breath, the one worth the bigger fuss.
+        private static string Louder(string? had, string tier) =>
+            had == "big" || tier == "big" ? "big" : had ?? tier;
+
+        // A section is finished: he jumps and wiggles, the confetti goes up, and
+        // there is a flourish to hear. "big" is a plan signed off or a build
+        // complete; everything else is the smaller version of all three.
+        private void Celebrate(bool big)
+        {
+            tatty.Celebrate(big);
+            effects.Confetti(big);
+            sounds.Play(big ? Sounds.Cue.Complete : Sounds.Cue.Milestone);
+        }
+
+        // A question has arrived: a sharp double hop and a chime. The ring pulses
+        // that go on until it is answered are started from the poll, which knows
+        // how many are still open.
+        private void Asked()
+        {
+            tatty.Alert();
+            sounds.Play(Sounds.Cue.Question);
+        }
+
         private async Task StopServer()
         {
+            await ClaudeTerminal("close");
             try { await http.PostAsync("/api/stop", new StringContent("{}", Encoding.UTF8, "application/json")); } catch (Exception) { }
             Quit();
+        }
+
+        // Tatty's own Claude session (the one the Desktop shortcut starts, in a
+        // terminal kept minimised): the server finds its window by title, because
+        // it started it. "show" brings it back; "close" ends it with Tatty, and
+        // the conversation is on disk for the next time. Nothing happens, and
+        // nothing is said, when this Tatty has no such session.
+        private async Task ClaudeTerminal(string what)
+        {
+            if (what == "show") Native.AllowAnyForeground();
+            try { await http.PostAsync($"/api/claude/{what}", new StringContent("{}", Encoding.UTF8, "application/json")); } catch (Exception) { }
+        }
+
+        // The Desktop shortcut and a taskbar pin start Tatty by running `tatty.sh
+        // boot`, which finds this app already running and rings this event instead
+        // of starting a second one (server.py's wake_companion).
+        private void WatchForWake()
+        {
+            wake = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\tatty-companion-show");
+            var handle = wake;
+            new Thread(() =>
+            {
+                try { while (handle.WaitOne()) Dispatcher.BeginInvoke(new Action(() => PopUp(activate: true))); }
+                catch (ObjectDisposedException) { }
+            }) { IsBackground = true }.Start();
         }
 
         // Leaving for good. Tatty's windows refuse to be closed, because closing
@@ -286,6 +366,7 @@ namespace TtCompanion
             if (!bubble.IsVisible) bubble.Show();
             if (Native.IsMinimised(bubble)) bubble.Restore();
             if (!bubble.IsExpanded) PlaceBubble();
+            tatty.Poke(); // being brought out is something happening: wake up
             tatty.Hop();
             bubble.Post("shown");
             if (activate) bubble.Activate();
@@ -312,12 +393,24 @@ namespace TtCompanion
             Native.BringToFront(bubble);
         }
 
-        // Out of sight until something happens. Tatty and the bubble go; the
-        // taskbar button stays, which is the whole reason the proxy window exists.
-        private void TuckAway()
+        // Out of sight until something happens. The bubble goes, and so does
+        // Tatty -- unless the person has asked to keep him on the desktop, in
+        // which case he stays out there on his own and gets on with his day
+        // (Avatar.cs: that is when the fidgeting, the sitting and the sleeping
+        // are there to be seen). The taskbar button stays either way, which is
+        // the whole reason the proxy window exists.
+        private void TuckAway() => Tuck(keepTatty: settings.StayVisible);
+
+        // The x, the tray's "hide" and the taskbar's close are a person saying
+        // "away with all of it", which outranks the setting.
+        private void HideEverything() => Tuck(keepTatty: false);
+
+        private void Tuck(bool keepTatty)
         {
             bubble.Hide();
+            if (keepTatty) return;
             tatty.Hide();
+            effects.Clear();
             tattyPlaced = false;
         }
 
@@ -335,6 +428,7 @@ namespace TtCompanion
             if (Native.IsOurs(hwnd) || Native.IsShellOrDesktop(hwnd) || Native.CoversItsMonitor(hwnd)) return;
             if (tatty.IsVisible) Native.KeepOnTop(tatty, true);
             if (bubble.IsShown && !bubble.IsExpanded) Native.KeepOnTop(bubble, true);
+            if (effects.IsVisible) Native.KeepOnTop(effects, true); // after Tatty: the confetti is in front of him
         }
 
         private void TryTuck()
@@ -363,7 +457,7 @@ namespace TtCompanion
                 case "drag": bubble.Drag(); break;
                 case "maximise": bubble.ToggleMaximise(); break;
                 case "minimise": bubble.Minimise(); break;
-                case "hide": TuckAway(); break;
+                case "hide": HideEverything(); break;
                 // The mode on the page (engineering, design, production): Tatty
                 // himself is drawn in its colour too.
                 case "mode": SetAccent(arg); break;
@@ -384,6 +478,7 @@ namespace TtCompanion
             var wa = Native.WorkAreaUnderPointer();
             var r = Native.Rect(tatty);
             Native.MoveTo(tatty, wa.Right - r.Width - 24, wa.Bottom - r.Height - 8);
+            effects.PlaceOn(tatty); // the stage goes wherever he does
         }
 
         // The compact bubble beside Tatty (above him, or to his left if there's no
@@ -401,14 +496,28 @@ namespace TtCompanion
             var wa = Native.WorkAreaOf(tatty);
             var t = Native.Rect(tatty);
             var b = Native.Rect(bubble);
-            int x = t.Right - b.Width, y = t.Top - b.Height - 6;
-            if (y < wa.Top) { x = t.Left - b.Width - 6; y = t.Bottom - b.Height; }
+            // Off Tatty himself, not off his window: it keeps empty strips above
+            // and below him to jump and sit in (TattyWindow's insets), and a
+            // bubble floating over one of them would just look misplaced.
+            double s = Native.Scale(tatty);
+            int top = t.Top + (int)(TattyWindow.TopInset * s), bottom = t.Bottom - (int)(TattyWindow.BottomInset * s);
+            int x = t.Right - b.Width, y = top - b.Height - 6;
+            if (y < wa.Top) { x = t.Left - b.Width - 6; y = bottom - b.Height; }
             x = Math.Clamp(x, wa.Left, Math.Max(wa.Left, wa.Right - b.Width));
             y = Math.Clamp(y, wa.Top, Math.Max(wa.Top, wa.Bottom - b.Height));
             Native.MoveTo(bubble, x, y);
         }
 
         // ------------------------------------------------------------ tray
+
+        // A menu item that is on or off and remembers which, saved as soon as it
+        // is clicked so a crash can't lose the choice.
+        private Forms.ToolStripMenuItem Choice(string text, bool on, Action<bool> set)
+        {
+            var item = new Forms.ToolStripMenuItem(text) { Checked = on, CheckOnClick = true };
+            item.CheckedChanged += (_, _) => { set(item.Checked); settings.Save(); };
+            return item;
+        }
 
         private Forms.NotifyIcon MakeTray(Drawing.Icon face)
         {
@@ -422,51 +531,54 @@ namespace TtCompanion
                 PickRoot(null);
             });
             menu.Items.Add("Hide until something happens", null, (_, _) => OnPageMessage("hide"));
+            menu.Items.Add("Show Claude's terminal", null, async (_, _) => await ClaudeTerminal("show"));
+            menu.Items.Add(new Forms.ToolStripSeparator());
+            // What Tatty is like to have around: whether he moves, whether he
+            // makes a noise, whether he throws confetti, and whether he goes away
+            // when there is nothing on. Animations starts as the OS's own answer
+            // and is the person's for good as soon as they click it (Motion).
+            menu.Items.Add(Choice("Animations", Motion.On, on =>
+            {
+                settings.Lively = on;
+                Motion.Chosen = on;
+                if (on) tatty.Hop();
+            }));
+            menu.Items.Add(Choice("Sound", settings.Sound, on =>
+            {
+                settings.Sound = sounds.Enabled = on;
+                if (on) sounds.Play(Sounds.Cue.Blip); // so the choice is audible
+            }));
+            menu.Items.Add(Choice("Effects", settings.Effects, on => settings.Effects = effects.Enabled = on));
+            menu.Items.Add(Choice("Keep Tatty on the desktop", settings.StayVisible, on =>
+            {
+                settings.StayVisible = on;
+                if (!on || tatty.IsVisible) return;
+                tatty.Show();
+                PlaceTatty();
+            }));
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add("Close Tatty's window", null, async (_, _) => await StopServer());
-            menu.Items.Add("Quit Tatty", null, (_, _) => Quit());
+            menu.Items.Add("Quit Tatty", null, async (_, _) => { await ClaudeTerminal("close"); Quit(); });
             var icon = new Forms.NotifyIcon { Icon = face, Text = "Tatty", ContextMenuStrip = menu, Visible = true };
             icon.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) ToggleBubble(); };
             return icon;
         }
 
-        // One handle for the whole process: Icon.FromHandle doesn't own it, and
-        // the tray, both windows and the taskbar button all want the same face.
-        private static IntPtr iconHandle;
+        // Tatty's face is a file, assets/tatty.ico (drawn by tools/make-icon), built
+        // into the exe as a resource and as its file icon, so the shell shows the
+        // same face when he isn't running.
+        private static Stream FaceStream() => typeof(App).Assembly.GetManifestResourceStream("tatty.ico")!;
 
-        // The same face for the taskbar button and for Alt-Tab, which WPF hands
-        // to the window as WM_SETICON. CreateBitmapSourceFromHIcon copies the
-        // pixels, so the handle stays the tray's business.
-        private static ImageSource WindowIcon() =>
-            Imaging.CreateBitmapSourceFromHIcon(iconHandle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
-
-        // Tatty's face, drawn here so there's no binary icon file to keep.
+        // The tray's own copy, at the size the tray asks for.
         private static Drawing.Icon MakeIcon()
         {
-            using var bmp = new Drawing.Bitmap(32, 32);
-            using (var g = Drawing.Graphics.FromImage(bmp))
-            {
-                g.SmoothingMode = Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                var accent = Drawing.Color.FromArgb(0x3B, 0x6E, 0xA8);
-                using var pen = new Drawing.Pen(accent, 2.5f);
-                using var face = new Drawing.SolidBrush(Drawing.Color.FromArgb(0xFD, 0xFC, 0xF9));
-                using var dark = new Drawing.SolidBrush(Drawing.Color.FromArgb(0x1F, 0x23, 0x28));
-                using var head = new Drawing.Drawing2D.GraphicsPath();
-                var r = new Drawing.Rectangle(3, 8, 26, 21);
-                int d = 8;
-                head.AddArc(r.Left, r.Top, d, d, 180, 90);
-                head.AddArc(r.Right - d, r.Top, d, d, 270, 90);
-                head.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-                head.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
-                head.CloseFigure();
-                g.FillPath(face, head);
-                g.DrawPath(pen, head);
-                g.DrawLine(pen, 16, 2, 16, 8);
-                g.FillEllipse(dark, 9, 14, 5, 5);
-                g.FillEllipse(dark, 18, 14, 5, 5);
-            }
-            iconHandle = bmp.GetHicon();
-            return Drawing.Icon.FromHandle(iconHandle);
+            using var stream = FaceStream();
+            return new Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize);
         }
+
+        // The face for the taskbar button and for Alt-Tab: every size in the file,
+        // so WPF picks the one that suits the window's DPI (WM_SETICON, small and big).
+        private static ImageSource WindowIcon() =>
+            BitmapFrame.Create(FaceStream(), BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
     }
 }

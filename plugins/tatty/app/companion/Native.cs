@@ -15,6 +15,7 @@ namespace TtCompanion
         private const int WS_EX_TOOLWINDOW = 0x00000080;
         private const int WS_EX_APPWINDOW = 0x00040000;
         private const int WS_EX_NOACTIVATE = 0x08000000;
+        private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int DWMWA_FORCE_ICONIC_REPRESENTATION = 7;
         private const int DWMWA_DISALLOW_PEEK = 12;
         private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
@@ -78,6 +79,18 @@ namespace TtCompanion
             if (!noActivate) return;
             var h = Handle(w);
             SetWindowLong(h, GWL_EXSTYLE, GetWindowLong(h, GWL_EXSTYLE) | WS_EX_NOACTIVATE);
+        }
+
+        // A window with nothing to click: the mouse goes straight through it to
+        // whatever is underneath, so the confetti can cover far more of the screen
+        // than Tatty does without taking a single click off the desktop.
+        // WS_EX_TRANSPARENT is also what tells Tatty's own window apart from this
+        // one, which otherwise looks exactly like him (tools/window-check.py).
+        public static void MakeClickThrough(Window w)
+        {
+            SetAltTab(w, false);
+            var h = Handle(w);
+            SetWindowLong(h, GWL_EXSTYLE, GetWindowLong(h, GWL_EXSTYLE) | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
         }
 
         // ------------------------------------------- where a window belongs

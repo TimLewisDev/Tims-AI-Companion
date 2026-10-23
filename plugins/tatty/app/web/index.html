@@ -24,7 +24,7 @@
   <button type="button" id="hide" title="Tuck Tatty away until something happens">×</button>
 </div>
 <header>
-  <a class="brand" href="#modes" title="All the modes you have installed"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong></a>
+  <a class="brand" href="#modes" title="All the modes you have installed"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong> <span class="dim">your TT toolbox companion</span></a>
   <div class="mode-switch" data-slot="header"></div>
   <nav class="pnav">
     <a href="#mode" data-page="mode">Home</a>
@@ -34,6 +34,7 @@
   <div class="where dim" id="cwd"></div>
   <div class="badges">
     <span class="badge" id="conn" title="Connection to the window server">connecting…</span>
+    <a href="#settings" id="settings-link" class="gear" title="Settings" aria-label="Settings">⚙<span class="dot" hidden></span></a>
     <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>
     <button type="button" id="chat-toggle" title="Show or hide the chat">Chat</button>
   </div>
@@ -48,6 +49,8 @@
   <section class="page" id="page-home"></section>
   <!-- One feature: its documents on the left, where it stands on the right. -->
   <section class="page" id="page-feature"></section>
+  <!-- Settings: Tatty's own options and its updates (settings.js). -->
+  <section class="page" id="page-settings"></section>
   <!-- Toolbox: status of any folder, connections and the toolbox's docs. -->
   <section class="page" id="page-toolbox">
   <nav class="rail">
@@ -97,5 +100,6 @@
 <script src="/static/views.js"></script>
 <script src="/static/usage.js"></script>
 <script src="/static/features.js"></script>
+<script src="/static/settings.js"></script>
 </body>
 </html>

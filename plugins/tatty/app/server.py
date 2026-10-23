@@ -17,6 +17,11 @@ log and Tatty's own settings (the root folder, the projects chosen per feature).
 usage: server.py serve  [--cwd DIR] [--bash PATH]       run in the foreground
        server.py open   [--cwd DIR] [--bash PATH] [--no-browser]
                                                         start it detached if needed, open the page
+       server.py boot   [--project DIR] [--bash PATH] [--no-browser] [--no-claude]
+                                                        what the Desktop shortcut runs: the server, the
+                                                        tray app and Tatty's own Claude session
+       server.py install [--bash PATH]                  Desktop and Start menu shortcuts (Windows)
+       server.py uninstall                              take them away
        server.py status                                 attached | attached (claude mod) | not open
        server.py url                                    the page's URL
        server.py stop                                   stop the server
@@ -24,6 +29,7 @@ usage: server.py serve  [--cwd DIR] [--bash PATH]       run in the foreground
        server.py ask [--wait S]                         questions JSON on stdin
        server.py answer <id> [--wait S]                 keep waiting on an ask
        server.py listen [--wait S]                      the next message typed in the window
+       server.py cheer [<event>] [--prefix NAME]        celebrate a milestone now (default build.complete)
 
 Home: $TATTY_HOME, else $CLAUDE_CONFIG_DIR/tatty, else ~/.claude/tatty.
 Exit: 0 ok, 1 not open, 2 usage, 5 no answer yet, 6 declined (ask in the terminal).
@@ -49,6 +55,7 @@ PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a ch
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
+          "settings.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -153,6 +160,9 @@ class State:
         self.mod_seen = 0.0
         self.mod_session = ""
         self.sessions = {}  # tag -> a session Start opened (see start_session)
+        self.update = {"status": "idle", "running": plugin_version(), "installed": "", "available": "",
+                       "checked": 0.0, "message": ""}  # see "updates" below
+        self.update_lock = threading.Lock()
         self.last_activity = time.time()
 
     def touch(self):
@@ -198,6 +208,166 @@ class State:
                 if left <= 0:
                     return None
                 self.cond.wait(left)
+
+
+# ---------------------------------------------------------------- settings
+
+# What the person has chosen in the Settings page, one JSON file in Tatty's home.
+# An unknown or mistyped key is ignored, so a hand-edited file can't break Tatty.
+SETTINGS_DEFAULTS = {"autoUpdate": True}
+
+
+def load_settings():
+    try:
+        stored = json.loads((home() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    return {k: stored[k] if isinstance(stored.get(k), type(v)) else v for k, v in SETTINGS_DEFAULTS.items()}
+
+
+def save_settings(changes):
+    """Keep the known keys of `changes` that have the right type; returns all the settings."""
+    now = load_settings()
+    now.update({k: v for k, v in changes.items() if k in now and isinstance(v, type(now[k]))})
+    home().mkdir(parents=True, exist_ok=True)
+    tmp = home() / "settings.json.tmp"
+    tmp.write_text(json.dumps(now, indent=2), encoding="utf-8")
+    os.replace(tmp, home() / "settings.json")
+    return now
+
+
+# ---------------------------------------------------------------- updates
+# Tatty updates the way any Claude Code plugin does, through the claude command:
+# `claude plugin marketplace update` refreshes the marketplace's copy of the
+# catalogue, and `claude plugin update` installs a newer version of the plugin
+# into Claude Code's cache. Claude Code only sees a new version when plugin.json's
+# "version" is raised, so a release must raise it. The running server and tray app
+# are the old version until Tatty is restarted, which is why the result is
+# "ready", not "done"; the tray app is built again, per version, on that start.
+# Nothing here touches the toolbox: its updates are Claude Code's to do.
+
+UPDATE_FIRST = float(os.environ.get("TATTY_UPDATE_FIRST", "30"))  # seconds after the server starts before it looks
+UPDATE_EVERY = 6 * 3600
+UPDATE_TIMEOUT = 180
+
+
+def version_key(v):
+    """A version as a tuple to compare: 0.10.0 is after 0.9.0. Anything that isn't
+    dotted numbers (a commit id, say) sorts first, so it is never 'newer'."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)(?:[-+].*)?", str(v))
+    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
+
+
+def install_record():
+    """(plugin id, marketplace, installed version) of Tatty's user-scope install, or None."""
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for name, installs in recorded.get("plugins", {}).items():
+            base, _, market = name.partition("@")
+            if base == "tatty" and market:
+                for e in installs:
+                    if e.get("scope") == "user":
+                        return name, market, str(e.get("version", ""))
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
+def marketplace_version(market):
+    """The version of Tatty that the marketplace's own copy of its catalogue offers
+    (as of the last `marketplace update`), or ''."""
+    try:
+        known = json.loads((config_dir() / "plugins" / "known_marketplaces.json").read_text(encoding="utf-8"))
+        where = Path(known[market]["installLocation"])
+        catalogue = json.loads((where / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        entry = next(p for p in catalogue["plugins"] if p.get("name") == "tatty")
+        if entry.get("version"):
+            return str(entry["version"])
+        if isinstance(entry.get("source"), str):  # a path inside the marketplace: the plugin's own manifest
+            manifest = where / entry["source"] / ".claude-plugin" / "plugin.json"
+            return str(json.loads(manifest.read_text(encoding="utf-8")).get("version", ""))
+    except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError):
+        pass
+    return ""
+
+
+def run_claude(state, args):
+    """Run the claude command quietly. (returncode, last line of what it said); None
+    when there is no claude to run. TATTY_CLAUDE names another one (a .sh runs in bash), for tests."""
+    import shutil
+    claude = os.environ.get("TATTY_CLAUDE") or shutil.which("claude")
+    if not claude:
+        return None
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    try:
+        p = quiet_run(state, argv + args, timeout=UPDATE_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 2, str(e)
+    lines = [ln.strip() for ln in (p.stderr + "\n" + p.stdout).splitlines() if ln.strip()]
+    return p.returncode, lines[-1] if lines else ""
+
+
+def set_update(state, **fields):
+    with state.cond:
+        state.update.update(fields)
+    state.emit("update", **state.update)
+
+
+def update_view(state):
+    return {**state.update, "autoUpdate": load_settings()["autoUpdate"]}
+
+
+def update_work(state, apply):
+    """Look for a newer Tatty and, when `apply` and there is one, install it. The
+    result is in state.update: current, available (not installed), ready (installed;
+    restart Tatty to use it), checkout (not an installed copy) or error."""
+    if not state.update_lock.acquire(blocking=False):
+        return  # one at a time
+    try:
+        record = install_record()
+        if not installed() or not record:
+            return set_update(state, status="checkout", checked=time.time(), installed="", available="",
+                              message="This copy of Tatty runs from a checkout (or was started with --plugin-dir), not from an install, so there is nothing to update.")
+        plugin_id, market, _ = record
+        set_update(state, status="checking", message="")
+        got = run_claude(state, ["plugin", "marketplace", "update", market])
+        if got is None:
+            return set_update(state, status="error", message="There's no claude command on this machine's PATH.")
+        if got[0] != 0:
+            return set_update(state, status="error", checked=time.time(), message=f"Couldn't refresh the marketplace: {got[1]}")
+        available = marketplace_version(market)
+        have = install_record()[2]
+        if apply and version_key(available) > version_key(have):
+            set_update(state, status="updating", available=available)
+            got = run_claude(state, ["plugin", "update", plugin_id, "--scope", "user"])
+            if got[0] != 0:
+                return set_update(state, status="error", checked=time.time(), message=f"Couldn't update: {got[1]}")
+            have = install_record()[2]
+        running = state.update["running"]
+        if version_key(have) > version_key(running):
+            status, message = "ready", f"Tatty {have} is installed. Restart Tatty to use it."
+        elif version_key(available) > version_key(have):
+            status, message = "available", f"Tatty {available} is available."
+        else:
+            status, message = "current", "Tatty is up to date."
+        set_update(state, status=status, installed=have, available=available, checked=time.time(), message=message)
+    except Exception as e:  # a background check must never take the server down
+        set_update(state, status="error", checked=time.time(), message=f"{type(e).__name__}: {e}")
+    finally:
+        state.update_lock.release()
+
+
+def watch_updates(state):
+    """With auto-update on, look for a newer Tatty soon after the server starts and
+    every few hours after, installing what it finds. The setting is read each time, so
+    turning it on or off in the page needs no restart."""
+    time.sleep(UPDATE_FIRST)
+    while True:
+        if load_settings()["autoUpdate"]:
+            update_work(state, apply=True)
+        time.sleep(UPDATE_EVERY)
 
 
 # ---------------------------------------------------------------- views
@@ -457,9 +627,16 @@ def read_doc(folder, name):
         return ""
 
 
+def ledger_path():
+    """The toolbox's event ledger (tt-common/events.md). Tatty only ever reads it:
+    for a feature's timeline, for the project a feature was worked in, and -- as
+    it is written -- for the milestones Tatty celebrates (see watch_ledger)."""
+    return Path(os.environ.get("TT_EVENTS_HOME") or config_dir() / "tt-events") / "events.jsonl"
+
+
 def events_of(folder):
     """Ledger rows for this folder, oldest first (tt-common/events.md)."""
-    ledger = Path(os.environ.get("TT_EVENTS_HOME") or config_dir() / "tt-events") / "events.jsonl"
+    ledger = ledger_path()
     out = []
     try:
         with open(ledger, encoding="utf-8", errors="replace") as fh:
@@ -473,6 +650,105 @@ def events_of(folder):
     except OSError:
         return []
     return sorted(out, key=lambda e: str(e.get("ts") or ""))
+
+
+# ---------------------------------------------------------------- milestones
+
+# The toolbox writes a feature's progress into its ledger as it happens
+# (tt-common/events.md). These are the rows worth making a fuss about, and how
+# much of one: "big" for the two that finish something outright, "mid" for a
+# piece of work done, "small" for a step taken. Anything not named here is
+# ignored, which is what that file asks of every reader.
+MILESTONES = {
+    "explore.focus_confirmed": ("Exploration focused", "small"),
+    "explore.documented": ("Familiarisation written", "small"),
+    "plan.familiarisation_closed": ("Familiarisation closed", "small"),
+    "plan.requirements_closed": ("Requirements closed", "small"),
+    "plan.scope_closed": ("Scope and constraints closed", "small"),
+    "plan.approach_closed": ("Approach closed", "small"),
+    "plan.design_closed": ("Technical design closed", "small"),
+    "plan.whole_closed": ("Whole-plan challenge closed", "mid"),
+    "plan.signed_off": ("Plan signed off", "big"),
+    "breakdown.written": ("Task breakdown written", "mid"),
+    "lite.brief_written": ("Lite brief written", "mid"),
+    "build.unit_validated": ("Work unit validated", "mid"),
+    "build.complete": ("Every work unit done", "big"),
+    "debug.root_cause_confirmed": ("Root cause confirmed", "small"),
+    "debug.report_written": ("Debug report written", "mid"),
+}
+
+LEDGER_POLL = 2.0  # seconds between looks at the ledger
+
+
+def announce(state, row):
+    """Tell the window about one ledger row. Returns the event it emitted, or
+    None when the row isn't a milestone Tatty knows."""
+    known = MILESTONES.get(str(row.get("event", "")))
+    if not known:
+        return None
+    label, tier = known
+    return state.emit("milestone", event=str(row["event"]), label=label, tier=tier,
+                      prefix=str(row.get("prefix") or ""), qualifier=str(row.get("qualifier") or ""),
+                      folder=str(row.get("folder") or ""), route=str(row.get("route") or ""))
+
+
+def ledger_rows(at):
+    """The whole rows past byte `at`, and where to read from next time. A row
+    still being written is left behind for the next look, so a half-written line
+    is never parsed."""
+    try:
+        with open(ledger_path(), "rb") as fh:
+            fh.seek(at)
+            blob = fh.read()
+    except OSError:
+        return [], at
+    cut = blob.rfind(b"\n")
+    if cut < 0:
+        return [], at
+    rows = []
+    for line in blob[:cut].splitlines():
+        try:
+            rows.append(json.loads(line.decode("utf-8", "replace")))
+        except ValueError:
+            continue
+    return rows, at + cut + 1
+
+
+def watch_ledger(state):
+    """Announce every milestone the toolbox records from now on.
+
+    The ledger is append-only and holds one row per key (tt-common/events.md), so
+    following it is a matter of remembering how far we have read. We start at the
+    end of the file as it stands, because a window that has just opened should
+    not celebrate last week's work; a file that shrinks or goes away has been
+    cleared or rotated, so we start again from the beginning of the new one. The
+    keys seen are kept as well, so a re-read can never celebrate twice."""
+    at, seen = ledger_size(), set()
+    while True:
+        time.sleep(LEDGER_POLL)
+        try:
+            size = ledger_size()
+            if size < at:  # cleared, or rotated: whatever is there now is new
+                at = 0
+            if size == at:
+                continue
+            rows, at = ledger_rows(at)
+            for row in rows:
+                key = str(row.get("key") or
+                          f"{row.get('folder')}|{row.get('event')}|{row.get('qualifier')}")
+                if key in seen or not announce(state, row):
+                    continue
+                seen.add(key)
+                state.touch()  # the toolbox is working, so the window is wanted
+        except Exception:  # a watcher that dies takes the celebrations with it
+            continue
+
+
+def ledger_size():
+    try:
+        return ledger_path().stat().st_size
+    except OSError:
+        return 0
 
 
 PLAN_EVENTS = {"Familiarisation": "plan.familiarisation_closed", "Requirements": "plan.requirements_closed",
@@ -591,7 +867,7 @@ def feature_project(folder, docs):
             pass
     if best:
         return best[0], "link"
-    ledger =Path(os.environ.get("TT_EVENTS_HOME") or config_dir() / "tt-events") / "events.jsonl"
+    ledger = ledger_path()
     try:
         found = None
         with open(ledger, encoding="utf-8", errors="replace") as fh:
@@ -641,12 +917,17 @@ def session_name(base):
     return name
 
 
-def launch(state, project, name, prompt, tag):
+def launch(state, project, name, prompt, tag, title="", claude_args=None, join=False):
     """Open a new terminal running claude in the project, named, started with the
     prompt, carrying TATTY_SESSION so Tatty's mod there reports to this window.
     From a checkout (not an install) the session loads this plugin with
     --plugin-dir. Windows Terminal, else a cmd window; elsewhere Terminal.app;
     else the command to run is given. TATTY_DRYRUN=1 opens nothing.
+
+    Tatty's own session (see boot_claude) differs in three ways: claude_args
+    replaces `-n name prompt` (to resume a conversation), join=True carries
+    TATTY_JOIN instead of a tag, and title puts it in a window of its own with
+    that fixed title, which is how minimise_window finds it again.
     Returns (ok, what happened or the command to run)."""
     import shlex
     import shutil
@@ -654,10 +935,13 @@ def launch(state, project, name, prompt, tag):
     if not claude:
         return False, "There's no claude command on this machine's PATH."
     args = [] if installed() else ["--plugin-dir", PLUGIN.as_posix()]
-    exports = {"TATTY_SESSION": tag}
+    exports = {"TATTY_SESSION": tag} if tag else {}
+    if join:
+        exports["TATTY_JOIN"] = "1"
     if os.environ.get("TATTY_HOME"):
         exports["TATTY_HOME"] = Path(os.environ["TATTY_HOME"]).as_posix()
-    run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, "-n", name, prompt])
+    tail = claude_args if claude_args is not None else ["-n", name, prompt]
+    run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, *tail])
     script = "\n".join([
         "#!/usr/bin/env bash",
         "export MSYS2_ARG_CONV_EXCL='*'",  # no path conversion of /tt-workflow and friends
@@ -667,14 +951,18 @@ def launch(state, project, name, prompt, tag):
         f"exec {run}", ""])
     manual = f"cd {shlex.quote(Path(project).as_posix())} && " + " ".join(f"{k}={shlex.quote(v)}" for k, v in exports.items()) + " " + run
     if os.environ.get("TATTY_DRYRUN") == "1":
-        return True, f"Name: {name}\nPrompt: {prompt}\nWould run: {manual}"
-    out = Path(os.environ.get("TEMP") or os.environ.get("TMPDIR") or "/tmp") / f"tatty-session-{tag}.sh"
+        return True, f"Name: {name}\nPrompt: {prompt}\n" + (f"Title: {title}\n" if title else "") + f"Would run: {manual}"
+    out = Path(os.environ.get("TEMP") or os.environ.get("TMPDIR") or "/tmp") / f"tatty-session-{tag or 'own'}.sh"
     out.write_text(script, encoding="utf-8", newline="\n")
     try:
         if os.name == "nt":
             bash = shutil.which(state.bash) or state.bash
-            for argv in (["wt.exe", "-d", str(Path(project)), bash, str(out)],
-                         ["cmd.exe", "/c", "start", "", "/D", str(Path(project)), bash, str(out)]):
+            # A titled terminal is always a window of its own (-w new), never a
+            # tab in one the person is using: it is about to be minimised, and
+            # the title is fixed so that claude can't rename it out from under us.
+            wt = ["wt.exe", "-w", "new", "--title", title, "--suppressApplicationTitle"] if title else ["wt.exe"]
+            for argv in ([*wt, "-d", str(Path(project)), bash, str(out)],
+                         ["cmd.exe", "/c", "start", title, *(["/min"] if title else []), "/D", str(Path(project)), bash, str(out)]):
                 try:
                     if subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                       timeout=20, creationflags=NO_WINDOW).returncode == 0:
@@ -971,6 +1259,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, sessions_of(st, folder))
         if path == "/api/root":
             return self.send(200, root_info())
+        if path == "/api/settings":
+            return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
         if path == "/api/features":
             return self.send(200, features_list(st))
         if path == "/api/resolve":
@@ -1106,11 +1396,30 @@ class Handler(BaseHTTPRequestHandler):
                 st.cond.notify_all()
             st.emit("say", text=text, tag=tag)
             return self.send(200, {"ok": True})
+        if path == "/api/milestone":
+            # A milestone to order, so the celebration can be tried out and
+            # tested without waiting for a work unit to land. It announces one of
+            # Tatty's own events; nothing of the toolbox's is touched.
+            ev = announce(st, b if isinstance(b, dict) else {})
+            if not ev:
+                return self.send(400, {"error": f"event must be one of {sorted(MILESTONES)}"})
+            return self.send(200, {"seq": ev["seq"]})
         if path == "/api/root":
             code, said = set_root(st, root_from_pick(str(b.get("path", "")).strip()), bool(b.get("create")))
             if code != 0:
                 return self.send(400, {"error": said or "couldn't set the root"})
             return self.send(200, root_info())
+        if path == "/api/settings":
+            save_settings(b if isinstance(b, dict) else {})
+            return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+        if path == "/api/update":
+            # check: look only; apply: look, and install what is newer. Runs in the
+            # background (the claude command takes seconds); the page hears the result
+            # as an "update" event.
+            if st.update_lock.locked():
+                return self.send(409, {"error": "an update check is already running"})
+            threading.Thread(target=update_work, args=(st, b.get("action") == "apply"), daemon=True).start()
+            return self.send(202, update_view(st))
         if path == "/api/pick-folder":
             if not picker_argv():
                 return self.send(501, {"error": "no folder dialog on this machine"})
@@ -1167,6 +1476,10 @@ class Handler(BaseHTTPRequestHandler):
             st.mod_seen = 0.0
             st.emit("status", mod=False, session="")
             return self.send(200, {"ok": True})
+        if path in ("/api/claude/show", "/api/claude/close"):
+            # Tatty's own Claude terminal (see boot_claude), kept minimised: the tray
+            # app brings it back, and closes it when Tatty is quit.
+            return self.send(200, {"ok": window_do(CLAUDE_TITLE, path.rsplit("/", 1)[1])})
         if path == "/api/stop":
             self.send(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -1199,6 +1512,8 @@ def serve(cwd, bash):
                 return
 
     threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=watch_ledger, args=(state,), daemon=True).start()
+    threading.Thread(target=watch_updates, args=(state,), daemon=True).start()
     try:
         httpd.serve_forever(poll_interval=0.5)
     finally:
@@ -1298,36 +1613,53 @@ COMPANION_EXE = BUILD / "bin" / "TtCompanion.exe"
 SOURCES = (".cs", ".xaml", ".csproj", ".manifest")
 
 
+ICON = PLUGIN / "assets" / "tatty.ico"  # Tatty's face, drawn by tools/make-icon; built into both exes
+
+
+def build_stale(sources, exe):
+    """True when `exe` isn't built, or a source file is newer than it."""
+    if not exe.exists():
+        return True
+    built = exe.stat().st_mtime
+    files = [p for p in sources.iterdir() if p.suffix in SOURCES] + [ICON]
+    return any(p.stat().st_mtime > built for p in files)
+
+
+def build_exe(sources, build, exe, what):
+    """dotnet build a copy of `sources` (and the icon) in `build`, quietly, into the
+    log. True when `exe` is there afterwards."""
+    import shutil
+    dotnet = shutil.which("dotnet")
+    if not dotnet:
+        return False
+    print(f"building {what} (first time only, about a minute)...", file=sys.stderr)
+    src = build / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    for p in sources.iterdir():
+        if p.suffix in SOURCES:
+            shutil.copy2(p, src / p.name)
+    shutil.copy2(ICON, src / ICON.name)
+    home().mkdir(parents=True, exist_ok=True)
+    with open(home() / "server.log", "ab") as log:
+        try:
+            p = subprocess.run([dotnet, "build", "-c", "Release", "--nologo", "-v", "q", "-o", str(build / "bin")],
+                               cwd=src, stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=600,
+                               creationflags=NO_WINDOW)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return p.returncode == 0 and exe.exists()
+
+
 def companion_stale():
     """True when the companion isn't built, or a source is newer than the build."""
-    if not COMPANION_EXE.exists():
-        return True
-    built = COMPANION_EXE.stat().st_mtime
-    return any(p.stat().st_mtime > built for p in COMPANION.iterdir() if p.suffix in SOURCES)
+    return build_stale(COMPANION, COMPANION_EXE)
 
 
 def companion_ready():
     """Build the companion if needed (once; quietly, into the log). True when it can run."""
     if not companion_stale():
         return True
-    import shutil
-    dotnet = shutil.which("dotnet")
-    if not dotnet:
-        return False
-    print("building Tatty's tray companion (first time only, about a minute)...", file=sys.stderr)
-    src = BUILD / "src"
-    src.mkdir(parents=True, exist_ok=True)
-    for p in COMPANION.iterdir():
-        if p.suffix in SOURCES:
-            shutil.copy2(p, src / p.name)
-    with open(home() / "server.log", "ab") as log:
-        try:
-            p = subprocess.run([dotnet, "build", "-c", "Release", "--nologo", "-v", "q", "-o", str(BUILD / "bin")],
-                               cwd=src, stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=600,
-                               creationflags=NO_WINDOW)
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-    return p.returncode == 0 and COMPANION_EXE.exists()
+    return build_exe(COMPANION, BUILD, COMPANION_EXE, "Tatty's tray companion")
 
 
 def companion_running():
@@ -1384,6 +1716,258 @@ def greet(info, cwd, bash):
         pass
 
 
+# ---------------------------------------------------------------- the desktop app
+# What the Desktop shortcut starts. The launcher (app/launcher, built by install)
+# only finds this plugin and runs `tatty.sh boot`; the rest is here: the server,
+# the tray companion, and Tatty's own Claude session -- the one that answers what
+# is typed in Tatty when no terminal of the person's is open. It is resumed from
+# last time and its terminal is minimised the moment it appears.
+
+CLAUDE_TITLE = "Tatty (Claude)"  # the fixed title of that session's terminal window
+APP = Path(os.environ.get("LOCALAPPDATA") or home()) / "Tatty"
+LAUNCHER = HERE / "launcher"  # the launcher's sources, shipped with the plugin
+LAUNCHER_BUILD = APP / "launcher"
+LAUNCHER_EXE = LAUNCHER_BUILD / "bin" / "Tatty.exe"
+BOOT_JSON = APP / "boot.json"  # what the launcher needs to find this plugin
+SHOW_EVENT = "Local\\tatty-companion-show"  # the tray app waits on it to come forward
+MOD_WAIT = 45  # seconds Tatty's Claude session has to load before it is brought up for the person
+
+
+def read_link():
+    """The saved link to Tatty's own conversation, claude-link.json in Tatty's home."""
+    try:
+        link = json.loads((home() / "claude-link.json").read_text(encoding="utf-8"))
+        return link if isinstance(link, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def claude_link(project=None):
+    """Tatty's own conversation: {project, sessionId, name}, saved so the next boot
+    resumes it. The project is the folder claude runs in (a conversation belongs to
+    one, so choosing another starts a new conversation): the one asked for, else the
+    saved one, else Tatty's root when it exists, else the home folder."""
+    import uuid
+    link = read_link()
+    if project:
+        if not os.path.isdir(project):
+            raise ValueError(f"no such folder: {project}")
+        if Path(project).resolve().as_posix() != link.get("project"):
+            link = {"project": Path(project).resolve().as_posix()}
+    if not link.get("project") or not os.path.isdir(link["project"]):
+        root, is_set = tatty_root()
+        link = {"project": (root if is_set and root.is_dir() else Path.home()).as_posix()}
+    link.setdefault("sessionId", str(uuid.uuid4()))
+    link["name"] = "Tatty"
+    path = home() / "claude-link.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(link, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return link
+
+
+def conversation_exists(session_id):
+    """True when Claude Code has kept this conversation: it writes
+    projects/<project>/<id>.jsonl once there is a message in it. --resume needs
+    one; a session that never got a message has to start with --session-id."""
+    return any((config_dir() / "projects").glob(f"*/{session_id}.jsonl"))
+
+
+def boot_claude(bash, link):
+    """Open Tatty's own Claude session in a terminal of its own, resuming the
+    saved conversation, and minimise the terminal. Returns (ok, what happened)."""
+    import types
+    sid = link["sessionId"]
+    tail = ["--resume" if conversation_exists(sid) else "--session-id", sid, "-n", link["name"]]
+    ok, said = launch(types.SimpleNamespace(bash=bash), link["project"], link["name"], "", "",
+                      title=CLAUDE_TITLE, claude_args=tail, join=True)
+    if ok and os.environ.get("TATTY_DRYRUN") != "1":
+        minimise_window(CLAUDE_TITLE)
+    return ok, said
+
+
+def find_window(title):
+    """The handle of the visible top-level window with exactly this title, or 0
+    (Windows only; a minimised window still counts)."""
+    if os.name != "nt":
+        return 0
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        if user32.GetWindowTextLengthW(hwnd) == len(title):  # cheap test first
+            buf = ctypes.create_unicode_buffer(len(title) + 1)
+            user32.GetWindowTextW(hwnd, buf, len(title) + 1)
+            if buf.value == title and user32.IsWindowVisible(hwnd):
+                found.append(hwnd)
+                return False
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found[0] if found else 0
+
+
+def window_do(title, what):
+    """minimise | show | close the window with this title. False when there isn't one."""
+    hwnd = find_window(title)
+    if not hwnd:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    if what == "minimise":
+        user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE: down without taking the focus
+    elif what == "show":
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+    elif what == "close":
+        user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE: claude's conversation is on disk
+    return True
+
+
+def minimise_window(title, timeout=20):
+    """Minimise the window with this title as soon as it exists, and again a moment
+    later, because Windows Terminal can bring itself forward while its first tab
+    starts. True when it was found."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if window_do(title, "minimise"):
+            time.sleep(1.5)
+            window_do(title, "minimise")
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def wake_companion():
+    """Ask a running tray app to come forward: it waits on SHOW_EVENT. True if it was there."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    k32.OpenEventW.restype = ctypes.c_void_p
+    k32.OpenEventW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+    k32.SetEvent.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    h = k32.OpenEventW(0x0002, False, SHOW_EVENT)  # EVENT_MODIFY_STATE
+    if h:
+        k32.SetEvent(h)
+        k32.CloseHandle(h)
+    return bool(h)
+
+
+def wait_for_mod(info, seconds):
+    """Wait for a Claude session's mod to say hello to the server. True if it did."""
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            if call(info, "GET", "/api/status", timeout=3).get("mod"):
+                return True
+        except (OSError, urllib.error.URLError, ValueError):
+            pass
+        time.sleep(1)
+    return False
+
+
+def write_boot_json(bash):
+    """Tell the launcher where this plugin and bash are. The launcher runs from a
+    stable place; the plugin moves with every update, so each boot says where it is now."""
+    APP.mkdir(parents=True, exist_ok=True)
+    tmp = BOOT_JSON.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"bash": bash, "pluginRoot": PLUGIN.as_posix()}, indent=2), encoding="utf-8")
+    os.replace(tmp, BOOT_JSON)
+
+
+def boot(bash, project, no_ui, no_claude):
+    """Everything the Desktop shortcut starts, in order: the server, the tray app
+    (or a browser tab), and Tatty's own Claude session. Each step is skipped when it
+    is already there, so starting Tatty twice just brings it forward. 0 ok; 2 when
+    the Claude session could not be started (the rest is up)."""
+    try:
+        link = claude_link(project)
+    except ValueError as e:
+        print(f"boot: {e}", file=sys.stderr)
+        return 2
+    if BOOT_JSON.exists():
+        write_boot_json(bash)
+    info = alive()
+    if not info:
+        info = start_detached(link["project"], bash)
+        greet(info, link["project"], bash)
+    print(info["url"])
+    if not no_ui:
+        ui = show_ui(info)
+        if ui.startswith("companion (already") and wake_companion():
+            ui = "companion (brought forward)"
+        print(f"ui={ui}")
+    if no_claude:
+        return 0
+    if call(info, "GET", "/api/status").get("mod"):
+        print("claude=already attached")  # a session of the person's is working with Tatty
+    elif os.environ.get("TATTY_DRYRUN") != "1" and find_window(CLAUDE_TITLE):  # a dry run looks at no real window
+        # Its terminal is up but its mod never joined: it's stuck on a question.
+        window_do(CLAUDE_TITLE, "show")
+        print("claude=waiting: its terminal is showing, because it hasn't joined Tatty")
+    else:
+        ok, said = boot_claude(bash, link)
+        if not ok:
+            print(f"boot: Tatty's Claude session didn't start: {said}", file=sys.stderr)
+            return 2
+        if os.environ.get("TATTY_DRYRUN") == "1":
+            print(f"claude=started\n{said}")
+        elif wait_for_mod(info, MOD_WAIT):
+            print("claude=started")
+        else:
+            # Claude hasn't loaded Tatty's mod: it is most likely asking something only
+            # the person can answer (trust this folder, sign in), in a terminal nobody
+            # can see. Bring it up rather than leave it stuck.
+            window_do(CLAUDE_TITLE, "show")
+            print("claude=waiting: its terminal is showing, because it may be asking you something")
+    return 0
+
+
+def install(bash):
+    """Put Tatty on the Desktop and in the Start menu: build the launcher, tell it
+    where the plugin is, and make the shortcuts. 0 ok, 2 when it can't."""
+    if os.name != "nt":
+        print("install: the desktop app is Windows-only; elsewhere Tatty opens in a browser tab.", file=sys.stderr)
+        return 2
+    if build_stale(LAUNCHER, LAUNCHER_EXE) and not build_exe(LAUNCHER, LAUNCHER_BUILD, LAUNCHER_EXE, "Tatty's launcher"):
+        print(f"install: couldn't build the launcher (it needs the .NET 9 SDK); see {home() / 'server.log'}", file=sys.stderr)
+        return 2
+    write_boot_json(bash)
+    p = subprocess.run([str(LAUNCHER_EXE), "--make-shortcuts"], stdin=subprocess.DEVNULL, capture_output=True,
+                       encoding="utf-8", errors="replace", timeout=60)
+    if p.returncode != 0:
+        print(f"install: the shortcuts weren't made: {(p.stderr or p.stdout).strip()}", file=sys.stderr)
+        return 2
+    print(p.stdout.strip())
+    print("Tatty is on your Desktop and in the Start menu. Right-click either and choose Pin to taskbar.")
+    return 0
+
+
+def uninstall():
+    """Take the shortcuts, the launcher and what it reads away. Tatty's own state
+    (its root, projects, the Claude link) stays."""
+    import shutil
+    if LAUNCHER_EXE.exists():
+        subprocess.run([str(LAUNCHER_EXE), "--remove-shortcuts"], stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    shutil.rmtree(LAUNCHER_BUILD, ignore_errors=True)
+    BOOT_JSON.unlink(missing_ok=True)
+    print("removed Tatty's shortcuts and launcher")
+    return 0
+
+
 def poll(info, path, wait):
     """Long-poll path until it stops saying pending/empty or `wait` seconds pass."""
     end = time.time() + wait
@@ -1432,6 +2016,12 @@ def main(argv):
         if not no_browser:
             print(f"ui={show_ui(info)}")
         return 0
+    if cmd == "boot":
+        return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"))
+    if cmd == "install":
+        return install(bash)
+    if cmd == "uninstall":
+        return uninstall()
     if cmd == "status":
         info = alive()
         if not info:
@@ -1457,6 +2047,16 @@ def main(argv):
         info = need()
         body = stdin_text().replace("\r\n", "\n")
         call(info, "POST", "/api/show", {"kind": args[0], "title": args[1], "body": body})
+        return 0
+    if cmd == "cheer":
+        # The celebration, to order: what a ledger milestone does to Tatty,
+        # without having to finish a work unit first.
+        prefix = opt(args, "--prefix", "")  # before args[0]: opt takes its pair out
+        event = args[0] if args else "build.complete"
+        if event not in MILESTONES:
+            print("cheer: the event must be one of " + " ".join(sorted(MILESTONES)), file=sys.stderr)
+            return 2
+        call(need(), "POST", "/api/milestone", {"event": event, "prefix": prefix})
         return 0
     if cmd == "ask":
         info = need()

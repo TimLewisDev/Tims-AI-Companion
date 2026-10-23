@@ -22,7 +22,7 @@ let attached: Info | null = null
 let polling = false
 let session = ''
 let tag = '' // set when Tatty started this session from a feature page
-let joined = false // this session works with Tatty (tagged, or /tatty open|attach)
+let joined = false // this session works with Tatty (tagged, TATTY_JOIN, or /tatty open|attach)
 // What a started session has used so far, summed over its turns (the engine
 // answers per turn; the window and cost it has as a whole, see reportUsage).
 const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -155,7 +155,7 @@ async function pollInbox($: EngineInterface) {
   }
 }
 
-// The /tatty command: open (the default), attach, detach, close or status.
+// The /tatty command: open (the default), attach, detach, close, status, install or uninstall.
 async function runTatty($: EngineInterface, args: string): Promise<{ text: string }> {
   const verb = args.trim() || 'open'
   if (verb === 'open') {
@@ -185,7 +185,18 @@ async function runTatty($: EngineInterface, args: string): Promise<{ text: strin
     if (!info) return { text: 'Tatty is not open. /tatty open starts it.' }
     return { text: joined ? `This session works with Tatty: ${info.url.split('#')[0]}` : 'Tatty is open, but this session does not work with it. /tatty attach joins.' }
   }
-  return { text: 'usage: /tatty [open | attach | detach | close | status]' }
+  if (verb === 'install') {
+    // Builds the launcher the first time, which takes about a minute.
+    const r = await tattySh($, ['install'])
+    const said = (r.stderr || r.stdout).trim()
+    if (r.exitCode === 3) return { text: 'No Python 3.8+ found, so Tatty is not available here.' }
+    return { text: r.exitCode === 0 ? said : `Tatty was not installed: ${said}` }
+  }
+  if (verb === 'uninstall') {
+    const r = await tattySh($, ['uninstall'])
+    return { text: (r.stderr || r.stdout).trim() }
+  }
+  return { text: 'usage: /tatty [open | attach | detach | close | status | install | uninstall]' }
 }
 
 export const register: Register = on => {
@@ -193,12 +204,14 @@ export const register: Register = on => {
     const started = await next(e)
     session = await $.session.id()
     tag = (await $.env.get('TATTY_SESSION')) || ''
-    joined = Boolean(tag)
+    // TATTY_JOIN: Tatty's own session (the Desktop app starts it): it works with
+    // Tatty like a /tatty attach'd one, on the main feed rather than a feature's.
+    joined = Boolean(tag) || (await $.env.get('TATTY_JOIN')) === '1'
     Object.assign(spent, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
     await $.command.register({
       name: 'tatty',
-      description: 'Open Tatty, or have this session work with it (attach / detach), or close it',
-      argumentHint: '[open | attach | detach | close | status]',
+      description: 'Open Tatty, or have this session work with it (attach / detach), close it, or put it on the Desktop (install)',
+      argumentHint: '[open | attach | detach | close | status | install | uninstall]',
     })
     if (joined) await attach($)
     $.clock.every(POLL_MS, () => void pollInbox($))

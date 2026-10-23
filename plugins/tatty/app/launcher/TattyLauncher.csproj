@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Tatty's launcher: the program the Desktop and Start menu shortcuts run (and
+       a taskbar pin after them). It does nothing itself but find this plugin and
+       run `tatty.sh boot`, so it never needs rebuilding when the plugin updates.
+       `/tatty install` builds it from a copy of these sources in
+       %LOCALAPPDATA%\Tatty\launcher, next to assets/tatty.ico. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Tatty</AssemblyName>
+    <RootNamespace>TattyLauncher</RootNamespace>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationIcon>tatty.ico</ApplicationIcon>
+  </PropertyGroup>
+
+</Project>

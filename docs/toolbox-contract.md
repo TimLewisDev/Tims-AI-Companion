@@ -79,9 +79,27 @@ with no shell.
 | File | For |
 |---|---|
 | `<feature>/<Prefix> - <Doc>.md` and `<feature>/.tt/**/*.md` | a feature's documents and working notes: their order, the Stages table of a draft Comprehensive Tech Plan, the Work Unit and Task Boards of a Task Status, `Repo` paths |
-| `${TT_EVENTS_HOME:-~/.claude/tt-events}/events.jsonl` | a feature's timeline and its project (`folder`, `event`, `ts`, `project`, …; see the toolbox's `tt-common/events.md`, which names a companion app as a reader) |
+| `${TT_EVENTS_HOME:-~/.claude/tt-events}/events.jsonl` | a feature's timeline and its project, and **followed as it is written** for the milestones Tatty celebrates (`folder`, `event`, `ts`, `key`, `prefix`, `qualifier`, `route`, `project`, …; see the toolbox's `tt-common/events.md`, which names a companion app as a reader) |
 | `${TT_WORKFLOW_HOME:-~/.claude/tt-workflow}/links.tsv`, `lite-links.tsv` | which project a feature folder is linked to |
 | `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json` | open sessions' names, so a new one isn't given the same name |
+
+### The ledger as it is written: milestones
+
+Tatty follows the ledger file while it is open (`watch_ledger` in
+`plugins/tatty/app/server.py`) and makes a fuss of the rows in `MILESTONES`: the
+explore, plan, breakdown, lite, build and debug events of
+`tt-common/events.md`'s catalogue, each with a tier (a plan signed off and a
+build complete are the big ones). This is still only reading:
+
+- the file is read forwards from wherever the last look ended, and never
+  written, locked or rotated;
+- a row Tatty doesn't recognise is ignored, as that document asks of every
+  reader, so the toolbox can add events without Tatty knowing;
+- rows are de-duplicated on the ledger's own `key`, and a window starts from the
+  end of the file as it stands, so nothing is celebrated twice and nothing
+  historical is celebrated at all;
+- the toolbox still knows nothing of any of this: it records what it always
+  recorded, whether or not Tatty is installed.
 
 ### Documents: View and Edit
 

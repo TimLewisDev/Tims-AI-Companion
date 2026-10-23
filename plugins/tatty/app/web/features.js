@@ -5,7 +5,7 @@
 "use strict";
 
 const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
-  feature: $("#page-feature"), toolbox: $("#page-toolbox") };
+  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
 const PAGE_MODE = { home: "engineering", feature: "engineering" };
@@ -65,7 +65,7 @@ function copyable(text) {
 }
 
 // ------------------------------------------------------------- routing
-// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox
+// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #toolbox · #settings
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
@@ -74,6 +74,7 @@ function parseRoute() {
     return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null };
   }
   if (parts[0] === "toolbox") return { page: "toolbox" };
+  if (parts[0] === "settings") return { page: "settings" };
   if (parts[0] === "modes") return { page: "modes" };
   if (parts[0] === "home") return { page: "home" };
   // #mode, and nothing asked for: the mode's home page, or the landing page
@@ -87,6 +88,7 @@ const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
   for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === (which === "feature" ? "home" : which));
+  $("#settings-link").classList.toggle("on", which === "settings");
   renderNav();
   clearInterval(homeTimer);
 }
@@ -106,6 +108,7 @@ async function route() {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at);
+  else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
 }
 

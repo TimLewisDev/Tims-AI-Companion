@@ -42,6 +42,7 @@ EX_FLAGS = {  # the bits that decide where a window belongs
     "topmost": 0x00000008,
     "noactivate": 0x08000000,
     "layered": 0x00080000,
+    "transparent": 0x00000020,
 }
 STYLE_FLAGS = {"visible": 0x10000000, "caption": 0x00C00000, "sysmenu": 0x00080000,
                "minimize": 0x20000000, "thickframe": 0x00040000}
@@ -174,6 +175,10 @@ def role_of(w):
         return "bubble"
     if w["title"] == "Hidden Window":
         return "wpf-owner"
+    # The effects stage looks exactly like Tatty -- layered, a tool window --
+    # apart from the one thing that makes it a stage: the mouse goes through it.
+    if w["ex"]["layered"] and w["ex"]["toolwindow"] and w["ex"]["transparent"]:
+        return "effects"
     if w["ex"]["layered"] and w["ex"]["toolwindow"]:
         return "tatty"
     if w["style"]["visible"] and w["style"]["caption"]:
@@ -273,6 +278,16 @@ def check(found, mode, want_proxy=True):
         want(tatty, "style.visible", mode != "hidden")
         if mode != "hidden":
             want(tatty, "ex.topmost", True)
+    stage = one("effects")
+    if stage is not None:
+        # The confetti's window: there all the time, seen only while something is
+        # flying, and never in the way -- the mouse goes through it, it takes no
+        # keyboard, and it is in neither list. Whether it is on screen is the
+        # animation's business, not the view's, so that isn't asserted here.
+        want(stage, "ex.transparent", True)
+        want(stage, "ex.noactivate", True)
+        want(stage, "ex.toolwindow", True)
+        want(stage, "alt_tab", False)
     if want_proxy:
         # The button that is always there, except while the panel has one of its
         # own. It is a button and never a window: minimised for good, asking for
@@ -378,10 +393,10 @@ def main(argv):
     out = {"dpi_awareness": dpi_aware()}
     pid = arg("--pid", int)
     def report(found):
-        """Tatty's own three windows are the whole story; --all adds the plumbing."""
+        """Tatty's own four windows are the whole story; --all adds the plumbing."""
         out["roles"] = {role: len(ws) for role, ws in sorted(by_role(found).items())}
         out["windows"] = found if "--all" in argv else \
-            [w for w in found if w["role"] in ("bubble", "tatty", "proxy")]
+            [w for w in found if w["role"] in ("bubble", "tatty", "proxy", "effects")]
 
     found = windows(pid)
     report(found)

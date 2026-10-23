@@ -52,6 +52,69 @@ workflow skills Tatty starts.
 Then `/tatty open` in a session. The first open builds the tray app into
 `%LOCALAPPDATA%\Tatty\companion\<version>`, which takes about a minute.
 
+## As a desktop app (Windows)
+
+So that Tatty can be started like any program, with no Claude session open first:
+
+```
+/tatty install
+```
+
+(or `bash plugins/tatty/scripts/tatty.sh install`). This builds a small launcher
+into `%LOCALAPPDATA%\Tatty\launcher` (about a minute, once) and makes a **Tatty**
+shortcut, with Tatty's face, on the Desktop and in the Start menu. Right-click
+either and choose **Pin to taskbar**.
+
+Starting Tatty from the shortcut (or the pin) brings up, in order:
+- the window server;
+- the tray app, or brings it forward if it is already running;
+- **Tatty's own Claude session**, in a terminal of its own that is minimised as
+  soon as it appears. What is typed in Tatty goes to this session, and its
+  questions and replies show in Tatty. **Tray → Show Claude's terminal** brings the
+  terminal back, and quitting Tatty closes it.
+
+Tatty remembers that session in `claude-link.json` in its home (the folder it runs
+in, and the conversation's id), and resumes the conversation with `claude --resume`
+at the next start. It runs in Tatty's root folder, else your home folder; `tatty.sh
+boot --project <dir>` chooses another, which is a new conversation.
+
+The first time Claude Code runs in a folder it asks whether to trust it, which no
+one can answer in a minimised window. So if the session hasn't joined Tatty within
+45 seconds, its terminal is brought up and left there for you to answer. Starting
+Tatty again does the same if it is still stuck.
+
+The launcher finds the plugin each time (`%LOCALAPPDATA%\Tatty\boot.json`, kept up
+to date by every start, else Claude Code's record of what is installed), so
+updating the plugin doesn't break the shortcut. `/tatty uninstall` removes the
+shortcuts, the launcher and `boot.json`.
+
+## Updating
+
+Tatty updates like any Claude Code plugin: Claude Code reads the marketplace's
+catalogue and installs a newer `version` of the plugin into its cache. **A release
+must raise `version` in `plugins/tatty/.claude-plugin/plugin.json`** (and be
+pushed to GitHub): with the same version, nothing counts as new.
+
+Tatty can do the updating itself. Open **Settings** (the gear beside the
+*connected* label in the top bar):
+
+- **Keep Tatty up to date automatically** (on by default). The window's server
+  looks 30 seconds after it starts and every 6 hours after, with
+  `claude plugin marketplace update <marketplace>` then, when the marketplace
+  offers a newer version, `claude plugin update tatty@<marketplace> --scope user`.
+- **Check for updates** looks without installing; **Update now** installs.
+- The gear shows a dot when a version is waiting or has been installed.
+
+An update is *ready*, not live, once installed: the running server and tray app
+are the old version until Tatty is restarted (**tray → Quit Tatty**, then start it
+again). The tray app is built again for the new version on that start (about a
+minute); the Desktop shortcut finds the new plugin by itself. The toolbox's own
+updates are Claude Code's: turn on auto-update for its marketplace in `/plugin`,
+or run `claude plugin update`.
+
+A copy run from a checkout or with `--plugin-dir` has nothing to update; Settings
+says so. Use `git pull`.
+
 ## From a local checkout
 
 To use your own copy of this repo, so edits take effect without a release:
@@ -111,12 +174,15 @@ for it to notice.
 
 | Variable | What |
 |---|---|
-| `TATTY_HOME` | Tatty's state (default `~/.claude/tatty`): the root setting, projects, server.json |
+| `TATTY_HOME` | Tatty's state (default `~/.claude/tatty`): the root setting, projects, server.json, settings.json (what Settings saves) |
 | `TATTY_ROOT` | use this root folder instead of the setting |
 | `TATTY_TOOLBOX` | a toolbox checkout to use instead of the installed toolbox |
 | `TATTY_MODES` | the modes (discipline plugins) to offer, e.g. `engineering,design`, instead of the ones installed |
+| `TATTY_JOIN` | `1`: this Claude session works with Tatty from the start, on the main feed (Tatty's own session, started by the desktop app) |
 | `TATTY_UI` | `browser` to use a browser tab even on Windows |
 | `TATTY_PYTHON` | the Python to run the server with |
+| `TATTY_CLAUDE` | the claude command to run for updates, instead of the one on the PATH (tests; a `.sh` runs in bash) |
+| `TATTY_UPDATE_FIRST` | seconds after the server starts before it first looks for an update (default 30) |
 | `TATTY_IDLE` | seconds of no use before the server stops (default 7200) |
 | `TATTY_DRYRUN` | `1`: Start reports the session it would open and opens nothing (tests) |
 | `TATTY_PICKER` | a stand-in for the folder dialog (tests) |

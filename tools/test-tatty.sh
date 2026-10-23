@@ -27,6 +27,19 @@ printf '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && 
 export TATTY_PICKER="$T/picker.sh"
 # Start reports the session it would open instead of opening it.
 export TATTY_DRYRUN=1
+# The updates run the claude command: a stand-in logs what it is asked and, for
+# `plugin update`, raises the version in the install record. The server's own
+# look at start-up is put off, so only the checks the tests ask for happen.
+export TATTY_CLAUDE="$T/claude.sh" TATTY_UPDATE_FIRST=100000
+cat >"$T/claude.sh" <<'EOS'
+#!/usr/bin/env bash
+echo "$*" >>"$(dirname "$0")/claude.log"
+[ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
+if [ "$1 $2" = "plugin update" ]; then
+	sed -i 's/"version":"[^"]*"/"version":"99.0.0"/' "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+fi
+exit 0
+EOS
 # The modes (the toolbox's discipline plugins) the server reports, instead of
 # whichever are installed on this machine. installed_modes() itself is checked
 # against real pointer folders further down.
@@ -406,6 +419,147 @@ has "ended" "$T/f" "ended"
 get /api/features >"$T/j"
 pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['live']" >"$T/f"
 hasnt "no longer live" "$T/f" "$TAG"
+
+echo "# the desktop app"
+# boot is what the Desktop shortcut runs: it reuses the open window and starts
+# Tatty's own Claude session (reported, not opened, under TATTY_DRYRUN).
+mkdir -p "$T/proj" "$T/proj2"
+PROJ=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; }); PROJ2=$(cd "$T/proj2" && { pwd -W 2>/dev/null || pwd; })
+post /api/bye '{}' >/dev/null # no session is working with Tatty yet
+expect "boot" 0 bash "$W" boot --no-browser --project "$PROJ"
+has "starts Tatty's own session" "$T/out" "claude=started"
+has "in a window of its own, with a fixed title" "$T/out" "Title: Tatty (Claude)"
+has "joined to Tatty" "$T/out" "TATTY_JOIN=1"
+hasnt "but not as a feature's session" "$T/out" "TATTY_SESSION"
+has "a new conversation starts with an id of its own" "$T/out" "--session-id"
+pick "$TATTY_HOME/claude-link.json" "d['project']" >"$T/f"
+has "the link remembers the project" "$T/f" "proj"
+SID=$(pick "$TATTY_HOME/claude-link.json" "d['sessionId']")
+expect "boot again" 0 bash "$W" boot --no-browser
+has "the same conversation" "$T/out" "$SID"
+hasnt "not yet kept by Claude Code, so not resumed" "$T/out" "--resume"
+mkdir -p "$CLAUDE_CONFIG_DIR/projects/x"; : >"$CLAUDE_CONFIG_DIR/projects/x/$SID.jsonl"
+expect "boot after the conversation has begun" 0 bash "$W" boot --no-browser
+has "resumes it" "$T/out" "--resume $SID"
+expect "boot in another project" 0 bash "$W" boot --no-browser --project "$PROJ2"
+hasnt "is another conversation" "$T/out" "$SID"
+expect "boot refuses a folder that isn't there" 2 bash "$W" boot --no-browser --project "$PROJ/nope"
+expect "boot without Claude" 0 bash "$W" boot --no-browser --no-claude
+hasnt "starts no session" "$T/out" "claude="
+post /api/hello '{"session":"s1"}' >/dev/null
+expect "boot with a session already working with Tatty" 0 bash "$W" boot --no-browser
+has "leaves it be" "$T/out" "claude=already attached"
+post /api/bye '{}' >/dev/null
+
+echo "# milestones"
+# The toolbox records a feature's progress in its own ledger as it happens, and
+# knows nothing of Tatty. Tatty follows the file and celebrates what it says.
+ledger() {
+	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"%s|%s","prefix":"%s","folder":"%s","route":"full","qualifier":"%s","approx":false}\n' \
+		"$1" "$1" "${2:-}" "${3:-Demo}" "$DEMO" "${2:-}" >>"$TT_EVENTS_HOME/events.jsonl"
+}
+# waitfor <text>: the events have it within ten seconds (the watcher looks every
+# LEDGER_POLL seconds, so nothing here can be immediate)
+waitfor() {
+	local i=0
+	while [ $i -lt 20 ]; do
+		get /api/events >"$T/ev"
+		grep -qF -- "$1" "$T/ev" && return 0
+		sleep 0.5
+		i=$((i + 1))
+	done
+	return 1
+}
+# milestone <name> <python test over the one milestone event with that prefix>
+milestone() {
+	$PY -c "import json, sys
+events = [e for e in json.load(open(sys.argv[1], encoding='utf-8')) if e['type'] == 'milestone' and e.get('prefix') == sys.argv[2]]
+sys.exit(0 if len(events) == 1 and ($3) else 1)" "$T/ev" "$2" && ok "$1" || bad "$1" "$(grep -c milestone "$T/ev") milestone events"
+}
+
+ledger build.unit_validated WU7 Wunit
+waitfor '"qualifier": "WU7"' && ok "a work unit validated is announced" || bad "a work unit validated is announced"
+milestone "with what it was and how big a thing" Wunit \
+	"events[0]['label'] == 'Work unit validated' and events[0]['tier'] == 'mid' and events[0]['qualifier'] == 'WU7'"
+ledger build.unit_validated WU7 Wunit  # the same key again: the toolbox re-reconciled
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+milestone "announced once per key" Wunit "events[0]['qualifier'] == 'WU7'"
+ledger nonsense.event "" Nonsense
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+hasnt "an event it doesn't know is ignored" "$T/ev" "nonsense.event"
+
+post /api/milestone '{"event":"plan.signed_off","prefix":"Zed"}' >"$T/j"
+has "a milestone to order" "$T/j" '"seq"'
+get /api/events >"$T/ev"
+milestone "signing a plan off is the big one" Zed \
+	"events[0]['label'] == 'Plan signed off' and events[0]['tier'] == 'big'"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"event":"nope"}' "$U/api/milestone")" = 400 ] &&
+	ok "an unknown milestone refused" || bad "an unknown milestone refused"
+expect "cheer" 0 bash "$W" cheer plan.approach_closed --prefix Cheered
+get /api/events >"$T/ev"
+milestone "cheer celebrates a step" Cheered \
+	"events[0]['label'] == 'Approach closed' and events[0]['tier'] == 'small'"
+expect "cheer needs an event it knows" 2 bash "$W" cheer not-an-event
+
+# A window that has just opened says nothing of what was finished before it: the
+# watcher starts from the end of the ledger as it stands, or Tatty would arrive
+# in the middle of a party for last week's work.
+bash "$W" close >/dev/null 2>&1
+sleep 1
+expect "open again, with a ledger already full" 0 bash "$W" open --no-browser
+P=$(json x 'd["port"]'); K=$(json x 'd["token"]'); U="http://127.0.0.1:$P"
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+hasnt "the ledger's history isn't celebrated" "$T/ev" '"type": "milestone"'
+ledger build.complete "" Fresh
+waitfor '"prefix": "Fresh"' && ok "but the next milestone is" || bad "but the next milestone is"
+
+echo "# settings and updates"
+get /api/settings >"$T/set"
+[ "$(pick "$T/set" "d['autoUpdate']")" = True ] && ok "auto-update is on by default" || bad "auto-update is on by default" "$(head -c 200 "$T/set")"
+[ "$(pick "$T/set" "d['update']['status']")" = idle ] && ok "no update looked for yet" || bad "no update looked for yet"
+post /api/settings '{"autoUpdate":false,"nonsense":1}' >"$T/set"
+[ "$(pick "$T/set" "d['autoUpdate']")" = False ] && ok "auto-update turned off" || bad "auto-update turned off" "$(head -c 200 "$T/set")"
+hasnt "unknown settings not kept" "$TATTY_HOME/settings.json" nonsense
+post /api/settings '{"autoUpdate":"yes"}' >"$T/set"
+[ "$(pick "$T/set" "d['autoUpdate']")" = False ] && ok "a wrong type is ignored" || bad "a wrong type is ignored"
+post /api/settings '{"autoUpdate":true}' >/dev/null
+has "the choice is kept in Tatty's home" "$TATTY_HOME/settings.json" '"autoUpdate": true'
+[ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served" || bad "settings.js served"
+
+# Run from a checkout (no install record), there is nothing to update.
+upd_wait() { for _ in $(seq 1 50); do get /api/settings >"$T/set"; case $(pick "$T/set" "d['update']['status']") in checking|updating) sleep 0.2 ;; *) return 0 ;; esac; done; return 1; }
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = checkout ] && ok "a checkout has nothing to update" || bad "a checkout has nothing to update" "$(head -c 300 "$T/set")"
+
+# An install of this very version, from a marketplace that offers 99.0.0.
+HAVE=$($PY -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$root/plugins/tatty/.claude-plugin/plugin.json")
+mkdir -p "$CLAUDE_CONFIG_DIR/plugins" "$T/market/.claude-plugin" "$T/market/plugins/tatty/.claude-plugin"
+printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+printf '{"fake-market":{"installLocation":"%s"}}' "$(cygpath -m "$T/market" 2>/dev/null || echo "$T/market")" >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
+printf '{"name":"fake-market","plugins":[{"name":"tatty","source":"./plugins/tatty"}]}' >"$T/market/.claude-plugin/marketplace.json"
+printf '{"name":"tatty","version":"99.0.0"}' >"$T/market/plugins/tatty/.claude-plugin/plugin.json"
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = available ] && ok "a newer version is found" || bad "a newer version is found" "$(head -c 300 "$T/set")"
+[ "$(pick "$T/set" "d['update']['available']")" = 99.0.0 ] && ok "and named" || bad "and named"
+has "the marketplace was refreshed first" "$T/claude.log" "plugin marketplace update fake-market"
+hasnt "checking installs nothing" "$T/claude.log" "plugin update"
+post /api/update '{"action":"apply"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "installed: ready for a restart" || bad "installed: ready for a restart" "$(head -c 300 "$T/set")"
+has "claude installed it for the user" "$T/claude.log" "plugin update tatty@fake-market --scope user"
+has "the page is told to restart" "$T/set" "Restart Tatty"
+get /api/events >"$T/ev"
+has "the page hears of it" "$T/ev" '"type": "update"'
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "still ready until restarted" || bad "still ready until restarted"
+touch "$T/claude-fail"
+printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = error ] && ok "a failed refresh is an error" || bad "a failed refresh is an error" "$(head -c 300 "$T/set")"
+has "with claude's words" "$T/set" "network is down"
+rm -f "$T/claude-fail"
 
 echo "# close"
 expect "close" 0 bash "$W" close
