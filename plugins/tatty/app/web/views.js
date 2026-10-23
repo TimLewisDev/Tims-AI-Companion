@@ -93,6 +93,27 @@ const outcomeOf = f => { const w = word(f.outcome); return w ? w[0].toUpperCase(
 const SEV_CLASS = { blocking: "bad", significant: "warn", minor: "todo" };
 const OUTCOME_CLASS = { Open: "warn", Accepted: "done", Resolved: "done", Deferred: "now", Rebutted: "todo", Dismissed: "todo" };
 
+// One challenge as a card (parseChallenges's item): here, and in the card a CH link shows on hover (ids.js).
+function challengeCard(it) {
+  const f = it.fields, sev = sevOf(f), out = outcomeOf(f);
+  const heading = `CH${it.n}` + (it.title ? ` — ${it.title}` : "");
+  const facts = [["Target", f.target], ["Assumption attacked", f["assumption attacked"]], ["Evidence", f.evidence],
+    ["Question for the engineer", f["question for the engineer"]],
+    ...Object.keys(f).filter(k => !CH_KNOWN.includes(k)).map(k => [k[0].toUpperCase() + k.slice(1), f[k]])]
+    .filter(([, v]) => v && !CH_NONE.test(v));
+  const why = it.body || f["why it may be wrong"];
+  // The heading text is what the document's own "### CH3 — title" would render, so a
+  // link such as [[Challenges#CH3]] finds it (findTarget matches headings by text).
+  const h = el("h3", { class: "ch-title", id: `h-${slug(heading)}` }, el("span", { class: "ch-num" }, `CH${it.n}`), " ");
+  h.append(rich("span", "", it.title));
+  return el("article", { class: "card chcard" + (sev ? " sev-" + sev : "") },
+    el("div", { class: "ch-top" }, h,
+      sev ? chip(sev, SEV_CLASS[sev] || "todo") : "", out ? chip(out, OUTCOME_CLASS[out] || "todo") : ""),
+    why ? rich("p", "ch-why", why) : "",
+    facts.length ? el("dl", { class: "ch-facts" }, facts.flatMap(([k, v]) => [el("dt", {}, k), rich("dd", "", v)])) : "",
+    f.resolution && !CH_NONE.test(f.resolution) ? el("div", { class: "ch-resolution" }, el("strong", {}, "Resolution "), rich("span", "", f.resolution)) : "");
+}
+
 function challengesView(src) {
   const doc = parseChallenges(src);
   if (!doc) return null;
@@ -100,24 +121,8 @@ function challengesView(src) {
   const cards = [], sections = [];
 
   const card = it => {
-    const f = it.fields, sev = sevOf(f), out = outcomeOf(f);
-    const heading = `CH${it.n}` + (it.title ? ` — ${it.title}` : "");
-    const facts = [["Target", f.target], ["Assumption attacked", f["assumption attacked"]], ["Evidence", f.evidence],
-      ["Question for the engineer", f["question for the engineer"]],
-      ...Object.keys(f).filter(k => !CH_KNOWN.includes(k)).map(k => [k[0].toUpperCase() + k.slice(1), f[k]])]
-      .filter(([, v]) => v && !CH_NONE.test(v));
-    const why = it.body || f["why it may be wrong"];
-    // The heading text is what the document's own "### CH3 — title" would render, so a
-    // link such as [[Challenges#CH3]] finds it (findTarget matches headings by text).
-    const h = el("h3", { class: "ch-title", id: `h-${slug(heading)}` }, el("span", { class: "ch-num" }, `CH${it.n}`), " ");
-    h.append(rich("span", "", it.title));
-    const n = el("article", { class: "card chcard" + (sev ? " sev-" + sev : "") },
-      el("div", { class: "ch-top" }, h,
-        sev ? chip(sev, SEV_CLASS[sev] || "todo") : "", out ? chip(out, OUTCOME_CLASS[out] || "todo") : ""),
-      why ? rich("p", "ch-why", why) : "",
-      facts.length ? el("dl", { class: "ch-facts" }, facts.flatMap(([k, v]) => [el("dt", {}, k), rich("dd", "", v)])) : "",
-      f.resolution && !CH_NONE.test(f.resolution) ? el("div", { class: "ch-resolution" }, el("strong", {}, "Resolution "), rich("span", "", f.resolution)) : "");
-    cards.push({ n, sev, out });
+    const n = challengeCard(it);
+    cards.push({ n, sev: sevOf(it.fields), out: outcomeOf(it.fields) });
     return n;
   };
 

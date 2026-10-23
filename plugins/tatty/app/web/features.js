@@ -153,14 +153,21 @@ document.addEventListener("click", async e => {
   location.hash = featureHref(name, file, at);
 });
 
-// The heading or block a link points at, inside a rendered document.
+// The heading, block or planning ID's item a link points at, inside a rendered
+// document. A block id that isn't there yet (a document written before block ids)
+// is still found by its ID (ids.js's findId).
 const norm = s => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 function findTarget(main, at) {
   if (!at) return null;
-  if (at.startsWith("^")) return main.querySelector(`[data-block="${CSS.escape(at.slice(1))}"]`);
+  if (at.startsWith("^")) {
+    const id = at.slice(1).toUpperCase();
+    return main.querySelector(`[data-block="${CSS.escape(at.slice(1))}"]`) || (isId(id) ? findId(main, id) : null);
+  }
+  const hit = isId(at) && findId(main, at);
+  if (hit) return hit;
   const want = norm(at.split("#").pop());
   const heads = [...main.querySelectorAll(".md h1, .md h2, .md h3, .md h4, .md h5, .md h6")];
-  return heads.find(h => norm(h.textContent) === want) || heads.find(h => norm(h.textContent).startsWith(want)) || null;
+  return heads.find(h => norm(h.textContent) === want) || heads.find(h => (norm(h.textContent) + " ").startsWith(want + " ")) || null;
 }
 
 function goToTarget(main, at) {
@@ -542,6 +549,7 @@ function activityRow(ev, rows) {
   if (ev.kind === "prompt") return el("li", { class: "act you" }, el("span", { class: "who" }, "Prompt"), el("span", {}, ev.text));
   if (ev.kind === "reply") {
     const body = mdNode(ev.text);
+    linkIds(body, ev.feature || (sessionInfo.get(ev.tag) || {}).feature);
     const li = el("li", { class: "act reply" }, el("span", { class: "who" }, "Claude"), body);
     if (ev.text.split("\n").length > 8 || ev.text.length > 700) {
       li.classList.add("folded");
@@ -771,6 +779,7 @@ async function showDoc(f, file, main, at) {
       editing = null;
       body.replaceChildren(mode === "edit" ? editor(f, file, d, meta, u => { changedAt.textContent = "changed " + ago(u); })
         : viewOf(kind, d.text, ctx) || mdNode(d.text));
+      if (mode === "view") linkIds(body, f.name); // the IDs it cites, as links to their items
     };
     const pick = m => {
       if (m === docMode.get()) return;

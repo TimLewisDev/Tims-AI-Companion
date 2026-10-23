@@ -70,6 +70,7 @@ All of these are under the core plugin's `skills/` folder.
 | `tt-common/scripts/tatty.sh banner` | the greeting's robot and quip | a fresh window's first card |
 | `tt-guide/scripts/guide.sh about [topic]`, `guide.sh start` | the toolbox's own docs | the Toolbox page's Docs tab |
 | `tt-connections/scripts/connections.sh status <folder>` | the project's connections | the Toolbox page's Connections tab |
+| `tt-common/scripts/ids.sh index <feature folder>` | every planning ID the feature's documents define, one row each: `ID file line form gloss` (form `heading`, `item` or `row`), from the document that owns its prefix | ID links and their hover cards (below) |
 
 The page can't name any other command. The server runs only these, by argv,
 with no shell.
@@ -80,8 +81,33 @@ with no shell.
 |---|---|
 | `<feature>/<Prefix> - <Doc>.md` and `<feature>/.tt/**/*.md` | a feature's documents and working notes: their order, the Stages table of a draft Comprehensive Tech Plan, the Work Unit and Task Boards of a Task Status, `Repo` paths |
 | `${TT_EVENTS_HOME:-~/.claude/tt-events}/events.jsonl` | a feature's timeline and its project (`folder`, `event`, `ts`, `project`, …; see the toolbox's `tt-common/events.md`, which names a companion app as a reader) |
-| `${TT_WORKFLOW_HOME:-~/.claude/tt-workflow}/links.tsv`, `lite-links.tsv` | which project a feature folder is linked to |
-| `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json` | open sessions' names, so a new one isn't given the same name |
+| `${TT_WORKFLOW_HOME:-~/.claude/tt-workflow}/links.tsv`, `lite-links.tsv` | which project a feature folder is linked to, and the other way: which feature a session's project (its git root) is linked to |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json` | open sessions' names, so a new one isn't given the same name; a session's `cwd`, by its `sessionId` |
+
+### Planning IDs: links and hover cards
+
+Wherever Tatty shows a feature's words (a question from a session, its options,
+a reply, a document in View), an ID the feature defines (`R12`, `CH5`, `P3`,
+`CD2`, `§4`, `T07`, ...) is a link to its item: it opens the owning document at
+that item, and hovering it shows the item as a card. An ID the feature doesn't
+define stays plain text, and so does everything without the toolbox's
+`ids.sh index`.
+
+- **Which feature.** A session Start opened is its feature's. Any other joined
+  session sends its Claude session id with each post; Tatty finds the session's
+  `cwd` in `sessions/*.json`, its git root, and the feature folder under Tatty's
+  root that `links.tsv` or `lite-links.tsv` links that project to.
+- **Where an ID is.** `ids.sh index` follows the toolbox's Anchors rule
+  (`tt-common/planning-protocol.md`): each ID is defined once, in the document
+  that owns its prefix, as a heading that starts with it, a bullet that opens
+  with it in bold (and ends with its block id, ` ^r12`), or a table row whose
+  first cell it is. A card is that heading's section, that bullet, or that row
+  under its table's header.
+- Tatty finds an item in a rendered document the same three ways, so a
+  document written before block ids still opens at the bullet.
+
+The toolbox's skills keep writing IDs as they do in chat (`R12 (what it says)`);
+nothing in a question is written for Tatty.
 
 ### Documents: View and Edit
 

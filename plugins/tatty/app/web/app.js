@@ -258,6 +258,7 @@ function card(ev) {
   if (ev.kind === "markdown" || ev.kind === "reply") body = mdNode(ev.body);
   else if (ev.kind === "table") body = statusTable(ev.body);
   else body = el("pre", {}, ev.body);
+  if (ev.kind === "markdown" || ev.kind === "reply") linkIds(body, ev.feature); // ids.js
   return el("div", { class: "card " + ev.kind }, title, body);
 }
 
@@ -305,6 +306,9 @@ function askCard(ev) {
   terminal.addEventListener("click", async () => {
     try { await api("/api/reply", { id: ev.id, declined: true }); } catch (e) { status.textContent = String(e); }
   });
+  // The IDs the question cites (R12, CH5, …) become links to their items (ids.js).
+  // Only the text on screen changes: an answer is still keyed by q.question.
+  linkIds(node, ev.feature);
   // The same question can be on screen twice (the feed and a feature's session
   // panel); answering either answers both.
   if (!asks.has(ev.id)) asks.set(ev.id, { nodes: [], ev });
@@ -315,9 +319,11 @@ function askCard(ev) {
 const answers = new Map(); // ask id -> its "answered" event, for cards drawn after it
 
 function answeredCard(a, ev) {
-  return el("div", { class: "card ask done" }, el("h4", {}, "Answered"),
+  const node = el("div", { class: "card ask done" }, el("h4", {}, "Answered"),
     ev.declined ? el("p", { class: "dim" }, "Asked in the terminal instead.") :
       a.questions.map(q => el("div", { class: "q" }, el("div", { class: "text" }, q.question), el("div", { class: "answer" }, ev.answers[q.question] || "—"))));
+  linkIds(node, a.feature); // ids.js
+  return node;
 }
 
 function answered(ev) {

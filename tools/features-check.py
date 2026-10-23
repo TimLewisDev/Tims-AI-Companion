@@ -77,7 +77,7 @@ def check_modes(p, feature):
                              headings: document.querySelectorAll('.fmain .md h3').length,
                              stages: [...document.querySelectorAll('.fmain .ch-stage')].map(h => h.textContent),
                              summary: (document.querySelector('.ch-summary') || {}).innerText || '',
-                             wikilinks: document.querySelectorAll('.fmain .chcard a.doclink').length })""")
+                             wikilinks: document.querySelectorAll('.fmain .chcard a.doclink:not(.idlink)').length })""")
     # a filter hides the other cards and the stages left empty
     p.js("[...document.querySelectorAll('.ch-filter')].find(b => b.dataset.value === 'blocking').click(); 1")
     res["filtered"] = p.js("""({ shown: document.querySelectorAll('.chcard:not(.hidden)').length,
@@ -162,6 +162,58 @@ def check_breakdown(p, feature):
     return res
 
 
+def check_ids(p, feature="Draft"):
+    """Planning IDs as links (ids.js): in a document's View, in a question from a
+    session working on the feature, the card a hovered link shows, and following
+    one to its item. Edits nothing on disk; the question is the page's own, never asked."""
+    res = {}
+    if not open_doc(p, feature, "Challenges"):
+        return {"ids": "no Challenges document in " + feature}
+    wait(p, "document.querySelectorAll('.fmain a.idlink').length > 0")
+    res["doc"] = p.js("[...document.querySelectorAll('.fmain a.idlink')].map(a => a.textContent + '>' + a.dataset.file).join(' ')")
+    # CH1 is its own heading, never CH10's
+    res["target"] = p.js("""(() => { const m = el('div', {}, mdNode('### CH10 — ten\\n### CH1 — one\\n- **R4:** four'));
+                                     const only10 = el('div', {}, mdNode('### CH10 — ten'));
+                                     return { ch1: (findTarget(m, 'CH1') || {}).textContent, r4: (findTarget(m, '^r4') || {}).textContent,
+                                              ch1in10: findTarget(only10, 'CH1') }; })()""")
+    # a hovered link shows its item's card
+    p.js("""(() => { const a = [...document.querySelectorAll('.fmain a.idlink')].find(a => a.textContent === 'R2');
+                     a.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); })()""")
+    wait(p, "!!document.querySelector('.peek')")
+    res["peek"] = p.js("(document.querySelector('.peek') || {}).innerText || ''")
+    p.js("closePeek(); 1")
+    # a wikilink's block id ([[Doc#^r1|R1]]) gets a card too
+    p.js("""(() => { const a = [...document.querySelectorAll('.fmain .chcard a.doclink:not(.idlink)')].find(a => a.dataset.at === '^r1');
+                     a.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); })()""")
+    wait(p, "!!document.querySelector('.peek')")
+    res["wikipeek"] = p.js("(document.querySelector('.peek') || {}).innerText || ''")
+    p.js("closePeek(); 1")
+    # a question from a session on this feature, with its IDs linked (and the answer key unchanged)
+    p.js("""feed.append(questionCard({ type: 'ask', id: 'ids-check', source: 'check', feature: %s,
+             questions: [{ question: 'Is CH1 settled by R1 and CD1?', options: [{ label: 'Yes', description: 'as P1 says' }, { label: 'No' }] }] })); 1""" % json.dumps(feature))
+    wait(p, "document.querySelectorAll('#feed .card.ask:last-child a.idlink').length >= 4")
+    res["question"] = p.js("""(() => { const c = document.querySelector('#feed .card.ask:last-child');
+                                      return { links: [...c.querySelectorAll('a.idlink')].map(a => a.textContent), text: c.querySelector('.q .text').textContent }; })()""")
+    p.js("""(() => { const a = [...document.querySelectorAll('#feed .card.ask:last-child a.idlink')].find(a => a.textContent === 'CD1');
+                     a.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); })()""")
+    wait(p, "!!document.querySelector('.peek')")
+    res["rowpeek"] = p.js("(document.querySelector('.peek') || {}).innerText || ''")
+    p.js("closePeek(); 1")
+    p.js("""(() => { const a = [...document.querySelectorAll('#feed .card.ask:last-child a.idlink')].find(a => a.textContent === 'CH1');
+                     a.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })); })()""")
+    wait(p, "!!document.querySelector('.peek .chcard')")
+    res["chpeek"] = p.js("""(() => { const c = document.querySelector('.peek');
+                                    return c ? { chips: [...c.querySelectorAll('.ch-top .chip')].map(x => x.textContent), text: c.innerText.slice(0, 120) } : null; })()""")
+    p.js("closePeek(); 1")
+    p.js("[...document.querySelectorAll('#feed .card.ask:last-child a.idlink')].find(a => a.textContent === 'R1').click(); 1")
+    wait(p, "!!document.querySelector('.fmain .target-flash')")
+    res["followed"] = {"hash": p.js("decodeURIComponent(location.hash)"),
+                       "flash": p.js("(document.querySelector('.fmain .target-flash') || {}).textContent || ''"),
+                       "picked": p.js("document.querySelectorAll('#feed .card.ask:last-child .opt.picked').length")}
+    p.js("document.querySelector('#feed .card.ask:last-child').remove(); 1")
+    return res
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -214,10 +266,10 @@ def main(argv):
         wait(p, "!!document.querySelector('.fmain .doc-head')")
         out["doc"] = p.js("""({ hash: decodeURIComponent(location.hash), title: document.querySelector('.doc-head h2').textContent,
                               headings: document.querySelectorAll('.fmain .md h1, .fmain .md h2, .fmain .md h3').length,
-                              doclinks: [...document.querySelectorAll('.fmain a.doclink')].map(a => a.dataset.doc) })""")
+                              doclinks: [...document.querySelectorAll('.fmain a.doclink:not(.idlink)')].map(a => a.dataset.doc) })""")
         # follow a [[wikilink]] that names another document of the feature
         followed = p.js("""(() => { const own = new Set([...document.querySelectorAll('.fnav-item')].map(a => a.querySelector('span').textContent));
-                                    const a = [...document.querySelectorAll('.fmain a.doclink')].find(a => a.dataset.doc !== document.querySelector('.doc-head h2').textContent);
+                                    const a = [...document.querySelectorAll('.fmain a.doclink:not(.idlink)')].find(a => a.dataset.doc !== document.querySelector('.doc-head h2').textContent);
                                     if (!a) return 'no doclink'; a.click(); return a.dataset.doc; })()""")
         time.sleep(1.2)
         out["wikilink"] = {"clicked": followed, "hash": p.js("decodeURIComponent(location.hash)"),
@@ -228,6 +280,7 @@ def main(argv):
         out["usage"] = check_usage(p, feature)
         out["modes"] = check_modes(p, feature)
         out["breakdown"] = check_breakdown(p, feature)
+        out["ids"] = check_ids(p)
         print(json.dumps(out, indent=1))
         return 0
     finally:

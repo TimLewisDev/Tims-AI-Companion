@@ -22,6 +22,9 @@ visually:
   answer right there.
 - **Questions from any session** you join pop up in Tatty instead of the
   terminal, and you can chat to that session from Tatty.
+- **Planning IDs as links:** an `R12`, `CH5` or `P3` in a question, a reply or a
+  document opens the item it names, and hovering it shows the item as a card,
+  so you don't have to go and find it.
 
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
