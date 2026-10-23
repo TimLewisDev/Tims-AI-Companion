@@ -200,6 +200,11 @@ The spec Tatty writes for an edit is the script's own format (`stories.sh
 --help`), from the fields the person filled in. Tatty never writes the
 document's markdown itself.
 
+**Export to Tasks** only reads the document (`stories.sh list --tsv`): the
+tasks it makes are Tatty's own files on a Tasks board (see "Tasks"), and which
+task each story became is kept in `<home>/boards/`, not in the document. It
+runs no skill.
+
 To **write** stories, Tatty runs the skill headless, on a person's click
 (**Write stories**, **Look for more**, a new board, or **Ask for changes** on a
 Proposed card):
@@ -315,7 +320,8 @@ has no part in it:
     (`issues/<KEY>.json`), and which feature was started from which ticket
     (`started.tsv`);
   - `boards/<key>.json`: where each card sits on a User Stories board, the view,
-    and each group's colour (never in the stories document);
+    each group's colour, and which task each exported story became (never in
+    the stories document);
   - `tasks-index/<key>.json`: each task board's index (each task file's size,
     time and summary), so a big board opens without reading every file;
   - `server.json` and `server.log`.

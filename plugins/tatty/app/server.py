@@ -1920,7 +1920,8 @@ def board_layout(folder):
     got = got if isinstance(got, dict) else {}
     return {"cards": got.get("cards") if isinstance(got.get("cards"), dict) else {},
             "colours": got.get("colours") if isinstance(got.get("colours"), dict) else {},
-            "view": got.get("view") if isinstance(got.get("view"), dict) else {}}
+            "view": got.get("view") if isinstance(got.get("view"), dict) else {},
+            "exported": got.get("exported") if isinstance(got.get("exported"), dict) else {}}
 
 
 def save_layout(folder, layout):
@@ -1952,7 +1953,7 @@ def design_view(state, folder):
             "run": stories_run_view(state, folder.name)}
     if not doc:
         return {**view, "doc": "", "intake": "", "meta": {}, "groups": [], "stories": [],
-                "retired": [], "problems": [], "layout": {"cards": {}, "view": {}},
+                "retired": [], "problems": [], "layout": {"cards": {}, "view": {}}, "exported": {},
                 "error": "This board has no User Stories document yet."}
     intake = design_intake(folder, doc)
     got = read_stories(state, doc) if view["plugin"] else {"meta": {}, "groups": [], "stories": [], "retired": [],
@@ -1961,7 +1962,8 @@ def design_view(state, folder):
         layout = board_layout(folder)
         group_colours(folder, layout, got["groups"])
     return {**view, **got, "doc": doc.name, "intake": intake.name if intake else "",
-            "updated": doc.stat().st_mtime, "layout": {"cards": layout["cards"], "view": layout["view"]}}
+            "updated": doc.stat().st_mtime, "layout": {"cards": layout["cards"], "view": layout["view"]},
+            "exported": story_exports(layout, got["stories"])}
 
 
 def designs_list(state):
@@ -2090,8 +2092,8 @@ def stories_change(state, folder, b):
             spec.unlink(missing_ok=True)
     msg = " ".join(ln.replace("stories.sh: ", "", 1) for ln in err.strip().splitlines()) or "stories.sh refused"
     if code == 3:
-        return 409, {"error": "This story changed since you opened it. It's been reloaded; make your change again.",
-                     **design_view(state, folder)}
+        return 409, {**design_view(state, folder),
+                     "error": "This story changed since you opened it. It's been reloaded; make your change again."}
     if code != 0:
         return (400 if code == 1 else 500), {"error": msg}
     if action == "group" and b.get("op") == "rename":
@@ -2120,6 +2122,115 @@ def move_cards(folder, b):
         if isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) for k in ("x", "y", "z")):
             layout["view"] = {k: round(float(v[k]), 3) for k in ("x", "y", "z")}
         save_layout(folder, layout)
+
+
+# -- export to a Tasks board
+
+def story_task(s, design):
+    """What a story becomes as a task: (title, labels, description, extra fields,
+    sections). The story sentence and its details are the description, the
+    acceptance criteria a section of their own, and its group the one label."""
+    group = " ".join(s["group"].replace(",", " ").split())
+    desc = f"**As {s['article']}** {s['as']}, **I want** {s['want']}, **so that** {s['soThat']}."
+    if s["details"].strip():
+        desc += "\n\n### Details\n\n" + s["details"].strip()
+    crit = "\n".join(f"- {c}" for c in s["criteria"])
+    return (s["title"], [group] if group and group != "Ungrouped" else [], desc,
+            [("Story", f'{s["id"]} on the design board "{design}"')], [("Acceptance criteria", crit)])
+
+
+def story_exports(layout, stories):
+    """{US-NN: {board, task, changed}} for each story whose exported task is still on
+    its board (one deleted since frees the story to go again); changed: the story
+    was edited after it went."""
+    hashes = {s["id"]: s["hash"] for s in stories}
+    boards, out = {}, {}
+    for sid, rec in layout["exported"].items():
+        if not isinstance(rec, dict):
+            continue
+        name, tid = str(rec.get("board", "")), str(rec.get("task", ""))
+        if name not in boards:
+            boards[name] = None
+            folder = tasks_dir(name)
+            if folder:
+                try:
+                    with task_store(folder)["lock"]:
+                        boards[name] = task_ids(task_index(folder))[0]
+                except OSError:
+                    pass
+        if boards[name] and tid in boards[name]:
+            out[sid] = {"board": name, "task": tid, "changed": sid in hashes and rec.get("hash") != hashes[sid]}
+    return out
+
+
+def stories_export(state, folder, b):
+    """Accepted stories into a Tasks board's backlog, one task each, by Tatty's own
+    file writes (no headless run): (http code, answer). ids: {US-NN: the hash the
+    page read}, so a story changed meanwhile is refused (409); board: the Tasks
+    board's name, made first when newBoard says so. A story whose task is still on
+    a board is skipped. Which task each story became is kept in <home>/boards."""
+    doc = stories_doc(folder)
+    if not doc:
+        return 404, {"error": "This board has no User Stories document."}
+    if not stories_script():
+        return 501, {"error": DESIGN_MISSING}
+    if stories_run_view(state, folder.name):
+        return 409, {"error": "The stories are being written right now; try again when that's done."}
+    ids = b.get("ids")
+    if not isinstance(ids, dict) or not ids or not all(re.fullmatch(r"US-\d+", str(k)) for k in ids):
+        return 400, {"error": "which stories? (ids: {US-NN: hash})"}
+    got = read_stories(state, doc)
+    if got["error"]:
+        return 500, {"error": got["error"]}
+    by_id = {s["id"]: s for s in got["stories"]}
+    for sid, h in ids.items():
+        s = by_id.get(sid)
+        why = (f"{sid} isn't on the board any more." if not s
+               else f"{sid} is {s['status']}: accept it first." if s["status"] != "Accepted"
+               else f"{sid} changed since you opened the board." if h and str(h) != s["hash"] else "")
+        if why:
+            return 409, {**design_view(state, folder), "error": why + " The board's been reloaded."}
+    name = " ".join(str(b.get("board", "")).split())
+    if b.get("newBoard") and not tasks_dir(name):
+        code, answer = new_task_board(name, None)
+        if code != 200:
+            return code, answer
+        state.emit("tasks", list=True, client="")
+    target = tasks_dir(name)
+    if not target:
+        return 404, {"error": f"There's no Tasks board called {name}."}
+    with board_layout_lock(folder):
+        live = story_exports(board_layout(folder), got["stories"])
+    picked = [s for s in got["stories"] if s["id"] in ids and s["id"] not in live]
+    made, failed = [], ""
+    with task_store(target)["lock"]:
+        try:
+            tb = task_board(target, strict=True)
+        except BoardBroken as e:
+            return 409, {"error": str(e)}
+        by, _ = task_ids(task_index(target))
+        try:
+            for s in picked:
+                title, labels, desc, extra, sections = story_task(s, folder.name)
+                made.append((s, task_create_locked(target, tb, by, title, "backlog", "", labels, desc, extra, sections)))
+        except OSError as e:
+            failed = f"couldn't write a task: {e}"
+        if made:
+            task_board_save(target, tb)
+    if made:
+        with board_layout_lock(folder):
+            layout = board_layout(folder)
+            for s, t in made:
+                layout["exported"][s["id"]] = {"board": target.name, "task": t["id"], "hash": s["hash"],
+                                               "at": task_today()}
+            save_layout(folder, layout)
+        task_said(state, target, "", [t["id"] for _, t in made])
+        state.emit("stories", name=folder.name, changed=True)
+    result = {"board": target.name, "created": [{"story": s["id"], "task": t["id"]} for s, t in made],
+              "skipped": [sid for sid in ids if sid in live]}
+    if failed:
+        return 500, {"error": failed, "export": result}
+    return 200, {**design_view(state, folder), "export": result}
 
 
 # -- the headless run
@@ -2542,11 +2653,15 @@ def task_edit(text, fields=None, title=None, tid="", description=None):
     return "\n".join(lines) + ("\n" if p["trail"] or not text else "")
 
 
-def task_new_text(tid, title, status, priority, labels, created, done, description):
+def task_new_text(tid, title, status, priority, labels, created, done, description, extra=(), sections=()):
+    """A new task's file. extra: (key, value) fields after the known ones;
+    sections: (heading, text) sections after the Description."""
     fields = [("Status", status), ("Priority", priority), ("Labels", ", ".join(labels)), ("Created", created),
-              ("Done", done)]
+              ("Done", done)] + [(k, task_line(v, 300)) for k, v in extra]
     out = [f"# {tid}: {title}", ""] + [f"- **{k}:**" + (f" {v}" if v else "") for k, v in fields]
     out += ["", "## Description"] + (["", description] if description else [])
+    for heading, text in sections:
+        out += ["", f"## {heading}"] + (["", text] if text else [])
     return "\n".join(out) + "\n"
 
 
@@ -2990,29 +3105,40 @@ def task_create(state, folder, body, client):
         to = str(body.get("to") or "backlog")
         if to not in task_targets(b):
             return 400, {"error": "Put it in the backlog, a column or Completed."}
-        fields = task_status_fields(b, {"status": "", "done": ""}, to)
-        desc = str(body.get("description") or "").replace("\r\n", "\n").strip("\n").rstrip()
-        n = task_next_id(b, by)
-        (folder / "items").mkdir(parents=True, exist_ok=True)
-        while True:
-            tid = f"{b['prefix']}-{n:04d}"
-            if tid in by:
-                n += 1
-                continue
-            path = folder / "items" / task_file_name(tid, title)
-            text = task_new_text(tid, title, fields.get("Status", "Backlog"), task_line(body.get("priority"), 40),
-                                 task_labels(body.get("labels")), task_today(), fields.get("Done", ""), desc)
-            try:
-                task_write(path, text, new=True)
-                break
-            except FileExistsError:
-                n += 1
-        b["nextId"] = n + 1
-        t = task_noted(folder, path, text)
-        task_put(b, task_lists(b, by), tid, to, body.get("before"))
+        t = task_create_locked(folder, b, by, title, to, body.get("priority"), body.get("labels"),
+                               body.get("description"), before=body.get("before"))
         task_board_save(folder, b)
-    task_said(state, folder, client, [tid])
+    task_said(state, folder, client, [t["id"]])
     return 200, {"task": t}
+
+
+def task_create_locked(folder, b, by, title, to, priority, labels, description, extra=(), sections=(), before=None):
+    """Write a new task into list `to` (the store's lock held): its file, the next
+    free ID, and its place in b's order. by gains it too, so several can be made
+    in a row; the caller saves board.json. Returns its summary."""
+    fields = task_status_fields(b, {"status": "", "done": ""}, to)
+    desc = str(description or "").replace("\r\n", "\n").strip("\n").rstrip()
+    n = task_next_id(b, by)
+    (folder / "items").mkdir(parents=True, exist_ok=True)
+    while True:
+        tid = f"{b['prefix']}-{n:04d}"
+        if tid in by:
+            n += 1
+            continue
+        path = folder / "items" / task_file_name(tid, title)
+        text = task_new_text(tid, title, fields.get("Status", "Backlog"), task_line(priority, 40),
+                             task_labels(labels), task_today(), fields.get("Done", ""), desc, extra, sections)
+        try:
+            task_write(path, text, new=True)
+            break
+        except FileExistsError:
+            n += 1
+    b["nextId"] = n + 1
+    lists = task_lists(b, by)
+    t = task_noted(folder, path, text)
+    task_put(b, lists, tid, to, before)
+    by[tid] = t
+    return t
 
 
 def task_move_locked(state, folder, b, by, t, to, before):
@@ -3805,14 +3931,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/stories/cancel":
             return self.send(200, {"ok": cancel_stories_run(st)})
-        if path in ("/api/stories", "/api/stories/layout", "/api/stories/run"):
+        if path in ("/api/stories", "/api/stories/layout", "/api/stories/run", "/api/stories/export"):
             folder = design_dir(str(b.get("name", "")))
             if not folder:
                 return self.send(404, {"error": "no such board"})
             if path == "/api/stories/layout":
                 move_cards(folder, b)
                 return self.send(200, {"ok": True})
-            code, answer = (start_stories_run if path == "/api/stories/run" else stories_change)(st, folder, b)
+            work = {"/api/stories/run": start_stories_run, "/api/stories/export": stories_export}.get(path, stories_change)
+            code, answer = work(st, folder, b)
             return self.send(code, answer)
         if path.startswith("/api/tasks/"):
             code, answer = tasks_post(st, path, b)

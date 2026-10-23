@@ -1086,6 +1086,67 @@ n0=$(pick "$T/ev" "len(d)")
 sleep 1.6; printf '\n' >>"$BD/Inventory - User Stories.md"
 for _ in $(seq 1 30); do get "/api/events?since=$n0" >"$T/ev2"; grep -q '"changed": true' "$T/ev2" && break; sleep 0.2; done
 has "a change on disk is an event" "$T/ev2" '"changed": true'
+# export to Tasks: accepted stories into a Tasks board's backlog, by Tatty's own writes
+ex_post() { curl -s -o "$T/j" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/stories/export"; }
+hash_of() { get "/api/design?name=Inventory" >"$T/h"; pick "$T/h" "[s['hash'] for s in d['stories'] if s['id'] == '$1'][0]"; }
+st_post '{"name":"Inventory","action":"group","op":"add","group":"Pickup"}' >/dev/null
+st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-02\",\"hash\":\"$(hash_of US-02)\",\"group\":\"Pickup\"}" >/dev/null
+printf 'title: Drop an item\nas: player\nwant: to drop items\nso_that: I make room\ncriteria:\n  - Given an item, when I drop it, then it is on the floor\n' >"$T/s5"
+bash "$US_SCRIPT" add "$BD/Inventory - User Stories.md" "$T/s5" --proposed >/dev/null
+IB="$FX/tasks/Inventory"
+[ "$(ex_post '{"name":"Inventory","ids":{"US-04":""},"board":"Inventory","newBoard":true}')" = 409 ] &&
+	ok "a Proposed story isn't exported" || bad "a Proposed story isn't exported" "$(head -c 300 "$T/j")"
+has "it says to accept it first" "$T/j" "accept it first"
+[ ! -d "$IB" ] && ok "and no board is made for it" || bad "and no board is made for it"
+[ "$(ex_post '{"name":"Inventory","ids":{"US-01":"1"},"board":"Inventory","newBoard":true}')" = 409 ] &&
+	ok "a story changed since the page read it isn't exported" || bad "a story changed since the page read it isn't exported"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Nope\"}")" = 404 ] &&
+	ok "an unknown Tasks board" || bad "an unknown Tasks board"
+[ "$(ex_post '{"name":"Inventory","ids":{},"board":"Inventory"}')" = 400 ] && ok "stories to export are named" || bad "stories to export are named"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-02\":\"$(hash_of US-02)\",\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\",\"newBoard\":true}")" = 200 ] &&
+	ok "export to a new board" || bad "export to a new board" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "[(c['story'], c['task']) for c in d['export']['created']]")" = "[('US-01', 'T-0001'), ('US-02', 'T-0002')]" ] &&
+	ok "a task each, in the stories' order" || bad "a task each, in the stories' order" "$(pick "$T/j" "d.get('export')")"
+[ -f "$IB/board.json" ] && ok "the board is made" || bad "the board is made"
+[ "$(pick "$IB/board.json" "d['order']['backlog']")" = "['T-0001', 'T-0002']" ] && ok "at the end of the backlog" || bad "at the end of the backlog"
+TF1="$IB/items/T-0001 - Pick up an item from the floor.md"
+TF2="$IB/items/T-0002 - Grab items from the floor.md"
+[ -f "$TF1" ] && [ -f "$TF2" ] && ok "named by ID and title" || bad "named by ID and title" "$(ls "$IB/items")"
+has "in the backlog" "$TF1" "- **Status:** Backlog"
+has "the story sentence is the description" "$TF1" "**As a** player, **I want** to pick up items, **so that** I can use them."
+has "its details under it" "$TF1" "### Details"
+has "the details as written" "$TF1" "A full bag refuses."
+has "the acceptance criteria are a section" "$TF1" "## Acceptance criteria"
+has "each criterion" "$TF1" "- Given a full bag, when I walk over it, then it stays"
+has "which story it was" "$TF1" '- **Story:** US-01 on the design board "Inventory"'
+hasnt "Ungrouped isn't a label" "$TF1" "Ungrouped"
+has "the group is the label" "$TF2" "- **Labels:** Pickup"
+[ "$(pick "$T/j" "(d['exported']['US-01']['task'], d['exported']['US-01']['changed'], 'US-04' in d['exported'])")" = "('T-0001', False, False)" ] &&
+	ok "the board knows which task each became" || bad "the board knows which task each became" "$(pick "$T/j" "d.get('exported')")"
+hasnt "never in the stories document" "$BD/Inventory - User Stories.md" "T-0001"
+get "/api/tasks/task?name=Inventory&id=T-0001" >"$T/t1"
+[ "$(pick "$T/t1" "[x for x in d['extra'] if x[0] == 'Story'][0][1]")" = 'US-01 on the design board "Inventory"' ] &&
+	ok "the Tasks board reads the Story field" || bad "the Tasks board reads the Story field" "$(head -c 300 "$T/t1")"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\"}")" = 200 ] &&
+	[ "$(pick "$T/j" "(d['export']['created'], d['export']['skipped'])")" = "([], ['US-01'])" ] &&
+	ok "a story already exported is skipped" || bad "a story already exported is skipped" "$(pick "$T/j" "d.get('export')")"
+[ "$(ls "$IB/items" | wc -l | tr -d ' ')" = 2 ] && ok "so no second task" || bad "so no second task"
+post /api/stories/layout '{"name":"Inventory","cards":{"US-02":[30,40]}}' >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "sorted(d['exported'])")" = "['US-01', 'US-02']" ] && ok "moving a card keeps the record" || bad "moving a card keeps the record"
+st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-01\",\"hash\":\"$(hash_of US-01)\",\"title\":\"Pick up an item\"}" >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "d['exported']['US-01']['changed']")" = True ] && ok "a story edited after it went says so" || bad "a story edited after it went says so"
+[ "$(tk delete "{\"name\":\"Inventory\",\"id\":\"T-0001\",\"rev\":\"$(pick "$T/t1" "d['rev']")\"}")" = 200 ] && ok "its task deleted" || bad "its task deleted" "$(cat "$T/tk")"
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "'US-01' in d['exported']")" = False ] && ok "frees the story to go again" || bad "frees the story to go again"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\"}")" = 200 ] &&
+	[ "$(pick "$T/j" "d['export']['created']")" = "[{'story': 'US-01', 'task': 'T-0003'}]" ] &&
+	ok "and it goes again, as a new task" || bad "and it goes again, as a new task" "$(pick "$T/j" "d.get('export')")"
+[ "$(tk start "{\"name\":\"Inventory\",\"id\":\"T-0002\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from an exported story" || bad "a workflow starts from an exported story" "$(cat "$T/tk")"
+ITK="$FX/features/T-0002 - Grab items from the floor/T-0002 - Grab items from the floor - Ticket.md"
+has "its Ticket has the story" "$ITK" "- **Story:** US-02 on the design board"
+has "and its acceptance criteria" "$ITK" "## Acceptance criteria"
 fi
 
 echo "# close"
