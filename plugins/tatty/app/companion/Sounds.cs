@@ -52,6 +52,14 @@ namespace TtCompanion
             catch (Exception) { } // no sound card, no sound: nothing else changes
         }
 
+        // Straight away, whatever was played a moment ago: the previews in his
+        // menu are asked for one at a time, by somebody who wants to compare them.
+        public void Preview(Cue cue)
+        {
+            last = DateTime.MinValue;
+            Play(cue);
+        }
+
         private SoundPlayer Player(Cue cue)
         {
             if (ready.TryGetValue(cue, out var had)) return had;

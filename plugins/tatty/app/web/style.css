@@ -140,6 +140,13 @@ body.companion:not(.expanded) .mode-switch { display: none; }
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, .25); }
 .mode-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
 .mode-card .fcard-top strong { display: inline-flex; align-items: center; gap: 8px; }
+/* A discipline that isn't installed: greyed, with Add under it. It comes back to
+   full strength while you are reaching for the button. */
+.mode-card.off { opacity: .6; border-left-color: var(--line); }
+.mode-card.off:hover, .mode-card.off:focus-within { opacity: 1; border-color: var(--line); box-shadow: none; }
+.mode-card.off .mode-dot { background: var(--dim); }
+.mode-add { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; margin-top: auto; }
+.mode-add button { padding: 1px 14px; }
 /* the home page has one short thing to say: in the middle of the page */
 #page-mode.on { align-items: center; justify-content: center; }
 .mode-home { max-width: 640px; text-align: center; }

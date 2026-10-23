@@ -13,7 +13,7 @@ Standard library only. Windows only (it skips elsewhere). Uses page-check.py's
 DevTools client for --page and --switch.
 
 usage: window-check.py [--pid <n>] [--expect <mode>] [--no-proxy] [--all]
-                       [--page <devtools port>] [--switch <mode>]
+                       [--page <devtools port>] [--switch <mode>] [--right-click]
        modes: hidden | compact | expanded | maximised | minimised
        --all also reports the plumbing windows .NET and WPF add to any process
 Prints one JSON object; exit 1 if an --expect or --switch check failed.
@@ -157,6 +157,38 @@ def process_name(pid):
         k32.CloseHandle(h)
 
 
+def right_click(hwnd):
+    """Right-click the middle of a window with the real pointer, and put the
+    pointer back where it was.
+
+    It has to be the real one. A posted WM_RBUTTONUP says where it was clicked,
+    but WPF takes its mouse input from the system's own cursor and ignores a
+    click that didn't happen there -- so a posted one reaches no handler at all,
+    which looks exactly like a menu that doesn't work."""
+    was = wt.POINT()
+    u32.GetCursorPos(ctypes.byref(was))
+    r = wt.RECT()
+    u32.GetWindowRect(hwnd, ctypes.byref(r))
+    u32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+    time.sleep(0.3)
+    u32.mouse_event(0x0008, 0, 0, 0, 0)  # MOUSEEVENTF_RIGHTDOWN
+    u32.mouse_event(0x0010, 0, 0, 0, 0)  # MOUSEEVENTF_RIGHTUP
+    time.sleep(0.3)
+    u32.SetCursorPos(was.x, was.y)  # the pointer belongs to whoever is using the machine
+
+
+def dismiss(hwnd):
+    """Escape, as a person would close a menu. If it will not go it is hidden
+    outright, because a menu left up would sit over every check after this one."""
+    u32.keybd_event(0x1B, 0, 0, 0)  # VK_ESCAPE down
+    u32.keybd_event(0x1B, 0, 2, 0)  # and up (KEYEVENTF_KEYUP)
+    time.sleep(0.8)
+    if not u32.IsWindowVisible(hwnd):
+        return "escape"
+    u32.ShowWindow(hwnd, 0)  # SW_HIDE
+    return "hidden by force"
+
+
 def role_of(w):
     """Which of Tatty's windows this is. The titles are deliberately all "Tatty",
     so they are told apart by what they are made of: the panel hosts WebView2,
@@ -166,6 +198,11 @@ def role_of(w):
     chrome at all). Everything else is the plumbing .NET and WPF put in every
     process -- including a hidden owner window per ShowInTaskbar="False" window,
     which is how WPF keeps one off the taskbar."""
+    # Tatty's menu while it is up: WinForms draws it (the tray's and his own are
+    # the same menu), and the only WinForms window of ours ever on screen is an
+    # open one.
+    if w["class"].startswith("WindowsForms10.Window") and w["style"]["visible"]:
+        return "menu"
     # Only WPF's own windows are ours. Text services, GDI+ and the .NET event
     # window all put one up too, and the text one is layered and a tool window,
     # which is exactly what Tatty looks like.
@@ -423,6 +460,36 @@ def main(argv):
             failed = failed or not all(out["switch"][k] for k in ("same_hwnd", "same_runtime", "same_page"))
             found = windows(pid)
             report(found)
+    # A right-click on Tatty puts his menu up where the pointer is, and Escape
+    # takes it away. Worth asking of the shell rather than by eye: Tatty's window
+    # is one that never takes the keyboard, and a menu has to.
+    if "--right-click" in argv:
+        tatty = next((w for w in found if w["role"] == "tatty" and w["style"]["visible"]), None)
+        if tatty is None:
+            out["error"] = "Tatty isn't on screen to be right-clicked"
+            failed = True
+        else:
+            right_click(tatty["hwnd"])
+            # The first menu of a process is slow: WinForms has to wake up and
+            # measure it before anything is on screen.
+            for _ in range(20):
+                time.sleep(0.25)
+                found = windows(pid)
+                if any(w["role"] == "menu" for w in found):
+                    break
+            report(found)
+            up = [w for w in found if w["role"] == "menu"]
+            out["menu"] = {"up": len(up), "items": [{"rect": w["rect"], "topmost": w["ex"]["topmost"]} for w in up]}
+            if not up:
+                out["menu"]["error"] = "a right-click on Tatty put no menu up"
+                failed = True
+            else:
+                out["menu"]["closed_by"] = [dismiss(w["hwnd"]) for w in up]
+                found = windows(pid)
+                report(found)
+                out["menu"]["left_up"] = len([w for w in found if w["role"] == "menu"])
+                failed = failed or out["menu"]["left_up"] > 0
+
     want = arg("--expect")
     if want:
         out["expect"] = want

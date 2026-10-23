@@ -133,6 +133,41 @@ def toolbox_script(rel):
 MODES = ("engineering", "design", "production")
 
 
+TOOLBOX_MARKET = "tims-ai-toolbox"  # the name in the toolbox's own marketplace.json
+
+
+def toolbox_market():
+    """The marketplace the toolbox was installed from, so a discipline added here
+    comes from the same place: the one core was installed from, else the toolbox's
+    own name."""
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for name in recorded.get("plugins", {}):
+            base, _, market = name.partition("@")
+            if base == "core" and market:
+                return market
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return TOOLBOX_MARKET
+
+
+def recorded_modes():
+    """The disciplines Claude Code records as installed from the toolbox's
+    marketplace. A plugin's pointer folder only appears once a session has loaded
+    it, so one just added is known from the records until then."""
+    found = set()
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        market = toolbox_market()
+        for name, installs in recorded.get("plugins", {}).items():
+            base, _, got = name.partition("@")
+            if base in MODES and got == market and installs:
+                found.add(base)
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return found
+
+
 def installed_modes():
     """The discipline plugins installed, in MODES order (see docs/toolbox-contract.md)."""
     forced = os.environ.get("TATTY_MODES")
@@ -144,7 +179,22 @@ def installed_modes():
     if own:
         roots.append(Path(own) / "plugins")  # a toolbox checkout
     roots.append(Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins"))
-    return [m for m in MODES if any((r / m).is_dir() for r in roots)]
+    have = recorded_modes()
+    return [m for m in MODES if m in have or any((r / m).is_dir() for r in roots)]
+
+
+def install_mode(state, mode):
+    """Add one of the toolbox's disciplines the way a person would:
+    `claude plugin install <mode>@<marketplace>`. (exit code, what it said).
+    Only the three names in MODES, only on a click on the modes page, and never
+    with -y: a marketplace that wanted to run a command of its own is refused
+    here and has to be installed by a person who can see what it asks for.
+    (run_claude is with the updates below: the same command, the same stand-in
+    for the tests.)"""
+    got = run_claude(state, ["plugin", "install", f"{mode}@{toolbox_market()}", "--scope", "user"])
+    if got is None:
+        return 2, "There's no claude command on this machine's PATH."
+    return got
 
 
 # ---------------------------------------------------------------- state
@@ -162,7 +212,8 @@ class State:
         self.mod_session = ""
         self.sessions = {}  # tag -> a session Start opened (see start_session)
         self.update = {"status": "idle", "running": plugin_version(), "installed": "", "available": "",
-                       "checked": 0.0, "message": ""}  # see "updates" below
+                       "checked": 0.0, "message": "", "plugins": []}  # see "updates" below
+        self.baseline = {}  # plugin name -> the version it was at when this server first looked
         self.update_lock = threading.Lock()
         self.last_activity = time.time()
 
@@ -242,16 +293,21 @@ def save_settings(changes):
 # ---------------------------------------------------------------- updates
 # Tatty updates the way any Claude Code plugin does, through the claude command:
 # `claude plugin marketplace update` refreshes the marketplace's copy of the
-# catalogue, and `claude plugin update` installs a newer version of the plugin
-# into Claude Code's cache. Claude Code only sees a new version when plugin.json's
-# "version" is raised, so a release must raise it. The running server and tray app
-# are the old version until Tatty is restarted, which is why the result is
-# "ready", not "done"; the tray app is built again, per version, on that start.
-# Nothing here touches the toolbox: its updates are Claude Code's to do.
+# catalogue, and `claude plugin update` installs a newer version of a plugin into
+# Claude Code's cache. Claude Code only sees a new version when plugin.json's
+# "version" is raised, so a release must raise it. The plugins kept current are
+# Tatty and the toolbox plugins that are installed (core and the disciplines, from
+# the toolbox's marketplace). That is Claude Code installing them: the toolbox
+# itself is neither read nor changed. Installed isn't live: the running server and
+# tray app are the old Tatty until it is restarted (the tray app is built again,
+# per version, on that start), and a toolbox plugin is loaded by Claude sessions
+# started afterwards. Hence the result is "ready", not "done".
 
 UPDATE_FIRST = float(os.environ.get("TATTY_UPDATE_FIRST", "30"))  # seconds after the server starts before it looks
 UPDATE_EVERY = 6 * 3600
 UPDATE_TIMEOUT = 180
+TOOLBOX_MARKET = "tims-ai-toolbox"
+TOOLBOX_PLUGINS = ("core",) + MODES
 
 
 def version_key(v):
@@ -261,29 +317,35 @@ def version_key(v):
     return tuple(int(p) for p in m.group(1).split(".")) if m else ()
 
 
-def install_record():
-    """(plugin id, marketplace, installed version) of Tatty's user-scope install, or None."""
+def install_records():
+    """The installs to keep current, Tatty first: [{name, id, market, scope, installed}].
+    Tatty only when this copy is an install (not a checkout); a plugin's user-scope
+    install, else the first one recorded."""
+    out = []
     try:
         recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
-        for name, installs in recorded.get("plugins", {}).items():
-            base, _, market = name.partition("@")
-            if base == "tatty" and market:
-                for e in installs:
-                    if e.get("scope") == "user":
-                        return name, market, str(e.get("version", ""))
+        for pid, installs in recorded.get("plugins", {}).items():
+            name, _, market = pid.partition("@")
+            if not market or not installs or not (name == "tatty" or (market == TOOLBOX_MARKET and name in TOOLBOX_PLUGINS)):
+                continue
+            e = next((i for i in installs if i.get("scope") == "user"), installs[0])
+            out.append({"name": name, "id": pid, "market": market, "scope": str(e.get("scope", "user")),
+                        "installed": str(e.get("version", ""))})
     except (OSError, ValueError, AttributeError, TypeError):
         pass
-    return None
+    if not installed():
+        out = [r for r in out if r["name"] != "tatty"]
+    return sorted(out, key=lambda r: r["name"] != "tatty")
 
 
-def marketplace_version(market):
-    """The version of Tatty that the marketplace's own copy of its catalogue offers
-    (as of the last `marketplace update`), or ''."""
+def marketplace_version(market, name):
+    """The version of plugin `name` that the marketplace's own copy of its catalogue
+    offers (as of the last `marketplace update`), or ''."""
     try:
         known = json.loads((config_dir() / "plugins" / "known_marketplaces.json").read_text(encoding="utf-8"))
         where = Path(known[market]["installLocation"])
         catalogue = json.loads((where / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
-        entry = next(p for p in catalogue["plugins"] if p.get("name") == "tatty")
+        entry = next(p for p in catalogue["plugins"] if p.get("name") == name)
         if entry.get("version"):
             return str(entry["version"])
         if isinstance(entry.get("source"), str):  # a path inside the marketplace: the plugin's own manifest
@@ -321,39 +383,58 @@ def update_view(state):
 
 
 def update_work(state, apply):
-    """Look for a newer Tatty and, when `apply` and there is one, install it. The
-    result is in state.update: current, available (not installed), ready (installed;
-    restart Tatty to use it), checkout (not an installed copy) or error."""
+    """Look for newer versions of Tatty and the toolbox plugins and, when `apply`,
+    install them. The result is in state.update: status (the most pressing of the
+    plugins': error, ready, available, else current; or checkout when there is
+    nothing installed to update), the top-level installed/available of Tatty
+    itself, and `plugins`, a row for each."""
     if not state.update_lock.acquire(blocking=False):
         return  # one at a time
     try:
-        record = install_record()
-        if not installed() or not record:
-            return set_update(state, status="checkout", checked=time.time(), installed="", available="",
-                              message="This copy of Tatty runs from a checkout (or was started with --plugin-dir), not from an install, so there is nothing to update.")
-        plugin_id, market, _ = record
+        targets = install_records()
+        if not targets:
+            return set_update(state, status="checkout", checked=time.time(), installed="", available="", plugins=[],
+                              message="Nothing installed to update: this copy of Tatty runs from a checkout (or was started with --plugin-dir), and the toolbox isn't installed through Claude Code.")
         set_update(state, status="checking", message="")
-        got = run_claude(state, ["plugin", "marketplace", "update", market])
-        if got is None:
-            return set_update(state, status="error", message="There's no claude command on this machine's PATH.")
-        if got[0] != 0:
-            return set_update(state, status="error", checked=time.time(), message=f"Couldn't refresh the marketplace: {got[1]}")
-        available = marketplace_version(market)
-        have = install_record()[2]
-        if apply and version_key(available) > version_key(have):
-            set_update(state, status="updating", available=available)
-            got = run_claude(state, ["plugin", "update", plugin_id, "--scope", "user"])
+        for market in dict.fromkeys(t["market"] for t in targets):
+            got = run_claude(state, ["plugin", "marketplace", "update", market])
+            if got is None:
+                return set_update(state, status="error", message="There's no claude command on this machine's PATH.")
             if got[0] != 0:
-                return set_update(state, status="error", checked=time.time(), message=f"Couldn't update: {got[1]}")
-            have = install_record()[2]
-        running = state.update["running"]
-        if version_key(have) > version_key(running):
-            status, message = "ready", f"Tatty {have} is installed. Restart Tatty to use it."
-        elif version_key(available) > version_key(have):
-            status, message = "available", f"Tatty {available} is available."
-        else:
-            status, message = "current", "Tatty is up to date."
-        set_update(state, status=status, installed=have, available=available, checked=time.time(), message=message)
+                return set_update(state, status="error", checked=time.time(), message=f"Couldn't refresh the marketplace {market}: {got[1]}")
+        rows, errors = [], []
+        for t in targets:
+            name, have = t["name"], t["installed"]
+            running = state.baseline.setdefault(name, plugin_version() if name == "tatty" else have)
+            available = marketplace_version(t["market"], name)
+            if apply and version_key(available) > version_key(have):
+                set_update(state, status="updating", message=f"Installing {name} {available}...")
+                got = run_claude(state, ["plugin", "update", t["id"], "--scope", t["scope"]])
+                if got[0] != 0:
+                    errors.append(f"Couldn't update {name}: {got[1]}")
+                else:
+                    have = next((r["installed"] for r in install_records() if r["id"] == t["id"]), have)
+            if version_key(have) > version_key(running):
+                status = "ready"
+            elif version_key(available) > version_key(have):
+                status = "available"
+            else:
+                status = "current"
+            rows.append({"name": name, "installed": have, "available": available, "status": status})
+        first = rows[0] if rows[0]["name"] == "tatty" else {"installed": "", "available": ""}
+        said = []
+        if rows[0]["name"] == "tatty" and rows[0]["status"] == "ready":
+            said.append(f"Tatty {first['installed']} is installed. Restart Tatty to use it.")
+        toolbox_ready = [r["name"] for r in rows if r["name"] != "tatty" and r["status"] == "ready"]
+        if toolbox_ready:
+            said.append(f"Toolbox updated ({', '.join(toolbox_ready)}). Claude sessions started from now on use it.")
+        waiting = [f"{r['name']} {r['available']}" for r in rows if r["status"] == "available"]
+        if waiting:
+            said.append(f"Newer versions are available: {', '.join(waiting)}.")
+        status = ("error" if errors else "ready" if any(r["status"] == "ready" for r in rows)
+                  else "available" if waiting else "current")
+        set_update(state, status=status, installed=first["installed"], available=first["available"], plugins=rows,
+                   checked=time.time(), message=" ".join(errors + said) or "Everything is up to date.")
     except Exception as e:  # a background check must never take the server down
         set_update(state, status="error", checked=time.time(), message=f"{type(e).__name__}: {e}")
     finally:
@@ -1603,6 +1684,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(409, {"error": "an update check is already running"})
             threading.Thread(target=update_work, args=(st, b.get("action") == "apply"), daemon=True).start()
             return self.send(202, update_view(st))
+        if path == "/api/mode/install":
+            # Add a discipline from the modes page: Claude Code installs the
+            # plugin, and the page hears which modes there are now.
+            mode = str(b.get("mode", ""))
+            if mode not in MODES:
+                return self.send(400, {"error": "not one of the toolbox's disciplines"})
+            if mode in installed_modes():
+                return self.send(200, {"modes": installed_modes(), "mode": mode, "already": True})
+            code, said = install_mode(st, mode)
+            if code != 0:
+                return self.send(502, {"error": f"{said or 'Claude Code could not install it'} "
+                                                f"— you can add it yourself: /plugin install {mode}@{toolbox_market()}"})
+            return self.send(200, {"modes": installed_modes(), "mode": mode, "said": said})
         if path == "/api/pick-folder":
             if not picker_argv():
                 return self.send(501, {"error": "no folder dialog on this machine"})

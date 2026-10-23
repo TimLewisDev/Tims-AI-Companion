@@ -6,7 +6,10 @@ way:
 
 - **Tatty reads the toolbox.** It reads the toolbox's documents and records and
   runs a few of its scripts, read-only. The one thing it writes is a feature's
-  own document, and only when a person saves it in Edit mode (see below).
+  own document, and only when a person saves it in Edit mode (see below). It can
+  also ask Claude Code to install one of the toolbox's discipline plugins, on a
+  person's click (see below); that is Claude Code's doing, and changes nothing
+  of the toolbox's.
 - **The toolbox never knows about Tatty.** Nothing in the toolbox calls Tatty,
   checks for it or waits for it. Every skill works the same with or without
   Tatty installed.
@@ -45,7 +48,7 @@ pages say "Tatty can't find the TT toolbox", and nothing else breaks.
 ## Which disciplines are installed (Tatty's modes)
 
 The toolbox's discipline plugins -- `engineering`, `design`, `production` --
-are Tatty's **modes**: its landing page offers the ones installed, its top bar
+are Tatty's **modes**: its landing page offers the ones installed, its title bar
 switches between them, and the mode is the only thing that sets the app's accent
 colour. `core` is the base every discipline installs, so it is not one of them.
 
@@ -53,12 +56,26 @@ Tatty reads the same pointer folders the toolbox keeps for itself
 (`installed_modes()` in `plugins/tatty/app/server.py`): a discipline is
 installed when `${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tt-plugins}/<plugin>`
 is there, or `<TATTY_TOOLBOX>/plugins/<plugin>` in a checkout. Existence only:
-nothing inside is read for this. `TATTY_MODES` names the modes instead, for
-development and the tests.
+nothing inside is read for this. A plugin's pointer appears when a session has
+loaded it, so Claude Code's own records
+(`${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/installed_plugins.json`, the
+toolbox's marketplace only) are read as well, and one just added counts at once.
+`TATTY_MODES` names the modes instead, for development and the tests.
 
 With no discipline plugin installed Tatty still shows everything it can drive
-from `core` alone: its landing page says which plugin to install, and no page is
-hidden.
+from `core` alone: its landing page offers the disciplines to add, and no page
+is hidden.
+
+### Adding a discipline
+
+**Add** on the modes page installs that plugin, which is the one thing Tatty
+does beyond reading. It is still not a change to the toolbox: Claude Code does
+the installing, through the command a person would run themselves --
+`claude plugin install <plugin>@<marketplace>`, the marketplace `core` was
+installed from (`install_mode` and `toolbox_market()`). Only the three names
+above, only on a click, never with `-y`, and the toolbox's own files are
+untouched. The plugin's skills and hooks reach Claude Code in sessions started
+afterwards, as they would after any install.
 
 ## Scripts Tatty runs (read-only)
 

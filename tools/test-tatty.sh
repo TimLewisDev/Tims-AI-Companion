@@ -36,7 +36,7 @@ cat >"$T/claude.sh" <<'EOS'
 echo "$*" >>"$(dirname "$0")/claude.log"
 [ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
 if [ "$1 $2" = "plugin update" ]; then
-	sed -i 's/"version":"[^"]*"/"version":"99.0.0"/' "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+	sed -i -E "s/(\"$3\":\[\{\"scope\":\"user\",\"version\":\")[^\"]*/\199.0.0/" "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
 fi
 exit 0
 EOS
@@ -148,8 +148,8 @@ echo "# modes"
 # Each toolbox plugin points <pointer home>/<plugin> at its install, so the
 # pointers say which disciplines are installed; core is the base, not a mode.
 mkdir -p "$T/pointers/core" "$T/pointers/engineering" "$T/pointers/production"
-$PY - "$SRV" "$T/pointers" >"$T/m" 2>&1 <<'EOF'
-import importlib.util, os, sys
+$PY - "$SRV" "$T/pointers" "$T/modecfg" >"$T/m" 2>&1 <<'EOF'
+import importlib.util, json, os, pathlib, sys
 for v in ("TATTY_MODES", "TATTY_TOOLBOX"): os.environ.pop(v, None)
 os.environ["TT_PLUGINS_HOME"] = sys.argv[2]
 spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
@@ -157,12 +157,34 @@ sys.dont_write_bytecode = True; spec.loader.exec_module(m)
 print("pointers:", m.installed_modes())
 os.environ["TT_PLUGINS_HOME"] = sys.argv[2] + "-none"
 print("none:", m.installed_modes())
+# A plugin just added has no pointer yet (that waits for a session to load it),
+# so Claude Code's own records are read too -- the toolbox's marketplace only.
+cfg = pathlib.Path(sys.argv[3]); (cfg / "plugins").mkdir(parents=True, exist_ok=True)
+(cfg / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {
+    "core@tims-ai-toolbox": [{"scope": "user"}], "design@tims-ai-toolbox": [{"scope": "user"}],
+    "production@someone-elses": [{"scope": "user"}]}}), encoding="utf-8")
+os.environ["CLAUDE_CONFIG_DIR"] = str(cfg)
+print("records:", m.installed_modes(), "from", m.toolbox_market())
 os.environ["TATTY_MODES"] = "design, nope ,engineering"
 print("forced:", m.installed_modes())
 EOF
 has "the pointers say which are installed" "$T/m" "pointers: ['engineering', 'production']"
 has "none installed" "$T/m" "none: []"
+has "a plugin with no pointer yet is in the records" "$T/m" "records: ['design'] from tims-ai-toolbox"
 has "TATTY_MODES names them instead" "$T/m" "forced: ['engineering', 'design']"
+
+# Add a discipline: the modes page has Claude Code install the plugin.
+post /api/mode/install '{"mode":"nope"}' >"$T/mi"
+has "a name that isn't a discipline is refused" "$T/mi" "not one of the toolbox's disciplines"
+post /api/mode/install '{"mode":"engineering"}' >"$T/mi"
+has "one already installed installs nothing" "$T/mi" '"already": true'
+post /api/mode/install '{"mode":"production"}' >"$T/mi"
+has "claude installs it for the user" "$T/claude.log" "plugin install production@tims-ai-toolbox --scope user"
+touch "$T/claude-fail"
+post /api/mode/install '{"mode":"production"}' >"$T/mi"
+has "a failed add says what claude said" "$T/mi" "network is down"
+has "and what to run by hand" "$T/mi" "/plugin install production@tims-ai-toolbox"
+rm -f "$T/claude-fail"
 
 echo "# without the toolbox"
 $PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
@@ -576,28 +598,40 @@ upd_wait() { for _ in $(seq 1 50); do get /api/settings >"$T/set"; case $(pick "
 post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = checkout ] && ok "a checkout has nothing to update" || bad "a checkout has nothing to update" "$(head -c 300 "$T/set")"
 
-# An install of this very version, from a marketplace that offers 99.0.0.
+# An install of this very version, from a marketplace that offers 99.0.0; and the
+# toolbox's core and engineering, of which the marketplace offers a newer core only.
 HAVE=$($PY -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$root/plugins/tatty/.claude-plugin/plugin.json")
-mkdir -p "$CLAUDE_CONFIG_DIR/plugins" "$T/market/.claude-plugin" "$T/market/plugins/tatty/.claude-plugin"
-printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
-printf '{"fake-market":{"installLocation":"%s"}}' "$(cygpath -m "$T/market" 2>/dev/null || echo "$T/market")" >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
+mkdir -p "$CLAUDE_CONFIG_DIR/plugins" "$T/market/.claude-plugin" "$T/market/plugins/tatty/.claude-plugin" "$T/tbox/.claude-plugin"
+write_installed() { printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}],"core@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}],"engineering@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"; }
+write_installed
+printf '{"fake-market":{"installLocation":"%s"},"tims-ai-toolbox":{"installLocation":"%s"}}' "$(cygpath -m "$T/market" 2>/dev/null || echo "$T/market")" "$(cygpath -m "$T/tbox" 2>/dev/null || echo "$T/tbox")" >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
+printf '{"name":"tims-ai-toolbox","plugins":[{"name":"core","version":"99.0.0"},{"name":"engineering","version":"0.1.0"}]}' >"$T/tbox/.claude-plugin/marketplace.json"
 printf '{"name":"fake-market","plugins":[{"name":"tatty","source":"./plugins/tatty"}]}' >"$T/market/.claude-plugin/marketplace.json"
 printf '{"name":"tatty","version":"99.0.0"}' >"$T/market/plugins/tatty/.claude-plugin/plugin.json"
 post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = available ] && ok "a newer version is found" || bad "a newer version is found" "$(head -c 300 "$T/set")"
 [ "$(pick "$T/set" "d['update']['available']")" = 99.0.0 ] && ok "and named" || bad "and named"
+[ "$(pick "$T/set" "d['update']['plugins'][0]['name']")" = tatty ] && ok "Tatty is listed first" || bad "Tatty is listed first"
+[ "$(pick "$T/set" "','.join(r['name'] + ':' + r['status'] for r in d['update']['plugins'])")" = "tatty:available,core:available,engineering:current" ] &&
+	ok "the toolbox plugins are looked at too" || bad "the toolbox plugins are looked at too" "$(head -c 400 "$T/set")"
 has "the marketplace was refreshed first" "$T/claude.log" "plugin marketplace update fake-market"
+has "and the toolbox's" "$T/claude.log" "plugin marketplace update tims-ai-toolbox"
 hasnt "checking installs nothing" "$T/claude.log" "plugin update"
 post /api/update '{"action":"apply"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "installed: ready for a restart" || bad "installed: ready for a restart" "$(head -c 300 "$T/set")"
 has "claude installed it for the user" "$T/claude.log" "plugin update tatty@fake-market --scope user"
+has "and the newer toolbox plugin" "$T/claude.log" "plugin update core@tims-ai-toolbox --scope user"
+hasnt "but not the one that is current" "$T/claude.log" "plugin update engineering"
+[ "$(pick "$T/set" "','.join(r['name'] + ':' + r['status'] for r in d['update']['plugins'])")" = "tatty:ready,core:ready,engineering:current" ] &&
+	ok "each plugin has its own state" || bad "each plugin has its own state" "$(head -c 400 "$T/set")"
+has "the toolbox is said to be for new sessions" "$T/set" "Claude sessions started from now on"
 has "the page is told to restart" "$T/set" "Restart Tatty"
 get /api/events >"$T/ev"
 has "the page hears of it" "$T/ev" '"type": "update"'
 post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "still ready until restarted" || bad "still ready until restarted"
 touch "$T/claude-fail"
-printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+write_installed
 post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = error ] && ok "a failed refresh is an error" || bad "a failed refresh is an error" "$(head -c 300 "$T/set")"
 has "with claude's words" "$T/set" "network is down"

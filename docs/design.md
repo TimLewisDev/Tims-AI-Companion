@@ -150,13 +150,25 @@ the noise.
   throws confetti and plays the flourish; the page adds a card and confetti of
   its own (`milestoneCard` and `confetti` in `app.js`). `tatty.sh cheer [<event>]`
   does the lot on demand, which is how it is tried out and tested.
+- **His menu** (`MakeMenu`) is one `ContextMenuStrip` shown in both the places a
+  person reaches for it: the tray icon, and a right-click on Tatty himself. Its
+  **Preview** submenu (`PreviewMenu`) is the catalogue of his whole repertoire --
+  every performance, every pose he holds, the stage's confetti and pulses, each
+  sound on its own, and the two whole reactions exactly as they arrive -- so any
+  of it can be watched on purpose rather than waited for. A preview cuts in and
+  winds the fidget clock back, so what was picked is what is seen
+  (`Avatar.Preview`); a pose stays until something really happens. Items whose
+  toggle is off are shown disabled, which says more than doing nothing would.
+  Bringing the menu up must not be mistaken for choosing something in it, so the
+  `telling` flag is up while the items are brought up to date (setting `Checked`
+  raises the same event a click does).
 - **What the person chooses** (`Settings.cs`, `%LOCALAPPDATA%\Tatty\avatar.json`,
   beside the panel's bounds but in a file of its own, and nothing to do with the
   server's settings): **Animations**, **Sound**, **Effects** and **Keep Tatty on
-  the desktop**, all from the tray menu. The last one is what makes the fidgeting
-  worth having: without it Tatty tucks himself away ten seconds after nothing is
-  pending, and his own day is never seen. The x, the tray's "hide" and the
-  taskbar's close are a person saying "away with all of it", and outrank it.
+  the desktop**. The last one is what makes the fidgeting worth having: without
+  it Tatty tucks himself away ten seconds after nothing is pending, and his own
+  day is never seen. The x, the tray's "hide" and the taskbar's close are a
+  person saying "away with all of it", and outrank it.
 - **Less motion.** Whether Tatty moves at all is `Motion.On`, in one place
   because the avatar and the stage have to agree. The OS's own answer
   (`SystemParameters.ClientAreaAnimation`, Settings ▸ Accessibility ▸ Visual
@@ -171,12 +183,20 @@ the noise.
 
 A **mode** is one of the toolbox's discipline plugins: engineering, design or
 production (`installed_modes()` in `server.py`, from the toolbox's pointer
-folders; see [toolbox-contract.md](toolbox-contract.md)).
+folders and Claude Code's own install records; see
+[toolbox-contract.md](toolbox-contract.md)).
 
-- **The landing page** (`#modes`) offers the modes installed; with only one
-  there is nothing to pick, so it goes straight to that mode's home page
-  (`#mode`). The mode is the page's own choice, remembered in `localStorage`;
-  the server only says which plugins are installed (`/api/status`'s `modes`).
+- **The landing page** (`#modes`) has a card for every discipline the toolbox
+  has, whether or not it is installed. The ones installed are the modes to work
+  in; the rest are greyed, with **Add**, which has Claude Code install that
+  plugin from the toolbox's marketplace (`POST /api/mode/install` →
+  `install_mode`, the same `claude plugin install` a person would run). The card
+  comes to life with the answer, and the page says the plugin's skills reach
+  Claude Code in new sessions. A window opens on the mode's home page when there
+  is one to open on (`parseRoute`), but the modes page stays reachable with a
+  single discipline installed, because it is also where another is added.
+- **The mode** is the page's own choice, remembered in `localStorage`; the
+  server only says which plugins are installed (`/api/status`'s `modes`).
 - **The radio** is one box of segments, the mode on screen pressed into it and
   in that mode's colour (one segment, pressed, when only one is installed). It
   lives in the panel's title bar, beside Tatty's name; the header holds the same
@@ -257,7 +277,7 @@ folders; see [toolbox-contract.md](toolbox-contract.md)).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  236 checks against a real toolbox, with a toolbox-free part when there's no
+  249 checks against a real toolbox, with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
   and a window that opens on a full ledger says nothing about it.
@@ -277,9 +297,14 @@ folders; see [toolbox-contract.md](toolbox-contract.md)).
   `--expect <view>`. With `--switch <view>` it changes view through the page's
   own buttons and checks that the window, its WebView2 and the loaded page all
   came through unchanged, which is the promise that a view switch never rebuilds
-  the runtime.
+  the runtime. `--right-click` right-clicks Tatty and asks whether his menu came
+  up and whether Escape took it away. That one borrows the **real** pointer for a
+  moment and puts it back: WPF takes its mouse input from the system cursor and
+  ignores a posted click that didn't happen there, so a synthetic one reaches no
+  handler at all and looks exactly like a menu that doesn't work.
 - `tools/test-companion.sh` walks every view with it (compact, full, maximised,
-  minimised, restored, tucked away and back), and finishes a section with
-  `tatty.sh cheer` to see the confetti's window come up and go away again. It is
-  the only test that builds and runs the exe and shows real windows, so it is
-  opt-in rather than part of `test-tatty.sh`.
+  minimised, restored, tucked away and back), right-clicks Tatty for his menu,
+  and finishes a section with `tatty.sh cheer` to see the confetti's window come
+  up and go away again. It is the only test that builds and runs the exe, shows
+  real windows and uses the pointer, so it is opt-in rather than part of
+  `test-tatty.sh`.

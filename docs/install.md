@@ -98,19 +98,26 @@ pushed to GitHub): with the same version, nothing counts as new.
 Tatty can do the updating itself. Open **Settings** (the gear beside the
 *connected* label in the top bar):
 
-- **Keep Tatty up to date automatically** (on by default). The window's server
-  looks 30 seconds after it starts and every 6 hours after, with
-  `claude plugin marketplace update <marketplace>` then, when the marketplace
-  offers a newer version, `claude plugin update tatty@<marketplace> --scope user`.
-- **Check for updates** looks without installing; **Update now** installs.
+- **Keep Tatty and the toolbox up to date automatically** (on by default). The
+  window's server looks 30 seconds after it starts and every 6 hours after. For
+  Tatty and each toolbox plugin installed (`core`, and the disciplines such as
+  `engineering`, from the `tims-ai-toolbox` marketplace) it runs
+  `claude plugin marketplace update <marketplace>` and then, for each plugin whose
+  marketplace version is newer, `claude plugin update <plugin>@<marketplace>`.
+- **Check for updates** looks without installing; **Update now** installs. The
+  page lists each plugin with the version installed and the latest.
 - The gear shows a dot when a version is waiting or has been installed.
 
-An update is *ready*, not live, once installed: the running server and tray app
-are the old version until Tatty is restarted (**tray → Quit Tatty**, then start it
-again). The tray app is built again for the new version on that start (about a
-minute); the Desktop shortcut finds the new plugin by itself. The toolbox's own
-updates are Claude Code's: turn on auto-update for its marketplace in `/plugin`,
-or run `claude plugin update`.
+An update is *ready*, not live, once installed. For Tatty, the running server and
+tray app are the old version until Tatty is restarted (**tray → Quit Tatty**, then
+start it again); the tray app is built again for the new version on that start
+(about a minute), and the Desktop shortcut finds the new plugin by itself. For the
+toolbox, Claude sessions started afterwards use the new version; ones already open
+keep the old (`/reload-plugins` picks it up).
+
+Tatty only has Claude Code install the toolbox's plugins; it doesn't read or change
+the toolbox for this. As for Tatty, a toolbox release must raise `version` in each
+changed plugin's `plugin.json`, or Claude Code sees nothing new.
 
 A copy run from a checkout or with `--plugin-dir` has nothing to update; Settings
 says so. Use `git pull`.

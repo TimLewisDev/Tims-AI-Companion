@@ -29,6 +29,7 @@ namespace TtCompanion
         private Effects effects = null!;
         private TaskbarProxy proxy = null!;
         private Forms.NotifyIcon tray = null!;
+        private Forms.ContextMenuStrip menu = null!;
         private HttpClient http = null!;
         private readonly Sounds sounds = new Sounds();
         private Settings settings = new Settings();
@@ -41,6 +42,7 @@ namespace TtCompanion
         private int failures;
         private bool polling;
         private bool tattyPlaced;
+        private bool demoPulse; // the pulses, asked for from his menu rather than by a question
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -102,6 +104,9 @@ namespace TtCompanion
 
             Native.OnForegroundChanged(OnForegroundChanged);
 
+            // One menu, in both the places a person reaches for it.
+            menu = MakeMenu();
+            tatty.RightClicked += ShowMenu;
             tray = MakeTray(face);
             PopUp(activate: false);
             WatchForWake();
@@ -203,7 +208,7 @@ namespace TtCompanion
                 if (question || attention || finished != null) PopUp(activate: false);
                 if (finished != null) Celebrate(finished == "big");
                 else if (question) Asked();
-                effects.Asking(openAsks.Count > 0);
+                effects.Asking(Waiting);
                 if (openAsks.Count == 0 && bubble.IsShown && !tuck.IsEnabled) tuck.Start();
                 if (openAsks.Count > 0) tuck.Stop();
             }
@@ -220,6 +225,10 @@ namespace TtCompanion
             }
             finally { polling = false; }
         }
+
+        // Whether the rings should be pulsing: because something is waiting for an
+        // answer, or because his menu was asked for them.
+        private bool Waiting => openAsks.Count > 0 || demoPulse;
 
         private static string Tier(JsonElement ev) =>
             ev.TryGetProperty("tier", out var tier) ? tier.GetString() ?? "small" : "small";
@@ -508,20 +517,37 @@ namespace TtCompanion
             Native.MoveTo(bubble, x, y);
         }
 
-        // ------------------------------------------------------------ tray
+        // ------------------------------------------------------------ his menu
 
         // A menu item that is on or off and remembers which, saved as soon as it
-        // is clicked so a crash can't lose the choice.
-        private Forms.ToolStripMenuItem Choice(string text, bool on, Action<bool> set)
+        // is clicked so a crash can't lose the choice. `telling` is on while the
+        // menu is being brought up to date, because setting Checked raises the
+        // same event a click does -- and opening a menu must not be mistaken for
+        // choosing something in it.
+        private bool telling;
+
+        private Forms.ToolStripMenuItem Choice(string text, Func<bool> on, Action<bool> set)
         {
-            var item = new Forms.ToolStripMenuItem(text) { Checked = on, CheckOnClick = true };
-            item.CheckedChanged += (_, _) => { set(item.Checked); settings.Save(); };
+            var item = new Forms.ToolStripMenuItem(text) { Checked = on(), CheckOnClick = true };
+            item.CheckedChanged += (_, _) => { if (telling) return; set(item.Checked); settings.Save(); };
+            freshen += () => item.Checked = on();
             return item;
         }
 
-        private Forms.NotifyIcon MakeTray(Drawing.Icon face)
+        // What each choice in the menu should say by the time it is seen.
+        private Action? freshen;
+
+        // Tatty's menu, which the tray icon and a right-click on Tatty himself
+        // both show: the same menu in both places, built once.
+        private Forms.ContextMenuStrip MakeMenu()
         {
             var menu = new Forms.ContextMenuStrip();
+            menu.Opening += (_, _) =>
+            {
+                telling = true;
+                freshen?.Invoke();
+                telling = false;
+            };
             menu.Items.Add("Show Tatty", null, (_, _) => PopUp(activate: true));
             menu.Items.Add("Open full panel", null, (_, _) => { PopUp(activate: true); if (!bubble.IsExpanded) OnPageMessage("expand"); });
             menu.Items.Add("Change root folder…", null, (_, _) =>
@@ -533,23 +559,25 @@ namespace TtCompanion
             menu.Items.Add("Hide until something happens", null, (_, _) => OnPageMessage("hide"));
             menu.Items.Add("Show Claude's terminal", null, async (_, _) => await ClaudeTerminal("show"));
             menu.Items.Add(new Forms.ToolStripSeparator());
+            menu.Items.Add(PreviewMenu());
+            menu.Items.Add(new Forms.ToolStripSeparator());
             // What Tatty is like to have around: whether he moves, whether he
             // makes a noise, whether he throws confetti, and whether he goes away
             // when there is nothing on. Animations starts as the OS's own answer
             // and is the person's for good as soon as they click it (Motion).
-            menu.Items.Add(Choice("Animations", Motion.On, on =>
+            menu.Items.Add(Choice("Animations", () => Motion.On, on =>
             {
                 settings.Lively = on;
                 Motion.Chosen = on;
                 if (on) tatty.Hop();
             }));
-            menu.Items.Add(Choice("Sound", settings.Sound, on =>
+            menu.Items.Add(Choice("Sound", () => settings.Sound, on =>
             {
                 settings.Sound = sounds.Enabled = on;
-                if (on) sounds.Play(Sounds.Cue.Blip); // so the choice is audible
+                if (on) sounds.Preview(Sounds.Cue.Blip); // so the choice is audible
             }));
-            menu.Items.Add(Choice("Effects", settings.Effects, on => settings.Effects = effects.Enabled = on));
-            menu.Items.Add(Choice("Keep Tatty on the desktop", settings.StayVisible, on =>
+            menu.Items.Add(Choice("Effects", () => settings.Effects, on => settings.Effects = effects.Enabled = on));
+            menu.Items.Add(Choice("Keep Tatty on the desktop", () => settings.StayVisible, on =>
             {
                 settings.StayVisible = on;
                 if (!on || tatty.IsVisible) return;
@@ -559,9 +587,89 @@ namespace TtCompanion
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add("Close Tatty's window", null, async (_, _) => await StopServer());
             menu.Items.Add("Quit Tatty", null, async (_, _) => { await ClaudeTerminal("close"); Quit(); });
+            return menu;
+        }
+
+        // Right-clicked: his menu where the pointer is. Tatty himself never takes
+        // the keyboard, but a menu must, or it could not be used -- which is the
+        // same bargain the tray icon's makes.
+        private void ShowMenu()
+        {
+            var at = Native.Pointer();
+            menu.Show(at.X, at.Y);
+        }
+
+        private Forms.NotifyIcon MakeTray(Drawing.Icon face)
+        {
             var icon = new Forms.NotifyIcon { Icon = face, Text = "Tatty", ContextMenuStrip = menu, Visible = true };
             icon.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) ToggleBubble(); };
             return icon;
+        }
+
+        // ------------------------------------------------------------ previews
+
+        // Everything Tatty can do, by name, to be watched on purpose: the
+        // performances, the poses he holds, what the stage throws about him, the
+        // noises, and the two whole reactions as they really happen. This is the
+        // catalogue of his repertoire -- a new trick belongs here as well, or
+        // nobody will know he has it.
+        //
+        // A preview cuts in and winds back the clock that decides when he
+        // fidgets, so what was picked is what is seen (Avatar.Preview).
+        private Forms.ToolStripMenuItem PreviewMenu()
+        {
+            var preview = new Forms.ToolStripMenuItem("Preview");
+            var items = preview.DropDownItems;
+            var noises = new List<Forms.ToolStripItem>();
+
+            void Does(string what, Act act) => items.Add(what, null, (_, _) => tatty.Preview(act));
+            void Holds(string what, Pose pose) => items.Add(what, null, (_, _) => tatty.Preview(pose));
+            void Hears(string what, Sounds.Cue cue) => noises.Add(items.Add(what, null, (_, _) => sounds.Preview(cue)));
+            void Line() => items.Add(new Forms.ToolStripSeparator());
+
+            Does("Hop", Act.Hop);
+            Does("Wake with a start", Act.Startle);
+            Does("Alert: a question waiting", Act.Alert);
+            Does("Dance, foot to foot", Act.Dance);
+            Does("Stretch", Act.Stretch);
+            Does("Look about", Act.LookAround);
+            Does("Yawn", Act.Yawn);
+            Does("Celebrate", Act.Celebrate);
+            Does("Celebrate, the big one", Act.CelebrateBig);
+            Line();
+            Holds("Stand up", Pose.Stand);
+            Holds("Sit down", Pose.Sit);
+            Holds("Doze", Pose.Doze);
+            Holds("Fall asleep (Z's and all)", Pose.Asleep);
+            Line();
+            items.Add("Confetti", null, (_, _) => effects.Confetti(big: false));
+            items.Add("Confetti, the big one", null, (_, _) => effects.Confetti(big: true));
+            // The pulses are a state and not a one-off: the poll would put them
+            // out again a second later if it didn't know they were wanted.
+            var pulse = new Forms.ToolStripMenuItem("Pulse for an answer") { CheckOnClick = true };
+            pulse.CheckedChanged += (_, _) => { demoPulse = pulse.Checked; effects.Asking(Waiting); };
+            freshen += () => pulse.Checked = demoPulse;
+            items.Add(pulse);
+            Line();
+            Hears("Chime: a question", Sounds.Cue.Question);
+            Hears("Flourish: a milestone", Sounds.Cue.Milestone);
+            Hears("Fanfare: all done", Sounds.Cue.Complete);
+            Hears("Blip", Sounds.Cue.Blip);
+            Line();
+            // The whole reaction, exactly as a real one arrives.
+            items.Add("A work unit validated", null, (_, _) => Celebrate(big: false));
+            items.Add("A build complete", null, (_, _) => Celebrate(big: true));
+            items.Add("A question arriving", null, (_, _) => Asked());
+
+            // Nothing moves while his animations are off, and nothing is heard
+            // while his sound is: saying so is kinder than doing nothing.
+            freshen += () =>
+            {
+                foreach (Forms.ToolStripItem item in items) item.Enabled = Motion.On;
+                foreach (var noise in noises) noise.Enabled = sounds.Enabled;
+                preview.Enabled = Motion.On || sounds.Enabled;
+            };
+            return preview;
         }
 
         // Tatty's face is a file, assets/tatty.ico (drawn by tools/make-icon), built

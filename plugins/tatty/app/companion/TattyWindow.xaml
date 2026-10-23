@@ -4,7 +4,7 @@
         Title="Tatty" Width="104" Height="156"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" ResizeMode="NoResize"
-        Cursor="Hand" ToolTip="Tatty: click to talk, drag to move">
+        Cursor="Hand" ToolTip="Tatty: click to talk, drag to move, right-click for his menu">
   <!-- Tatty in the page's colours: ◉ ◉ eyes, ▽ mouth, an antenna and ╨ ╨ legs.
        Native drawing only, so the window can be truly transparent.
 

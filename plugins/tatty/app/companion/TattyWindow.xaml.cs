@@ -18,6 +18,7 @@ namespace TtCompanion
 
         public event Action? Clicked;
         public event Action? Moved;
+        public event Action? RightClicked;
 
         private readonly Avatar avatar;
 
@@ -29,6 +30,9 @@ namespace TtCompanion
             Loaded += (_, _) => avatar.Start();
             MouseLeftButtonDown += OnMouseDown;
             MouseEnter += (_, _) => avatar.Poke();
+            // His own menu, the same one the tray icon has: everything about him
+            // is where he is, rather than down in the corner of the screen.
+            MouseRightButtonUp += (_, e) => { e.Handled = true; avatar.Poke(); RightClicked?.Invoke(); };
         }
 
         public bool HasBadge
@@ -56,6 +60,10 @@ namespace TtCompanion
 
         // A section is finished; big for a plan signed off or a build complete.
         public void Celebrate(bool big) => avatar.Perform(big ? Act.CelebrateBig : Act.Celebrate);
+
+        // Do this one now, because somebody picked it off his menu to watch it.
+        internal void Preview(Act act) => avatar.Preview(act);
+        internal void Preview(Pose pose) => avatar.Preview(pose);
 
         private void OnMouseDown(object sender, MouseButtonEventArgs e)
         {

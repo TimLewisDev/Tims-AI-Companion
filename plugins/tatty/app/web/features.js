@@ -99,8 +99,9 @@ async function route() {
   // A page of one mode's own is shown in that mode (modes.js).
   const owner = PAGE_MODE[r.page];
   if (owner && owner !== currentMode && installedModes.includes(owner)) applyMode(owner);
-  // With one mode installed there is nothing to pick: straight to its home page.
-  if (r.page === "modes" && installedModes.length === 1) { location.replace("#mode"); return; }
+  // (A window opens on the mode's home page when there is one to open on:
+  // parseRoute. The modes page stays reachable even with a single discipline
+  // installed, because it is also where another one is added.)
   showPage(r.page);
   if (r.page === "modes") renderLanding(pageEls.modes);
   else if (r.page === "mode") renderModeHome(pageEls.mode);

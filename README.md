@@ -9,7 +9,8 @@ visually:
 - **Your modes:** the toolbox's discipline plugins you have installed
   (engineering, design, production), each with a home page of its own and its
   own colour, switched from the radio in the title bar. With one installed,
-  Tatty opens straight into it.
+  Tatty opens straight into it. The ones you haven't got are greyed on the modes
+  page with **Add**, which installs them for you.
 - **Features:** every feature you're working on, where it stands in the
   workflow (exploring, planning, building, done), and its progress.
 - **A feature's page:**
@@ -27,9 +28,13 @@ visually:
   section is finished -- a work unit validated, a plan signed off, a build
   complete. Between the two he gets on with his own day: he fidgets, dances from
   foot to foot, sits down, and eventually falls asleep until something happens.
+  **Right-click Tatty** (or his tray icon) for his menu: **Preview** plays any
+  one of his animations on the spot -- every performance, every pose, the
+  confetti, the pulses, each sound, and the whole reaction to a finished work
+  unit or a question arriving -- so you can see the lot without waiting for it.
   **Animations**, **Sound**, **Effects** and **Keep Tatty on the desktop** are
-  all in his tray menu. If your system is set to show less motion he keeps still
-  until you tick **Animations** yourself.
+  there too. If your system is set to show less motion he keeps still until you
+  tick **Animations** yourself.
 - **Planning IDs as links:** an `R12`, `CH5` or `P3` in a question, a reply or a
   document opens the item it names, and hovering it shows the item as a card,
   so you don't have to go and find it.
@@ -50,9 +55,10 @@ install Tatty:
 /plugin install tatty --marketplace TimLewisDev/Tims-AI-Companion
 ```
 
-Installing Tatty installs `core` too, if you don't have it yet. Install the
-toolbox's `engineering` plugin as well (`/plugin install engineering@tims-ai-toolbox`)
-for the workflow Tatty shows and starts.
+Installing Tatty installs `core` too, if you don't have it yet. You also want at
+least one discipline plugin, for the workflow Tatty shows and starts: either
+`/plugin install engineering@tims-ai-toolbox`, or **Add** on Tatty's modes page,
+which does the same thing.
 
 Then, in any session, run `/tatty open`. The first time, it builds the tray app,
 which takes about a minute. See [docs/install.md](docs/install.md) for what
@@ -67,12 +73,14 @@ install from a local checkout, and how to work on Tatty itself.
 | have another session work with an open Tatty | `/tatty attach` (and `/tatty detach` to stop) |
 | close Tatty's window | `/tatty close`, or Tatty's tray menu |
 | switch between your modes | the radio in Tatty's title bar (or **Tatty** → the modes) |
+| add another discipline | **Tatty** → the modes → **Add** under the one you want |
 | see your features | Tatty's **Full panel** → **Features** |
 | start a new feature | **Features** → **New feature…** |
 | run a feature's next step | its page → **Start…** → **Start session** |
-| keep Tatty out where you can see him | Tatty's tray menu → **Keep Tatty on the desktop** |
-| have him move, or keep still | Tatty's tray menu → **Animations** |
-| turn his noise or his confetti off | Tatty's tray menu → **Sound**, **Effects** |
+| see one of his animations now | right-click Tatty → **Preview** → pick one |
+| keep Tatty out where you can see him | right-click Tatty → **Keep Tatty on the desktop** |
+| have him move, or keep still | right-click Tatty → **Animations** |
+| turn his noise or his confetti off | right-click Tatty → **Sound**, **Effects** |
 
 Sessions you haven't joined are untouched: Tatty never answers for them, and
 they ask their questions in the terminal as usual.

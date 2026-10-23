@@ -38,7 +38,7 @@ function drawSettings() {
   };
   const look = el("button", { type: "button", id: "update-check", onclick: () => act("check") }, "Check for updates");
   const install = el("button", { type: "button", id: "update-apply", class: "primary", onclick: () => act("apply") },
-    u.available ? `Update to ${u.available}` : "Update now");
+    "Update now");
   look.disabled = busy;
   install.disabled = busy;
   const when = u.checked ? `Last checked ${ago(u.checked)}.` : "Not checked yet.";
@@ -47,11 +47,15 @@ function drawSettings() {
     el("h2", {}, "Settings"),
     el("section", {},
       el("h3", {}, "Updates"),
-      el("p", {}, "Tatty ", el("strong", {}, s.version), u.installed && u.installed !== s.version ? ` (version ${u.installed} is installed)` : ""),
+      el("p", {}, "Tatty ", el("strong", {}, s.version)),
       el("label", { class: "opt-row" }, auto,
-        el("span", {}, el("strong", {}, "Keep Tatty up to date automatically"),
+        el("span", {}, el("strong", {}, "Keep Tatty and the toolbox up to date automatically"),
           el("br"), el("span", { class: "dim small" },
-            "Looks when Tatty starts and every few hours, and installs a newer version when there is one. It takes effect the next time you start Tatty."))),
+            "Looks when Tatty starts and every few hours, and installs newer versions of Tatty and the toolbox plugins. Tatty's takes effect the next time you start it; the toolbox's in Claude sessions you start after."))),
+      (u.plugins || []).length ? el("table", { class: "plugins", id: "update-plugins" },
+        el("tr", {}, el("th", {}, "Plugin"), el("th", {}, "Installed"), el("th", {}, "Latest"), el("th", {})),
+        (u.plugins || []).map(r => el("tr", { class: r.status }, el("td", {}, r.name), el("td", {}, r.installed || "?"),
+          el("td", {}, r.available || "?"), el("td", { class: "dim small" }, { ready: "installed, not in use yet", available: "update waiting", current: "up to date" }[r.status] || "")))) : null,
       el("p", { class: "upd-status " + u.status, id: "update-status" }, words !== undefined && words !== "" ? words : (u.message || "")),
       el("p", { class: "dim small" }, when),
       el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null))));

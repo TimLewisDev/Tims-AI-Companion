@@ -4,7 +4,7 @@
 // app's accent colour, which is all a mode changes (theme.css). The choice is
 // the page's own, remembered in localStorage; the server only says which
 // plugins are installed (/api/status's modes).
-// Uses app.js's $, el, tell and host; features.js routes to the pages below.
+// Uses app.js's el, api and tell; features.js routes to the pages below.
 "use strict";
 
 const MODE_INFO = {
@@ -80,24 +80,50 @@ function renderNav() {
 
 // ------------------------------------------------------------- the pages
 
-// #modes: pick a mode. Only ever shown with more than one installed (features.js
-// sends the single-mode case straight to its home page), or with none at all.
+// A mode just added: what it still needs, said on the next render of the page.
+let added = "";
+
+// #modes: every discipline the toolbox has. The ones installed are the modes to
+// work in; the rest are greyed, with Add to install the plugin.
 function renderLanding(box) {
+  const note = added ? el("p", { class: "home-note small ok" },
+    `${MODE_INFO[added].label} is installed. Its skills reach Claude Code in sessions started from now on.`) : "";
+  added = ""; // said once
   const head = el("div", { class: "home-head" },
     el("div", {}, el("h2", {}, "Where are you working?"),
-      el("div", { class: "dim small" }, "Your TT toolbox plugins. The top bar switches between them later.")));
-  if (!installedModes.length) {
-    box.replaceChildren(head, el("div", { class: "card toolbox-missing" },
-      el("strong", {}, "No discipline plugin installed. "),
-      "Tatty shows the TT toolbox's work, one discipline at a time. Install one and it turns up here:",
-      el("p", { class: "mono small" }, "/plugin install engineering@tims-ai-toolbox"),
-      el("span", { class: "dim" }, "For development, TATTY_MODES names the modes instead.")));
-    return;
+      el("div", { class: "dim small" }, "Your TT toolbox plugins. The title bar switches between them later."),
+      note));
+  box.replaceChildren(head, el("div", { class: "fgrid" }, MODE_ORDER.map(id => modeCard(id, box))));
+}
+
+function modeCard(id, box) {
+  const info = MODE_INFO[id];
+  const top = el("div", { class: "fcard-top" }, el("strong", {}, modeDot(id), info.label));
+  const blurb = el("p", { class: "ftext" }, info.blurb);
+  if (installedModes.includes(id)) {
+    return el("a", { class: "fcard mode-card", "data-mode": id, href: "#mode", onclick: () => applyMode(id) }, top, blurb);
   }
-  box.replaceChildren(head, el("div", { class: "fgrid" }, installedModes.map(id =>
-    el("a", { class: "fcard mode-card", "data-mode": id, href: "#mode", onclick: () => applyMode(id) },
-      el("div", { class: "fcard-top" }, el("strong", {}, modeDot(id), MODE_INFO[id].label)),
-      el("p", { class: "ftext" }, MODE_INFO[id].blurb)))));
+  // Not installed: greyed, and Add has Claude Code install it from the toolbox's
+  // marketplace (/api/mode/install). The card comes to life with the answer.
+  const msg = el("div", { class: "small dim" });
+  const add = el("button", { type: "button", class: "primary", title: `Install the toolbox's ${info.label.toLowerCase()} plugin` }, "Add");
+  add.addEventListener("click", async () => {
+    add.disabled = true;
+    msg.className = "small dim";
+    msg.textContent = "Installing…";
+    try {
+      const r = await api("/api/mode/install", { mode: id });
+      added = id;
+      setInstalledModes(r.modes); // the card becomes one of the modes
+      renderLanding(box);
+    } catch (e) {
+      add.disabled = false;
+      msg.className = "small st missing";
+      msg.textContent = String(e.message || e); // the server says what to run by hand
+    }
+  });
+  return el("div", { class: "fcard mode-card off", "data-mode": id }, top, blurb,
+    el("div", { class: "mode-add" }, add, msg));
 }
 
 // #mode: the mode's own home page. A placeholder for now.
@@ -109,7 +135,8 @@ function renderModeHome(box) {
     el("p", { class: "dim" }, `This is the ${info.label} home page. There is nothing on it yet.`),
     el("div", { class: "mode-home-links" },
       currentMode === "engineering" ? el("a", { href: "#home" }, "Your features →") : "",
-      installedModes.length > 1 ? el("a", { href: "#modes" }, "All modes") : "")));
+      // always: the modes page is also where another discipline is added
+      el("a", { href: "#modes" }, "All modes"))));
 }
 
 // The remembered mode's colour is on before the first paint; the server's answer

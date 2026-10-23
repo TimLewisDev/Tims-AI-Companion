@@ -97,6 +97,22 @@ wake "popped up"
 step "popped up compact again" compact
 
 echo
+echo "# his own menu"
+# A right-click on Tatty puts up the same menu the tray icon has, previews and
+# all, and Escape takes it away. This one uses the real pointer -- WPF ignores a
+# click that didn't happen where the cursor is -- and puts it back afterwards.
+if out=$("$PY" "$CHECK" --right-click 2>&1); then
+	ok "right-clicking Tatty puts his menu up, and Escape takes it away"
+else
+	bad "right-clicking Tatty puts his menu up, and Escape takes it away" \
+		"$(printf '%s' "$out" | "$PY" -c 'import json,sys
+try: d = json.load(sys.stdin)
+except ValueError: print(sys.stdin.read()[:300]); raise SystemExit
+m = d.get("menu") or {}
+print(m.get("error") or d.get("error") or "left up: %s, closed by %s" % (m.get("left_up"), m.get("closed_by")))' 2>/dev/null)"
+fi
+
+echo
 echo "# a section finished"
 # The confetti has a window of its own, click-through so it can cover far more
 # than Tatty does without taking a click off the desktop (every step above has

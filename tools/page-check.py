@@ -197,9 +197,12 @@ def main(argv):
             accent: getComputedStyle(document.body).getPropertyValue('--accent').trim() })""")
         p.js("location.hash = '#modes'; 1")
         time.sleep(0.6)
-        # with one mode installed there is nothing to pick: straight to its home page
+        # every discipline is there: the ones installed to pick, the rest greyed
+        # with an Add button (which this check never presses: it would install)
         out["landing"] = p.js("""({ hash: location.hash, heading: (document.querySelector('.page.on h2') || {}).textContent || '',
-            cards: [...document.querySelectorAll('#page-modes .mode-card')].map(a => a.dataset.mode) })""")
+            cards: [...document.querySelectorAll('#page-modes .mode-card')].map(a => a.dataset.mode +
+                     (a.classList.contains('off') ? ' (off: ' + [...a.querySelectorAll('.mode-add button')].map(b => b.textContent).join() + ')' : '')),
+            greyed: [...document.querySelectorAll('#page-modes .mode-card.off')].map(a => getComputedStyle(a).opacity) })""")
         # the radio takes you into the mode you pick (a new page, so give the
         # hash a moment), in that mode's colour and with that mode's nav
         picked = p.js("""(() => {

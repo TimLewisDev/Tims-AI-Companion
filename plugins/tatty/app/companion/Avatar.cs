@@ -76,12 +76,34 @@ namespace TtCompanion
 
         // One performance at a time. A fidget waits its turn and is dropped if it
         // misses it; the two that are the whole point -- a question, a milestone --
-        // cut in, and stand him up first if he was sitting.
-        public void Perform(Act act)
+        // cut in.
+        public void Perform(Act act) =>
+            Run(act, cutsIn: act == Act.Alert || act == Act.Celebrate || act == Act.CelebrateBig);
+
+        // One asked for by name, from his own menu. It cuts in, because somebody
+        // who has just picked a performance off a menu should see that one and
+        // not whatever he happened to be doing, and the quiet starts again, so
+        // he doesn't wander off into a fidget while it is being watched.
+        public void Preview(Act act)
+        {
+            poked = DateTime.UtcNow;
+            Run(act, cutsIn: true);
+        }
+
+        // A pose held for as long as it is wanted: the ladder is wound back, so
+        // nothing stands him up or sends him to sleep until something really
+        // happens (any Poke, including a hand reaching for him).
+        public void Preview(Pose held)
+        {
+            poked = DateTime.UtcNow;
+            sitUntil = DateTime.UtcNow + Seconds(600);
+            Set(held);
+        }
+
+        private void Run(Act act, bool cutsIn)
         {
             if (!Lively) return;
-            bool matters = act == Act.Alert || act == Act.Celebrate || act == Act.CelebrateBig;
-            if (DateTime.UtcNow < busyUntil && !matters) return;
+            if (DateTime.UtcNow < busyUntil && !cutsIn) return;
             double wait = 0;
             if ((pose == Pose.Sit || pose == Pose.Asleep) && Standing(act))
             {
