@@ -111,7 +111,12 @@ async function route() {
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at);
   else if (r.page === "settings") renderSettings(pageEls.settings);
-  else if (r.page === "jira") renderJira(pageEls.jira);
+  else if (r.page === "jira") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderJira === "function") renderJira(pageEls.jira);
+    else pageEls.jira.replaceChildren(el("p", { class: "pad st missing" },
+      "The Jira board didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
 }
 

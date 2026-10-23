@@ -253,6 +253,14 @@ def check_jira(p):
     wait(p, "!!document.querySelector('.jticket')")
     res["notLoaded"] = p.js("""({ load: (document.querySelector('#jira-load') || {}).textContent, start: !!document.querySelector('#jira-start') })""")
     p.js("closeTicket(); 1")
+    # a refresh running: what it is doing, and for how long
+    p.js("jiraNow.busy = ['board']; jiraNow.since = { board: Date.now() / 1000 - 5 }; drawJira(); 1")
+    res["progress"] = p.js("(document.querySelector('#jira-progress') || {}).textContent || ''")
+    res["refreshDisabled"] = p.js("document.querySelector('#jira-refresh').disabled")
+    # a page whose script didn't load says so, rather than staying blank
+    p.js("window.renderJiraWas = renderJira; renderJira = undefined; route(); 1")
+    res["staleServer"] = p.js("document.querySelector('#page-jira').textContent.slice(0, 40)")
+    p.js("renderJira = window.renderJiraWas; 1")
     p.js(f"setInstalledModes({json.dumps(was['modes'])}); applyMode({json.dumps(was['mode'])}); jiraNow = null; jiraDetail.clear(); location.hash = '#home'; 1")
     return res
 
