@@ -447,6 +447,10 @@ body.asking::after {
 .jkey { font-family: var(--mono); font-size: 12px; color: var(--dim); }
 .jsum { font-size: 13px; }
 .jstarted { color: var(--accent); }
+.jprogress { color: var(--accent); }
+.jprogress::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%;
+  background: var(--accent); animation: jpulse 1.2s ease-in-out infinite; }
+@keyframes jpulse { 50% { opacity: .25; } }
 .jshade { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.25); }
 .jticket { position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(600px, calc(100vw - 24px)); overflow: auto;
   display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; background: var(--panel);
@@ -467,4 +471,5 @@ body.asking::after {
 /* Less motion asked for: the cards say it all without anything flying about. */
 @media (prefers-reduced-motion: reduce) {
   .burst, body.asking::after { display: none; }
+  .jprogress::before { animation: none; } /* the seconds still count */
 }

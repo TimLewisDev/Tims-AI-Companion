@@ -36,6 +36,11 @@ EOF
 
 case ${1:-} in '' | -h | --help) usage; [ -n "${1:-}" ] && exit 0; exit 2 ;; esac
 
+# Git Bash's own bash.exe (usr\bin), run straight from Windows as the Desktop
+# shortcut does, has only Windows' PATH, which needn't hold its tools: put them
+# first, for this script and everything the server runs after it.
+command -v dirname >/dev/null 2>&1 || export PATH="/usr/bin:/bin:$PATH"
+
 here=$(readlink -f "$(dirname "$0")" 2>/dev/null) || here=$(cd -P "$(dirname "$0")" && pwd -P)
 SERVER="$here/../app/server.py"
 

@@ -215,7 +215,7 @@ class State:
                        "checked": 0.0, "message": "", "plugins": []}  # see "updates" below
         self.baseline = {}  # plugin name -> the version it was at when this server first looked
         self.update_lock = threading.Lock()
-        self.jira_busy = set()  # the Jira jobs running: board, issue:<KEY>, move:<KEY> (see "Jira")
+        self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.last_activity = time.time()
 
     def touch(self):
@@ -1453,7 +1453,7 @@ def jira_job(state, job, work, *args):
     with state.cond:
         if job in state.jira_busy:
             return False
-        state.jira_busy.add(job)
+        state.jira_busy[job] = time.time()
     state.emit("jira", job=job, busy=True)
 
     def run():
@@ -1462,7 +1462,7 @@ def jira_job(state, job, work, *args):
         except Exception as e:  # a background job must never take the server down
             said = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         with state.cond:
-            state.jira_busy.discard(job)
+            state.jira_busy.pop(job, None)
         state.emit("jira", job=job, busy=False, **said)
 
     threading.Thread(target=run, daemon=True).start()
@@ -1472,8 +1472,8 @@ def jira_job(state, job, work, *args):
 def jira_view(state):
     s = load_settings()
     with state.cond:
-        busy = sorted(state.jira_busy)
-    return {**jira_board(), "busy": busy, "started": jira_started(), "jql": s["jiraJql"], "project": s["jiraProject"],
+        since = dict(state.jira_busy)
+    return {**jira_board(), "busy": sorted(since), "since": since, "started": jira_started(), "jql": s["jiraJql"], "project": s["jiraProject"],
             "cached": sorted(p.stem for p in (jira_dir() / "issues").glob("*.json"))}
 
 

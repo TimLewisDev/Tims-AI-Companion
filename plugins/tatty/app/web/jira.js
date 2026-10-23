@@ -23,6 +23,12 @@ const jiraName = i => {
   return s ? `${i.key} - ${s}`.slice(0, 70).replace(/[ .-]+$/, "") : i.key;
 };
 const typeClass = t => /bug/i.test(t) ? "bad" : /story/i.test(t) ? "done" : "now";
+// How long a job has been running, counted up each second (the server says when it began).
+const jiraSince = job => el("span", { class: "jsince", "data-since": String((jiraNow.since || {})[job] || Date.now() / 1000) });
+function tickSince() {
+  for (const s of document.querySelectorAll(".jsince")) s.textContent = `${Math.max(0, Math.round(Date.now() / 1000 - Number(s.dataset.since)))} s`;
+}
+setInterval(tickSince, 1000);
 
 async function renderJira(box) {
   jiraBox = box;
@@ -60,6 +66,12 @@ function drawJira() {
       el("div", { class: "dim small jql", title: "Change it in Settings" }, b.jql)),
     el("div", { class: "actions" }, refresh));
   const said = [];
+  // What is running now: each is a headless claude run, which takes a while.
+  if (busy) said.push(el("p", { class: "home-note small jprogress", id: "jira-progress" },
+    "Asking Claude to read your tickets from Jira… ", jiraSince("board"), ". It usually takes about 20 s."));
+  for (const job of (b.busy || []).filter(j => j.startsWith("move:"))) {
+    said.push(el("p", { class: "home-note small jprogress" }, `Moving ${job.slice(5)} to In Progress in Jira… `, jiraSince(job)));
+  }
   if (b.error) said.push(el("p", { class: "home-note small st missing", id: "jira-error" }, "The last refresh failed: " + b.error));
   if (jiraNote) said.push(el("p", { class: "home-note small " + (jiraNote.bad ? "st missing" : "ok") }, jiraNote.text));
   let body;
@@ -78,6 +90,7 @@ function drawJira() {
   }
   jiraBox.replaceChildren(el("div", { class: "jira-page" }, head, ...said, body));
   if (jiraOpen) showTicket(jiraOpen);
+  tickSince();
 }
 
 function jiraCard(i) {
@@ -134,12 +147,13 @@ function showTicket(key) {
           el("ul", {}, d.links.map(l => el("li", {}, el("span", { class: "dim" }, (l.relation || "relates to") + ": "), `${l.key} ${l.summary || ""}`)))) : "",
         el("div", { class: "dim small jfetched" }, `Copied from Jira ${ago(d.fetchedAt)}. `, load))
       : el("div", { class: "jload" },
-        el("p", {}, loading ? "Reading the ticket from Jira…" : "Not loaded yet."),
+        el("p", { class: loading ? "jprogress" : "" }, loading ? ["Asking Claude to read the ticket from Jira… ", jiraSince("issue:" + key), ". It usually takes about 20 s."] : "Not loaded yet."),
         el("p", { class: "dim small" }, "Loading reads the whole ticket through Claude, which spends a few thousand tokens. Tatty keeps it afterwards."),
         load),
     loaded ? startForm(i) : "");
   const shade = el("div", { class: "jshade", onclick: closeTicket });
   document.body.append(shade, panel);
+  tickSince();
 }
 
 // Start workflow: the feature's name and project, then the server makes the
