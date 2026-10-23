@@ -274,10 +274,46 @@ folders and Claude Code's own install records; see
   activity feed. Nothing is read from the transcript files, and a session
   Tatty didn't start reports nothing.
 
+## User Stories (the design mode)
+
+- **Boards:** `<root>/design/<name>/`, each a copy of a design document and its
+  `<name> - User Stories.md`, which only the toolbox's `tt-user-stories` skill
+  and its `stories.sh` write (see the contract, "User Stories"). The nav's
+  **User Stories** (design mode) lists them (`#designs`); a board is
+  `#design/<name>`, an opened card `#design/<name>/card/<id>` (`stories.js`).
+- **New from a design document…** picks the file in Windows' own file dialog
+  (`pickFile`; the companion's `pick-file` message, or `TtCompanion.exe
+  --pick-file` from the server), makes the board (`/api/new-design`: the copy,
+  then `stories.sh init`) and starts a draft run.
+- **Runs:** `start_stories_run` runs the skill headless (`claude -p`, the prompt
+  on stdin, stream-json out) on a thread of its own, one at a time. Each tool
+  call becomes a `stories` event with a step for the page's strip; the last one
+  says which stories are new or rewritten, the cost, or the error. Stop
+  (`/api/stories/cancel`) kills the process tree. `state.touch()` on every line
+  keeps the idle watchdog off a long run.
+- **Changes:** Save, ✓, 🗑 and the group panel post to `/api/stories`, which
+  writes a spec and calls `stories.sh` with the story's hash (`--if`), so a
+  story changed elsewhere is a 409 and the board reloads. No change is taken
+  while a run is writing the same board. `watch_designs` sends a `stories`
+  event whenever a board's document changes on disk (the skill's writes, a hand
+  edit in Obsidian), and the page reloads.
+- **The board:** a viewport (`.board`) and a `.world` it moves with
+  `transform: translate() scale()`, set through the DOM (the CSP refuses inline
+  styles). Dragging the background pans, the wheel zooms about the pointer,
+  dragging a note moves it, and a click that didn't move opens it. Notes with no
+  place yet go in a column per group. Places, the view and each group's colour
+  (`.g0`–`.g7`, kept once given so removing a group recolours nothing) are
+  Tatty's own, in `<home>/boards/` (`/api/stories/layout`).
+- **The group panel** is pinned top right, over the board. A click puts the
+  group in focus: its notes outlined, the rest dimmed, a labelled frame round
+  them, and the view framed on them. The framing eases with motion on and jumps
+  with reduced motion; either way it happens.
+
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  249 checks against a real toolbox, with a toolbox-free part when there's no
+  319 checks against a real toolbox (the User Stories board's with a stand-in
+  `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
   and a window that opens on a full ledger says nothing about it.
@@ -285,6 +321,10 @@ folders and Claude Code's own install records; see
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
+  `features-check.py ... --stories` walks only a User Stories board with real
+  mouse input (pan, wheel zoom, a group in focus with and without reduced
+  motion, a note dragged and back, a card opened and its edit form); it changes
+  nothing in the stories document.
   `page-check.py` also covers the modes: the top bar, the landing page, what
   switching mode does to the colour and the nav, and the mode being remembered
   across a reload. Start the server with `TATTY_MODES` to drive more than the

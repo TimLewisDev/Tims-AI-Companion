@@ -23,7 +23,7 @@ fi
 export CLAUDE_CONFIG_DIR="$T/claude" TATTY_HOME="$T/home" TT_EVENTS_HOME="$T/events" TT_WORKFLOW_HOME="$T/workflow"
 mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
 # A stand-in for Windows' folder dialog: "chooses" what $T/pick-answer says.
-printf '#!/usr/bin/env bash\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done\ncat "%s/pick-answer" >"$out" 2>/dev/null\n' "$T" >"$T/picker.sh"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/picker.log"\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done\ncat "%s/pick-answer" >"$out" 2>/dev/null\n' "$T" "$T" >"$T/picker.sh"
 export TATTY_PICKER="$T/picker.sh"
 # Start reports the session it would open instead of opening it.
 export TATTY_DRYRUN=1
@@ -33,6 +33,8 @@ export TATTY_DRYRUN=1
 export TATTY_CLAUDE="$T/claude.sh" TATTY_UPDATE_FIRST=100000
 cat >"$T/claude.sh" <<'EOS'
 #!/usr/bin/env bash
+# a headless run (the User Stories board's): the stand-in is claude-p.sh, made with its tests
+[ "${1:-}" = -p ] && exec bash "$(dirname "$0")/claude-p.sh" "$@"
 echo "$*" >>"$(dirname "$0")/claude.log"
 [ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
 if [ "$1 $2" = "plugin update" ]; then
@@ -636,6 +638,175 @@ post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = error ] && ok "a failed refresh is an error" || bad "a failed refresh is an error" "$(head -c 300 "$T/set")"
 has "with claude's words" "$T/set" "network is down"
 rm -f "$T/claude-fail"
+
+echo "# user stories"
+if [ ! -f "$TATTY_TOOLBOX/plugins/design/skills/tt-user-stories/scripts/stories.sh" ] && [ ! -f "$TATTY_TOOLBOX/../design/skills/tt-user-stories/scripts/stories.sh" ]; then
+	echo "skip  the User Stories board: the toolbox has no design plugin with tt-user-stories"
+else
+[ "$(code "$U/static/stories.js")" = 200 ] && ok "stories.js served" || bad "stories.js served"
+[ "$(code "$U/static/stories.css")" = 200 ] && ok "stories.css served" || bad "stories.css served"
+get /api/designs >"$T/j"
+has "no boards yet" "$T/j" '"designs": []'
+has "the design plugin is found" "$T/j" '"plugin": true'
+has "boards live in the root's design folder" "$T/j" "fxroot/design"
+# the intake: picked in the file dialog (the stand-in), then copied into the board
+mkdir -p "$T/designs"
+printf '# Bag\n\n## Pickup\n\nWalking over an item puts it in the bag.\n' >"$T/designs/Bag - Design.md"
+INTAKE=$(cd "$T/designs" && { pwd -W 2>/dev/null || pwd; })/"Bag - Design.md"
+printf '%s' "$INTAKE" >"$T/pick-answer"
+post /api/pick-file '{"start":""}' >"$T/j"
+has "the file dialog chose the design document" "$T/j" "Bag - Design.md"
+has "it was the file dialog" "$T/picker.log" "--pick-file"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"a/b\",\"intake\":\"$INTAKE\"}" "$U/api/new-design")" = 400 ] &&
+	ok "new board: a bad name is refused" || bad "new board: a bad name is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"X\",\"intake\":\"$T/none.txt\"}" "$U/api/new-design")" = 400 ] &&
+	ok "new board: only a markdown document" || bad "new board: only a markdown document"
+post /api/new-design "{\"name\":\"Inventory\",\"intake\":\"$INTAKE\"}" >"$T/j"
+has "new board made" "$T/j" '"doc": "Inventory - User Stories.md"'
+BD="$FX/design/Inventory"
+[ -f "$BD/Bag - Design.md" ] && ok "the design document is copied in" || bad "the design document is copied in"
+has "the stories document is started by stories.sh" "$BD/Inventory - User Stories.md" "- **Source:** [[Bag - Design]]"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Inventory\",\"intake\":\"$INTAKE\"}" "$U/api/new-design")" = 409 ] &&
+	ok "new board: one that exists is refused" || bad "new board: one that exists is refused"
+# the headless run: a stand-in claude that writes stories through stories.sh,
+# as the skill does, and says so in stream-json
+US_SCRIPT=""
+for c in "$TATTY_TOOLBOX/plugins/design" "$TATTY_TOOLBOX/../design"; do
+	[ -f "$c/skills/tt-user-stories/scripts/stories.sh" ] && { US_SCRIPT="$c/skills/tt-user-stories/scripts/stories.sh"; break; }
+done
+printf '%s' "$US_SCRIPT" >"$T/stories-script"
+cat >"$T/claude-p.sh" <<'EOS'
+#!/usr/bin/env bash
+here=$(dirname "$0"); US=$(cat "$here/stories-script")
+prompt=$(cat)
+printf '%s\n' "$prompt" >"$here/claude-prompt"; printf '%s\n' "$*" >"$here/claude-p-args"
+printf '%s\n' "${TATTY_SESSION:-none}" >"$here/claude-p-session"
+say() { printf '%s\n' "$1"; }
+tool() { say "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"bash stories.sh $1\"}}]}}"; }
+say '{"type":"system","subtype":"init"}'
+[ -f "$here/claude-slow" ] && sleep 20
+case "$prompt" in
+*" draft "*)
+	doc=$(printf '%s' "$prompt" | sed 's/^.*" "\([^"]*\)"[[:space:]]*$/\1/')
+	tool "group add"; bash "$US" group add "$doc" Bag "Carrying things" >/dev/null
+	printf 'title: Pick up an item\ngroup: Bag\nas: player\nwant: to pick up items\nso_that: I can use them\ncriteria:\n  - Given a free slot, when I walk over an item, then it goes in my bag\n' >"$here/s1"
+	tool add; bash "$US" add "$doc" "$here/s1" >/dev/null
+	printf 'title: Grab items\ngroup: Bag\norigin: Suggested\nas: player\nwant: to grab items\nso_that: I keep them\ncriteria:\n  - Given an item, when I grab it, then it is mine\n' >"$here/s2"
+	tool add; bash "$US" add "$doc" "$here/s2" --proposed >/dev/null
+	printf 'title: Sort the bag\norigin: Suggested\nas: player\nwant: to sort my bag\nso_that: I find things\ncriteria:\n  - Given a bag, when I sort it, then it is in order\n' >"$here/s3"
+	tool add; bash "$US" add "$doc" "$here/s3" --proposed >/dev/null ;;
+*" alter "*)
+	doc=$(printf '%s' "$prompt" | sed 's/^[^"]*"\([^"]*\)".*$/\1/')
+	id=$(printf '%s' "$prompt" | grep -o 'US-[0-9]*' | head -1)
+	note=$(printf '%s' "$prompt" | sed 's/^.*US-[0-9]* "\([^"]*\)".*$/\1/')
+	cp "$note" "$here/claude-note" 2>/dev/null
+	printf 'title: Grab items from the floor\n' >"$here/s4"
+	tool edit; bash "$US" edit "$doc" "$id" "$here/s4" --altered >/dev/null ;;
+esac
+say '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0123,"result":"done"}'
+EOS
+# runs_done <n>: wait for the n-th finished run's event
+runs_done() {
+	for _ in $(seq 1 100); do
+		get /api/events >"$T/ev"
+		[ "$(pick "$T/ev" "sum(1 for e in d if e['type'] == 'stories' and e.get('done'))")" -ge "$1" ] && return 0
+		sleep 0.2
+	done
+	return 1
+}
+post /api/stories/run '{"name":"Inventory","mode":"draft"}' >"$T/j"
+has "a draft run starts" "$T/j" '"status": "running"'
+runs_done 1 && ok "the run finishes" || bad "the run finishes"
+has "the run is the skill's draft mode" "$T/claude-prompt" '/design:tt-user-stories draft "Bag - Design.md" "Inventory - User Stories.md"'
+has "headless, streaming" "$T/claude-p-args" "-p --output-format stream-json --verbose"
+has "only stories.sh may run" "$T/claude-p-args" "Bash(bash *stories.sh*)"
+has "nothing prompts" "$T/claude-p-args" "--permission-mode dontAsk"
+has "the run isn't one of Tatty's sessions" "$T/claude-p-session" "none"
+pick "$T/ev" "'\n'.join(e.get('run', {}).get('step', '') for e in d if e['type'] == 'stories' and e.get('run'))" >"$T/f"
+has "each tool call is a step on the page" "$T/f" "Writing a story"
+pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
+has "the new stories are named" "$T/f" "'new': ['US-01', 'US-02', 'US-03']"
+has "and what it cost" "$T/f" "'cost': 0.0123"
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "len(d['stories'])")" = 3 ] && ok "the board has the stories" || bad "the board has the stories" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['groups'][0]['name'] + ':' + str(d['groups'][0]['count']) + ':' + str(d['groups'][0]['colour'])")" = "Bag:2:0" ] &&
+	ok "groups with their counts and a colour" || bad "groups with their counts and a colour" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['stories'][1]['status'] + ' ' + d['stories'][1]['soThat']")" = "Proposed I keep them" ] &&
+	ok "stories read through stories.sh" || bad "stories read through stories.sh"
+[ "$(pick "$T/j" "d['problems']")" = "[]" ] && ok "no problems" || bad "no problems"
+[ "$(pick "$T/j" "d['intake']")" = "Bag - Design.md" ] && ok "the design document is known" || bad "the design document is known"
+get /api/designs >"$T/j"
+[ "$(pick "$T/j" "' '.join(str(d['designs'][0][k]) for k in ('name', 'stories', 'proposed', 'groups'))")" = "Inventory 3 2 1" ] &&
+	ok "the boards list counts them" || bad "the boards list counts them" "$(head -c 300 "$T/j")"
+# alter a proposed story: the note reaches the skill as a file
+post /api/stories/run '{"name":"Inventory","mode":"alter","id":"US-01","note":"x"}' >"$T/j"
+has "only a proposed story is altered" "$T/j" "Only a Proposed story"
+post /api/stories/run '{"name":"Inventory","mode":"alter","id":"US-02","note":"Say it is from the floor"}' >"$T/j"
+runs_done 2 && ok "the alter run finishes" || bad "the alter run finishes"
+has "the note reached the skill" "$T/claude-note" "Say it is from the floor"
+has "the story was rewritten" "$BD/Inventory - User Stories.md" "### US-02: Grab items from the floor"
+has "and counted as altered" "$BD/Inventory - User Stories.md" "- **Altered:** 1"
+pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
+has "the page hears which was rewritten" "$T/f" "'altered': ['US-02']"
+ls "$TATTY_HOME/runs" 2>/dev/null | grep -q . && bad "the run's note is cleaned up" || ok "the run's note is cleaned up"
+# changes a person makes on the board
+get "/api/design?name=Inventory" >"$T/j"
+H1=$(pick "$T/j" "d['stories'][0]['hash']")
+st_post() { curl -s -o "$T/j" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/stories"; }
+[ "$(st_post '{"name":"Inventory","action":"edit","id":"US-01","hash":"1","title":"Stale"}')" = 409 ] &&
+	ok "an edit to a story that changed is refused" || bad "an edit to a story that changed is refused"
+[ "$(st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-01\",\"hash\":\"$H1\",\"title\":\"Pick up an item from the floor\",\"details\":\"Items glow.\\n\\nA full bag refuses.\",\"criteria\":[\"Given a free slot, when I walk over it, then it is mine\",\"Given a full bag, when I walk over it, then it stays\"]}")" = 200 ] &&
+	ok "edit a story" || bad "edit a story" "$(head -c 300 "$T/j")"
+has "the edit is in the document" "$BD/Inventory - User Stories.md" "### US-01: Pick up an item from the floor"
+has "details as written" "$BD/Inventory - User Stories.md" "A full bag refuses."
+has "criteria as written" "$BD/Inventory - User Stories.md" "- Given a full bag, when I walk over it, then it stays"
+has "the answer is the board again" "$T/j" '"title": "Pick up an item from the floor"'
+[ "$(st_post '{"name":"Inventory","action":"edit","id":"US-01","title":"a\nb"}')" = 400 ] &&
+	ok "a title is one line" || bad "a title is one line"
+[ "$(st_post '{"name":"Inventory","action":"edit","id":"US-01","criteria":[]}')" = 400 ] &&
+	ok "a story keeps at least one criterion" || bad "a story keeps at least one criterion"
+has "with stories.sh's reason" "$T/j" "criterion"
+[ "$(st_post '{"name":"Inventory","action":"accept","id":"US-02"}')" = 200 ] && ok "accept" || bad "accept" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "[s['status'] for s in d['stories'] if s['id'] == 'US-02'][0]")" = Accepted ] && ok "accepted" || bad "accepted"
+[ "$(st_post '{"name":"Inventory","action":"reject","id":"US-03","reason":"Not for now"}')" = 200 ] && ok "reject" || bad "reject"
+has "rejected stories are retired" "$BD/Inventory - User Stories.md" "| US-03 | Sort the bag | Rejected: Not for now |"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"add","group":"Combat"}')" = 200 ] && ok "add a group" || bad "add a group"
+[ "$(pick "$T/j" "[g['colour'] for g in d['groups'] if g['name'] == 'Combat'][0]")" = 1 ] && ok "a new group gets the next colour" || bad "a new group gets the next colour"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"add","group":"bag"}')" = 400 ] && ok "group names are unique" || bad "group names are unique"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"rename","group":"Bag","value":"Inventory"}')" = 200 ] && ok "rename a group" || bad "rename a group"
+has "its stories follow" "$BD/Inventory - User Stories.md" "- **Group:** Inventory"
+[ "$(pick "$T/j" "[g['colour'] for g in d['groups'] if g['name'] == 'Inventory'][0]")" = 0 ] && ok "and so does its colour" || bad "and so does its colour"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"remove","group":"Inventory"}')" = 200 ] && ok "remove a group" || bad "remove a group"
+has "its stories are ungrouped" "$BD/Inventory - User Stories.md" "- **Group:** Ungrouped"
+[ "$(pick "$T/j" "[g['colour'] for g in d['groups'] if g['name'] == 'Combat'][0]")" = 1 ] && ok "the others keep their colours" || bad "the others keep their colours"
+[ "$(st_post '{"name":"Nope","action":"accept","id":"US-01"}')" = 404 ] && ok "an unknown board" || bad "an unknown board"
+# where the cards sit is Tatty's own
+post /api/stories/layout '{"name":"Inventory","cards":{"US-01":[10,20],"x":[1,1]},"view":{"x":5,"y":6,"z":0.8}}' >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "d['layout']['cards']['US-01']")" = "[10.0, 20.0]" ] && ok "a card's place is kept" || bad "a card's place is kept" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['layout']['view']['z']")" = 0.8 ] && ok "and the view" || bad "and the view"
+[ "$(pick "$T/j" "'x' in d['layout']['cards']")" = False ] && ok "only story IDs are kept" || bad "only story IDs are kept"
+ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in Tatty's home" || bad "in Tatty's home"
+hasnt "never in the document" "$BD/Inventory - User Stories.md" "10.0"
+# one run at a time; Stop ends it; edits wait for it
+touch "$T/claude-slow"
+post /api/stories/run '{"name":"Inventory","mode":"draft"}' >/dev/null
+sleep 0.5
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Inventory","mode":"draft"}' "$U/api/stories/run")" = 409 ] &&
+	ok "one run at a time" || bad "one run at a time"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"add","group":"Later"}')" = 409 ] && ok "no edits while it writes" || bad "no edits while it writes"
+post /api/stories/cancel '{}' >"$T/j"
+has "stop" "$T/j" '"ok": true'
+runs_done 3 && ok "a stopped run ends" || bad "a stopped run ends"
+pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
+has "and says so" "$T/f" "'error': 'Stopped.'"
+rm -f "$T/claude-slow"
+# a hand edit (in Obsidian, say) reaches the page
+n0=$(pick "$T/ev" "len(d)")
+sleep 1.6; printf '\n' >>"$BD/Inventory - User Stories.md"
+for _ in $(seq 1 30); do get "/api/events?since=$n0" >"$T/ev2"; grep -q '"changed": true' "$T/ev2" && break; sleep 0.2; done
+has "a change on disk is an event" "$T/ev2" '"changed": true'
+fi
 
 echo "# close"
 expect "close" 0 bash "$W" close

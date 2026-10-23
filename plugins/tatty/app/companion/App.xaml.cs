@@ -48,6 +48,7 @@ namespace TtCompanion
         {
             base.OnStartup(e);
             if (Array.IndexOf(e.Args, "--pick-folder") >= 0) { PickFolderAndExit(e.Args); return; }
+            if (Array.IndexOf(e.Args, "--pick-file") >= 0) { PickFileAndExit(e.Args); return; }
             single = new Mutex(true, @"Local\tatty-companion", out bool first);
             if (!first) { Shutdown(0); return; }
 
@@ -326,6 +327,12 @@ namespace TtCompanion
 
         private void PickFolderFromPage(string? arg)
         {
+            var (start, title) = PickArgs(arg);
+            PickFolder(start, title);
+        }
+
+        private static (string? Start, string? Title) PickArgs(string? arg)
+        {
             string? start = null, title = null;
             try
             {
@@ -334,7 +341,60 @@ namespace TtCompanion
                 if (doc.RootElement.TryGetProperty("title", out var t)) title = t.GetString();
             }
             catch (JsonException) { }
-            PickFolder(start, title);
+            return (start, title);
+        }
+
+        // A markdown document the page needs (a design document for the User
+        // Stories board): Windows' own file dialog, answered like a folder with
+        // "picked:" (empty when cancelled). The start may be a folder or a file in it.
+        private static Microsoft.Win32.OpenFileDialog FileDialog(string? start, string? title)
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = string.IsNullOrEmpty(title) ? "Choose a document" : title,
+                Filter = "Markdown documents (*.md)|*.md|All files (*.*)|*.*",
+                CheckFileExists = true,
+            };
+            try
+            {
+                string? dir = !string.IsNullOrEmpty(start) && File.Exists(start) ? Path.GetDirectoryName(start) : start;
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) dlg.InitialDirectory = Path.GetFullPath(dir);
+            }
+            catch (Exception) { }
+            return dlg;
+        }
+
+        private void PickFileFromPage(string? arg)
+        {
+            tuck.Stop();
+            var (start, title) = PickArgs(arg);
+            var dlg = FileDialog(start, title);
+            bubble.Post("picked:" + (dlg.ShowDialog(bubble) == true ? dlg.FileName : ""));
+        }
+
+        // TtCompanion.exe --pick-file [--start <dir>] [--out <file>] [--title <t>]:
+        // the file dialog alone, for the window server when the page is in a
+        // browser; the same as --pick-folder otherwise.
+        private void PickFileAndExit(string[] args)
+        {
+            var owner = new Window
+            {
+                Width = 1, Height = 1, Left = -32000, Top = -32000, WindowStyle = WindowStyle.None,
+                ShowInTaskbar = false, Topmost = true, AllowsTransparency = true,
+                Background = System.Windows.Media.Brushes.Transparent,
+            };
+            owner.Show();
+            owner.Activate();
+            var dlg = FileDialog(Arg(args, "--start"), Arg(args, "--title"));
+            bool chosen = dlg.ShowDialog(owner) == true;
+            string? outFile = Arg(args, "--out");
+            try
+            {
+                if (outFile != null) File.WriteAllText(outFile, chosen ? dlg.FileName : "");
+            }
+            catch (Exception) { }
+            owner.Close();
+            Shutdown(chosen ? 0 : 1);
         }
 
         // TtCompanion.exe --pick-folder [--start <dir>] [--out <file>]: just the
@@ -458,6 +518,7 @@ namespace TtCompanion
             {
                 case "pick-root": PickRoot(arg); break;
                 case "pick-folder": PickFolderFromPage(arg); break;
+                case "pick-file": PickFileFromPage(arg); break;
                 // The page is about to have the server open a new session's
                 // window: let that window come to the front (Tatty has the focus now).
                 case "allow-foreground": Native.AllowAnyForeground(); break;

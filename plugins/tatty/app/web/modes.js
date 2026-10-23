@@ -9,7 +9,7 @@
 
 const MODE_INFO = {
   engineering: { label: "Engineering", blurb: "Plan, build, debug and review code." },
-  design: { label: "Design", blurb: "The design discipline's skills." },
+  design: { label: "Design", blurb: "Turn design documents into user stories, and work them on a board." },
   production: { label: "Production", blurb: "The production discipline's skills." },
 };
 const MODE_ORDER = ["engineering", "design", "production"];
@@ -135,6 +135,7 @@ function renderModeHome(box) {
     el("p", { class: "dim" }, `This is the ${info.label} home page. There is nothing on it yet.`),
     el("div", { class: "mode-home-links" },
       currentMode === "engineering" ? el("a", { href: "#home" }, "Your features →") : "",
+      currentMode === "design" ? el("a", { href: "#designs" }, "Your user story boards →") : "",
       // always: the modes page is also where another discipline is added
       el("a", { href: "#modes" }, "All modes"))));
 }
