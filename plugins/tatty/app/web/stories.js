@@ -24,6 +24,7 @@ const { renderDesigns, renderBoard } = (() => {
   const ZMIN = 0.2, ZMAX = 2.5;
   let listBox = null;
   let b = null; // the board on screen: { name, box, data, view, world, cards, focus, ... }
+  let boardRequest = 0;
 
   // ----------------------------------------------------------- the list of boards
 
@@ -95,14 +96,18 @@ const { renderDesigns, renderBoard } = (() => {
   // ----------------------------------------------------------- one board
 
   async function renderBoard(box, name, card) {
+    const request = ++boardRequest;
+    const route = location.hash;
     if (b && b.name === name && b.box === box && b.data) { openCard(card); return; }
     listBox = null;
     box.replaceChildren(el("p", { class: "dim pad" }, "Opening the board…"));
     let data;
     try { data = await api("/api/design?name=" + encodeURIComponent(name)); } catch (e) {
+      if (request !== boardRequest || location.hash !== route) return;
       box.replaceChildren(el("p", { class: "st missing pad" }, String(e.message || e), " ", el("a", { href: "#designs" }, "All boards")));
       return;
     }
+    if (request !== boardRequest || location.hash !== route) return;
     b = { name, box, data, focus: "", fresh: new Set(), cards: new Map(), busy: new Set(), run: data.run, runNote: "", editing: false };
     const v = data.layout.view || {};
     b.view = { x: num(v.x, 40), y: num(v.y, 30), z: clampZ(num(v.z, 1)) };
@@ -432,9 +437,11 @@ const { renderDesigns, renderBoard } = (() => {
       e.preventDefault();
       save.disabled = true;
       const role = f.as.value.trim();
+      const board = b;
       const ok = await change({ action: "edit", id: s.id, hash: s.hash, title: f.title.value, group: f.group.value,
         as: role === s.as ? `${s.article} ${role}` : role, want: f.want.value, soThat: f.soThat.value, source: f.source.value,
         details: f.details.value, criteria: [...crit.querySelectorAll("input")].map(i => i.value).filter(v => v.trim()) }, msg);
+      if (b !== board) return;
       save.disabled = false;
       if (ok) { b.editing = false; const now = story(s.id); if (now) drawOpen(now); }
     } },
@@ -454,7 +461,8 @@ const { renderDesigns, renderBoard } = (() => {
     const busy = b.busy.has(s.id);
     const send = el("button", { type: "button", id: "alter-send", disabled: busy || (b.run && b.run.status === "running"), onclick: async () => {
       if (!note.value.trim()) { msg.textContent = "Say what to change first."; return; }
-      if (await run({ mode: "alter", id: s.id, note: note.value }, msg)) { b.busy.add(s.id); drawCards(); drawOpen(s); }
+      const board = b;
+      if (await run({ mode: "alter", id: s.id, note: note.value }, msg) && b === board) { b.busy.add(s.id); drawCards(); drawOpen(s); }
     } }, busy ? "Rewriting…" : "Ask for changes");
     return el("div", { class: "oacts" },
       el("div", { class: "row" },
@@ -465,37 +473,47 @@ const { renderDesigns, renderBoard } = (() => {
   }
 
   async function accept(s, msg) {
-    if (await change({ action: "accept", id: s.id, hash: s.hash }, msg) && b.open === s.id) closeCard();
+    const board = b;
+    if (await change({ action: "accept", id: s.id, hash: s.hash }, msg) && b === board && board.open === s.id) closeCard();
   }
 
   async function reject(s, reason, msg) {
-    if (await change({ action: "reject", id: s.id, hash: s.hash, reason }, msg) && b.open === s.id) closeCard();
+    const board = b;
+    if (await change({ action: "reject", id: s.id, hash: s.hash, reason }, msg) && b === board && board.open === s.id) closeCard();
   }
 
   // ----------------------------------------------------------- changes and runs
 
   // One change through the server (stories.sh): the answer is the board again.
   async function change(body, msg) {
+    const board = b;
+    if (!board) return false;
     try {
-      const d = await api("/api/stories", { name: b.name, ...body });
+      const d = await api("/api/stories", { name: board.name, ...body });
+      if (b !== board) return false;
       take(d);
       return true;
     } catch (e) {
+      if (b !== board) return false;
       const text = String(e.message || e);
       if (msg) msg.textContent = text; else stripSay(text, true);
-      if (e.status === 409) reload();
+      if (e.status === 409) reload(board);
       return false;
     }
   }
 
   async function run(body, msg) {
+    const board = b;
+    if (!board) return false;
     try {
-      const r = await api("/api/stories/run", { name: b.name, ...body });
-      b.run = r.run;
-      b.runNote = "";
+      const r = await api("/api/stories/run", { name: board.name, ...body });
+      if (b !== board) return false;
+      board.run = r.run;
+      board.runNote = "";
       drawStrip();
       return true;
     } catch (e) {
+      if (b !== board) return false;
       const text = String(e.message || e);
       if (msg) msg.textContent = text; else stripSay(text, true);
       return false;
@@ -512,12 +530,16 @@ const { renderDesigns, renderBoard } = (() => {
   }
 
   let reloadTimer = null;
-  function reload() {
+  function reload(board = b) {
+    if (!board) return;
     clearTimeout(reloadTimer);
-    const name = b.name;
+    const name = board.name;
     reloadTimer = setTimeout(async () => {
-      if (!b || b.name !== name) return;
-      try { take(await api("/api/design?name=" + encodeURIComponent(name))); } catch { /* the next event tries again */ }
+      if (b !== board) return;
+      try {
+        const data = await api("/api/design?name=" + encodeURIComponent(name));
+        if (b === board) take(data);
+      } catch { /* the next event tries again */ }
     }, 250);
   }
 
