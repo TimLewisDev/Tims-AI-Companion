@@ -470,7 +470,11 @@ makes one with `makeWhiteboard(o)`: where it saves (`key: {kind, ref}`), what
 the server gave it, its own cards (`setCards([{id, node, w, h}])`: nodes it
 built, which the board places and drags), what a click on a card does
 (`onOpen`), its own placing tools (`tools`, e.g. the Story tool), and a panel
-to pin top right (`corner`). The board does the rest: pan, wheel zoom about
+to pin top right (`corner`). The board does the rest: pan (a drag with the
+middle button, wherever it starts, or a finger on the background; the left and
+right buttons are kept for the things on the board, so a left drag on the
+background moves nothing and the browser's right-click menu is off, but in a
+text being written), wheel zoom about
 the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 
 - **What a person adds:** text fields (markdown, edited on double-click, a
@@ -536,7 +540,8 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   it only on a throwaway root.
   `features-check.py ... --whiteboard` makes a blank whiteboard and writes on it
   with real mouse and keys (a text by the Text tool, one by double-click, a
-  comment pinned to the first, a labelled line between them, a drag the comment
+  comment pinned to the first, a labelled line between them (its layer only as
+  big as the line, and still taking a click), a drag the comment
   and the line follow, a reload, Delete), adds a story with the Story tool where
   it was clicked, and opens a document from the Demo feature's whiteboard. It
   writes too: a throwaway root and home only.

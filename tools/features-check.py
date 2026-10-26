@@ -274,16 +274,17 @@ def check_jira(p):
     return res
 
 
-def mouse(p, kind, x, y, **extra):
-    p.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button="left", buttons=1 if kind != "mouseReleased" else 0,
+def mouse(p, kind, x, y, button="left", **extra):
+    held = {"left": 1, "right": 2, "middle": 4}[button]
+    p.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button=button, buttons=held if kind != "mouseReleased" else 0,
            clickCount=1, **extra)
 
 
-def drag(p, x0, y0, x1, y1):
-    mouse(p, "mousePressed", x0, y0)
+def drag(p, x0, y0, x1, y1, button="left"):
+    mouse(p, "mousePressed", x0, y0, button)
     for i in range(1, 6):
-        mouse(p, "mouseMoved", x0 + (x1 - x0) * i / 5, y0 + (y1 - y0) * i / 5)
-    mouse(p, "mouseReleased", x1, y1)
+        mouse(p, "mouseMoved", x0 + (x1 - x0) * i / 5, y0 + (y1 - y0) * i / 5, button)
+    mouse(p, "mouseReleased", x1, y1, button)
 
 
 def check_stories(p):
@@ -311,12 +312,22 @@ def check_stories(p):
     box = p.js("(() => { const r = document.querySelector('#board').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()")
     bx, by = box[0] + 30, box[1] + box[3] - 60  # the board's bottom-left, clear of notes and the panel
     t0 = p.js("document.querySelector('#board-world').style.transform")
-    drag(p, bx + 40, by - 20, bx + 140, by - 70)
+    drag(p, bx + 40, by - 20, bx + 140, by - 70)  # the left button on the background moves nothing
+    res["leftDrag"] = {"still": p.js("document.querySelector('#board-world').style.transform") == t0}
+    drag(p, bx + 40, by - 20, bx + 140, by - 70, "middle")
     res["pan"] = {"before": t0, "after": p.js("document.querySelector('#board-world').style.transform")}
+    # the middle button over a note moves the view, not the note
+    n = p.js("(() => { const n = document.querySelector('#board .scard'); const r = n.getBoundingClientRect(); return [r.left + 40, r.top + 30, n.style.left, n.style.top]; })()")
+    t1 = p.js("document.querySelector('#board-world').style.transform")
+    drag(p, n[0], n[1], n[0] - 60, n[1] - 40, "middle")
+    res["panOverNote"] = {"viewMoved": p.js("document.querySelector('#board-world').style.transform") != t1,
+                          "noteStill": p.js("[document.querySelector('#board .scard').style.left, document.querySelector('#board .scard').style.top]") == n[2:4]}
+    res["contextMenu"] = p.js("(() => { const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true }); document.querySelector('#board .scard').dispatchEvent(e); return e.defaultPrevented ? 'board' : 'browser'; })()")
     p.call("Input.dispatchMouseEvent", type="mouseWheel", x=box[0] + box[2] / 2, y=box[1] + box[3] / 2, deltaX=0, deltaY=-240)
     time.sleep(0.2)
     res["wheel"] = {"zoom": p.js("document.querySelector('.zoom-pct').textContent"),
-                    "transform": p.js("document.querySelector('#board-world').style.transform")}
+                    "transform": p.js("document.querySelector('#board-world').style.transform"),
+                    "settled": not p.js("document.querySelector('#board-world').classList.contains('moving')")}
     # a group in focus: once as this machine has it (reduced motion: a jump), once with motion
     for media in ("reduce", "no-preference"):
         p.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": media}])
@@ -472,6 +483,10 @@ def whiteboard_steps(p, res):
     wait(p, "document.querySelectorAll('#wboard .wbline').length === 1")
     res["line"] = p.js("""({ lines: document.querySelectorAll('#wboard .wbline').length, arrow: !!document.querySelector('#wboard .wbstroke[marker-end]'),
                             pop: !document.querySelector('#wboard .wbpop').hidden, tool: document.querySelector('#wboard').dataset.tool })""")
+    # the line layer is only as big as its lines, and the line still takes a click at its middle
+    res["lineLayer"] = p.js("""(() => { const s = document.querySelector('#wboard .wblines'), r = document.querySelector('#wboard .wbhit').getBoundingClientRect();
+                                const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                                return { w: +s.getAttribute('width'), h: +s.getAttribute('height'), hit: !!(at && at.closest('[data-line]')) }; })()""")
     p.js("(() => { const i = document.querySelector('#wboard .wblabel-in'); i.value = 'leads to'; i.dispatchEvent(new Event('change')); return 1; })()")
     time.sleep(0.4)
     res["label"] = p.js("(document.querySelector('#wboard .wblabel') || {}).textContent || ''")
