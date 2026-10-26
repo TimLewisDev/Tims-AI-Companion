@@ -85,7 +85,12 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   Tatty started (it carries `TATTY_SESSION`), Tatty's own (it carries
   `TATTY_JOIN=1`, and works on the main feed), or one where `/tatty open` or
   `/tatty attach` was run. In a joined session it:
-  - routes AskUserQuestion to Tatty, falling back to the terminal dialog;
+  - routes AskUserQuestion to Tatty, falling back to the terminal dialog (the
+    page lays a challenge question out for reading: tag chips, the description,
+    the evidence as a list, "My take" in italics at the bottom and the closing
+    ask in bold above the options; text it does not recognise shows as written,
+    and the answer is still keyed by the raw question — `parseQuestion` in
+    `app/web/app.js`);
   - submits text typed in Tatty;
   - mirrors replies.
 
@@ -543,7 +548,8 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   Given a page opened as the companion (`?mode=companion`), `page-check.py` also
   checks the alert banner: a question's text, its going when answered, a
   milestone's, and that opening one expands to its page. The avatar's click
-  itself (`OpenAlert`) is only checked by hand.
+  itself (`OpenAlert`) is only checked by hand. It also posts a challenge-style
+  question and reports how it was laid out (`ask_format`).
   `features-check.py` ends with the Jira board, drawn from a sample board in
   the page (columns, a ticket's panel, Esc, the nav item per mode), and the
   task boards. `features-check.py ... --tasks` walks only those, on the

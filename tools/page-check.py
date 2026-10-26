@@ -161,6 +161,36 @@ def main(argv):
             p.js(f"document.querySelector('#say').value = {json.dumps(say)}; document.querySelector('#chat').requestSubmit(); 'sent'")
             time.sleep(1)
             out["you_cards"] = p.js("document.querySelectorAll('#feed .card.you').length")
+        # A challenge question, taken apart (app.js's questionNode): the tag as
+        # chips, the description, the evidence as a list, "My take" in italics at
+        # the bottom and the closing ask in bold just above the options. A plain
+        # question keeps its single bold line. Both are declined afterwards.
+        challenge = ("CH22 (significant): S10 (the tool has one bake mode; lists leave) is bigger than \"children leave\". "
+                     "I checked the sites and they stand. Editor: window (`HasHandles`, `ComputeLeg`), `CombatShapeStaleTracker.AppendTargets`. "
+                     "Runtime: `CombatShapeAuthoringSetup` and `CombatShapeTargetHandle`. `README.md` lines 12 and 37 describe it. "
+                     "My take: concede. AGENTS.md covers deleting them. What should S10 say?")
+        p.js("api('/api/ask', { questions: [{ question: " + json.dumps(challenge) + ", header: 'CH22 / S10', options: ['Accept', 'Rebut'] },"
+             " { question: 'Shall the plain one stay plain?', options: ['Yes', 'No'] }] })")
+        time.sleep(1)
+        out["ask_format"] = p.js("""(() => {
+            const card = [...document.querySelectorAll('#feed .card.ask:not(.done)')].pop();
+            if (!card) return 'no card';
+            const [one, two] = card.querySelectorAll('.q');
+            const box = one.querySelector('.qfmt');
+            const kids = box ? [...box.children].map(c => c.className) : [];
+            return { kids,
+                chips: box ? [...box.querySelectorAll('.qchip')].map(c => c.textContent) : [],
+                evidence: box ? [...box.querySelectorAll('.qevidence li')].map(l => l.textContent.slice(0, 24)) : [],
+                code: box ? box.querySelectorAll('code').length : 0,
+                take: box && box.querySelector('.take') ? box.querySelector('.take').textContent.slice(0, 20) : '',
+                takeItalic: box && box.querySelector('.take') ? getComputedStyle(box.querySelector('.take')).fontStyle : '',
+                ask: box && box.querySelector('.ask-line') ? box.querySelector('.ask-line').textContent : '',
+                takeBeforeAsk: kids.indexOf('take') >= 0 && kids.indexOf('take') < kids.indexOf('ask-line'),
+                optionsAfter: !!(box && box.nextElementSibling && box.nextElementSibling.classList.contains('opt')),
+                plain: { text: two.querySelector('.text') ? two.querySelector('.text').textContent : '', formatted: !!two.querySelector('.qfmt') } };
+        })()""")
+        p.js("api('/api/reply', { id: [...asks.keys()].pop(), declined: true })")
+        time.sleep(0.5)
         # A section finished: the card naming it, and the confetti over the page
         # (app.js's milestoneCard and confetti). The milestone is asked for
         # through the page's own api(), so no token is needed out here. The
