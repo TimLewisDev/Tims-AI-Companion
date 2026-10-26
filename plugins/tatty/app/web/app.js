@@ -183,6 +183,103 @@ function codeActions(root) {
   }
 }
 
+// ------------------------------------------------------------- questions
+//
+// A challenge from tt-adversarial-plan arrives as one paragraph: a tag ("CH22
+// (significant):"), what is wrong, labelled evidence ("Editor: ... Runtime: ..."),
+// "My take: ...", then the closing ask. parseQuestion picks those apart for
+// display only. What it does not recognise is shown as it was written, and an
+// answer is still keyed by the raw text.
+
+// "Editor: ..." at the start of a sentence: a label of up to three words
+const LABEL = /^([A-Z][\w/&-]*(?: [\w/&-]+){0,2}):\s+/;
+const NOT_AN_END = /(?:^|[\s(])(?:e\.g|i\.e|vs|etc)$/i;
+
+// The sentences of s. A full stop inside `code` or (brackets) does not end one.
+function sentences(s) {
+  const out = [];
+  let from = 0, depth = 0, tick = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "`") tick = !tick;
+    else if (tick) continue;
+    else if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === "." || c === "?" || c === "!")) {
+      const end = s.slice(i).match(/^[.?!]["')”*]*(?=\s|$)/);
+      if (!end || NOT_AN_END.test(s.slice(0, i))) continue;
+      out.push(s.slice(from, i + end[0].length).trim());
+      from = i + end[0].length;
+      i = from - 1;
+    }
+  }
+  if (s.slice(from).trim()) out.push(s.slice(from).trim());
+  return out;
+}
+
+function parseQuestion(text) {
+  const out = { tag: null, desc: [], evidence: [], take: "", ask: "", md: "", plain: false };
+  let s = String(text || "").trim();
+  const t = s.match(/^((?:CH|[A-Z]{1,3})\d+)\s*\(([^)]+)\)\s*:\s*/);
+  if (t) { out.tag = { id: t[1], sev: t[2].trim() }; s = s.slice(t[0].length); }
+  const m = s.match(/\*{0,2}\bMy take\s*:\s*\*{0,2}/i);
+  const body = m ? s.slice(0, m.index).trim() : s;
+  const multiline = body.includes("\n");
+  const tk = m ? sentences(s.slice(m.index + m[0].length).trim()) : [];
+  const bs = multiline ? [] : sentences(body);
+  // the closing ask is the last sentence, if it is a question
+  const last = tk.length ? tk : bs;
+  if (last.length && /\?["')”*]*$/.test(last[last.length - 1])) out.ask = last.pop();
+  out.take = tk.join(" ");
+  if (multiline) out.md = body;
+  else {
+    // description up to the first labelled sentence; from there on, evidence.
+    // Without labels, a long run of sentences keeps its first two as the description.
+    const labels = bs.map(x => x.match(LABEL));
+    const first = labels.findIndex(Boolean);
+    const cut = first >= 0 ? first : (bs.length >= 4 ? 2 : bs.length);
+    out.desc = bs.slice(0, cut);
+    out.evidence = bs.slice(cut).map((x, i) => {
+      const l = labels[cut + i];
+      return l ? { label: l[1], text: x.slice(l[0].length) } : { label: "", text: x };
+    });
+  }
+  out.plain = !out.tag && !out.take && !out.evidence.length && !out.md;
+  return out;
+}
+
+// One line saying what a question is about: the alert bar's title and an answered card's text.
+function questionHeadline(text) {
+  const p = parseQuestion(text);
+  if (p.plain) return firstLine(text);
+  const lead = p.desc[0] || (p.md && firstLine(p.md)) || p.ask || firstLine(text);
+  const h = (p.tag ? p.tag.id + ": " : "") + lead;
+  return h.length > 200 ? h.slice(0, 197) + "…" : h;
+}
+
+// The question as the card shows it: tag chips, the description, the evidence as a
+// list, "My take" in italics at the bottom, then the closing ask in bold.
+function questionNode(text) {
+  const p = parseQuestion(text);
+  const html = (tag, cls, s) => { const n = el(tag, cls ? { class: cls } : {}); n.innerHTML = s; return n; };
+  if (p.plain) return html("div", "text", inline(String(text)));
+  const box = el("div", { class: "qfmt" });
+  if (p.tag) {
+    const sev = p.tag.sev.toLowerCase();
+    box.append(el("div", { class: "qchips" }, el("span", { class: "qchip id" }, p.tag.id),
+      el("span", { class: "qchip sev sev-" + sev.replace(/[^a-z]/g, "") }, p.tag.sev)));
+  }
+  if (p.md) { const d = mdNode(p.md); d.classList.add("qdesc"); box.append(d); }
+  else if (p.desc.length) box.append(html("p", "qdesc", inline(p.desc.join(" "))));
+  if (p.evidence.length) {
+    box.append(el("ul", { class: "qevidence" }, p.evidence.map(e =>
+      html("li", "", (e.label ? `<strong>${esc(e.label)}:</strong> ` : "") + inline(e.text)))));
+  }
+  if (p.take) box.append(html("div", "take", `<em><strong>My take:</strong> ${inline(p.take)}</em>`));
+  if (p.ask) box.append(html("div", "ask-line", inline(p.ask)));
+  return box;
+}
+
 // ------------------------------------------------------------- views
 
 const COLS = ["prefix", "kind", "phase", "skill", "verb", "arg", "text", "hint", "stage"];
@@ -305,7 +402,7 @@ function askCard(ev) {
       if (!q.multiSelect && others[i].value.trim()) { picks[i].clear(); for (const [, r] of opts) { r.classList.remove("picked"); r.firstChild.textContent = "○"; } }
       ready();
     });
-    return el("div", { class: "q" }, q.header ? el("div", { class: "head" }, q.header) : "", el("div", { class: "text" }, q.question), opts.map(([, r]) => r), others[i]);
+    return el("div", { class: "q" }, q.header ? el("div", { class: "head" }, q.header) : "", questionNode(q.question), opts.map(([, r]) => r), others[i]);
   });
   const terminal = el("button", { type: "button", title: "Have the question asked in the terminal instead" }, "Answer in terminal instead");
   const status = el("div", { class: "dim small" });
@@ -339,7 +436,7 @@ const answers = new Map(); // ask id -> its "answered" event, for cards drawn af
 function answeredCard(a, ev) {
   const node = el("div", { class: "card ask done" }, el("h4", {}, "Answered"),
     ev.declined ? el("p", { class: "dim" }, "Asked in the terminal instead.") :
-      a.questions.map(q => el("div", { class: "q" }, el("div", { class: "text" }, q.question), el("div", { class: "answer" }, ev.answers[q.question] || "—"))));
+      a.questions.map(q => el("div", { class: "q" }, el("div", { class: "text", title: q.question }, questionHeadline(q.question)), el("div", { class: "answer" }, ev.answers[q.question] || "—"))));
   linkIds(node, a.feature); // ids.js
   return node;
 }
@@ -420,7 +517,7 @@ function alertFrom(ev) {
   if (!companion) return;
   const fresh = ev.ts * 1000 >= pageOpened - 5000;
   if (ev.type === "ask") {
-    pushAlert({ kind: "ask", key: ev.id, title: firstLine(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer",
+    pushAlert({ kind: "ask", key: ev.id, title: questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer",
                sub: [ev.source, ev.feature].filter(Boolean).join(" · "), link: ev.link || "" });
   } else if (fresh && ev.type === "milestone") {
     pushAlert({ kind: "milestone", key: "m" + ev.seq, title: ev.label || "Finished",

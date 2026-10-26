@@ -869,7 +869,7 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     if (ev.type === "ask") {
       if (shownAsks.has(ev.id)) return;
       shownAsks.add(ev.id);
-      questions.append(questionCard(ev));
+      questions.prepend(questionCard(ev)); // newest on top, older ones further down
       return;
     }
     if (ev.type !== "activity" && ev.type !== "say") return;
