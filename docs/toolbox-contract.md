@@ -148,6 +148,10 @@ build complete are the big ones). This is still only reading:
 - the toolbox still knows nothing of any of this: it records what it always
   recorded, whether or not Tatty is installed.
 
+Of a row, Tatty also reads `skill` (named in the window's alert) and `folder`,
+which it matches to a feature under its root to know which page a click should
+open. A row without them still celebrates; it just opens no page.
+
 ### Documents: View and Edit
 
 A document opens in **View**, which lays it out by its kind (the part of the file

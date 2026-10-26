@@ -357,9 +357,71 @@ function onEvent(ev) {
   document.dispatchEvent(new CustomEvent("tt-event", { detail: ev }));
 }
 
+// ------------------------------------------------------- what is calling
+//
+// The bubble says what is calling for the person, above the feed: the question,
+// or what finished. Each alert carries the page it is about (the server's
+// `link`), and opening one takes the person there. A question stays until it is
+// answered; a finished milestone or a reply goes once it has been opened.
+const alerts = []; // oldest first; the banner shows the newest
+const alertBar = $("#alert");
+
+function pushAlert(a) {
+  const at = alerts.findIndex(x => x.key === a.key);
+  if (at >= 0) alerts.splice(at, 1);
+  alerts.push(a);
+  drawAlert();
+}
+
+function dropAlert(key) {
+  const at = alerts.findIndex(x => x.key === key);
+  if (at < 0) return;
+  alerts.splice(at, 1);
+  drawAlert();
+}
+
+function drawAlert() {
+  const a = alerts[alerts.length - 1];
+  alertBar.hidden = !a;
+  if (!a) { alertBar.replaceChildren(); return; }
+  const more = alerts.length - 1;
+  alertBar.replaceChildren(
+    el("div", { class: "what" },
+      el("div", { class: "kind" }, a.kind === "ask" ? "Question" : a.kind === "reply" ? "Reply" : "Finished", more ? ` · +${more} more` : ""),
+      el("div", { class: "title" }, a.title),
+      a.sub ? el("div", { class: "sub" }, a.sub) : ""),
+    a.kind === "ask" ? "" : el("button", { type: "button", class: "dismiss", title: "Dismiss", "aria-label": "Dismiss" }, "×"));
+  alertBar.dataset.link = a.link || "";
+  alertBar.title = a.link ? "Open the page this is about" : "Open Tatty's full panel";
+}
+
+const firstLine = s => String(s || "").split("\n").map(l => l.trim()).find(Boolean) || "";
+
+// Only what happens from now on is news; a question that is still waiting is
+// news whenever it was asked, and its answer, replayed after it, takes it away.
+function alertFrom(ev) {
+  if (!companion) return;
+  const fresh = ev.ts * 1000 >= pageOpened - 5000;
+  if (ev.type === "ask") {
+    pushAlert({ kind: "ask", key: ev.id, title: firstLine(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer",
+               sub: [ev.source, ev.feature].filter(Boolean).join(" · "), link: ev.link || "" });
+  } else if (fresh && ev.type === "milestone") {
+    pushAlert({ kind: "milestone", key: "m" + ev.seq, title: ev.label || "Finished",
+               sub: [ev.skill, ev.feature || ev.prefix, ev.qualifier].filter(Boolean).join(" · "), link: ev.link || "" });
+  } else if (fresh && ev.type === "card" && ev.kind === "reply" && !ev.tag) {
+    pushAlert({ kind: "reply", key: "r" + ev.seq, title: ev.title || "Claude replied",
+               sub: firstLine(ev.body).slice(0, 200), link: ev.link || "" });
+  }
+}
+
 function feedEvent(ev) {
+  alertFrom(ev);
   if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); }
-  else if (ev.type === "answered") answered(ev);
+  else if (ev.type === "answered") {
+    answered(ev);
+    dropAlert(ev.id);
+    if (companion && !alerts.length) tell("alert-cleared"); // nothing is calling any more
+  }
   // A milestone belongs to the feature, not to a session, so it is shown
   // wherever Tatty is: before the tag test, which is what keeps a started
   // session's own chatter out of this feed.
@@ -476,6 +538,42 @@ if (companion) {
     if (on) document.dispatchEvent(new Event("tt-expanded")); // features.js shows the page
     scrollFeed();
   };
+  // Take the person to what is calling: the full panel, on the page it is about.
+  // A question with no page of its own (nothing links its session to a feature)
+  // is answered in the feed, so the feed is brought to it. `fromHost` is when the
+  // avatar was clicked: the host has already made the window big.
+  const openAlert = fromHost => {
+    const a = alerts[alerts.length - 1];
+    const wasExpanded = document.body.classList.contains("expanded");
+    if (a && a.link) {
+      // Quietly, when expanding is about to route anyway: once, not twice.
+      if (wasExpanded) location.hash = a.link; else history.replaceState(null, "", location.pathname + location.search + a.link);
+    }
+    expand(true);
+    if (!fromHost) tell("expand");
+    tell("alert-cleared");
+    if (!a) return;
+    if (a.kind !== "ask") dropAlert(a.key);
+    else if (!a.link) {
+      document.body.classList.remove("nochat");
+      const node = asks.get(a.key) && asks.get(a.key).nodes.find(n => n.isConnected);
+      if (node) node.scrollIntoView({ block: "center" });
+    }
+  };
+  alertBar.addEventListener("click", e => {
+    if (e.target.closest(".dismiss")) {
+      const a = alerts[alerts.length - 1];
+      if (a) dropAlert(a.key);
+      if (!alerts.length) tell("alert-cleared");
+      return;
+    }
+    openAlert(false);
+  });
+  alertBar.tabIndex = 0;
+  alertBar.setAttribute("role", "button");
+  alertBar.addEventListener("keydown", e => {
+    if ((e.key === "Enter" || e.key === " ") && e.target === alertBar) { e.preventDefault(); openAlert(false); }
+  });
   $("#expand").addEventListener("click", () => { expand(true); tell("expand"); });
   $("#collapse").addEventListener("click", () => { expand(false); tell("collapse"); });
   $("#hide").addEventListener("click", () => tell("hide"));
@@ -503,6 +601,7 @@ if (companion) {
     else if (m.data === "maximised") maximised(true);
     else if (m.data === "restored") maximised(false);
     else if (m.data === "shown") scrollFeed();
+    else if (m.data === "open-alert") openAlert(true);
   });
 }
 

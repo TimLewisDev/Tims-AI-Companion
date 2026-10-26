@@ -787,9 +787,29 @@ def announce(state, row):
     if not known:
         return None
     label, tier = known
+    folder = str(row.get("folder") or "")
+    feature = folder_feature(folder)
     return state.emit("milestone", event=str(row["event"]), label=label, tier=tier,
                       prefix=str(row.get("prefix") or ""), qualifier=str(row.get("qualifier") or ""),
-                      folder=str(row.get("folder") or ""), route=str(row.get("route") or ""))
+                      folder=folder, route=str(row.get("route") or ""),
+                      skill=str(row.get("skill") or ""), feature=feature, link=feature_link(feature))
+
+
+def folder_feature(folder):
+    """The feature under <root>/features whose folder a ledger row names, or "":
+    the row holds a path, which may be where a linked folder really is."""
+    if not folder:
+        return ""
+    base = tatty_root()[0] / "features"
+    try:
+        return next((d.name for d in sorted(base.iterdir()) if d.is_dir() and is_folder(folder, d)), "")
+    except OSError:
+        return ""
+
+
+def feature_link(feature):
+    """The page route a feature's alert points at, or "" when there is no such page."""
+    return "#feature/" + urllib.parse.quote(feature, safe="") if feature else ""
 
 
 def ledger_rows(at):
@@ -3186,7 +3206,7 @@ def task_celebrate(state, b, folder, before, after, label, qualifier, tier):
     if crossed:
         tier, label = "big", f"{crossed} tasks completed!"
     state.emit("milestone", event="tasks.done", label=label, tier=tier, prefix=folder.name, qualifier=qualifier,
-               folder="", route="")
+               folder="", route="", skill="", feature="", link="#tasks/" + urllib.parse.quote(folder.name, safe=""))
 
 
 def task_targets(b):
@@ -4051,8 +4071,9 @@ class Handler(BaseHTTPRequestHandler):
             kind = b.get("kind", "text")
             if kind not in KINDS:
                 return self.send(400, {"error": f"kind must be one of {sorted(KINDS)}"})
+            feature = session_feature(st, tag, session) if kind in ("markdown", "reply") else ""
             ev = st.emit("card", kind=kind, title=str(b.get("title", "")), body=str(b.get("body", "")), tag=tag,
-                         feature=session_feature(st, tag, session) if kind in ("markdown", "reply") else "")
+                         feature=feature, link=feature_link(feature))
             return self.send(200, {"seq": ev["seq"]})
         if path == "/api/activity":
             # What a started session is doing: a tool starting or finishing, a prompt, a reply.
@@ -4085,7 +4106,8 @@ class Handler(BaseHTTPRequestHandler):
             source = str(b.get("source", ""))
             if tag in st.sessions:
                 source = st.sessions[tag]["name"]
-            st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=session_feature(st, tag, session))
+            feature = session_feature(st, tag, session)
+            st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=feature, link=feature_link(feature))
             return self.send(200, {"id": qid})
         if path == "/api/reply":
             qid = str(b.get("id", ""))

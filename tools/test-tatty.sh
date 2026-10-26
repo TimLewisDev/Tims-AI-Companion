@@ -541,6 +541,14 @@ post /api/ask '{"session":"sess-elsewhere","questions":[{"question":"Is R2 done?
 get /api/events >"$T/j"
 pick "$T/j" "' '.join([repr(e['feature']) for e in d if e['type'] == 'ask'][-2:])" >"$T/f"
 has "a linked project's question is about its feature, one elsewhere about none" "$T/f" "'Demo' ''"
+# Each alert says which page it is about, for the avatar's click to go there
+pick "$T/j" "' '.join([repr(e['link']) for e in d if e['type'] == 'ask'][-2:])" >"$T/f"
+has "a question's link is its feature's page, or none" "$T/f" "'#feature/Demo' ''"
+post /api/show '{"kind":"reply","title":"Done","body":"All set.","session":"sess-ids"}' >/dev/null
+post /api/show '{"kind":"reply","body":"Nothing to link.","session":"sess-elsewhere"}' >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "' '.join([repr(e['link']) for e in d if e['type'] == 'card' and e['kind'] == 'reply'][-2:])" >"$T/f"
+has "a reply's link is its feature's page, or none" "$T/f" "'#feature/Demo' ''"
 rm -f "$CLAUDE_CONFIG_DIR/sessions/2.json"
 
 echo "# the desktop app"
@@ -578,8 +586,8 @@ echo "# milestones"
 # The toolbox records a feature's progress in its own ledger as it happens, and
 # knows nothing of Tatty. Tatty follows the file and celebrates what it says.
 ledger() {
-	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"%s|%s","prefix":"%s","folder":"%s","route":"full","qualifier":"%s","approx":false}\n' \
-		"$1" "$1" "${2:-}" "${3:-Demo}" "$DEMO" "${2:-}" >>"$TT_EVENTS_HOME/events.jsonl"
+	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"%s|%s","prefix":"%s","folder":"%s","route":"full","qualifier":"%s","skill":"tt-execute","approx":false}\n' \
+		"$1" "$1" "${2:-}" "${3:-Demo}" "${4:-$DEMO}" "${2:-}" >>"$TT_EVENTS_HOME/events.jsonl"
 }
 # waitfor <text>: the events have it within ten seconds (the watcher looks every
 # LEDGER_POLL seconds, so nothing here can be immediate)
@@ -604,6 +612,11 @@ ledger build.unit_validated WU7 Wunit
 waitfor '"qualifier": "WU7"' && ok "a work unit validated is announced" || bad "a work unit validated is announced"
 milestone "with what it was and how big a thing" Wunit \
 	"events[0]['label'] == 'Work unit validated' and events[0]['tier'] == 'mid' and events[0]['qualifier'] == 'WU7'"
+milestone "and the skill, the feature and its page" Wunit \
+	"events[0]['skill'] == 'tt-execute' and events[0]['feature'] == 'Demo' and events[0]['link'] == '#feature/Demo'"
+ledger build.complete "" Nowhere "$T/not-a-feature"
+waitfor '"prefix": "Nowhere"' && ok "a milestone of a folder that is no feature's is announced" || bad "a milestone of a folder that is no feature's is announced"
+milestone "with no page to go to" Nowhere "events[0]['feature'] == '' and events[0]['link'] == ''"
 ledger build.unit_validated WU7 Wunit  # the same key again: the toolbox re-reconciled
 sleep "$((2 * 2))"
 get /api/events >"$T/ev"
@@ -871,6 +884,7 @@ get "/api/events?since=$n0" >"$T/ev"
 has "a milestone for the move into Done" "$T/ev" '"label": "Task done"'
 has "and one for the clear" "$T/ev" '"label": "1 task completed"'
 has "which Tatty celebrates" "$T/ev" '"event": "tasks.done"'
+has "and which opens the board" "$T/ev" '"link": "#tasks/Game"'
 # a hand edit, and a file without an ID, reach the board
 get /api/events >"$T/ev0"; n0=$(pick "$T/ev0" "len(d)")
 sleep 1.6; printf 'more by hand\n' >>"$(taskfile T-0006)"

@@ -39,7 +39,9 @@ visually:
 - **Tatty tells you when he needs you:** a chime, a hop and a ring of sparks
   while a question waits for an answer, and confetti and a flourish each time a
   section is finished -- a work unit validated, a plan signed off, a build
-  complete. Between the two he gets on with his own day: he fidgets, dances from
+  complete. The bubble says what is calling -- the question itself, or what
+  finished -- and a click on him (or on that banner) opens the full panel on the
+  page it is about. Between the two he gets on with his own day: he fidgets, dances from
   foot to foot, sits down, and eventually falls asleep until something happens.
   **Right-click Tatty** (or his tray icon) for his menu: **Preview** plays any
   one of his animations on the spot -- every performance, every pose, the

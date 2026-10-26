@@ -235,6 +235,31 @@ def main(argv):
         out["remembered"] = p.js("""({ stored: localStorage.getItem('tt-mode'), mode: document.body.dataset.mode,
             current: currentMode, page: [...document.querySelectorAll('.page.on')].map(s => s.id).join() })""")
         p.js(f"localStorage.setItem('tt-mode', {json.dumps(was or '')}); 1")  # leave the mode as it was
+
+        # What is calling, in the bubble (app.js's alerts): a question and a
+        # finished section say what they are, a question goes when answered, and
+        # opening one takes the person to the page it is about. Only the bubble
+        # has it, so only a page opened as the companion (?mode=companion) is asked.
+        if p.js("companion"):
+            p.js("document.body.classList.remove('expanded'); location.hash = ''; 1")
+            p.js("api('/api/ask', { questions: [{ question: 'Shall the alert say so?', options: ['Yes', 'No'] }] })")
+            time.sleep(1)
+            asked = p.js("""({ shown: !document.querySelector('#alert').hidden,
+                visible: document.querySelector('#alert').offsetParent !== null,
+                text: document.querySelector('#alert').innerText.replace(/\\s+/g, ' ') })""")
+            p.js("api('/api/reply', { id: [...asks.keys()].pop(), declined: true })")
+            time.sleep(1)
+            out["alert_question"] = {**asked, "gone": p.js("document.querySelector('#alert').hidden")}
+            p.js("api('/api/milestone', { event: 'plan.signed_off', prefix: 'Alerted' })")
+            time.sleep(1)
+            finished = p.js("document.querySelector('#alert').innerText.replace(/\\s+/g, ' ')")
+            p.js("pushAlert({ kind: 'milestone', key: 'check', title: 'Opened', sub: '', link: '#settings' })")
+            p.js("document.querySelector('#alert').click()")
+            time.sleep(1)
+            out["alert_finished"] = {"text": finished, "opened": p.js("""({ expanded: document.body.classList.contains('expanded'),
+                hash: location.hash, page: [...document.querySelectorAll('.page.on')].map(s => s.id).join(),
+                left: alerts.map(a => a.key) })""")}
+            p.js("document.body.classList.remove('expanded'); 1")
         print(json.dumps(out, indent=1))  # ASCII, whatever the console's code page
         return 0
     finally:

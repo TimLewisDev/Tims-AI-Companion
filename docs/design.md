@@ -44,7 +44,8 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     window with a whole monitor to itself, or while the full panel is out. The
     full and maximised panel are ordinary windows that other windows can cover. A
     click on Tatty raises a covered full panel, and tucks it away when it is
-    already in front.
+    already in front -- unless something is calling for you, when it opens the
+    full panel on the page that is about.
   - **Tatty is an application on the taskbar**, and only the full and maximised
     panel is in Alt-Tab. Those are the same style bit, so they are kept apart by
     two windows: the panel asks for `WS_EX_APPWINDOW` while it is out, which puts
@@ -150,6 +151,21 @@ the noise.
   throws confetti and plays the flourish; the page adds a card and confetti of
   its own (`milestoneCard` and `confetti` in `app.js`). `tatty.sh cheer [<event>]`
   does the lot on demand, which is how it is tried out and tested.
+- **What is calling, and where it goes.** A question, a finished milestone and a
+  Claude reply each carry a `link`: the page route they are about (`#feature/<name>`,
+  or `#tasks/<board>` for a task board's milestone), empty when nothing links
+  them to a page. The server works it out (`feature_link`; `folder_feature` for a
+  milestone, whose ledger row names a folder, not a feature), and a milestone also
+  carries the ledger row's `skill` and the `feature`. The compact bubble shows the
+  newest of these in a banner above the feed (`#alert`, `alerts` in `app.js`):
+  the question's text, or what finished and by which skill, with "+N more" when
+  others wait. A question stays until it is answered; a milestone or a reply
+  goes when opened or dismissed. Clicking the banner, or Tatty himself while
+  something is calling (`alertWaiting`, `OpenAlert` in `App.xaml.cs`), opens the
+  full panel on that page: the host expands the window and posts `open-alert`,
+  and the page sets the route. A question with no page of its own is answered in
+  the feed, which is brought to it. Replies from started (tagged) sessions are
+  not alerts: they stay in their feature page's session panel.
 - **His menu** (`MakeMenu`) is one `ContextMenuStrip` shown in both the places a
   person reaches for it: the tray icon, and a right-click on Tatty himself. Its
   **Preview** submenu (`PreviewMenu`) is the catalogue of his whole repertoire --
@@ -510,7 +526,9 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
-  and a window that opens on a full ledger says nothing about it. So are the
+  and a window that opens on a full ledger says nothing about it, and each
+  alert's `link` (a question's, a reply's, a milestone's with its skill and
+  feature). So are the
   task boards: a hand-made file kept byte for byte but for the line changed,
   IDs made at once, moves and the order they keep, conflicts, the columns,
   Clear done and its milestones, a hand edit reaching the page, problems and
@@ -522,6 +540,10 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
+  Given a page opened as the companion (`?mode=companion`), `page-check.py` also
+  checks the alert banner: a question's text, its going when answered, a
+  milestone's, and that opening one expands to its page. The avatar's click
+  itself (`OpenAlert`) is only checked by hand.
   `features-check.py` ends with the Jira board, drawn from a sample board in
   the page (columns, a ticket's panel, Esc, the nav item per mode), and the
   task boards. `features-check.py ... --tasks` walks only those, on the
