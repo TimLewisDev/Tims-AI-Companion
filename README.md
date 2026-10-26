@@ -35,7 +35,13 @@ visually:
   watches that session live: what it's doing, how many tokens it has used,
   and its questions, which you answer right there.
 - **Questions from any session** you join pop up in Tatty instead of the
-  terminal, and you can chat to that session from Tatty.
+  terminal.
+- **Chats beside the workflow:** right-click text you've selected in a
+  workflow, or use a code block's own button, to **ask about it in a side
+  chat**: a new chat beside the workflow that starts with that piece and what
+  is around it, while the workflow carries on. The **+** on either side opens a
+  chat of its own. Chats run Claude with no terminal, and can read the project
+  and use the toolbox's skills but never change anything.
 - **Tatty tells you when he needs you:** a chime, a hop and a ring of sparks
   while a question waits for an answer, and confetti and a flourish each time a
   section is finished -- a work unit validated, a plan signed off, a build

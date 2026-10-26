@@ -4,8 +4,9 @@
 JavaScript in it: report what rendered, and optionally pick an answer to the
 newest open question the way a person would. Standard library only.
 
-usage: page-check.py <browser exe> <page url> [--answer <option label>] [--say <text>]
-       page-check.py attach <devtools port> [--answer <option label>] [--say <text>]
+usage: page-check.py <browser exe> <page url> [--answer <option label>]
+       page-check.py attach <devtools port> [--answer <option label>]
+(The chats, which replaced the old chat box, are walked by features-check.py --chats.)
 Prints one JSON object: {"text": <the page's visible text>, "cards": n, "asks": n, ...}.
 """
 
@@ -98,7 +99,6 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     answer = argv[argv.index("--answer") + 1] if "--answer" in argv else None
-    say = argv[argv.index("--say") + 1] if "--say" in argv else None
     # attach <port>: a page already open elsewhere (Tatty's companion, started
     # with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>)
     attach = argv[0] == "attach"
@@ -157,10 +157,6 @@ def main(argv):
             }})()""")
             time.sleep(1.5)
             out["done_cards"] = p.js("document.querySelectorAll('#feed .card.ask.done').length")
-        if say is not None:
-            p.js(f"document.querySelector('#say').value = {json.dumps(say)}; document.querySelector('#chat').requestSubmit(); 'sent'")
-            time.sleep(1)
-            out["you_cards"] = p.js("document.querySelectorAll('#feed .card.you').length")
         # A section finished: the card naming it, and the confetti over the page
         # (app.js's milestoneCard and confetti). The milestone is asked for
         # through the page's own api(), so no token is needed out here. The

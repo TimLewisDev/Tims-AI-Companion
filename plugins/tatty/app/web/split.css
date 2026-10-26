@@ -1,0 +1,24 @@
+/* The documents split (split.js): a workflow tab on the left, a pane of documents
+   with tabs of its own on the right, and a divider between that can be dragged.
+   The tab strips use the workflow tabs' look (style.css, .wtabs); the documents
+   use the feature page's (.fmain). Everything uses theme.css's tokens. */
+
+.split { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.split-left { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; overflow: auto; }
+/* with a pane open the divider sets the left side's width (split.js, as a percentage) */
+.split.paned > .split-left { flex: 0 1 auto; min-width: 280px; }
+
+.split-div { flex: none; width: 6px; cursor: col-resize; background: var(--line); touch-action: none; }
+.split-div:hover, .split-div:focus-visible, .split-dragging .split-div { background: var(--accent); outline: none; }
+.split-dragging { user-select: none; cursor: col-resize; }
+
+.dpane { display: flex; flex-direction: column; flex: 1 1 0; min-width: 280px; min-height: 0; background: var(--bg); }
+.dpane .wtabs { padding-left: 12px; padding-right: 12px; }
+.dpane-main { flex: 1; min-height: 0; }
+
+/* the menu a right-click on a document link opens (split.js) */
+.linkmenu { position: fixed; z-index: 60; left: 0; top: 0; min-width: 190px; padding: 4px; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 22px rgba(0, 0, 0, .22); }
+.linkmenu-item { text-align: left; border: none; border-radius: 5px; background: none; padding: 6px 10px; color: var(--ink); }
+.linkmenu-item:hover:not(:disabled), .linkmenu-item:focus-visible { background: var(--accent-soft); color: var(--accent); outline: none; }
+.linkmenu-item:disabled { color: var(--dim); cursor: default; }

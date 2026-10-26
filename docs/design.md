@@ -27,9 +27,11 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     toolbox status.
   - It owns Tatty's root folder and launches sessions.
 - **`app/web`:** the page, with no libraries and no network beyond the server.
-  - **Companion mode** is a compact speech bubble: the feed, questions and chat.
+  - **Companion mode** is a compact speech bubble: the questions waiting and
+    the milestones (the feed).
   - **The full panel** has the modes, mode home, Features, feature and Toolbox
-    pages, with the chat as a right-hand column.
+    pages. The feed comes out as a right-hand column only while a question
+    waits; the chats are tabs (see [Chats](#chats) below).
   - It has its own small markdown renderer, which handles Obsidian links and
     block ids.
 - **`app/companion`:** the Windows tray app (.NET 9 WPF and WebView2).
@@ -66,25 +68,19 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     runs `tatty.sh boot` hidden, so a plugin update never breaks the shortcut. The
     shortcuts carry the AppUserModelID the tray app names itself with
     (`TimsAICompanion.Tatty`), so a taskbar pin and the running window are one button.
-  - `server.py boot` starts the server, shows the tray app (or rings the running
-    one's `Local\tatty-companion-show` event, which brings it forward) and starts
-    **Tatty's own Claude session**: a titled terminal window (`Tatty (Claude)`;
-    `wt -w new --suppressApplicationTitle`, so Claude can't rename it) running
-    `claude --resume <id>`, or `--session-id <id>` before the conversation has a
-    message. The id and the folder are `claude-link.json` in Tatty's home. The window
-    is found by its title (`find_window`) and minimised the moment it exists
-    (`minimise_window`); if the session's mod hasn't joined within `MOD_WAIT` it is
-    brought up instead, since it is most likely asking something (trust this
-    folder). The tray's "Show Claude's terminal" and quitting go through the
-    server's `/api/claude/show|close`.
+  - `server.py boot` starts the server and shows the tray app (or rings the
+    running one's `Local\tatty-companion-show` event, which brings it forward).
+    Tatty no longer keeps a Claude session of its own in a minimised terminal:
+    what that session was for is now the headless chats (see [Chats](#chats)).
+    `--no-claude` is still taken and does nothing; an old `claude-link.json` is
+    left where it is.
   - The icon is `assets/tatty.ico`, drawn natively at each size by
     `tools/make-icon` (which also writes the plugin's `icon.png`) from the same
     geometry as `TattyWindow.xaml`'s head. It is built into both exes as their file
     icon and as the resource the tray and windows load.
 - **`hooks/register.tsx`:** the mod. It acts only in **joined** sessions: one
-  Tatty started (it carries `TATTY_SESSION`), Tatty's own (it carries
-  `TATTY_JOIN=1`, and works on the main feed), or one where `/tatty open` or
-  `/tatty attach` was run. In a joined session it:
+  Tatty started (it carries `TATTY_SESSION`), one carrying `TATTY_JOIN=1`, or one
+  where `/tatty open` or `/tatty attach` was run. In a joined session it:
   - routes AskUserQuestion to Tatty, falling back to the terminal dialog;
   - submits text typed in Tatty;
   - mirrors replies.
@@ -275,8 +271,81 @@ folders and Claude Code's own install records; see
     Windows Terminal tab doesn't inherit environment variables.
   - From a checkout it also passes `--plugin-dir`, so the new session loads the
     mod.
-  - The feature page then swaps "Where it stands" for that session's live
-    panel.
+  - The page then opens that session's tab (see Workflow tabs, below). The
+    feature page keeps "Where it stands" and adds a line pointing to the tab.
+- **Workflow tabs:** the Features page (`#home`) has a strip of tabs along the
+  top (`workflowTabs` in `features.js`): Features, the list of features, then one
+  tab for each session Start opened (`#workflows/<tag>`), each showing that
+  session's live panel (`sessionPanel`) and usage. Every Start is a Claude
+  process of its own, so any number of workflows can run at once, in different
+  features or in one. The live panels and usage widgets are kept per tag
+  (`livePanels`, `usageViews`), and `route()` clears them as the page is redrawn.
+  - **The tabs** are `GET /api/sessions` without a `name`: every started session
+    that hasn't been closed, oldest first. They are rebuilt from that after a
+    reload and kept up to date from `session` events. The server keeps sessions
+    in memory only, so a restart drops the tabs.
+  - **Closing a tab stops its workflow.** × posts `/api/session/stop` (after a
+    `confirm` while the session is going). `stop_session` finds the claude
+    process in Claude's own registry (`<config>/sessions/<pid>.json`), by the
+    Claude session id the mod's hello reported, or by the name the session was
+    started with when it hasn't said hello yet, and ends it and what it started
+    (`kill_pid`). It marks the session ended and closed, so it leaves the tabs
+    (its feature still lists it as the last session). A session that had already
+    ended is only dismissed: nothing is killed, as its process id may belong to
+    something else by now. If no process is found, the tab closes anyway and the
+    page says to close the terminal by hand.
+  - **One thing the tabs don't separate:** tt-workflow's link between a project
+    and a feature folder is kept per git repository, so two workflows started in
+    the same repository share it. Start always names the folder, which is safe for
+    the first command, but a later no-argument `/tt-workflow` in either session
+    follows whichever was linked last. Separate worktrees avoid that.
+- **Documents split:** a document link clicked while a workflow tab is on
+  screen opens beside the workflow instead of taking you to the feature's page
+  (`split.js`, `split.css`). It covers planning-ID links (`openItem` in `ids.js`
+  asks `openInPane` first, which includes the hover card's "Open in …"), and
+  `[[wikilinks]]` (the click handler in `features.js`, which uses the session's
+  feature, or the pane's active document for a link inside the pane).
+  Elsewhere (the feature list, a feature's page) links navigate as before.
+  - **One pane serves every workflow tab.** It has tabs of its own, one per
+    document (never two for the same one; following another link into an open
+    document just scrolls it to the target), each closeable. Closing the last
+    tab closes the pane. The tabs are kept in `sessionStorage` (`tt-docpane`),
+    so a reload keeps them.
+  - **The documents are `showDoc`'s**, drawn into the pane, so View and Edit work
+    there as on the feature's page. An unsaved edit is asked about before its tab
+    closes, before another document replaces it, and before leaving the workflow
+    tabs (`paneLeaveBlocked`, called by `route()`).
+  - **The divider** between the workflow and the pane is dragged with the
+    mouse, moved with the arrow keys (Home and End for the limits) or reset with a
+    double-click. The workflow's share of the width is kept in `localStorage`
+    (`tt-split`), is clamped to 20–80% with 280px at least on each side, and is
+    set through the DOM because the CSP refuses inline styles.
+  - **The documents rail stays beside the workflow.** A workflow tab has the
+    feature's left rail (its overview, whiteboard, documents and working notes;
+    `featureNav` with `side`), and a document chosen there opens in the side
+    panel. The ones open there are marked (`markRail`, called whenever the side
+    panel's tabs change), and the rail is read again every 20 seconds because the
+    workflow writes documents (`refreshRail`). The rail has a button at its top
+    left (`documentsRail`) that collapses it to a narrow strip holding just the
+    button; the choice is kept in `localStorage` (`tt-rail`) and is the same on the
+    feature's page, which has the same rail.
+  - **Right-clicking a link** opens Tatty's own menu instead of the browser's
+    (whose "open in a new window" opens nothing here): **Open** (as a click
+    does), **Open in side panel** (greyed out away from a workflow tab) and
+    **Open in main panel** (the document's page, leaving the workflow). When the
+    document is already open in the side panel, Open reads **Navigate to** and
+    moves that document to the item the link names. `linkTarget` in `features.js`
+    works out where a link points (shared with the click), and the menu is
+    `showLinkMenu` in `split.js`. It takes the arrow keys, Enter and Esc.
+  - **The pane is one element, moved** into each workflow tab's page rather than
+    rebuilt, so its scroll position and an edit in progress survive the workflow
+    side being redrawn. `renderHome` and `renderWorkflowTab` share the Features
+    page's container; a counter (`homeDraw`) stops a slow draw of one landing on
+    the other.
+- **Chats:** see [Chats](#chats) below. A chat has a tab in the workflow strip
+  (`#chats/<id>`, with the documents pane beside it as a workflow tab has) or in
+  the pane's own strip, which is why `splitRoute` (a workflow's tab or a chat's)
+  is what the split asks for, not a workflow tag.
 - **Tokens used:** `usageWidget(usage, { compact })` in `usage.js` draws what a
   session has used (input, output, cache read and write, the context window's
   fill, the cost) as a card, or as one line with `compact`; it returns
@@ -289,6 +358,75 @@ folders and Claude Code's own install records; see
   event, so they reach the page with the session; they are not a row in the
   activity feed. Nothing is read from the transcript files, and a session
   Tatty didn't start reports nothing.
+
+## Chats
+
+A chat is a Claude conversation of its own with no terminal: `server.py`'s
+"chats" section, `chat.js` and `chat.css`. The rules it keeps are in the toolbox
+contract's "Chats" section; how it is built:
+
+- **Two kinds.** A **main chat** is opened by the "+" at the end of either strip:
+  the workflow strip's opens it as a tab there (`#chats/<id>`), the pane's opens
+  it in the pane. A **side chat** is about a piece of a workflow and opens in the
+  pane beside it (or, off a workflow, as a tab of its own):
+  - **selected text:** right-clicking a selection in a workflow's reply, a chat's
+    answer or a document offers **Ask about this in a side chat** (the
+    `contextmenu` listener in `split.js`, `selectionPick` and `askItem`; the
+    menu is `showMenu`, shared with the link menu). Inputs keep the browser's own
+    menu.
+  - **a code block:** every code block `mdNode` draws gets a bar of its own
+    (`codeActions` in `app.js`): **Copy**, and **Ask about it in a side chat**.
+    The fence's language is kept as `data-lang`.
+  - The Toolbox page's **Ask** beside a command opens a side chat about it.
+- **What a side chat is about** is `pieceContext` in `chat.js`: the source (the
+  feature, the workflow session and the reply's time, or the document and the
+  heading it sits under), the piece (at most 4000 characters) and what is around
+  it: the reply's markdown, or the document's section down to the next heading as
+  high (`sectionOf`; at most 6000). `mdSource` keeps the markdown each `.md` was
+  drawn from. The chat shows it above the messages (`contextChip`), open until
+  the first message has gone.
+- **The summary** is the `chatSummary` setting (Settings → Chats): `tatty`
+  (`chat_context_summary`, a line saying what and where from, no tokens) or
+  `model` (a one-off `claude -p --model haiku` with no tools, on a thread of its
+  own while the chat says "Summarising"; Tatty's own line stays if it fails).
+- **One turn is one process.** `chat_say` runs `claude -p --output-format
+  stream-json --verbose` in the chat's project with the prompt on stdin:
+  `--session-id <uuid>` until Claude Code has kept the conversation
+  (`conversation_exists`), `--resume <uuid>` after, so it outlives a restart.
+  `--tools Read,Glob,Grep,Skill` with the same allowed and `--permission-mode
+  dontAsk`; `--setting-sources user`, `--strict-mcp-config` (no MCP servers),
+  `--max-budget-usd` (`TATTY_CHAT_BUDGET`, 2), `--model` from `chatModel` when
+  set; `--plugin-dir` for Tatty from a checkout (for `/tatty:side-chat`) and for
+  the toolbox plugins found only in a checkout (`from_checkout`, shared with the
+  stories run). `TATTY_SESSION` and `TATTY_JOIN` are stripped, so the mod there
+  stays out. The first message of a side chat is `/tatty:side-chat`, the context
+  (`context_block`) and then the message; later ones go alone.
+- **The skill** is `plugins/tatty/skills/side-chat`: what the context block is,
+  answer about the piece, read only, suggest rather than change, never carry the
+  workflow on. Without a context block (typed in a terminal) it says side chats
+  come from Tatty.
+- **One turn at a time per chat** (409); any number of chats may answer at once.
+  Stop (`/api/chat/stop`) and the timeout (`TATTY_CHAT_TIMEOUT`, 600 s) kill the
+  turn as a stories run's are. Each turn's steps (`chat_step`), its answer (the
+  result's text) and its cost are added to the chat's file; an error or "Stopped."
+  is a message of its own.
+- **What is kept:** `<home>/chats/<id>.json` (written through `change_chat`, one
+  change at a time): its kind, title, project, feature, the workflow tag it came
+  from, the Claude conversation's id, the context, the messages, the cost, and
+  whether its tab is closed. Closing a tab keeps the file and the conversation.
+- **Events are small:** `chat {id, busy, step, done, new, closed}`, never the
+  text, since the event log is replayed to every page; a view reads the chat with
+  `GET /api/chat`. They carry no `tag`, so nothing of a chat reaches a workflow's
+  panel, the feed or an inbox. Answers come whole (no token streaming).
+- **The tabs:** the workflow strip shows every open chat that isn't in the pane
+  (`GET /api/chats`, loaded with the sessions). The pane's tabs keep a chat as
+  `{kind: "chat", chat}` in `tt-docpane`, drawn by `showPaneChat` (`showPaneTab`
+  chooses), with an unsent message asked about like an unsaved edit. × on either
+  closes the chat, asking first while it answers.
+- **Which folder:** a chat works in its workflow's project, the chat's on a
+  chat's tab, else the feature's (`feature_project`); with none of those, the "+"
+  asks (`pickChatProject`: the folders Tatty knows, `GET /api/chat/projects`, or
+  Explorer).
 
 ## The Jira board
 
@@ -522,7 +660,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  530 checks against a real toolbox (the User Stories board's with a stand-in
+  599 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
@@ -535,7 +673,12 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   adoption, Delete, Start workflow, a board.json that won't read, and a board
   through a junction. And Export to Tasks: Proposed and changed stories
   refused, the task files it writes, a story skipped once exported and offered
-  again once its task is deleted, and a workflow started from one.
+  again once its task is deleted, and a workflow started from one. And the
+  chats, with a stand-in `claude` (`claude-chat.sh`): the flags of each turn
+  (only reading, no command, the conversation named then resumed), the side
+  chat's context in front of its first message only, both summaries, one turn
+  at a time and Stop, closing, and a workflow beside a chat hearing nothing of
+  it. And the desktop app's boot, which starts no Claude session.
 - `claude plugin test plugins/tatty` covers the mod, including the joining
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
@@ -552,6 +695,24 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   back, Alt+arrows, the task panel (Write and Preview, Cancel, Esc), the backlog
   and Completed with and without reduced motion. It leaves every task's file as
   it was (it never uses the done column).
+  `features-check.py ... --tabs` walks only the workflow tabs, drawn from two
+  sample sessions (the page's `api()` and `confirm()` stood in for): the tab on
+  screen, × asking before it stops a going session and not for an ended one, and
+  a tab that is gone.
+  `features-check.py ... --split` starts two sessions without opening a terminal
+  and walks the documents split with real mouse input: a link from a reply opening
+  in the pane, a second tab and no duplicate, a link inside the pane, the divider
+  dragged, keyed, reset and held to its minimums, the pane across another workflow
+  tab and a reload, the documents rail (opening in the pane, collapsing, kept over a reload), the right-click link menu, an unsaved edit asked about, and the
+  pane closing with its last tab. It needs the toolbox (for the planning IDs).
+  `features-check.py ... --chats` starts a session without opening a terminal
+  and posts it a reply with a sentence and a code block, then walks the chats:
+  the old chat column gone, a right-click with nothing selected left alone, a
+  selection's menu and its side chat in the pane (the context, sent with the
+  first message), the code block's own button, the workflow taking new activity
+  meanwhile, the "+" in the pane and in the workflow strip, a reload, and tabs
+  closed. Run its server with a stand-in claude (`TATTY_CLAUDE`) on a throwaway
+  home, or each message is a real turn.
   `features-check.py ... --stories` walks only a User Stories board with real
   mouse input (pan, wheel zoom, a group in focus with and without reduced
   motion, a note dragged and back, a card opened and its edit form); it changes

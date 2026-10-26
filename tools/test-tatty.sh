@@ -35,6 +35,13 @@ cat >"$T/claude.sh" <<'EOS'
 #!/usr/bin/env bash
 # a User Stories headless run (it may run stories.sh): the stand-in is claude-p.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
+# a chat's turn (it names its conversation): the stand-in is claude-chat.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *--session-id*|*--resume*) exec bash "$(dirname "$0")/claude-chat.sh" "$@" ;; esac
+# the summary a small model writes of a side chat's context
+if [ "${1:-}" = -p ]; then case "$*" in *"You summarise"*)
+	printf '%s\n' "$@" >"$(dirname "$0")/summary.args"
+	echo '{"type":"result","is_error":false,"result":"A summary by the model.","total_cost_usd":0.001}'
+	exit 0 ;; esac; fi
 echo "$*" >>"$(dirname "$0")/claude.log"
 [ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
 # A headless run for the Jira board: which job it is shows in the one MCP tool
@@ -111,6 +118,10 @@ has "a fresh window greets" "$T/ev" '"title": "Tatty"'
 [ "$(code "$U/static/../server.py")" = 404 ] && ok "only the page's files" || bad "only the page's files"
 [ "$(code "$U/static/features.js")" = 200 ] && ok "features.js served" || bad "features.js served"
 [ "$(code "$U/static/modes.js")" = 200 ] && ok "modes.js served" || bad "modes.js served"
+[ "$(code "$U/static/split.js")" = 200 ] && ok "split.js served" || bad "split.js served"
+[ "$(code "$U/static/split.css")" = 200 ] && ok "split.css served" || bad "split.css served"
+[ "$(code "$U/static/chat.js")" = 200 ] && ok "chat.js served" || bad "chat.js served"
+[ "$(code "$U/static/chat.css")" = 200 ] && ok "chat.css served" || bad "chat.css served"
 [ "$(code "$U/static/theme.css")" = 200 ] && ok "theme.css served" || bad "theme.css served"
 [ "$(code -H "X-TT-Token: $K" "$U/api/view/rm")" = 404 ] && ok "unknown view refused" || bad "unknown view refused"
 get /api/status >"$T/st"
@@ -504,6 +515,58 @@ get /api/events >"$T/j"
 pick "$T/j" "[e['feature'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
 has "a started session's question is about its feature" "$T/f" "Demo"
 
+echo "# workflow tabs: several sessions, one stopped"
+# Real processes stand in for the claudes; claude lists each in <config>/sessions/<pid>.json.
+winpid() { cat "/proc/$1/winpid" 2>/dev/null || echo "$1"; }
+alive() { kill -0 "$1" 2>/dev/null; }
+gone() { for _ in 1 2 3 4 5 6 7 8 9 10; do alive "$1" || return 0; sleep 0.3; done; return 1; }
+register() { printf '{"pid":%s,"sessionId":"%s","name":"%s"}' "$(winpid "$1")" "$2" "$3" >"$CLAUDE_CONFIG_DIR/sessions/tab-$1.json"; }
+sleep 300 & PA=$!
+sleep 300 & PB=$!
+sleep 300 & PC=$!
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+TA=$(pick "$T/j" "d['tag']")
+post /api/start '{"name":"Draft","row":"workflow"}' >"$T/j"
+TB=$(pick "$T/j" "d['tag']")
+post /api/hello "{\"session\":\"sess-a\",\"tag\":\"$TA\"}" >/dev/null
+post /api/hello "{\"session\":\"sess-b\",\"tag\":\"$TB\"}" >/dev/null
+register "$PA" sess-a "a"
+register "$PB" sess-b "b"
+get /api/sessions >"$T/j"
+has "every feature's sessions are listed without a name" "$T/j" "\"tag\": \"$TA\""
+has "the other feature's too" "$T/j" "\"tag\": \"$TB\""
+post /api/session/stop "{\"tag\":\"$TB\"}" >"$T/j"
+has "stopping a session kills its claude" "$T/j" '"killed": true'
+gone "$PB" && ok "its process is gone" || bad "its process is gone"
+alive "$PA" && ok "the other session's is not touched" || bad "the other session's is not touched"
+get /api/sessions >"$T/j"
+hasnt "the stopped session leaves the tabs" "$T/j" "\"tag\": \"$TB\""
+has "the other stays" "$T/j" "\"tag\": \"$TA\""
+get "/api/sessions?name=Draft" >"$T/j"
+pick "$T/j" "[s['status'] + ':' + str(s.get('stopped')) for s in d if s['tag'] == '$TB'][0]" >"$T/f"
+has "it is kept on its feature, ended and stopped" "$T/f" "ended:True"
+post /api/bye "{\"tag\":\"$TB\"}" >/dev/null
+get /api/sessions >"$T/j"
+hasnt "a late goodbye doesn't bring the tab back" "$T/j" "\"tag\": \"$TB\""
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope"}' "$U/api/session/stop")" = 404 ] &&
+	ok "stopping an unknown session refused" || bad "stopping an unknown session refused"
+# Not heard from yet: found by the name it was started with.
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+TC=$(pick "$T/j" "d['tag']")
+NC=$(pick "$T/j" "d['name']")
+register "$PC" "" "$NC"
+post /api/session/stop "{\"tag\":\"$TC\"}" >"$T/j"
+has "a session not heard from is found by name" "$T/j" '"killed": true'
+gone "$PC" && ok "and stopped" || bad "and stopped"
+# Ended on its own: closing the tab only dismisses it (its process id may belong to something else by now).
+post /api/bye "{\"tag\":\"$TA\"}" >/dev/null
+post /api/session/stop "{\"tag\":\"$TA\"}" >"$T/j"
+has "an ended session is only dismissed" "$T/j" '"killed": false'
+alive "$PA" && ok "and nothing is killed" || bad "and nothing is killed"
+get /api/sessions >"$T/j"
+hasnt "and its tab goes" "$T/j" "\"tag\": \"$TA\""
+kill "$PA" 2>/dev/null; rm -f "$CLAUDE_CONFIG_DIR"/sessions/tab-*.json
+
 echo "# planning IDs"
 # (the Challenges as the fixture has them, not as the editing checks left them: a changed file is read again)
 cp "$root/tools/fixtures/tatty-root/features/Draft/Draft - Challenges.md" "$FX/features/Draft/"
@@ -552,35 +615,19 @@ has "a reply's link is its feature's page, or none" "$T/f" "'#feature/Demo' ''"
 rm -f "$CLAUDE_CONFIG_DIR/sessions/2.json"
 
 echo "# the desktop app"
-# boot is what the Desktop shortcut runs: it reuses the open window and starts
-# Tatty's own Claude session (reported, not opened, under TATTY_DRYRUN).
-mkdir -p "$T/proj" "$T/proj2"
-PROJ=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; }); PROJ2=$(cd "$T/proj2" && { pwd -W 2>/dev/null || pwd; })
-post /api/bye '{}' >/dev/null # no session is working with Tatty yet
+# boot is what the Desktop shortcut runs: it reuses the open window. Tatty keeps
+# no Claude session of its own in a terminal any more (its chats are headless).
+mkdir -p "$T/proj"
+PROJ=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; })
 expect "boot" 0 bash "$W" boot --no-browser --project "$PROJ"
-has "starts Tatty's own session" "$T/out" "claude=started"
-has "in a window of its own, with a fixed title" "$T/out" "Title: Tatty (Claude)"
-has "joined to Tatty" "$T/out" "TATTY_JOIN=1"
-hasnt "but not as a feature's session" "$T/out" "TATTY_SESSION"
-has "a new conversation starts with an id of its own" "$T/out" "--session-id"
-pick "$TATTY_HOME/claude-link.json" "d['project']" >"$T/f"
-has "the link remembers the project" "$T/f" "proj"
-SID=$(pick "$TATTY_HOME/claude-link.json" "d['sessionId']")
-expect "boot again" 0 bash "$W" boot --no-browser
-has "the same conversation" "$T/out" "$SID"
-hasnt "not yet kept by Claude Code, so not resumed" "$T/out" "--resume"
-mkdir -p "$CLAUDE_CONFIG_DIR/projects/x"; : >"$CLAUDE_CONFIG_DIR/projects/x/$SID.jsonl"
-expect "boot after the conversation has begun" 0 bash "$W" boot --no-browser
-has "resumes it" "$T/out" "--resume $SID"
-expect "boot in another project" 0 bash "$W" boot --no-browser --project "$PROJ2"
-hasnt "is another conversation" "$T/out" "$SID"
+has "reuses the window" "$T/out" "$U"
+hasnt "starts no Claude session" "$T/out" "claude="
+hasnt "nor a terminal for one" "$T/out" "Would run"
+[ ! -f "$TATTY_HOME/claude-link.json" ] && ok "keeps no link to a conversation of its own" || bad "keeps no link to a conversation of its own"
 expect "boot refuses a folder that isn't there" 2 bash "$W" boot --no-browser --project "$PROJ/nope"
-expect "boot without Claude" 0 bash "$W" boot --no-browser --no-claude
-hasnt "starts no session" "$T/out" "claude="
-post /api/hello '{"session":"s1"}' >/dev/null
-expect "boot with a session already working with Tatty" 0 bash "$W" boot --no-browser
-has "leaves it be" "$T/out" "claude=already attached"
-post /api/bye '{}' >/dev/null
+expect "boot still takes --no-claude" 0 bash "$W" boot --no-browser --no-claude
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/claude/show")" = 404 ] &&
+	ok "there's no Claude terminal to show" || bad "there's no Claude terminal to show"
 
 echo "# milestones"
 # The toolbox records a feature's progress in its own ledger as it happens, and
@@ -1239,6 +1286,141 @@ get "/api/whiteboard?kind=feature&ref=Demo" >"$T/j"
 	ok "its documents, and where they sit" || bad "its documents, and where they sit" "$(head -c 300 "$T/j")"
 ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in <home>/boards" || bad "in <home>/boards"
 [ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=feature&ref=Nope")" = 404 ] && ok "an unknown feature" || bad "an unknown feature"
+
+echo "# chats"
+# A chat is a headless claude of its own, one run a turn: the first names its
+# conversation (--session-id), the rest go on with it (--resume). It only reads.
+cat >"$T/claude-chat.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+printf '%s\n' "$@" >"$d/chat.args"
+cat >"$d/chat.prompt"
+echo "${TATTY_SESSION:-none}" >"$d/chat.session"
+pwd >"$d/chat.cwd"
+sid=""; prev=""
+for a in "$@"; do [ "$prev" = --session-id ] && sid=$a; prev=$a; done
+# Claude Code keeps a conversation once there is a message in it
+[ -n "$sid" ] && mkdir -p "$CLAUDE_CONFIG_DIR/projects/chat" && : >"$CLAUDE_CONFIG_DIR/projects/chat/$sid.jsonl"
+echo '{"type":"system","subtype":"init"}'
+# (its output elsewhere: a stopped turn ends when the claude it stands in for does, not when the sleep would)
+[ -f "$d/chat-slow" ] && sleep 20 >/dev/null 2>&1
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/README.md"}}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It reads the README."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"It reads the README.","total_cost_usd":0.02}'
+EOS
+mkdir -p "$T/chatproj"
+CP=$(cd "$T/chatproj" && { pwd -W 2>/dev/null || pwd; })
+cpost() { curl -s -o "$T/j" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U$1"; }
+# chat_done <id> <n>: the chat has finished n turns (or summaries) within ten seconds
+chat_done() {
+	for _ in $(seq 1 50); do
+		get /api/events >"$T/ev"
+		[ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'chat' and e.get('id') == '$1' and e.get('done')])")" -ge "$2" ] && return 0
+		sleep 0.2
+	done
+	return 1
+}
+# after <flag>: what the last turn was given after that flag
+after() { $PY -c "import sys; a = open(sys.argv[1], encoding='utf-8').read().split('\n'); print(a[a.index(sys.argv[2]) + 1] if sys.argv[2] in a else '')" "$T/chat.args" "$1"; }
+[ "$(cpost /api/chat/new '{"kind":"main"}')" = 400 ] && ok "a chat needs a folder to work in" || bad "a chat needs a folder to work in" "$(cat "$T/j")"
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\"}")" = 400 ] && ok "a side chat needs what it is about" || bad "a side chat needs what it is about"
+[ "$(cpost /api/chat/new '{"kind":"other"}')" = 400 ] && ok "main or side" || bad "main or side"
+[ "$(cpost /api/chat/new "{\"kind\":\"main\",\"project\":\"$CP\",\"feature\":\"Demo\"}")" = 200 ] && ok "a main chat" || bad "a main chat" "$(cat "$T/j")"
+C1=$(pick "$T/j" "d['id']")
+[ -f "$TATTY_HOME/chats/$C1.json" ] && ok "kept in Tatty's home" || bad "kept in Tatty's home"
+SID=$(pick "$T/j" "d['claudeSession']")
+get /api/chats >"$T/c"
+[ "$(pick "$T/c" "[(c['id'], c['kind'], 'messages' in c) for c in d]")" = "[('$C1', 'main', False)]" ] && ok "listed, without its messages" || bad "listed, without its messages" "$(head -c 300 "$T/c")"
+get /api/chat/projects >"$T/c"
+has "its folder is one a new chat can work in" "$T/c" "chatproj"
+[ "$(code -H "X-TT-Token: $K" "$U/api/chat?id=c-00000000")" = 404 ] && ok "an unknown chat" || bad "an unknown chat"
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"\"}")" = 400 ] && ok "an empty message isn't sent" || bad "an empty message isn't sent"
+# a workflow running beside it: nothing of the chat reaches it
+post /api/hello '{"tag":"s-chatwf","session":"wf-1"}' >/dev/null
+get /api/events >"$T/ev"
+n_wf=$(pick "$T/ev" "len([e for e in d if e.get('tag') == 's-chatwf'])")
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"What is this?\"}")" = 202 ] && ok "a message starts a turn" || bad "a message starts a turn" "$(cat "$T/j")"
+chat_done "$C1" 1 && ok "the turn ends" || bad "the turn ends"
+get "/api/chat?id=$C1" >"$T/c"
+[ "$(pick "$T/c" "[(m['role'], m['text']) for m in d['messages']]")" = "[('you', 'What is this?'), ('claude', 'It reads the README.')]" ] &&
+	ok "the message and the answer are kept" || bad "the message and the answer are kept" "$(head -c 400 "$T/c")"
+[ "$(pick "$T/c" "(d['messages'][1]['steps'], d['cost'], d['busy'])")" = "(['Reading README.md'], 0.02, False)" ] &&
+	ok "with its steps and what it cost" || bad "with its steps and what it cost" "$(head -c 400 "$T/c")"
+[ "$(after --session-id)" = "$SID" ] && ok "the first turn names its conversation" || bad "the first turn names its conversation" "$(cat "$T/chat.args")"
+[ "$(after --tools)" = "Read,Glob,Grep,Skill" ] && ok "it may only read, and use skills" || bad "it may only read, and use skills" "$(after --tools)"
+[ "$(after --permission-mode)" = dontAsk ] && ok "and asks nobody" || bad "and asks nobody"
+hasnt "nothing that writes" "$T/chat.args" "Write"
+hasnt "nothing that edits" "$T/chat.args" "Edit"
+hasnt "no commands" "$T/chat.args" "Bash"
+hasnt "its conversation is kept" "$T/chat.args" "--no-session-persistence"
+has "it isn't one of Tatty's sessions" "$T/chat.session" "none"
+has "it works in its folder" "$T/chat.cwd" "chatproj"
+has "a main chat's message goes as it is" "$T/chat.prompt" "What is this?"
+hasnt "with no side-chat skill" "$T/chat.prompt" "/tatty:side-chat"
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"And then?\"}")" = 202 ] && chat_done "$C1" 2 && ok "a second turn" || bad "a second turn"
+[ "$(after --resume)" = "$SID" ] && ok "goes on with the same conversation" || bad "goes on with the same conversation" "$(cat "$T/chat.args")"
+hasnt "rather than naming a new one" "$T/chat.args" "--session-id"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'chat' and 'tag' in e])")" = 0 ] && ok "a chat's events carry no tag" || bad "a chat's events carry no tag"
+[ "$(pick "$T/ev" "len([e for e in d if e.get('tag') == 's-chatwf'])")" = "$n_wf" ] && ok "the workflow beside it hears nothing of it" || bad "the workflow beside it hears nothing of it"
+get "/api/inbox?tag=s-chatwf" >"$T/c"
+has "and nothing is put in front of it" "$T/c" '"status": "empty"'
+# a side chat: what it is about goes in front of the first message
+CTX='{"source":{"from":"selection","feature":"Demo","tag":"s-chatwf","session":"Demo : Workflow","ts":1700000000},"selected":"retry the upload","around":"First it saves. Then it can retry the upload."}'
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\",\"context\":$CTX}")" = 200 ] && ok "a side chat" || bad "a side chat" "$(cat "$T/j")"
+C2=$(pick "$T/j" "d['id']")
+[ "$(pick "$T/j" "d['title']")" = "About: retry the upload" ] && ok "named by what it is about" || bad "named by what it is about" "$(pick "$T/j" "d['title']")"
+pick "$T/j" "d['context']['summary']" >"$T/c"
+has "Tatty's summary says where it came from" "$T/c" "Selected text from a reply in the workflow Demo : Workflow at"
+has "and which feature" "$T/c" "in the feature Demo"
+[ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"Why retry?\"}")" = 202 ] && chat_done "$C2" 1 && ok "its first message" || bad "its first message"
+[ "$(head -n 1 "$T/chat.prompt")" = "/tatty:side-chat" ] && ok "goes to the side-chat skill" || bad "goes to the side-chat skill" "$(head -n 3 "$T/chat.prompt")"
+has "after the context" "$T/chat.prompt" "<context>"
+has "with the summary" "$T/chat.prompt" "Summary: Selected text from a reply"
+has "what was picked out" "$T/chat.prompt" "retry the upload"
+has "and what is around it" "$T/chat.prompt" "First it saves."
+[ "$(tail -n 1 "$T/chat.prompt")" = "Why retry?" ] && ok "then the message" || bad "then the message" "$(tail -n 2 "$T/chat.prompt")"
+[ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"More?\"}")" = 202 ] && chat_done "$C2" 2 && ok "a follow-up" || bad "a follow-up"
+hasnt "goes alone" "$T/chat.prompt" "<context>"
+get "/api/chat?id=$C2" >"$T/c"
+[ "$(pick "$T/c" "[m.get('withContext') for m in d['messages'] if m['role'] == 'you']")" = "[True, False]" ] && ok "the chat says which message had it" || bad "the chat says which message had it"
+CODE='{"source":{"from":"code","feature":"Demo","file":"Demo - Plan.md","doc":"Plan","heading":"Steps","lang":"python"},"selected":"print(1)","around":"## Steps\nprint(1)"}'
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\",\"context\":$CODE}")" = 200 ] && ok "a side chat about a code block" || bad "a side chat about a code block" "$(cat "$T/j")"
+pick "$T/j" "d['context']['summary']" >"$T/c"
+has "says what and where" "$T/c" 'A python code block from the document Plan, section "Steps"'
+# the summary a small model writes, when chosen in Settings
+post /api/settings '{"chatSummary":"nonsense"}' >"$T/c"
+[ "$(pick "$T/c" "d['chatSummary']")" = tatty ] && ok "the summary setting is tatty or model" || bad "the summary setting is tatty or model"
+post /api/settings '{"chatSummary":"model"}' >/dev/null
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\",\"context\":$CTX}")" = 200 ] && ok "a side chat summarised by a model" || bad "a side chat summarised by a model"
+C3=$(pick "$T/j" "d['id']")
+chat_done "$C3" 1 && ok "the summary is written" || bad "the summary is written"
+get "/api/chat?id=$C3" >"$T/c"
+[ "$(pick "$T/c" "(d['context']['summary'], d['context']['summaryBy'])")" = "('A summary by the model.', 'model')" ] && ok "by the model" || bad "by the model" "$(head -c 400 "$T/c")"
+has "a small one" "$T/summary.args" "haiku"
+has "with nothing to do but write" "$T/summary.args" "--no-session-persistence"
+post /api/settings '{"chatSummary":"tatty"}' >/dev/null
+# one turn at a time; Stop ends it
+touch "$T/chat-slow"
+cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Slowly\"}" >/dev/null
+sleep 0.5
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Again\"}")" = 409 ] && ok "one turn at a time" || bad "one turn at a time"
+[ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"Meanwhile\"}")" = 202 ] && ok "but another chat may answer meanwhile" || bad "but another chat may answer meanwhile"
+post /api/chat/stop "{\"id\":\"$C1\"}" >"$T/c"
+has "stop" "$T/c" '"ok": true'
+chat_done "$C1" 3 && ok "a stopped turn ends" || bad "a stopped turn ends"
+get "/api/chat?id=$C1" >"$T/c"
+[ "$(pick "$T/c" "(d['messages'][-1]['role'], d['messages'][-1]['text'])")" = "('error', 'Stopped.')" ] && ok "and says so" || bad "and says so" "$(head -c 400 "$T/c")"
+post /api/chat/stop "{\"id\":\"$C2\"}" >/dev/null
+chat_done "$C2" 3
+rm -f "$T/chat-slow"
+# closing a chat's tab
+[ "$(cpost /api/chat/close "{\"id\":\"$C1\"}")" = 200 ] && ok "close a chat" || bad "close a chat"
+get /api/chats >"$T/c"
+hasnt "it leaves the tabs" "$T/c" "$C1"
+[ -f "$TATTY_HOME/chats/$C1.json" ] && ok "its file is kept" || bad "its file is kept"
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Hello?\"}")" = 404 ] && ok "a closed chat takes no message" || bad "a closed chat takes no message"
+post /api/bye '{"tag":"s-chatwf"}' >/dev/null
 
 echo "# close"
 expect "close" 0 bash "$W" close

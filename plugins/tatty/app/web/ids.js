@@ -26,8 +26,10 @@ const itemOf = (feature, id) => remembered(items, feature + "\n" + id,
   () => api(`/api/item?name=${encodeURIComponent(feature)}&id=${encodeURIComponent(id)}`).catch(() => null));
 
 // Opens the item, from wherever the link is: in the bubble, the full panel first.
-function openItem(feature, file, id) {
-  location.hash = featureHref(feature, file, id);
+// On a workflow tab it opens in the documents split beside the workflow (split.js).
+// where "main" goes to the document's page even from a workflow tab.
+function openItem(feature, file, id, where = "auto") {
+  if (where === "main" || !openInPane(feature, file, id)) location.hash = featureHref(feature, file, id);
   if (typeof companion !== "undefined" && companion && !document.body.classList.contains("expanded")) $("#expand").click();
 }
 

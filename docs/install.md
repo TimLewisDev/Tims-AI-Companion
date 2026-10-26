@@ -67,21 +67,13 @@ either and choose **Pin to taskbar**.
 
 Starting Tatty from the shortcut (or the pin) brings up, in order:
 - the window server;
-- the tray app, or brings it forward if it is already running;
-- **Tatty's own Claude session**, in a terminal of its own that is minimised as
-  soon as it appears. What is typed in Tatty goes to this session, and its
-  questions and replies show in Tatty. **Tray → Show Claude's terminal** brings the
-  terminal back, and quitting Tatty closes it.
+- the tray app, or brings it forward if it is already running.
 
-Tatty remembers that session in `claude-link.json` in its home (the folder it runs
-in, and the conversation's id), and resumes the conversation with `claude --resume`
-at the next start. It runs in Tatty's root folder, else your home folder; `tatty.sh
-boot --project <dir>` chooses another, which is a new conversation.
-
-The first time Claude Code runs in a folder it asks whether to trust it, which no
-one can answer in a minimised window. So if the session hasn't joined Tatty within
-45 seconds, its terminal is brought up and left there for you to answer. Starting
-Tatty again does the same if it is still stuck.
+To talk to Claude from Tatty, open a chat with the **+** at the end of the
+workflow tabs (or of the side panel beside a workflow): each chat is a Claude
+conversation of its own, with no terminal, that can read the project but not
+change it. The server starts in Tatty's root folder, else your home folder;
+`tatty.sh boot --project <dir>` chooses another.
 
 The launcher finds the plugin each time (`%LOCALAPPDATA%\Tatty\boot.json`, kept up
 to date by every start, else Claude Code's record of what is installed), so
@@ -185,10 +177,12 @@ for it to notice.
 | `TATTY_ROOT` | use this root folder instead of the setting |
 | `TATTY_TOOLBOX` | a toolbox checkout to use instead of the installed toolbox |
 | `TATTY_MODES` | the modes (discipline plugins) to offer, e.g. `engineering,design`, instead of the ones installed |
-| `TATTY_JOIN` | `1`: this Claude session works with Tatty from the start, on the main feed (Tatty's own session, started by the desktop app) |
+| `TATTY_JOIN` | `1`: this Claude session works with Tatty from the start, as after `/tatty attach` |
 | `TATTY_UI` | `browser` to use a browser tab even on Windows |
 | `TATTY_PYTHON` | the Python to run the server with |
-| `TATTY_CLAUDE` | the claude command to run for updates, instead of the one on the PATH (tests; a `.sh` runs in bash) |
+| `TATTY_CLAUDE` | the claude command to run for updates and headless runs (Jira, User Stories, chats), instead of the one on the PATH (tests; a `.sh` runs in bash) |
+| `TATTY_CHAT_BUDGET` | US dollars a chat's turn may spend at most (default 2) |
+| `TATTY_CHAT_TIMEOUT` | seconds a chat's turn may take (default 600) |
 | `TATTY_UPDATE_FIRST` | seconds after the server starts before it first looks for an update (default 30) |
 | `TATTY_IDLE` | seconds of no use before the server stops (default 7200) |
 | `TATTY_DRYRUN` | `1`: Start reports the session it would open and opens nothing (tests) |

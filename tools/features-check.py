@@ -7,8 +7,14 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats]
+--tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
+--split only the documents split beside a workflow tab: it starts two sessions (no terminal opens), uses real mouse input and
+writes nothing to the features, so a throwaway home is still best;
+--chats only the chats: side chats from selected text and from a code block in a workflow's reply, the "+" on
+either side of the split, a reload; it starts a session (no terminal opens) and sends messages, so run it on a
+throwaway home whose server has a stand-in claude (TATTY_CLAUDE), or every message is a real turn;
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -221,6 +227,306 @@ def check_ids(p, feature="Draft"):
                        "flash": p.js("(document.querySelector('.fmain .target-flash') || {}).textContent || ''"),
                        "picked": p.js("document.querySelectorAll('#feed .card.ask:last-child .opt.picked').length")}
     p.js("document.querySelector('#feed .card.ask:last-child').remove(); 1")
+    return res
+
+
+def check_tabs(p):
+    """The workflow tabs, drawn from two sample sessions in the page (nothing is
+    started; the page's api() and confirm() are stood in for while it runs): the
+    Features tab and a tab for each session with its status dot, the tab on screen
+    and its panel, × asking before it stops a session that is going and not for an
+    ended one, the closed tab gone, and a tab that is not there."""
+    res = {}
+    p.js("""(() => {
+      window.__real = { api, confirm };
+      window.__asked = []; window.__posted = [];
+      window.__sample = [
+        { tag: 's-t1', feature: 'Demo', name: 'Demo : Workflow', status: 'running', started: Date.now() / 1000 - 60, project: 'p', command: '/tt-workflow', usage: null },
+        { tag: 's-t2', feature: 'Draft', name: 'Draft : Workflow', status: 'ended', started: Date.now() / 1000 - 120, project: 'p', command: '/tt-workflow', usage: null }];
+      window.confirm = m => { window.__asked.push(m); return true; };
+      api = async (path, body) => {
+        if (path === '/api/sessions') return window.__sample;
+        if (path === '/api/session/stop') { window.__posted.push(body.tag); window.__sample = window.__sample.filter(s => s.tag !== body.tag); return { ok: true, killed: true, said: '' }; }
+        return window.__real.api(path, body);
+      };
+      location.hash = '#home'; return 1; })()""")
+    wait(p, "!!document.querySelector('#page-home .wtabs .wtab[data-tag]')")
+    tabs = """[...document.querySelectorAll('#page-home .wtabs .wtab')].map(t => t.innerText.trim() + (t.classList.contains('on') ? ' *' : '') + ' ' + [...t.querySelectorAll('.wdot')].map(d => d.className.replace('wdot ', '')).join(''))"""
+    res["onList"] = p.js(tabs)
+    p.js("location.hash = '#workflows/s-t1'; 1")
+    wait(p, "!!document.querySelector('#page-home .live-head')")
+    res["onTab"] = {"tabs": p.js(tabs), "panel": p.js("document.querySelector('#page-home .live-head h4').textContent"),
+                    "open": p.js("document.querySelector('#page-home .live-head button').textContent")}
+    p.js("document.querySelector('#page-home .wtab[data-tag=\"s-t1\"] .x').click(); 1")
+    wait(p, "location.hash === '#home' && !document.querySelector('#page-home .wtab[data-tag=\"s-t1\"]')")
+    res["afterStop"] = {"asked": p.js("window.__asked.length"), "posted": p.js("window.__posted"), "tabs": p.js(tabs), "hash": p.js("location.hash")}
+    p.js("document.querySelector('#page-home .wtab[data-tag=\"s-t2\"] .x').click(); 1")
+    wait(p, "!document.querySelector('#page-home .wtab[data-tag]')")
+    res["afterDismiss"] = {"asked": p.js("window.__asked.length"), "posted": p.js("window.__posted"), "tabs": p.js(tabs)}
+    p.js("location.hash = '#workflows/s-nope'; 1")
+    wait(p, "!!document.querySelector('#page-home .wtabs') && /isn.t here/.test(document.querySelector('#page-home').innerText)")
+    res["gone"] = p.js("document.querySelector('#page-home').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("api = window.__real.api; window.confirm = window.__real.confirm; location.hash = '#home'; 1")
+    return res
+
+
+def check_split(p):
+    """The documents split beside a workflow tab, with a real session (started
+    without opening a terminal) whose reply cites CH1 and R1 of the Draft feature:
+    following a link opens it in the pane instead of leaving the workflow, tabs of
+    its own (one per document, none twice), a link inside the pane stays there, the
+    divider dragged with the mouse and moved with keys, the pane kept across another
+    workflow tab and a reload, an unsaved edit asked about, and the pane closing with
+    its last tab. Links elsewhere still navigate."""
+    res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    HEAD = "((document.querySelector('.dpane .doc-head h2') || {}).textContent || '')"
+    panes = """[...document.querySelectorAll('.dpane .wtab')].map(t => t.innerText.replace(/\\s+/g, ' ').trim() + (t.classList.contains('on') ? ' *' : ''))"""
+    sizes = """(() => { const l = document.querySelector('.split-left'), s = document.querySelector('.split');
+                 return l && s ? { left: Math.round(l.getBoundingClientRect().width), whole: Math.round(s.getBoundingClientRect().width),
+                                   saved: localStorage.getItem('tt-split') } : null; })()"""
+    p.js("window.confirm = m => { window.__asked.push(m); return window.__yes; }; window.__asked = []; window.__yes = true; location.hash = '#home'; 1")
+    wait(p, "!!document.querySelector('#page-home .wtabs')")
+    p.js("""window.__t = null; api('/api/root').then(r => Promise.all([
+            api('/api/start', { name: 'Draft', row: 'workflow', project: r.root }),
+            api('/api/start', { name: 'Demo', row: 'workflow', project: r.root })])).then(([a, b]) => {
+              window.__t = [a.tag, b.tag];
+              return api('/api/hello', { session: 'sess-d', tag: a.tag }).then(() => api('/api/activity', { tag: a.tag, kind: 'reply',
+                text: 'The question is CH1, the requirement it concerns is R1, and the proposal is P1.' }));
+            }); 1""")
+    wait(p, "!!window.__t")
+    tag = p.js("window.__t[0]")
+    other = p.js("window.__t[1]")
+    p.js(f"location.hash = '#workflows/' + encodeURIComponent('{tag}'); 1")
+    wait(p, "document.querySelectorAll('.act.reply a.idlink').length >= 3")
+    res["before"] = {"pane": p.js("!!document.querySelector('.dpane')"), "divider": p.js("!!document.querySelector('.split-div')"), "sizes": p.js(sizes)}
+    click_link = lambda text: p.js(f"[...document.querySelectorAll('.act.reply a.idlink')].find(a => a.textContent === '{text}').click(); 1")
+    click_link("CH1")
+    wait(p, "!!document.querySelector('.dpane .doc-head') && !!document.querySelector('.dpane .target-flash')")
+    res["ch1"] = {"hash": p.js("location.hash === '#workflows/' + encodeURIComponent(window.__t[0])"), "tabs": p.js(panes),
+                  "doc": p.js(HEAD),
+                  "flash": p.js("(document.querySelector('.dpane .target-flash') || { innerText: 'gone' }).innerText.slice(0, 50)"),
+                  "workflowStill": p.js("!!document.querySelector('.split-left .live-head')")}
+    click_link("R1")
+    wait(p, "document.querySelectorAll('.dpane .wtab').length === 2 && /Plan/.test(HEAD)".replace("HEAD", HEAD))
+    res["r1"] = {"tabs": p.js(panes), "doc": p.js(HEAD)}
+    click_link("CH1")
+    wait(p, "/Challenges/.test(HEAD)".replace("HEAD", HEAD))
+    res["ch1Again"] = {"tabs": p.js(panes), "hash": p.js("location.hash === '#workflows/' + encodeURIComponent(window.__t[0])")}
+    # right-clicking a link: our menu (not the browser's), Open / Open in side panel / Open in main panel
+    menu = """[...document.querySelectorAll('.linkmenu button')].map(b => b.textContent + (b.disabled ? ' (off)' : ''))"""
+
+    def right_click(target):
+        prevented = p.js(f"""(() => {{ const a = {target}; const r = a.getBoundingClientRect();
+                              return !a.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true, clientX: r.x + 4, clientY: r.y + 4 }})); }})()""")
+        wait(p, "!!document.querySelector('.linkmenu')")
+        return prevented
+
+    reply_link = lambda text: f"[...document.querySelectorAll('.act.reply a.idlink')].find(a => a.textContent === '{text}')"
+    prevented = right_click(reply_link("P1"))
+    res["menuClosedDoc"] = {"prevented": prevented, "items": p.js(menu), "focused": p.js("document.activeElement.textContent")}
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1")
+    res["menuEsc"] = p.js("!document.querySelector('.linkmenu')")
+    right_click(reply_link("CH1"))
+    res["menuOpenDoc"] = p.js(menu)
+    p.js("[...document.querySelectorAll('.linkmenu button')].find(b => b.textContent === 'Navigate to').click(); 1")
+    res["navigateTo"] = {"menuGone": p.js("!document.querySelector('.linkmenu')"), "tabs": p.js(panes), "doc": p.js(HEAD),
+                         "hash": p.js("location.hash === '#workflows/' + encodeURIComponent(window.__t[0])")}
+    right_click(reply_link("P1"))
+    p.js("[...document.querySelectorAll('.linkmenu button')].find(b => b.textContent === 'Open in main panel').click(); 1")
+    wait(p, "location.hash.startsWith('#feature/Draft/doc/')")
+    res["mainPanel"] = {"hash": p.js("decodeURIComponent(location.hash)"), "pane": p.js("!!document.querySelector('.dpane')")}
+    # off a workflow tab there is no side panel to open in
+    p.js("location.hash = '#feature/Draft/doc/' + encodeURIComponent('Draft - Challenges.md'); 1")
+    wait(p, "!!document.querySelector('#page-feature .fmain a.doclink')")
+    right_click("document.querySelector('#page-feature .fmain a.doclink')")
+    res["menuOffWorkflow"] = p.js(menu)
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1")
+    p.js(f"location.hash = '#workflows/' + encodeURIComponent('{tag}'); 1")
+    wait(p, "document.querySelectorAll('.dpane .wtab').length === 2")
+    res["afterMenus"] = {"tabs": p.js(panes), "doc": p.js(HEAD)}
+    # a [[wikilink]] in the pane's document opens in the pane (its target is a tab already: that one comes up)
+    p.js("[...document.querySelectorAll('.dpane a.doclink:not(.idlink)')].find(a => /Tech Plan/.test(a.dataset.doc)).click(); 1")
+    wait(p, "/Plan/.test(HEAD)".replace("HEAD", HEAD))
+    res["wikilink"] = {"tabs": p.js(panes), "hash": p.js("location.hash === '#workflows/' + encodeURIComponent(window.__t[0])")}
+    # the divider: dragged with the mouse, moved with keys, reset, and kept to the minimums
+    box = p.js("(() => { const r = document.querySelector('.split-div').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()")
+    start = p.js(sizes)
+    drag(p, box["x"], box["y"], box["x"] - 150, box["y"])
+    time.sleep(0.2)
+    res["drag"] = {"from": start["left"], "to": p.js(sizes), "now": p.js("document.querySelector('.split-div').getAttribute('aria-valuenow')")}
+    box = p.js("(() => { const r = document.querySelector('.split-div').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()")
+    drag(p, box["x"], box["y"], 5, box["y"])
+    time.sleep(0.2)
+    res["dragFarLeft"] = p.js(sizes)
+    p.js("document.querySelector('.split-div').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); 1")
+    res["arrowRight"] = p.js(sizes)
+    p.js("document.querySelector('.split-div').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); 1")
+    res["reset"] = p.js(sizes)
+    # another workflow tab and back: the pane and its tabs stay
+    p.js(f"location.hash = '#workflows/' + encodeURIComponent('{other}'); 1")
+    wait(p, f"!!document.querySelector('.split-left .wtab.on[data-tag=\"{other}\"]')")
+    res["otherTab"] = {"tabs": p.js(panes), "workflow": p.js("document.querySelector('.split-left .live-head h4').textContent")}
+    p.js(f"location.hash = '#workflows/' + encodeURIComponent('{tag}'); 1")
+    wait(p, f"!!document.querySelector('.split-left .wtab.on[data-tag=\"{tag}\"]')")
+    res["back"] = {"tabs": p.js(panes), "doc": p.js(HEAD)}
+    # a reload keeps the tabs and the divider
+    p.js("location.reload(); 1")
+    time.sleep(2)
+    wait(p, "document.querySelectorAll('.dpane .wtab').length === 2 && !!document.querySelector('.dpane .doc-head')")
+    res["reload"] = {"tabs": p.js(panes), "sizes": p.js(sizes)}
+    # an unsaved edit is asked about before its tab closes
+    p.js("window.confirm = m => { window.__asked.push(m); return window.__yes; }; window.__asked = []; window.__yes = false; 1")
+    p.js("[...document.querySelectorAll('.dpane .mode-btn')].find(b => b.textContent === 'Edit').click(); 1")
+    wait(p, "!!document.querySelector('.dpane textarea.doc-edit')")
+    p.js("(() => { const t = document.querySelector('.dpane textarea.doc-edit'); t.value += '\\nunsaved'; t.dispatchEvent(new Event('input', { bubbles: true })); })(); 1")
+    p.js("document.querySelector('.dpane .wtab.on .x').click(); 1")
+    res["dirtyClose"] = {"asked": p.js("window.__asked"), "tabs": p.js(panes)}
+    p.js("window.__yes = true; document.querySelector('.dpane .wtab.on .x').click(); 1")
+    wait(p, "document.querySelectorAll('.dpane .wtab').length === 1")
+    wait(p, HEAD + " !== ''")
+    res["afterDiscard"] = {"tabs": p.js(panes), "doc": p.js(HEAD)}
+    # the last tab closes the pane and its divider
+    p.js("document.querySelector('.dpane .wtab .x').click(); 1")
+    wait(p, "!document.querySelector('.dpane')")
+    res["closed"] = {"pane": p.js("!!document.querySelector('.dpane')"), "divider": p.js("!!document.querySelector('.split-div')"), "sizes": p.js(sizes),
+                     "stored": p.js("sessionStorage.getItem('tt-docpane')")}
+    # the documents rail beside the workflow: its documents open in the side panel, and it collapses to a button
+    rail = "document.querySelector('#page-home .frail')"
+    labels = "[...document.querySelectorAll('#page-home .frail .fnav-item')].map(a => a.querySelector('span').textContent)"
+    state = f"""(() => {{ const r = {rail}, n = r.querySelector('.fnav'), t = r.querySelector('.rail-toggle');
+                  return {{ collapsed: r.classList.contains('collapsed'), navShown: getComputedStyle(n).display !== 'none', railWidth: Math.round(r.getBoundingClientRect().width),
+                           split: Math.round(document.querySelector('.split').getBoundingClientRect().width), toggle: t.textContent + ' | ' + t.title,
+                           stored: localStorage.getItem('tt-rail') }}; }})()"""
+    res["rail"] = {"items": p.js(labels), "state": p.js(state)}
+    p.js("[...document.querySelectorAll('#page-home .frail .fnav-item')].find(a => a.querySelector('span').textContent === 'Challenges').click(); 1")
+    wait(p, "!!document.querySelector('.dpane .doc-head')")
+    res["railOpen"] = {"hashStays": p.js(f"location.hash === '#workflows/' + encodeURIComponent('{tag}')"), "tabs": p.js(panes),
+                       "marked": p.js("[...document.querySelectorAll('#page-home .frail .fnav-item.on')].map(a => a.querySelector('span').textContent)")}
+    p.js("document.querySelector('#page-home .rail-toggle').click(); 1")
+    res["railCollapsed"] = p.js(state)
+    p.js("location.reload(); 1")
+    time.sleep(2)
+    wait(p, f"!!{rail} && !!document.querySelector('.dpane .doc-head')")
+    res["railAfterReload"] = p.js(state)
+    p.js("document.querySelector('#page-home .rail-toggle').click(); 1")
+    res["railExpanded"] = p.js(state)
+    p.js("document.querySelector('.dpane .wtab .x').click(); 1")
+    wait(p, "!document.querySelector('.dpane')")
+    p.js("location.hash = '#feature/Draft'; 1")
+    wait(p, "!!document.querySelector('#page-feature .frail .fnav')")
+    res["railOnFeaturePage"] = {"toggle": p.js("!!document.querySelector('#page-feature .frail .rail-toggle')"),
+                                "items": p.js("[...document.querySelectorAll('#page-feature .fnav-item')].map(a => a.querySelector('span').textContent)"),
+                                "stillNavigates": p.js("document.querySelector('#page-feature .fnav-item[href*=\"/doc/\"]').getAttribute('href')")}
+    # elsewhere a link still navigates
+    p.js("location.hash = '#home'; 1")
+    res["offWorkflow"] = p.js("(() => { const was = location.hash; return { opened: openInPane('Draft', 'Draft - Challenges.md', 'CH1'), unchanged: location.hash === was }; })()")
+    return res
+
+
+def check_chats(p):
+    """Chats, with a real session (started without opening a terminal) whose reply
+    holds a sentence and a code block: right-clicking selected text offers "Ask
+    about this in a side chat", which opens a chat in the pane beside the workflow
+    holding the text and its context, sent in front of the first message; a code
+    block's own "Ask about it in a side chat"; the workflow still taking its
+    activity meanwhile; the "+" in the pane's strip and in the workflow strip; the
+    chats kept over a reload; a tab closed; and the old chat column gone. The
+    server needs a stand-in claude (TATTY_CLAUDE) for the answers."""
+    res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    panes = """[...document.querySelectorAll('.dpane .wtab')].map(t => t.innerText.replace(/\\s+/g, ' ').trim() + (t.classList.contains('on') ? ' *' : ''))"""
+    menu = """[...document.querySelectorAll('.linkmenu button')].map(b => b.textContent + (b.disabled ? ' (off)' : ''))"""
+    p.js("window.confirm = m => { (window.__asked = window.__asked || []).push(m); return true; }; location.hash = '#home'; 1")
+    wait(p, "!!document.querySelector('#page-home .wtabs')")
+    res["oldChat"] = p.js("""({ column: getComputedStyle(document.querySelector('.feed-col')).display,
+                              box: !!document.querySelector('#say'), toggle: !!document.querySelector('#chat-toggle') })""")
+    p.js("""window.__t = null; api('/api/root').then(r => api('/api/start', { name: 'Draft', row: 'workflow', project: r.root })).then(a => {
+              window.__t = a.tag;
+              return api('/api/hello', { session: 'sess-chat', tag: a.tag }).then(() => api('/api/activity', { tag: a.tag, kind: 'reply',
+                text: 'Run the checks first.\\n\\n```bash\\nbash tools/test-tatty.sh\\n```\\n\\nThen retry the upload when they pass.' }));
+            }); 1""")
+    wait(p, "!!window.__t")
+    tag = p.js("window.__t")
+    p.js(f"location.hash = '#workflows/' + encodeURIComponent('{tag}'); 1")
+    wait(p, "!!document.querySelector('.act.reply .codeblock')")
+    res["codeBar"] = p.js("[...document.querySelectorAll('.act.reply .code-actions button')].map(b => b.textContent)")
+    # a right-click with nothing selected is the browser's own
+    res["noSelection"] = p.js("""(() => { getSelection().removeAllRanges(); const e = document.querySelector('.act.reply .md p');
+                                 return { prevented: !e.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })),
+                                          menu: !!document.querySelector('.linkmenu') }; })()""")
+    prevented = p.js("""(() => {
+        const para = [...document.querySelectorAll('.act.reply .md p')].find(x => x.textContent.includes('retry the upload'));
+        const tn = [...para.childNodes].find(n => n.nodeType === 3 && n.textContent.includes('retry the upload'));
+        const i = tn.textContent.indexOf('retry the upload'), r = document.createRange();
+        r.setStart(tn, i); r.setEnd(tn, i + 'retry the upload'.length);
+        getSelection().removeAllRanges(); getSelection().addRange(r);
+        const b = para.getBoundingClientRect();
+        return !para.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: b.x + 4, clientY: b.y + 4 })); })()""")
+    wait(p, "!!document.querySelector('.linkmenu')")
+    res["selectionMenu"] = {"prevented": prevented, "items": p.js(menu)}
+    p.js("[...document.querySelectorAll('.linkmenu button')].find(b => b.textContent === 'Ask about this in a side chat').click(); 1")
+    wait(p, "!!document.querySelector('.dpane .chat .chat-context')")
+    res["sideChat"] = {"hashStays": p.js(f"location.hash === '#workflows/' + encodeURIComponent('{tag}')"),
+                       "workflowStill": p.js("!!document.querySelector('.split-left .live-head')"),
+                       "tabs": p.js(panes),
+                       "summary": p.js("document.querySelector('.dpane .chat-summary').textContent"),
+                       "selected": p.js("document.querySelector('.dpane .chat-selected').textContent"),
+                       "around": p.js("(document.querySelector('.dpane .chat-around pre') || {}).textContent || ''"),
+                       "focused": p.js("document.activeElement === document.querySelector('.dpane .chat-box')")}
+    p.js("(() => { document.querySelector('.dpane .chat-box').value = 'Why retry?'; document.querySelector('.dpane .chat-form').requestSubmit(); })(); 1")
+    wait(p, "!!document.querySelector('.dpane .chat-msg.claude')")
+    res["answered"] = {"messages": p.js("[...document.querySelectorAll('.dpane .chat-msg')].map(m => m.innerText.replace(/\\s+/g, ' ').trim())"),
+                       "contextSent": p.js("document.querySelector('.dpane .chat-context').classList.contains('sent')"),
+                       "workflowRows": p.js("document.querySelectorAll('.split-left .act').length")}
+    # the workflow carries on meanwhile
+    p.js(f"api('/api/activity', {{ tag: '{tag}', kind: 'reply', text: 'The upload went through.' }}); 1")
+    wait(p, "document.querySelectorAll('.split-left .act.reply').length === 2")
+    res["workflowGoesOn"] = p.js("[...document.querySelectorAll('.split-left .act.reply')].map(r => r.innerText.replace(/\\s+/g, ' ').trim().slice(0, 40))")
+    # a code block's own button
+    p.js("document.querySelector('.split-left .act.reply .code-ask').click(); 1")
+    wait(p, "document.querySelectorAll('.dpane .wtab.chat').length === 2 && !!document.querySelector('.dpane .chat-context')")
+    res["codeChat"] = {"tabs": p.js(panes), "summary": p.js("document.querySelector('.dpane .chat-summary').textContent"),
+                       "selected": p.js("document.querySelector('.dpane .chat-selected').textContent"),
+                       "kind": p.js("document.querySelector('.dpane .chat-context summary strong').textContent")}
+    # "+" in the pane's strip: a main chat beside the workflow
+    p.js("document.querySelector('.dpane .wtab-add').click(); 1")
+    wait(p, "document.querySelectorAll('.dpane .wtab.chat').length === 3")
+    wait(p, "!!document.querySelector('.dpane .chat-head h3')")
+    res["panePlus"] = {"tabs": p.js(panes), "head": p.js("document.querySelector('.dpane .chat-head').innerText.replace(/\\s+/g, ' ').trim()"),
+                       "context": p.js("!!document.querySelector('.dpane .chat-context')")}
+    # a reload keeps the pane's chats
+    p.js("location.reload(); 1")
+    time.sleep(2)
+    wait(p, "document.querySelectorAll('.dpane .wtab.chat').length === 3 && !!document.querySelector('.dpane .chat-head h3')")
+    res["afterReload"] = {"tabs": p.js(panes), "messages": p.js("document.querySelectorAll('.dpane .chat-msg:not(.dim)').length")}
+    p.js("[...document.querySelectorAll('.dpane .wtab.chat a')][0].click(); 1")
+    wait(p, "document.querySelectorAll('.dpane .chat-msg.claude').length === 1")
+    res["firstAgain"] = p.js("[...document.querySelectorAll('.dpane .chat-msg')].map(m => m.innerText.replace(/\\s+/g, ' ').trim())")
+    # "+" in the workflow strip: a chat in a tab of its own, with the pane still beside it
+    p.js("document.querySelector('#page-home .split-left .wtabs .wtab-add').click(); 1")
+    wait(p, "/^#chats\\//.test(location.hash) && !!document.querySelector('.split-left .chat-head h3')")
+    res["stripPlus"] = {"hash": p.js("location.hash.split('/')[0]"),
+                        "tabs": p.js("[...document.querySelectorAll('#page-home .split-left .wtabs .wtab')].map(t => t.innerText.replace(/\\s+/g, ' ').trim() + (t.classList.contains('on') ? ' *' : ''))"),
+                        "pane": p.js(panes)}
+    p.js("document.querySelector('#page-home .split-left .wtabs .wtab.chat.on .x').click(); 1")
+    wait(p, "location.hash === '#home'")
+    res["stripClosed"] = {"hash": p.js("location.hash"), "chatTabs": p.js("document.querySelectorAll('#page-home .wtabs .wtab.chat').length")}
+    # × on a pane chat closes the chat
+    p.js(f"location.hash = '#workflows/' + encodeURIComponent('{tag}'); 1")
+    wait(p, "document.querySelectorAll('.dpane .wtab.chat').length === 3")
+    p.js("document.querySelector('.dpane .wtab.chat.on .x').click(); 1")
+    wait(p, "document.querySelectorAll('.dpane .wtab.chat').length === 2")
+    res["paneClosed"] = {"tabs": p.js(panes)}
+    p.js("window.__open = null; api('/api/chats').then(l => { window.__open = l.length; }); 1")
+    wait(p, "window.__open !== null")
+    res["openChats"] = p.js("window.__open")
+    for _ in range(2):
+        p.js("document.querySelector('.dpane .wtab.chat .x').click(); 1")
+        time.sleep(0.4)
+    wait(p, "!document.querySelector('.dpane')")
+    res["paneGone"] = p.js("!document.querySelector('.dpane')")
+    p.js("location.hash = '#home'; 1")
     return res
 
 
@@ -709,9 +1015,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
-                                "--whiteboard": check_whiteboard}[feature](p)
+                                "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
+                                "--chats": check_chats}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
@@ -748,6 +1055,8 @@ def main(argv):
         out["modes"] = check_modes(p, feature)
         out["breakdown"] = check_breakdown(p, feature)
         out["ids"] = check_ids(p)
+        out["tabs"] = check_tabs(p)
+        out["split"] = check_split(p)
         out["jira"] = check_jira(p)
         out["tasks"] = check_tasks(p)
         out["stories"] = check_stories(p)  # last: it sets the viewport and the motion setting

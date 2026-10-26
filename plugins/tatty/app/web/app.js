@@ -1,6 +1,6 @@
 // Tatty's page: shows what the agent sends, answers its questions, reads the
 // toolbox's status/connections/docs through the server's read-only views, and
-// sends typed messages to the session. No libraries, no network beyond the server.
+// keeps the headless chats (chat.js). No libraries, no network beyond the server.
 "use strict";
 
 const token = (() => {
@@ -102,10 +102,11 @@ function markdown(src) {
   while (i < lines.length) {
     const l = lines[i];
     if (/^```/.test(l)) {
+      const lang = l.slice(3).trim().split(/\s/)[0] || "";
       const buf = [];
       for (i++; i < lines.length && !/^```/.test(lines[i]); i++) buf.push(lines[i]);
       i++;
-      out.push(`<pre><code>${esc(buf.join("\n"))}</code></pre>`);
+      out.push(`<pre${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(buf.join("\n"))}</code></pre>`);
     } else if (/^\s*\^[A-Za-z0-9-]+\s*$/.test(l)) {
       // a block id on its own line names the block just before it
       const id = l.trim().slice(1);
@@ -155,7 +156,32 @@ function markdown(src) {
   return out.join("\n");
 }
 
-const mdNode = src => { const d = el("div", { class: "md" }); d.innerHTML = markdown(src); return d; };
+// The markdown each .md was drawn from, for a side chat about a piece of it (chat.js).
+const mdSource = new WeakMap();
+const mdNode = src => {
+  const d = el("div", { class: "md" });
+  d.innerHTML = markdown(src);
+  mdSource.set(d, src);
+  codeActions(d);
+  return d;
+};
+
+// Each code block gets a bar of its own: Copy, and Ask about it in a side chat
+// (chat.js's openSideChat, with the block and what is around it). Safe to call
+// again on the same nodes.
+function codeActions(root) {
+  for (const pre of root.querySelectorAll("pre")) {
+    if (pre.parentElement && pre.parentElement.classList.contains("codeblock")) continue;
+    const wrap = el("div", { class: "codeblock" });
+    pre.replaceWith(wrap);
+    const copy = el("button", { type: "button", class: "code-copy", title: "Copy the code" }, "Copy");
+    copy.addEventListener("click", () => navigator.clipboard.writeText(pre.textContent));
+    const ask = el("button", { type: "button", class: "code-ask", title: "Open a side chat about this code block" },
+      "Ask about it in a side chat");
+    ask.addEventListener("click", () => openSideChat(pieceContext(wrap, pre.textContent, "code", pre.dataset.lang || "")));
+    wrap.append(el("div", { class: "code-actions" }, copy, ask), pre);
+  }
+}
 
 // ------------------------------------------------------------- views
 
@@ -175,7 +201,10 @@ function cmdCell(cmd, about) {
   return el("div", { class: "cmd" },
     el("code", {}, cmd),
     el("button", { title: "Copy the command", onclick: () => navigator.clipboard.writeText(cmd) }, "Copy"),
-    el("button", { title: "Ask Tatty about this step", onclick: () => say(`Tell me about this next step: ${cmd}${about ? ` (${about})` : ""}`) }, "Ask"));
+    el("button", { title: "Ask about this step in a side chat", onclick: () => openSideChat({
+      source: { from: "selection" }, selected: cmd,
+      around: `The next step${about ? ` for ${about}` : ""} in the workflow is the command ${cmd}`,
+    }, $("#dir").value.trim() || $("#cwd").textContent) }, "Ask"));
 }
 
 function statusTable(tsv) {
@@ -248,19 +277,8 @@ async function loadDocs(view, name) {
 
 const feed = $("#feed");
 const asks = new Map();
-let modAttached = false;
 
 function scrollFeed() { feed.scrollTop = feed.scrollHeight; }
-
-function card(ev) {
-  const title = ev.title ? el("h4", {}, ev.title) : "";
-  let body;
-  if (ev.kind === "markdown" || ev.kind === "reply") body = mdNode(ev.body);
-  else if (ev.kind === "table") body = statusTable(ev.body);
-  else body = el("pre", {}, ev.body);
-  if (ev.kind === "markdown" || ev.kind === "reply") linkIds(body, ev.feature); // ids.js
-  return el("div", { class: "card " + ev.kind }, title, body);
-}
 
 function askCard(ev) {
   const picks = ev.questions.map(() => new Set());
@@ -339,18 +357,17 @@ function questionCard(ev) {
   return answers.has(ev.id) ? answeredCard(ev, answers.get(ev.id)) : askCard(ev);
 }
 
+// Whether a terminal of the person's works with Tatty (/tatty open or attach in it).
 function setMod(on) {
-  modAttached = on;
   const b = $("#mod");
   b.textContent = on ? "Claude session attached" : "no session";
   b.className = "badge " + (on ? "ok" : "");
-  $("#chat-mode").textContent = on ? "Messages go straight into the Claude session." :
-    "No Claude session works with Tatty yet: run /tatty attach in one, or start one from a feature page.";
 }
 
-// The feed is the main session's conversation, plus every question (wherever
-// it comes from, so the bubble shows it). A started session's activity, replies
-// and messages are its feature page's (features.js, through "tt-event").
+// The feed is the compact bubble: every question (wherever it comes from) and
+// every milestone. In the full panel it only comes out while a question waits
+// (style.css). A started session's activity, replies and messages are its
+// workflow tab's (features.js, through "tt-event"); a chat's are its own (chat.js).
 function onEvent(ev) {
   feedEvent(ev);
   // after the feed, so an answer is already recorded when a session panel hears of it
@@ -423,14 +440,10 @@ function feedEvent(ev) {
     if (companion && !alerts.length) tell("alert-cleared"); // nothing is calling any more
   }
   // A milestone belongs to the feature, not to a session, so it is shown
-  // wherever Tatty is: before the tag test, which is what keeps a started
-  // session's own chatter out of this feed.
+  // wherever Tatty is.
   // (The stream replays every event when the page connects: only what happens
   // from now on throws confetti, or each reload would be a party for old news.)
   else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); if (ev.ts * 1000 >= pageOpened - 5000) confetti(ev.tier); }
-  else if (ev.tag) return;
-  else if (ev.type === "card") feed.append(card(ev));
-  else if (ev.type === "say") feed.append(el("div", { class: "card you" }, el("pre", {}, ev.text)));
   else if (ev.type === "status") setMod(!!ev.mod);
   scrollFeed();
 }
@@ -491,20 +504,6 @@ function connect() {
   es.onerror = () => { badge.textContent = "server gone"; badge.className = "badge bad"; };
   es.onmessage = m => onEvent(JSON.parse(m.data));
 }
-
-// ------------------------------------------------------------- chat
-
-const SECRETISH = /(token|password|passwd|secret|api[_-]?key)\s*[=:]|[A-Za-z0-9+/_-]{32,}/i;
-
-async function say(text) {
-  text = text.trim();
-  if (!text) return;
-  if (SECRETISH.test(text) && !confirm("That looks like it might hold a secret. Send it anyway?")) return;
-  try { await api("/api/say", { text }); } catch (e) { alert(String(e)); }
-}
-
-$("#chat").addEventListener("submit", e => { e.preventDefault(); say($("#say").value); $("#say").value = ""; });
-$("#say").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat").requestSubmit(); } });
 
 // ------------------------------------------------------------- tabs
 
@@ -612,7 +611,7 @@ if (companion) {
 // routes once it resolves, however it went.
 const booted = (async () => {
   if (!token) {
-    feed.append(el("div", { class: "card" }, "No token: open Tatty with /tatty open (or scripts/tatty.sh open)."));
+    feed.append(el("div", { class: "card notice" }, "No token: open Tatty with /tatty open (or scripts/tatty.sh open)."));
     return;
   }
   try {
@@ -620,7 +619,7 @@ const booted = (async () => {
     $("#cwd").textContent = st.cwd;
     setMod(st.mod);
     setInstalledModes(st.modes); // which discipline plugins there are (modes.js)
-  } catch (e) { feed.append(el("div", { class: "card" }, "Can't reach the window server: " + e)); }
+  } catch (e) { feed.append(el("div", { class: "card notice" }, "Can't reach the window server: " + e)); }
   connect();
   setInterval(async () => {
     try {
