@@ -93,6 +93,19 @@ body.companion:not(.expanded) #chat { padding: 6px 10px; }
 body.companion:not(.expanded) #chat .note { display: none; }
 body.companion .card.text pre { font-size: 11px; }
 
+/* What is calling for the person, at the top of the bubble. Plain colours and no
+   motion: it has to read the same with animations off. */
+#alert { display: none; }
+body.companion:not(.expanded) #alert:not([hidden]) { display: flex; flex: none; align-items: flex-start; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--panel); cursor: pointer; }
+#alert .what { flex: 1; min-width: 0; }
+#alert .kind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+#alert .title, #alert .sub { overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+#alert .title { font-weight: 600; -webkit-line-clamp: 3; line-clamp: 3; }
+#alert .sub { font-size: 12px; opacity: .75; -webkit-line-clamp: 2; line-clamp: 2; }
+#alert .dismiss { padding: 0 6px; font-size: 14px; }
+#alert:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; line-height: 1.25; }
 .md h1 { font-size: 18px; } .md h2 { font-size: 16px; } .md h3 { font-size: 14.5px; } .md h4 { font-size: 13.5px; }
 .md p { margin: 6px 0; } .md ul, .md ol { margin: 6px 0; padding-left: 22px; }

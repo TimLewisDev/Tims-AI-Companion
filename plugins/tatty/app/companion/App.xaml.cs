@@ -43,6 +43,7 @@ namespace TtCompanion
         private bool polling;
         private bool tattyPlaced;
         private bool demoPulse; // the pulses, asked for from his menu rather than by a question
+        private bool alertWaiting; // something called for the person that they have not opened yet
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -205,6 +206,7 @@ namespace TtCompanion
                 // day's work would arrive mid-party.
                 if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; attention = false; finished = null; anything = false; }
                 if (anything) tatty.Poke();
+                if (question || attention || finished != null) alertWaiting = true;
                 tatty.HasBadge = openAsks.Count > 0;
                 if (question || attention || finished != null) PopUp(activate: false);
                 if (finished != null) Celebrate(finished == "big");
@@ -445,10 +447,23 @@ namespace TtCompanion
         // the click first brings it to the front, and hides it only when it already is.
         private void ToggleBubble()
         {
+            if (alertWaiting) { OpenAlert(); return; }
             if (Native.IsMinimised(bubble)) { bubble.Restore(); return; }
             if (bubble.IsShown && bubble.IsExpanded && !bubble.IsActive) { Native.BringToFront(bubble); return; }
             if (bubble.IsShown) { TuckAway(); return; }
             PopUp(activate: false);
+        }
+
+        // A click on Tatty while something is calling: not "away with the bubble"
+        // but the full panel, on the page it is about -- which the page knows, and
+        // is told to go to once the window is big enough to show it.
+        private void OpenAlert()
+        {
+            alertWaiting = false;
+            PopUp(activate: false);
+            if (bubble.IsExpanded) Native.BringToFront(bubble); else bubble.SetExpanded(true);
+            bubble.Activate();
+            bubble.Post("open-alert");
         }
 
         // The taskbar button is always a way back to Tatty, never a way to put him
@@ -523,6 +538,8 @@ namespace TtCompanion
                 // window: let that window come to the front (Tatty has the focus now).
                 case "allow-foreground": Native.AllowAnyForeground(); break;
                 case "expand": bubble.SetExpanded(true); bubble.Activate(); break;
+                // The person opened or dismissed what was calling, in the page itself.
+                case "alert-cleared": alertWaiting = false; break;
                 case "collapse": bubble.SetExpanded(false); PlaceBubble(); break;
                 case "drag": bubble.Drag(); break;
                 case "maximise": bubble.ToggleMaximise(); break;
