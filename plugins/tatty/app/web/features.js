@@ -439,7 +439,7 @@ async function featureBoard(f, main) {
     },
     onOpen: id => { location.hash = featureHref(f.name, id); },
     onError: t => { note.textContent = t; },
-    empty: "No documents yet. Sketch the plan here: T for text (or double-click), 💬 for a comment, ↗ to join two things." });
+    empty: "No documents yet. Sketch the plan here: T for text (or double-click), 💬 for a comment, ↗ to join two things. Drag with the middle button to move around." });
   main.replaceChildren(el("div", { class: "board-page" }, note, wb.element));
   wb.setCards(d.docs.map(x => ({ id: x.file, w: W, h: H,
     node: el("div", { class: "wbdoc", tabindex: "0", role: "button", "aria-label": `Open ${x.doc}` },

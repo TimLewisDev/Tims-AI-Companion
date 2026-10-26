@@ -1,5 +1,5 @@
-// A whiteboard: a board you pan and zoom (drag the background, the wheel or a
-// pinch), holding the host page's cards (stories, documents) and what a person
+// A whiteboard: a board you pan and zoom (drag with the middle button, the
+// wheel or a pinch), holding the host page's cards (stories, documents) and what a person
 // puts on it: text fields, comments pinned to a card, a text or a spot, and
 // lines that join any two things. The host builds its card nodes and says what
 // a click on one does; the board places and moves them, and saves where
@@ -16,7 +16,7 @@ const WB_TOOLS = [
   { id: "line", label: "↗", key: "l", title: "Line: click one thing, then another (L)" },
 ];
 const WB_ZMIN = 0.2, WB_ZMAX = 2.5;
-const WB_SPAN = 10000; // the line layer reaches this far each way from the origin
+const WB_LINE_PAD = 40; // room round the lines in their layer: arrowheads, labels, the hit stroke
 const WB_COMMENT = 26; // a comment's marker, square
 
 // makeWhiteboard(o) -> the board. o:
@@ -63,8 +63,8 @@ function makeWhiteboard(o) {
   marker.append(svg("path", { d: "M0,0 L10,5 L0,10 z", class: "wbarrowhead" }));
   const defs = svg("defs");
   defs.append(marker);
-  const linesG = svg("g", { transform: `translate(${WB_SPAN},${WB_SPAN})` });
-  const layer = svg("svg", { class: "wblines", width: String(WB_SPAN * 2), height: String(WB_SPAN * 2) });
+  const linesG = svg("g");
+  const layer = svg("svg", { class: "wblines", width: "0", height: "0" });
   layer.append(defs, linesG);
   const frameBox = el("div", { class: "gframe", hidden: true });
   const cardsBox = el("div", { class: "wblayer" });
@@ -144,10 +144,33 @@ function makeWhiteboard(o) {
 
   // ----------------------------------------------------------- drawing
 
+  let queued = 0, still = null, rect = null;
+  // While the view moves, the world is a layer of its own: a pan moves its
+  // picture instead of drawing every card again, and a zoom draws them sharp
+  // once it stops. hold: until stopMoving (a pan), else until a pause (the wheel).
+  function moving(hold) {
+    world.classList.add("moving");
+    clearTimeout(still);
+    if (!hold) still = setTimeout(stopMoving, 150);
+  }
+  function stopMoving() {
+    clearTimeout(still);
+    world.classList.remove("moving");
+    rect = null;
+  }
+
+  // The view on the next frame: however many moves come before it, it's drawn once.
+  function queueView() {
+    if (!queued) queued = requestAnimationFrame(() => { queued = 0; applyView(false); });
+  }
+  function flushView() { if (queued) applyView(false); }
+
   function applyView(ease) {
+    if (queued) { cancelAnimationFrame(queued); queued = 0; }
     world.classList.toggle("easing", !!ease && !calm());
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
-    zoomPct.textContent = Math.round(view.z * 100) + "%";
+    const pct = Math.round(view.z * 100) + "%";
+    if (zoomPct.textContent !== pct) zoomPct.textContent = pct; // a pan leaves it as it is: nothing to draw again
     if (ease) setTimeout(() => world.classList.remove("easing"), 400);
     movePop();
   }
@@ -176,10 +199,13 @@ function makeWhiteboard(o) {
 
   function drawLines() {
     linesG.replaceChildren();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const [id, ln] of Object.entries(data.lines)) {
       const a = boxOf(ln.from), b = boxOf(ln.to);
       if (!a || !b) continue; // an end is gone (or hidden): kept, not drawn
       const p1 = edge(a, centre(b)), p2 = edge(b, centre(a));
+      x0 = Math.min(x0, p1[0], p2[0]); y0 = Math.min(y0, p1[1], p2[1]);
+      x1 = Math.max(x1, p1[0], p2[0]); y1 = Math.max(y1, p1[1], p2[1]);
       const d = `M${p1[0]},${p1[1]} L${p2[0]},${p2[1]}`;
       const g = svg("g", { class: "wbline" + (sel && sel.id === id ? " sel" : ""), "data-line": id });
       const stroke = svg("path", { d, class: "wbstroke" });
@@ -192,6 +218,14 @@ function makeWhiteboard(o) {
       }
       linesG.append(g);
     }
+    // The layer is only as big as its lines: a huge one is slow to draw and to move.
+    const has = x0 <= x1, pad = WB_LINE_PAD;
+    if (!has) x0 = y0 = x1 = y1 = 0;
+    layer.style.left = x0 - pad + "px";
+    layer.style.top = y0 - pad + "px";
+    layer.setAttribute("width", has ? String(x1 - x0 + pad * 2) : "0");
+    layer.setAttribute("height", has ? String(y1 - y0 + pad * 2) : "0");
+    linesG.setAttribute("transform", `translate(${pad - x0},${pad - y0})`);
     movePop();
   }
 
@@ -480,8 +514,22 @@ function makeWhiteboard(o) {
   const startOf = id => cards.has(id) ? [...data.cards[id]]
     : data.items[id].type === "comment" ? commentAt(data.items[id]) : [data.items[id].x, data.items[id].y, data.items[id].w];
 
+  // The middle button moves the view, wherever it is pressed (a finger does too,
+  // on the background, as there is no middle button on a touch screen). The
+  // left and right buttons are for the things on the board: a left drag on the
+  // background moves nothing.
   board.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || e.target.closest(".wbui, button, input, textarea, select, a")) return;
+    const over = e.target.closest(".wbui, button, input, textarea, select, a");
+    if (e.button === 1 || (e.pointerType === "touch" && !over && !e.target.closest("[data-wb], [data-line]"))) {
+      if (over && e.button === 1 && e.target.closest(".wbui, textarea, input, select")) return;
+      e.preventDefault();
+      drag = { id: "", pan: true, x0: e.clientX, y0: e.clientY, moved: false, start: [view.x, view.y] };
+      try { board.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer: no capture needed */ }
+      board.classList.add("panning");
+      moving(true);
+      return;
+    }
+    if (e.button !== 0 || over) return;
     let thing = e.target.closest("[data-wb]");
     if (openComment && (!thing || thing.dataset.wb !== openComment)) {
       closeComment();
@@ -494,10 +542,14 @@ function makeWhiteboard(o) {
     if (line) { select({ kind: "line", id: line.dataset.line }); return; }
     if (editing && editing !== id) document.activeElement && document.activeElement.blur();
     drag = { id, grip: !!e.target.closest(".wbgrip"), x0: e.clientX, y0: e.clientY, moved: false, node: id ? thing : null,
-      start: id ? startOf(id) : [view.x, view.y] };
+      start: id ? startOf(id) : null };
     try { board.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer: no capture needed */ }
-    if (!id) board.classList.add("panning");
   });
+  // No autoscroll on a middle press, and the right button's menu is the board's
+  // to use (a text being written keeps its own: spelling, paste).
+  board.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); });
+  board.addEventListener("auxclick", e => { if (e.button === 1) e.preventDefault(); });
+  board.addEventListener("contextmenu", e => { if (!e.target.closest("input, textarea")) e.preventDefault(); });
 
   board.addEventListener("pointermove", e => {
     if (!drag) return;
@@ -506,9 +558,10 @@ function makeWhiteboard(o) {
     drag.moved = true;
     const s = drag.start;
     if (!drag.id) {
+      if (!drag.pan) return; // a left drag on the background: nothing to move
       view.x = s[0] + dx;
       view.y = s[1] + dy;
-      applyView(false);
+      queueView();
       return;
     }
     const kx = dx / view.z, ky = dy / view.z;
@@ -534,9 +587,14 @@ function makeWhiteboard(o) {
     const d = drag;
     drag = null;
     board.classList.remove("panning");
-    if (!d.id) {
+    if (d.pan) {
+      flushView();
+      stopMoving();
       if (d.moved) saveView();
-      else { if (openComment) closeComment(); select(null); }
+      return;
+    }
+    if (!d.id) {
+      if (!d.moved) { if (openComment) closeComment(); select(null); }
       return;
     }
     d.node.classList.remove("dragging");
@@ -576,8 +634,9 @@ function makeWhiteboard(o) {
   board.addEventListener("wheel", e => {
     if (e.target.closest(".wbui, textarea")) return;
     e.preventDefault();
-    const r = board.getBoundingClientRect();
-    zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+    moving();
+    const r = rect || (rect = board.getBoundingClientRect()); // read once a burst of wheel turns
+    zoomBy(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top, true);
   }, { passive: false });
 
   board.addEventListener("keydown", e => {
@@ -610,13 +669,13 @@ function makeWhiteboard(o) {
 
   // ----------------------------------------------------------- the view
 
-  // Zoom about a point of the board (its centre by default), keeping it still.
-  function zoomBy(f, cx, cy) {
-    const r = board.getBoundingClientRect();
-    if (cx === undefined) { cx = r.width / 2; cy = r.height / 2; }
+  // Zoom about a point of the board (its centre by default), keeping it still;
+  // soon: drawn on the next frame (the wheel), not now.
+  function zoomBy(f, cx, cy, soon) {
+    if (cx === undefined) { const r = board.getBoundingClientRect(); cx = r.width / 2; cy = r.height / 2; }
     const z = clampZ(view.z * f), k = z / view.z;
     view = { x: cx - (cx - view.x) * k, y: cy - (cy - view.y) * k, z };
-    applyView(false);
+    if (soon) queueView(); else applyView(false);
     saveView();
   }
 

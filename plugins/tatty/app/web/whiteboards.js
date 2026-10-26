@@ -69,7 +69,7 @@ const { renderWhiteboards, renderWhiteboard } = (() => {
     }
     const note = el("p", { class: "small st missing wb-note" });
     const wb = makeWhiteboard({ id: "wboard", key: { kind: "blank", ref: name }, data: d, onError: t => { note.textContent = t; },
-      empty: "An empty whiteboard. Pick T and click to write (or double-click anywhere), 💬 for a comment, ↗ to join two things." });
+      empty: "An empty whiteboard. Pick T and click to write (or double-click anywhere), 💬 for a comment, ↗ to join two things. Drag with the middle button to move around." });
     box.replaceChildren(el("div", { class: "board-page" },
       el("div", { class: "board-bar" }, el("a", { href: "#whiteboards", class: "small" }, "← All whiteboards"), el("h2", {}, name)),
       note, wb.element));
