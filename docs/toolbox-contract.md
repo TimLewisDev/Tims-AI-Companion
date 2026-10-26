@@ -314,6 +314,26 @@ has no part in it:
   other sections. The workflow plans from it; Tatty never touches it again.
   The task's own file then names the feature (`- **Feature:**`).
 
+## Chats
+
+A chat (see design.md, "Chats") is a headless Claude conversation Tatty runs on
+a person's message, never on its own:
+
+- **Only reading.** `--tools Read,Glob,Grep,Skill`, the same allowed, and
+  `--permission-mode dontAsk`: no Write, Edit or Bash. So a chat can't change the
+  project or a document, and can't get in the way of a workflow running in it.
+  Skills run through Skill only as far as reading goes; one that needs its
+  scripts says it can't run them.
+- **Not one of Tatty's sessions.** `TATTY_SESSION` and `TATTY_JOIN` are stripped,
+  so the mod stays out, and its events carry no tag: nothing of it reaches a
+  workflow's panel or inbox.
+- **The conversation is Claude Code's own**, kept in its projects folder like any
+  other (`--session-id`, then `--resume`). Tatty keeps only its own record of it
+  (`chats/`, below).
+- **The side-chat skill is Tatty's** (`/tatty:side-chat`, in this plugin), not the
+  toolbox's: the toolbox is unchanged, and the skill does nothing useful outside
+  Tatty, which writes the context it reads.
+
 ## What Tatty keeps of its own
 
 - `${TATTY_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tatty}/`:
@@ -331,6 +351,8 @@ has no part in it:
     deleted ones);
   - `tasks-index/<key>.json`: each task board's index (each task file's size,
     time and summary), so a big board opens without reading every file;
+  - `chats/<id>.json`: each chat: its kind, folder, feature, the Claude
+    conversation's id, what a side chat is about, the messages and the cost;
   - `server.json` and `server.log`.
 - `%LOCALAPPDATA%\Tatty\`, on Windows:
   - the tray app's build;

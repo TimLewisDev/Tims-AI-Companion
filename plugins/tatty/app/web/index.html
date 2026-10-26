@@ -9,6 +9,8 @@
 <link rel="stylesheet" href="/static/whiteboard.css">
 <link rel="stylesheet" href="/static/stories.css">
 <link rel="stylesheet" href="/static/tasks.css">
+<link rel="stylesheet" href="/static/split.css">
+<link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
 <!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
@@ -43,7 +45,6 @@
     <span class="badge" id="conn" title="Connection to the window server">connecting…</span>
     <a href="#settings" id="settings-link" class="gear" title="Settings" aria-label="Settings">⚙<span class="dot" hidden></span></a>
     <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>
-    <button type="button" id="chat-toggle" title="Show or hide the chat">Chat</button>
   </div>
 </header>
 
@@ -102,14 +103,9 @@
   </nav>
   </section>
 
-  <section class="feed-col">
+  <!-- the compact bubble: questions and milestones; in the full panel, only while a question waits -->
+  <section class="feed-col" aria-label="Questions and milestones">
     <div id="feed" aria-live="polite"></div>
-    <form id="chat">
-      <textarea id="say" rows="2" placeholder="Ask Tatty something…  (Enter sends, Shift+Enter for a new line)"></textarea>
-      <button type="submit">Send</button>
-      <div class="note dim small">Never paste a token, password or key here; enter secrets in your own shell or through <code>/mcp</code>.</div>
-      <div class="note dim small" id="chat-mode"></div>
-    </form>
   </section>
 </main>
 
@@ -118,6 +114,8 @@
 <script src="/static/views.js"></script>
 <script src="/static/usage.js"></script>
 <script src="/static/features.js"></script>
+<script src="/static/split.js"></script>
+<script src="/static/chat.js"></script>
 <script src="/static/settings.js"></script>
 <script src="/static/jira.js"></script>
 <script src="/static/whiteboard.js"></script>

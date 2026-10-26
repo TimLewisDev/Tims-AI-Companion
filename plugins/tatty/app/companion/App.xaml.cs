@@ -188,7 +188,7 @@ namespace TtCompanion
                 using var doc = JsonDocument.Parse(text);
                 var events = doc.RootElement;
                 bool first = since < 0;
-                bool attention = false, question = false, anything = false;
+                bool question = false, anything = false;
                 string? finished = null; // the loudest milestone in this batch
                 foreach (var ev in events.EnumerateArray())
                 {
@@ -197,16 +197,15 @@ namespace TtCompanion
                     string type = ev.GetProperty("type").GetString() ?? "";
                     if (type == "ask") { openAsks.Add(ev.GetProperty("id").GetString() ?? ""); question = true; }
                     else if (type == "answered") openAsks.Remove(ev.GetProperty("id").GetString() ?? "");
-                    else if (type == "card" && ev.TryGetProperty("kind", out var kind) && kind.GetString() == "reply") attention = true;
                     else if (type == "milestone") finished = Louder(finished, Tier(ev));
                 }
                 // The first poll is the backlog, not the news: it says what is
                 // still waiting and nothing else, or a window opened beside a
                 // day's work would arrive mid-party.
-                if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; attention = false; finished = null; anything = false; }
+                if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; finished = null; anything = false; }
                 if (anything) tatty.Poke();
                 tatty.HasBadge = openAsks.Count > 0;
-                if (question || attention || finished != null) PopUp(activate: false);
+                if (question || finished != null) PopUp(activate: false);
                 if (finished != null) Celebrate(finished == "big");
                 else if (question) Asked();
                 effects.Asking(Waiting);
@@ -259,20 +258,8 @@ namespace TtCompanion
 
         private async Task StopServer()
         {
-            await ClaudeTerminal("close");
             try { await http.PostAsync("/api/stop", new StringContent("{}", Encoding.UTF8, "application/json")); } catch (Exception) { }
             Quit();
-        }
-
-        // Tatty's own Claude session (the one the Desktop shortcut starts, in a
-        // terminal kept minimised): the server finds its window by title, because
-        // it started it. "show" brings it back; "close" ends it with Tatty, and
-        // the conversation is on disk for the next time. Nothing happens, and
-        // nothing is said, when this Tatty has no such session.
-        private async Task ClaudeTerminal(string what)
-        {
-            if (what == "show") Native.AllowAnyForeground();
-            try { await http.PostAsync($"/api/claude/{what}", new StringContent("{}", Encoding.UTF8, "application/json")); } catch (Exception) { }
         }
 
         // The Desktop shortcut and a taskbar pin start Tatty by running `tatty.sh
@@ -618,7 +605,6 @@ namespace TtCompanion
                 PickRoot(null);
             });
             menu.Items.Add("Hide until something happens", null, (_, _) => OnPageMessage("hide"));
-            menu.Items.Add("Show Claude's terminal", null, async (_, _) => await ClaudeTerminal("show"));
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add(PreviewMenu());
             menu.Items.Add(new Forms.ToolStripSeparator());
@@ -647,7 +633,7 @@ namespace TtCompanion
             }));
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add("Close Tatty's window", null, async (_, _) => await StopServer());
-            menu.Items.Add("Quit Tatty", null, async (_, _) => { await ClaudeTerminal("close"); Quit(); });
+            menu.Items.Add("Quit Tatty", null, (_, _) => Quit());
             return menu;
         }
 

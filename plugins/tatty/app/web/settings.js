@@ -1,6 +1,7 @@
 // Tatty's Settings page (#settings, the gear beside the connection badge): the
 // updates -- the version running, whether Tatty keeps itself up to date, and
-// buttons to look and to install by hand -- and what the Jira board reads. The
+// buttons to look and to install by hand -- what the Jira board reads, and how
+// chats work (chat.js): who sums up a side chat's context, and their model. The
 // server does the work (server.py's "updates") and says how it went as "update"
 // events.
 // Uses app.js's $, el and api, and features.js's pageEls and ago.
@@ -60,7 +61,32 @@ function drawSettings() {
       el("p", { class: "upd-status " + u.status, id: "update-status" }, words !== undefined && words !== "" ? words : (u.message || "")),
       el("p", { class: "dim small" }, when),
       el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null)),
+    chatSettings(s),
     jiraSettings(s)));
+}
+
+// Chats (chat.js): who writes the summary of what a side chat is about, and the
+// model chats answer with. Each is saved as it changes; the next chat uses it.
+function chatSettings(s) {
+  const radio = (value, label, hint) => {
+    const input = el("input", { type: "radio", name: "chat-summary", id: "chat-summary-" + value, value });
+    input.checked = s.chatSummary === value;
+    input.addEventListener("change", async () => {
+      try { settingsNow = await api("/api/settings", { chatSummary: value }); } catch (e) { alert(String(e)); }
+    });
+    return el("label", { class: "opt-row" }, input, el("span", {}, el("strong", {}, label), el("br"), el("span", { class: "dim small" }, hint)));
+  };
+  const model = el("input", { id: "set-chatModel", value: s.chatModel, "aria-label": "Model" });
+  model.addEventListener("change", async () => {
+    try { settingsNow = await api("/api/settings", { chatModel: model.value.trim() }); } catch (e) { alert(String(e)); }
+  });
+  return el("section", { id: "chat-settings" },
+    el("h3", {}, "Chats"),
+    el("p", { class: "dim small" }, "A side chat starts with what you picked out of a workflow and a summary of it, put in front of your first message."),
+    radio("tatty", "Tatty writes the summary", "Where the piece came from, in a line. Free, and at once."),
+    radio("model", "A small model writes the summary", "Two or three sentences on what the piece is about. Costs a little, and takes a few seconds."),
+    el("label", { class: "field-row" }, el("strong", {}, "Model"), model,
+      el("span", { class: "dim small" }, "The model chats answer with. Blank: Claude Code's own choice.")));
 }
 
 // The Jira board's reading (jira.js): which tickets, through which MCP server

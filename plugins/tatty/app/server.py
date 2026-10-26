@@ -17,9 +17,9 @@ log and Tatty's own settings (the root folder, the projects chosen per feature).
 usage: server.py serve  [--cwd DIR] [--bash PATH]       run in the foreground
        server.py open   [--cwd DIR] [--bash PATH] [--no-browser]
                                                         start it detached if needed, open the page
-       server.py boot   [--project DIR] [--bash PATH] [--no-browser] [--no-claude]
-                                                        what the Desktop shortcut runs: the server, the
-                                                        tray app and Tatty's own Claude session
+       server.py boot   [--project DIR] [--bash PATH] [--no-browser]
+                                                        what the Desktop shortcut runs: the server and
+                                                        the tray app
        server.py install [--bash PATH]                  Desktop and Start menu shortcuts (Windows)
        server.py uninstall                              take them away
        server.py status                                 attached | attached (claude mod) | not open
@@ -61,7 +61,8 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "stories.js": "text/javascript", "stories.css": "text/css",
           "tasks.js": "text/javascript", "tasks.css": "text/css",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
-          "ids.js": "text/javascript",
+          "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
+          "chat.js": "text/javascript", "chat.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -222,6 +223,8 @@ class State:
         self.update_lock = threading.Lock()
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
+        self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
+        self.chat_lock = threading.Lock()  # one change to a chat's file at a time
         self.last_activity = time.time()
 
     def touch(self):
@@ -277,7 +280,10 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      # the Jira board (see "Jira" below): what it shows, through which MCP server and model,
                      # on which site when the sign-in reaches several, and the project last started in
                      "jiraJql": "assignee = currentUser() AND sprint in openSprints() ORDER BY Rank",
-                     "jiraServer": "atlassian", "jiraModel": "haiku", "jiraSite": "", "jiraProject": ""}
+                     "jiraServer": "atlassian", "jiraModel": "haiku", "jiraSite": "", "jiraProject": "",
+                     # chats (see "chats" below): who writes a side chat's summary of what it is about
+                     # (tatty: Tatty itself, no tokens; model: a small model), and the model chats use ("" Claude's own)
+                     "chatSummary": "tatty", "chatModel": ""}
 
 
 def load_settings():
@@ -294,6 +300,8 @@ def save_settings(changes):
     """Keep the known keys of `changes` that have the right type; returns all the settings."""
     now = load_settings()
     now.update({k: v for k, v in changes.items() if k in now and isinstance(v, type(now[k]))})
+    if now["chatSummary"] not in ("tatty", "model"):
+        now["chatSummary"] = "tatty"
     home().mkdir(parents=True, exist_ok=True)
     tmp = home() / "settings.json.tmp"
     tmp.write_text(json.dumps(now, indent=2), encoding="utf-8")
@@ -1017,17 +1025,12 @@ def session_name(base):
     return name
 
 
-def launch(state, project, name, prompt, tag, title="", claude_args=None, join=False):
+def launch(state, project, name, prompt, tag):
     """Open a new terminal running claude in the project, named, started with the
     prompt, carrying TATTY_SESSION so Tatty's mod there reports to this window.
     From a checkout (not an install) the session loads this plugin with
     --plugin-dir. Windows Terminal, else a cmd window; elsewhere Terminal.app;
     else the command to run is given. TATTY_DRYRUN=1 opens nothing.
-
-    Tatty's own session (see boot_claude) differs in three ways: claude_args
-    replaces `-n name prompt` (to resume a conversation), join=True carries
-    TATTY_JOIN instead of a tag, and title puts it in a window of its own with
-    that fixed title, which is how minimise_window finds it again.
     Returns (ok, what happened or the command to run)."""
     import shlex
     import shutil
@@ -1035,13 +1038,10 @@ def launch(state, project, name, prompt, tag, title="", claude_args=None, join=F
     if not claude:
         return False, "There's no claude command on this machine's PATH."
     args = [] if installed() else ["--plugin-dir", PLUGIN.as_posix()]
-    exports = {"TATTY_SESSION": tag} if tag else {}
-    if join:
-        exports["TATTY_JOIN"] = "1"
+    exports = {"TATTY_SESSION": tag}
     if os.environ.get("TATTY_HOME"):
         exports["TATTY_HOME"] = Path(os.environ["TATTY_HOME"]).as_posix()
-    tail = claude_args if claude_args is not None else ["-n", name, prompt]
-    run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, *tail])
+    run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, "-n", name, prompt])
     script = "\n".join([
         "#!/usr/bin/env bash",
         "export MSYS2_ARG_CONV_EXCL='*'",  # no path conversion of /tt-workflow and friends
@@ -1051,18 +1051,14 @@ def launch(state, project, name, prompt, tag, title="", claude_args=None, join=F
         f"exec {run}", ""])
     manual = f"cd {shlex.quote(Path(project).as_posix())} && " + " ".join(f"{k}={shlex.quote(v)}" for k, v in exports.items()) + " " + run
     if os.environ.get("TATTY_DRYRUN") == "1":
-        return True, f"Name: {name}\nPrompt: {prompt}\n" + (f"Title: {title}\n" if title else "") + f"Would run: {manual}"
-    out = Path(os.environ.get("TEMP") or os.environ.get("TMPDIR") or "/tmp") / f"tatty-session-{tag or 'own'}.sh"
+        return True, f"Name: {name}\nPrompt: {prompt}\nWould run: {manual}"
+    out = Path(os.environ.get("TEMP") or os.environ.get("TMPDIR") or "/tmp") / f"tatty-session-{tag}.sh"
     out.write_text(script, encoding="utf-8", newline="\n")
     try:
         if os.name == "nt":
             bash = shutil.which(state.bash) or state.bash
-            # A titled terminal is always a window of its own (-w new), never a
-            # tab in one the person is using: it is about to be minimised, and
-            # the title is fixed so that claude can't rename it out from under us.
-            wt = ["wt.exe", "-w", "new", "--title", title, "--suppressApplicationTitle"] if title else ["wt.exe"]
-            for argv in ([*wt, "-d", str(Path(project)), bash, str(out)],
-                         ["cmd.exe", "/c", "start", title, *(["/min"] if title else []), "/D", str(Path(project)), bash, str(out)]):
+            for argv in (["wt.exe", "-d", str(Path(project)), bash, str(out)],
+                         ["cmd.exe", "/c", "start", "", "/D", str(Path(project)), bash, str(out)]):
                 try:
                     if subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                       timeout=20, creationflags=NO_WINDOW).returncode == 0:
@@ -1146,6 +1142,54 @@ def sessions_of(state, folder):
     """The sessions Start opened for this feature, newest first."""
     return sorted((state.session_view(s) for s in state.sessions.values() if is_folder(s["folder"], folder)),
                   key=lambda s: -s["started"])
+
+
+def sessions_open(state):
+    """Every session Start opened, in any feature, that hasn't had its tab closed:
+    the Features page's tabs, oldest first so a tab keeps its place."""
+    with state.cond:
+        return sorted((state.session_view(s) for s in state.sessions.values() if s.get("feature") and not s.get("closed")),
+                      key=lambda s: s["started"])
+
+
+def claude_pid(s):
+    """The process id of a started session's claude, from the registry claude keeps
+    in <config>/sessions/<pid>.json: by the Claude session id its mod reported, else
+    (not heard from yet) by the name it was started with. 0 when there is none."""
+    for f in (config_dir() / "sessions").glob("*.json"):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        same = d.get("sessionId") == s["claude"] if s.get("claude") else d.get("name") == s.get("name")
+        if same and isinstance(d.get("pid"), int):
+            return d["pid"]
+    return 0
+
+
+def stop_session(state, tag):
+    """Close a started session's tab: end its claude if it is still going (its
+    terminal goes with it), and keep it out of the tabs from then on.
+    (http code, answer {ok, killed, said})."""
+    with state.cond:
+        s = state.sessions.get(tag)
+        if not s or not s.get("feature"):
+            return 404, {"error": "no such session"}
+        live = state.session_view(s)["status"] != "ended"
+    killed, said = False, ""
+    if live:
+        pid = claude_pid(s)
+        if pid:
+            kill_pid(pid)
+            killed = True
+        else:
+            said = "Couldn't find its process: close its terminal yourself."
+    with state.cond:
+        s["closed"] = True
+        if live:
+            s.update(status="ended", stopped=True)
+    state.session_event(tag)
+    return 200, {"ok": True, "killed": killed, "said": said}
 
 
 def resolve_link(folder, target):
@@ -2312,15 +2356,23 @@ def git_bash_path(state):
     return str(p)
 
 
-def kill_tree(p):
+def kill_pid(pid):
+    """End a process and what it started."""
     if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], stdin=subprocess.DEVNULL,
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     else:
         try:
-            os.killpg(p.pid, 9)
+            os.killpg(pid, 9)
         except OSError:
-            p.kill()
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+
+
+def kill_tree(p):
+    kill_pid(p.pid)
 
 
 def start_stories_run(state, folder, b):
@@ -2369,9 +2421,7 @@ def start_stories_run(state, folder, b):
     if os.environ.get("TATTY_STORIES_MODEL"):
         argv += ["--model", os.environ["TATTY_STORIES_MODEL"]]
     design = toolbox_plugin("design")
-    if design and not str(design).replace("\\", "/").lower().startswith(
-            (Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins").as_posix().lower(),
-             (config_dir() / "plugins").as_posix().lower())):
+    if design and from_checkout(design):
         # found only in a checkout: load it (and core) into the run
         core = toolbox_plugin("core")
         argv += ["--plugin-dir", str(design)] + (["--plugin-dir", str(core)] if core else [])
@@ -3829,6 +3879,381 @@ def watch_tasks(state):
         wait = min(10.0, wait * 2) if time.time() - began > 0.2 else 2.0
 
 
+# ---------------------------------------------------------------- chats
+# A chat is a Claude conversation of its own with no terminal: a main chat (the
+# "+" on either side of a workflow's split) or a side chat about a piece of a
+# workflow (selected text or a code block), which starts with that piece and
+# what is around it. Each turn is one headless `claude -p`: the first with
+# --session-id, the rest with --resume, so the conversation is Claude Code's own
+# and outlives a restart. A chat may only read (Read, Glob, Grep, and the
+# toolbox's skills through Skill), so it can never get in a running workflow's
+# way, and it carries no tag, so nothing of it reaches a workflow's panel or
+# inbox. What Tatty keeps is <home>/chats/<id>.json. See docs/toolbox-contract.md, "Chats".
+
+CHAT_ID = re.compile(r"^c-[0-9a-f]{8}$")
+CHAT_TIMEOUT = float(os.environ.get("TATTY_CHAT_TIMEOUT", "600"))
+CHAT_BUDGET = os.environ.get("TATTY_CHAT_BUDGET", "2")  # US dollars, at most, per turn
+CHAT_TOOLS = ["Read", "Glob", "Grep", "Skill"]
+CHAT_PLUGINS = ("core", "engineering", "design", "production")  # the toolbox's, loaded from a checkout
+MAX_SELECTED, MAX_AROUND, MAX_MESSAGE = 4000, 6000, 20000
+SUMMARY_TIMEOUT = 120
+SUMMARY_SYSTEM = ("You summarise, in two or three plain sentences, a piece of a software workflow that someone "
+                  "has picked out to ask about: what it is and what it is about, using the text around it. "
+                  "Answer with the summary only.")
+
+
+def chats_dir():
+    return home() / "chats"
+
+
+def read_chat(cid):
+    if not CHAT_ID.match(str(cid)):
+        return None
+    got = read_json(chats_dir() / f"{cid}.json", {})
+    return got if got.get("id") == cid else None
+
+
+def write_chat(c):
+    chats_dir().mkdir(parents=True, exist_ok=True)
+    tmp = chats_dir() / f"{c['id']}.json.tmp"
+    tmp.write_text(json.dumps(c, indent=2), encoding="utf-8")
+    os.replace(tmp, chats_dir() / f"{c['id']}.json")
+
+
+def change_chat(state, cid, change):
+    """Read a chat, change(c) it and write it back, one change at a time: (the chat or None)."""
+    with state.chat_lock:
+        c = read_chat(cid)
+        if c is None:
+            return None
+        change(c)
+        write_chat(c)
+        return c
+
+
+def chat_view(state, c, full=True):
+    """A chat as the page sees it: what is kept, and whether it is answering now (busy, step)."""
+    run = state.chat_runs.get(c["id"])
+    out = {**c, "busy": bool(run), "step": run["step"] if run else ""}
+    if not full:
+        out.pop("messages", None)
+        out.pop("context", None)
+    return out
+
+
+def chats_open(state):
+    """Every chat whose tab hasn't been closed, oldest first."""
+    out = []
+    for f in sorted(chats_dir().glob("c-*.json")) if chats_dir().is_dir() else []:
+        c = read_chat(f.stem)
+        if c and not c.get("closed"):
+            out.append(chat_view(state, c, full=False))
+    return sorted(out, key=lambda c: c.get("created", 0))
+
+
+def chat_projects(state):
+    """The folders a new chat could work in, the most recent first: the workflows'
+    projects, the chats', and the ones chosen on feature pages."""
+    seen, out = set(), []
+    picks = [s.get("project", "") for s in sorted(state.sessions.values(), key=lambda s: -s.get("started", 0))]
+    picks += [c.get("project", "") for c in reversed(chats_open(state))]
+    picks += list(chosen_projects().values())
+    for p in picks:
+        key = str(p).replace("\\", "/").rstrip("/").lower()
+        if p and key not in seen and os.path.isdir(p):
+            seen.add(key)
+            out.append(Path(p).as_posix())
+    return out
+
+
+def clean_context(ctx):
+    """What a side chat is about, as the page picked it out: the source (where it
+    came from), the selected text (or code block) and the text around it. None if unusable."""
+    if not isinstance(ctx, dict):
+        return None
+    src = ctx.get("source") if isinstance(ctx.get("source"), dict) else {}
+    source = {k: text_of(src.get(k), 200) for k in ("feature", "tag", "session", "file", "doc", "heading", "lang")}
+    source["from"] = "code" if src.get("from") == "code" else "selection"
+    ts = src.get("ts")
+    source["ts"] = float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0 else 0.0
+    selected = str(ctx.get("selected", "")).strip("\n")[:MAX_SELECTED]
+    if not selected.strip():
+        return None
+    return {"source": source, "selected": selected, "around": str(ctx.get("around", "")).strip()[:MAX_AROUND],
+            "summary": "", "summaryBy": "tatty"}
+
+
+def chat_context_summary(ctx):
+    """Tatty's own summary of a side chat's context, made without a model: what
+    was picked out and where from, in one sentence."""
+    s = ctx["source"]
+    what = (f"A {s['lang']} code block" if s["lang"] else "A code block") if s["from"] == "code" else "Selected text"
+    if s["file"]:
+        where = f"the document {s['doc'] or Path(s['file']).stem}" + (f", section \"{s['heading']}\"" if s["heading"] else "")
+    elif s["session"] or s["tag"]:
+        when = time.strftime(" at %H:%M", time.localtime(s["ts"])) if s["ts"] else ""
+        where = f"a reply in the workflow {s['session'] or s['tag']}{when}"
+    else:
+        where = "a chat"
+    feature = f", in the feature {s['feature']}" if s["feature"] else ""
+    return f"{what} from {where}{feature}."
+
+
+def context_block(ctx):
+    """The context that goes in front of the first message of a side chat."""
+    s = ctx["source"]
+    rows = [f"Summary: {ctx['summary']}", f"Picked out: {'a code block' if s['from'] == 'code' else 'selected text'}"]
+    rows += [f"{label}: {s[k]}" for k, label in (("feature", "Feature"), ("session", "Workflow session"),
+                                                  ("file", "Document"), ("heading", "Section"), ("lang", "Language"))
+             if s[k]]
+    rows += ["<selected>", ctx["selected"], "</selected>"]
+    if ctx["around"]:
+        rows += ["<around>", ctx["around"], "</around>"]
+    return "<context>\n" + "\n".join(rows) + "\n</context>"
+
+
+def model_summary(state, c):
+    """Have a small model summarise a side chat's context (the chatSummary setting
+    "model"); Tatty's own summary stays when it can't. Runs on a thread of its own."""
+    ctx = c["context"]
+    summary, cost = "", 0.0
+    claude = claude_path()
+    if claude:
+        argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+        argv += ["-p", context_block(ctx), "--system-prompt", SUMMARY_SYSTEM, "--model", "haiku",
+                 "--output-format", "json", "--tools", "", "--setting-sources", "user", "--disable-slash-commands",
+                 "--no-session-persistence", "--strict-mcp-config"]
+        env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+        try:
+            p = quiet_run(state, argv, cwd=c["project"], timeout=SUMMARY_TIMEOUT, env=env)
+            out = json.loads(p.stdout)
+            if isinstance(out, dict) and not out.get("is_error"):
+                summary = " ".join(str(out.get("result") or "").split())[:1000]
+                cost = float(out.get("total_cost_usd") or 0)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+
+    def keep(c):
+        if summary:
+            c["context"].update(summary=summary, summaryBy="model")
+        else:
+            c["context"]["summaryNote"] = "The model couldn't summarise it, so this is Tatty's own summary."
+        c["cost"] = round(c.get("cost", 0) + cost, 4)
+    change_chat(state, c["id"], keep)
+    with state.cond:
+        state.chat_runs.pop(c["id"], None)
+    state.emit("chat", id=c["id"], busy=False, done=True)
+
+
+def chat_new(state, b):
+    """Make a chat: (http code, answer). kind main or side (a side chat needs its
+    context). It works in the project asked for, else its workflow's, else its
+    feature's; nothing runs until its first message."""
+    import uuid
+    kind = str(b.get("kind", ""))
+    if kind not in ("main", "side"):
+        return 400, {"error": "kind: main or side"}
+    tag = str(b.get("tag", ""))[:20]
+    s = state.sessions.get(tag, {}) if tag else {}
+    feature = text_of(b.get("feature"), 200) or s.get("feature", "")
+    project = str(b.get("project") or "").strip() or s.get("project", "")
+    if not project and feature and feature_dir(feature):
+        project = feature_project(feature_dir(feature), docs_of(feature_dir(feature)))[0] or ""
+    if not project or not os.path.isdir(project):
+        return 400, {"error": "Choose the project this chat works in."}
+    ctx = None
+    if kind == "side":
+        ctx = clean_context(b.get("context"))
+        if not ctx:
+            return 400, {"error": "A side chat needs the text it is about."}
+        ctx["summary"] = chat_context_summary(ctx)
+    cid = "c-" + secrets.token_hex(4)
+    first = " ".join(ctx["selected"].split())[:40] if ctx else ""
+    c = {"id": cid, "kind": kind, "title": f"About: {first}" if ctx else "Chat", "project": Path(project).as_posix(),
+         "feature": feature, "tag": tag, "claudeSession": str(uuid.uuid4()), "context": ctx, "messages": [],
+         "cost": 0.0, "created": time.time(), "closed": False}
+    with state.chat_lock:
+        write_chat(c)
+    if ctx and load_settings()["chatSummary"] == "model":
+        with state.cond:
+            state.chat_runs[cid] = {"step": "Summarising", "proc": None, "cancelled": False}
+        threading.Thread(target=model_summary, args=(state, c), daemon=True).start()
+    state.emit("chat", id=cid, busy=cid in state.chat_runs, new=True)
+    return 200, chat_view(state, c)
+
+
+def from_checkout(plugin):
+    """True when a toolbox plugin was found only in a checkout (not through its
+    pointer folder or Claude Code's install), so a headless run must be given it."""
+    return not str(plugin).replace("\\", "/").lower().startswith(
+        (Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins").as_posix().lower(),
+         (config_dir() / "plugins").as_posix().lower()))
+
+
+def conversation_exists(session_id):
+    """True when Claude Code has kept this conversation: it writes
+    projects/<project>/<id>.jsonl once there is a message in it. --resume needs
+    one; a conversation not kept yet has to start with --session-id."""
+    return any((config_dir() / "projects").glob(f"*/{session_id}.jsonl"))
+
+
+def chat_argv(state, claude, c):
+    sid = c["claudeSession"]
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    argv += ["-p", "--output-format", "stream-json", "--verbose",
+             "--resume" if conversation_exists(sid) else "--session-id", sid,
+             # only reading: nothing that writes or runs a command
+             "--tools", ",".join(CHAT_TOOLS), "--allowedTools", *CHAT_TOOLS,
+             "--permission-mode", "dontAsk", "--setting-sources", "user", "--strict-mcp-config",
+             "--max-budget-usd", CHAT_BUDGET]
+    if load_settings()["chatModel"].strip():
+        argv += ["--model", load_settings()["chatModel"].strip()]
+    if not installed():
+        argv += ["--plugin-dir", PLUGIN.as_posix()]  # for /tatty:side-chat
+    for name in CHAT_PLUGINS:
+        p = toolbox_plugin(name)
+        if p and from_checkout(p):
+            argv += ["--plugin-dir", str(p)]
+    return argv
+
+
+def chat_say(state, b):
+    """Send a message in a chat: one headless turn, on a thread of its own: (http code, answer).
+    The first message of a side chat goes after /tatty:side-chat and the chat's context."""
+    cid = str(b.get("id", ""))
+    c = read_chat(cid)
+    if not c or c.get("closed"):
+        return 404, {"error": "no such chat"}
+    text = str(b.get("text", "")).strip()
+    if not text or len(text) > MAX_MESSAGE:
+        return 400, {"error": f"Say something (at most {MAX_MESSAGE} characters)."}
+    claude = claude_path()
+    if not claude:
+        return 501, {"error": "There's no claude command on this machine's PATH."}
+    if not os.path.isdir(c["project"]):
+        return 400, {"error": f"The chat's project isn't there any more: {c['project']}"}
+    with state.cond:
+        if cid in state.chat_runs:
+            return 409, {"error": "This chat is still answering."}
+        state.chat_runs[cid] = {"step": "Starting", "proc": None, "cancelled": False}
+    lead = c["kind"] == "side" and c.get("context") and not any(m["role"] == "you" for m in c["messages"])
+    prompt = f"/tatty:side-chat\n{context_block(c['context'])}\n\n{text}\n" if lead else text + "\n"
+    c = change_chat(state, cid, lambda c: c["messages"].append(
+        {"role": "you", "text": text, "ts": time.time(), "withContext": bool(lead)}))
+    threading.Thread(target=chat_turn_work, args=(state, c, chat_argv(state, claude, c), prompt), daemon=True).start()
+    state.emit("chat", id=cid, busy=True, step="Starting")
+    return 202, chat_view(state, c)
+
+
+def chat_step(block):
+    """A tool call in a chat's turn, as a line for the page."""
+    name, inp = block.get("name", ""), block.get("input") or {}
+    if name == "Read":
+        return f"Reading {Path(str(inp.get('file_path', ''))).name or 'a file'}"
+    if name == "Grep":
+        return f"Searching for {text_of(inp.get('pattern'), 60) or 'something'}"
+    if name == "Glob":
+        return f"Looking for {text_of(inp.get('pattern'), 60) or 'files'}"
+    if name == "Skill":
+        return f"Running {text_of(inp.get('skill') or inp.get('command'), 60) or 'a skill'}"
+    return name or "Working"
+
+
+def chat_turn_work(state, c, argv, prompt):
+    import tempfile
+    cid, run = c["id"], state.chat_runs[c["id"]]
+    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
+    final, texts, steps, error, said = None, [], [], "", []
+    try:
+        with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as errf:
+            p = subprocess.Popen(argv, cwd=c["project"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf,
+                                 encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW,
+                                 start_new_session=os.name != "nt")
+            run["proc"] = p
+            if run["cancelled"]:
+                kill_tree(p)
+            timer = threading.Timer(CHAT_TIMEOUT, lambda: (run.update(timedOut=True), kill_tree(p)))
+            timer.start()
+            try:
+                p.stdin.write(prompt)
+                p.stdin.close()
+            except OSError:
+                pass
+            for line in p.stdout:
+                state.touch()
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "assistant":
+                    for block in (msg.get("message") or {}).get("content") or []:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "text" and str(block.get("text", "")).strip():
+                            texts.append(str(block["text"]).strip())
+                        elif block.get("type") == "tool_use":
+                            run["step"] = chat_step(block)
+                            steps.append(run["step"])
+                            state.emit("chat", id=cid, busy=True, step=run["step"])
+                elif msg.get("type") == "result":
+                    final = msg
+            p.wait()
+            timer.cancel()
+            errf.seek(0)
+            said = [ln.strip() for ln in errf.read().splitlines() if ln.strip()]
+        if run["cancelled"]:
+            error = "Stopped."
+        elif run.get("timedOut"):
+            error = f"The answer took longer than {int(CHAT_TIMEOUT // 60)} minutes and was stopped."
+        elif final is None:
+            error = said[-1] if said else f"claude exited {p.returncode} saying nothing"
+        elif final.get("is_error") or final.get("subtype") != "success":
+            error = str(final.get("result") or final.get("subtype") or "the turn failed")[:400]
+    except OSError as e:
+        error = f"couldn't run claude: {e}"
+    reply = str(final.get("result") or "").strip() if final and not error else ""
+    reply = reply or "\n\n".join(texts)
+    cost = float(final.get("total_cost_usd") or 0) if final else 0.0
+
+    def keep(c):
+        if reply:
+            c["messages"].append({"role": "claude", "text": reply, "ts": time.time(), "steps": steps[:40],
+                                  "cost": round(cost, 4)})
+        if error:
+            c["messages"].append({"role": "error", "text": error, "ts": time.time()})
+        c["cost"] = round(c.get("cost", 0) + cost, 4)
+    change_chat(state, cid, keep)
+    with state.cond:
+        state.chat_runs.pop(cid, None)
+    state.emit("chat", id=cid, busy=False, done=True, ok=not error, error=error)
+
+
+def chat_stop(state, cid):
+    """Stop the turn a chat is answering (or its summary). False when it isn't answering."""
+    run = state.chat_runs.get(cid)
+    if not run:
+        return False
+    run["cancelled"] = True
+    if run.get("proc"):
+        kill_tree(run["proc"])
+    return True
+
+
+def chat_close(state, cid):
+    """Close a chat's tab: stop its turn, and keep it out of the tabs. Its file
+    and Claude's conversation are kept."""
+    chat_stop(state, cid)
+    c = change_chat(state, cid, lambda c: c.update(closed=True))
+    if not c:
+        return 404, {"error": "no such chat"}
+    state.emit("chat", id=cid, closed=True)
+    return 200, {"ok": True}
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -3935,10 +4360,19 @@ class Handler(BaseHTTPRequestHandler):
             msg = st.wait_for(lambda: box.popleft() if box else None, wait)
             return self.send(200, {"status": "message", "text": msg} if msg is not None else {"status": "empty"})
         if path == "/api/sessions":
+            if not q.get("name", [""])[0]:
+                return self.send(200, sessions_open(st))
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             return self.send(200, sessions_of(st, folder))
+        if path == "/api/chats":
+            return self.send(200, chats_open(st))
+        if path == "/api/chat":
+            c = read_chat(q.get("id", [""])[0])
+            return self.send(200, chat_view(st, c)) if c else self.send(404, {"error": "no such chat"})
+        if path == "/api/chat/projects":
+            return self.send(200, chat_projects(st))
         if path == "/api/root":
             return self.send(200, root_info())
         if path == "/api/settings":
@@ -4181,6 +4615,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/new-design":
             code, answer = new_design(st, b.get("name", ""), b.get("intake", ""))
             return self.send(code, answer)
+        if path == "/api/session/stop":
+            code, answer = stop_session(st, tag)
+            return self.send(code, answer)
+        if path == "/api/chat/new":
+            code, answer = chat_new(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path == "/api/chat/say":
+            code, answer = chat_say(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path == "/api/chat/stop":
+            return self.send(200, {"ok": chat_stop(st, str(b.get("id", "")))})
+        if path == "/api/chat/close":
+            code, answer = chat_close(st, str(b.get("id", "")))
+            return self.send(code, answer)
         if path == "/api/stories/cancel":
             return self.send(200, {"ok": cancel_stories_run(st)})
         if path == "/api/whiteboard":
@@ -4250,10 +4698,6 @@ class Handler(BaseHTTPRequestHandler):
             st.mod_seen = 0.0
             st.emit("status", mod=False, session="")
             return self.send(200, {"ok": True})
-        if path in ("/api/claude/show", "/api/claude/close"):
-            # Tatty's own Claude terminal (see boot_claude), kept minimised: the tray
-            # app brings it back, and closes it when Tatty is quit.
-            return self.send(200, {"ok": window_do(CLAUDE_TITLE, path.rsplit("/", 1)[1])})
         if path == "/api/stop":
             self.send(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -4494,135 +4938,27 @@ def greet(info, cwd, bash):
 
 # ---------------------------------------------------------------- the desktop app
 # What the Desktop shortcut starts. The launcher (app/launcher, built by install)
-# only finds this plugin and runs `tatty.sh boot`; the rest is here: the server,
-# the tray companion, and Tatty's own Claude session -- the one that answers what
-# is typed in Tatty when no terminal of the person's is open. It is resumed from
-# last time and its terminal is minimised the moment it appears.
+# only finds this plugin and runs `tatty.sh boot`; the rest is here: the server
+# and the tray companion. (Tatty no longer keeps a Claude session of its own in a
+# terminal: its chats are headless, see "chats".)
 
-CLAUDE_TITLE = "Tatty (Claude)"  # the fixed title of that session's terminal window
 APP = Path(os.environ.get("LOCALAPPDATA") or home()) / "Tatty"
 LAUNCHER = HERE / "launcher"  # the launcher's sources, shipped with the plugin
 LAUNCHER_BUILD = APP / "launcher"
 LAUNCHER_EXE = LAUNCHER_BUILD / "bin" / "Tatty.exe"
 BOOT_JSON = APP / "boot.json"  # what the launcher needs to find this plugin
 SHOW_EVENT = "Local\\tatty-companion-show"  # the tray app waits on it to come forward
-MOD_WAIT = 45  # seconds Tatty's Claude session has to load before it is brought up for the person
 
 
-def read_link():
-    """The saved link to Tatty's own conversation, claude-link.json in Tatty's home."""
-    try:
-        link = json.loads((home() / "claude-link.json").read_text(encoding="utf-8"))
-        return link if isinstance(link, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def claude_link(project=None):
-    """Tatty's own conversation: {project, sessionId, name}, saved so the next boot
-    resumes it. The project is the folder claude runs in (a conversation belongs to
-    one, so choosing another starts a new conversation): the one asked for, else the
-    saved one, else Tatty's root when it exists, else the home folder."""
-    import uuid
-    link = read_link()
+def boot_project(project=None):
+    """The folder the server starts in: the one asked for, else Tatty's root when
+    it exists, else the home folder."""
     if project:
         if not os.path.isdir(project):
             raise ValueError(f"no such folder: {project}")
-        if Path(project).resolve().as_posix() != link.get("project"):
-            link = {"project": Path(project).resolve().as_posix()}
-    if not link.get("project") or not os.path.isdir(link["project"]):
-        root, is_set = tatty_root()
-        link = {"project": (root if is_set and root.is_dir() else Path.home()).as_posix()}
-    link.setdefault("sessionId", str(uuid.uuid4()))
-    link["name"] = "Tatty"
-    path = home() / "claude-link.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(link, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-    return link
-
-
-def conversation_exists(session_id):
-    """True when Claude Code has kept this conversation: it writes
-    projects/<project>/<id>.jsonl once there is a message in it. --resume needs
-    one; a session that never got a message has to start with --session-id."""
-    return any((config_dir() / "projects").glob(f"*/{session_id}.jsonl"))
-
-
-def boot_claude(bash, link):
-    """Open Tatty's own Claude session in a terminal of its own, resuming the
-    saved conversation, and minimise the terminal. Returns (ok, what happened)."""
-    import types
-    sid = link["sessionId"]
-    tail = ["--resume" if conversation_exists(sid) else "--session-id", sid, "-n", link["name"]]
-    ok, said = launch(types.SimpleNamespace(bash=bash), link["project"], link["name"], "", "",
-                      title=CLAUDE_TITLE, claude_args=tail, join=True)
-    if ok and os.environ.get("TATTY_DRYRUN") != "1":
-        minimise_window(CLAUDE_TITLE)
-    return ok, said
-
-
-def find_window(title):
-    """The handle of the visible top-level window with exactly this title, or 0
-    (Windows only; a minimised window still counts)."""
-    if os.name != "nt":
-        return 0
-    import ctypes
-    from ctypes import wintypes
-    user32 = ctypes.windll.user32
-    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user32.IsWindowVisible.argtypes = [wintypes.HWND]
-    found = []
-
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    def each(hwnd, _):
-        if user32.GetWindowTextLengthW(hwnd) == len(title):  # cheap test first
-            buf = ctypes.create_unicode_buffer(len(title) + 1)
-            user32.GetWindowTextW(hwnd, buf, len(title) + 1)
-            if buf.value == title and user32.IsWindowVisible(hwnd):
-                found.append(hwnd)
-                return False
-        return True
-
-    user32.EnumWindows(each, 0)
-    return found[0] if found else 0
-
-
-def window_do(title, what):
-    """minimise | show | close the window with this title. False when there isn't one."""
-    hwnd = find_window(title)
-    if not hwnd:
-        return False
-    import ctypes
-    from ctypes import wintypes
-    user32 = ctypes.windll.user32
-    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-    if what == "minimise":
-        user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE: down without taking the focus
-    elif what == "show":
-        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        user32.SetForegroundWindow(hwnd)
-    elif what == "close":
-        user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE: claude's conversation is on disk
-    return True
-
-
-def minimise_window(title, timeout=20):
-    """Minimise the window with this title as soon as it exists, and again a moment
-    later, because Windows Terminal can bring itself forward while its first tab
-    starts. True when it was found."""
-    end = time.time() + timeout
-    while time.time() < end:
-        if window_do(title, "minimise"):
-            time.sleep(1.5)
-            window_do(title, "minimise")
-            return True
-        time.sleep(0.15)
-    return False
+        return Path(project).resolve().as_posix()
+    root, is_set = tatty_root()
+    return (root if is_set and root.is_dir() else Path.home()).as_posix()
 
 
 def wake_companion():
@@ -4642,19 +4978,6 @@ def wake_companion():
     return bool(h)
 
 
-def wait_for_mod(info, seconds):
-    """Wait for a Claude session's mod to say hello to the server. True if it did."""
-    end = time.time() + seconds
-    while time.time() < end:
-        try:
-            if call(info, "GET", "/api/status", timeout=3).get("mod"):
-                return True
-        except (OSError, urllib.error.URLError, ValueError):
-            pass
-        time.sleep(1)
-    return False
-
-
 def write_boot_json(bash):
     """Tell the launcher where this plugin and bash are. The launcher runs from a
     stable place; the plugin moves with every update, so each boot says where it is now."""
@@ -4664,13 +4987,14 @@ def write_boot_json(bash):
     os.replace(tmp, BOOT_JSON)
 
 
-def boot(bash, project, no_ui, no_claude):
-    """Everything the Desktop shortcut starts, in order: the server, the tray app
-    (or a browser tab), and Tatty's own Claude session. Each step is skipped when it
-    is already there, so starting Tatty twice just brings it forward. 0 ok; 2 when
-    the Claude session could not be started (the rest is up)."""
+def boot(bash, project, no_ui, no_claude=False):
+    """Everything the Desktop shortcut starts, in order: the server and the tray
+    app (or a browser tab). Each step is skipped when it is already there, so
+    starting Tatty twice just brings it forward. 0 ok; 2 when the folder asked
+    for isn't there. (no_claude is still taken, and does nothing: there is no
+    Claude session of Tatty's own to start any more.)"""
     try:
-        link = claude_link(project)
+        cwd = boot_project(project)
     except ValueError as e:
         print(f"boot: {e}", file=sys.stderr)
         return 2
@@ -4678,37 +5002,14 @@ def boot(bash, project, no_ui, no_claude):
         write_boot_json(bash)
     info = alive()
     if not info:
-        info = start_detached(link["project"], bash)
-        greet(info, link["project"], bash)
+        info = start_detached(cwd, bash)
+        greet(info, cwd, bash)
     print(info["url"])
     if not no_ui:
         ui = show_ui(info)
         if ui.startswith("companion (already") and wake_companion():
             ui = "companion (brought forward)"
         print(f"ui={ui}")
-    if no_claude:
-        return 0
-    if call(info, "GET", "/api/status").get("mod"):
-        print("claude=already attached")  # a session of the person's is working with Tatty
-    elif os.environ.get("TATTY_DRYRUN") != "1" and find_window(CLAUDE_TITLE):  # a dry run looks at no real window
-        # Its terminal is up but its mod never joined: it's stuck on a question.
-        window_do(CLAUDE_TITLE, "show")
-        print("claude=waiting: its terminal is showing, because it hasn't joined Tatty")
-    else:
-        ok, said = boot_claude(bash, link)
-        if not ok:
-            print(f"boot: Tatty's Claude session didn't start: {said}", file=sys.stderr)
-            return 2
-        if os.environ.get("TATTY_DRYRUN") == "1":
-            print(f"claude=started\n{said}")
-        elif wait_for_mod(info, MOD_WAIT):
-            print("claude=started")
-        else:
-            # Claude hasn't loaded Tatty's mod: it is most likely asking something only
-            # the person can answer (trust this folder, sign in), in a terminal nobody
-            # can see. Bring it up rather than leave it stuck.
-            window_do(CLAUDE_TITLE, "show")
-            print("claude=waiting: its terminal is showing, because it may be asking you something")
     return 0
 
 

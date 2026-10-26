@@ -68,7 +68,8 @@ function copyable(text) {
 }
 
 // ------------------------------------------------------------- routing
-// #modes · #mode · #home · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard
+// #modes · #mode · #home · #workflows/<session tag> · #chats/<chat id> (chat.js)
+// · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard
 // · #toolbox · #settings · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
@@ -79,6 +80,8 @@ function parseRoute() {
     const doc = parts[2] === "doc" ? parts[3] : null;
     return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard" };
   }
+  if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1] };
+  if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
   if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
   if (parts[0] === "whiteboards") return { page: "whiteboards" };
   if (parts[0] === "design" && parts[1]) return { page: "design", name: parts[1], card: parts[2] === "card" ? parts[3] : null };
@@ -114,6 +117,11 @@ function showPage(which) {
 async function route() {
   if (companion && !document.body.classList.contains("expanded")) return; // the bubble shows the feed only
   const r = parseRoute();
+  if (paneLeaveBlocked(r)) return; // (split.js: an unsaved edit in the documents pane)
+  lastHash = location.hash;
+  // The page is drawn again: its live panels are gone (each draws its own).
+  livePanels.clear();
+  usageViews.clear();
   // A page of one mode's own is shown in that mode (modes.js).
   const owner = PAGE_MODE[r.page];
   if (owner && owner !== currentMode && installedModes.includes(owner)) applyMode(owner);
@@ -123,6 +131,8 @@ async function route() {
   showPage(r.page);
   if (r.page === "modes") renderLanding(pageEls.modes);
   else if (r.page === "mode") renderModeHome(pageEls.mode);
+  else if (r.page === "home" && r.tag) await renderWorkflowTab(r.tag);
+  else if (r.page === "home" && r.chat) await renderChatTab(r.chat); // chat.js
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
@@ -165,32 +175,63 @@ function switchMode(id) {
 
 window.addEventListener("hashchange", route);
 document.addEventListener("tt-expanded", route);
-$("#chat-toggle").addEventListener("click", () => document.body.classList.toggle("nochat"));
 
 // A document link ([[Doc#Heading]], [[Doc#^block]], [[#Heading]], Doc.md#part)
 // opens the document in place, at that heading or block. The document is found
 // as Obsidian finds it: by name, in this feature, else in another feature under
-// Tatty's root (the server looks). Outside a feature page a link does nothing.
+// Tatty's root (the server looks). On a workflow (or chat) tab it opens in the documents
+// split beside it (split.js), in a document there it stays in the pane;
+// elsewhere outside a feature page a link does nothing. (Right-clicking a link
+// offers the other ways to open it: split.js's link menu.)
 document.addEventListener("click", async e => {
   const a = e.target.closest("a.doclink");
   if (!a) return;
   e.preventDefault();
-  const r = parseRoute();
-  const f = r.page === "feature" && featureCache.get(r.name);
-  if (!f) return;
-  const want = a.dataset.doc || "", at = a.dataset.at || "";
-  let name = f.name, file = null;
-  if (!want) file = r.doc; // [[#Heading]]: this document
-  else {
-    const hit = [...f.docList, ...f.notes].find(d => d.file.replace(/\.md$/i, "").split("/").pop().toLowerCase() === want.toLowerCase());
-    if (hit) file = hit.file;
-    else {
-      try { const got = await api(`/api/resolve?name=${encodeURIComponent(f.name)}&target=${encodeURIComponent(want)}`); name = got.name; file = got.file; } catch { /* missing */ }
-    }
-  }
-  if (!file) { a.classList.add("missing"); a.title = `No document called “${want}” under Tatty's root`; return; }
-  location.hash = featureHref(name, file, at);
+  const got = await linkTarget(a);
+  if (!got) return;
+  if (got.missing) { a.classList.add("missing"); a.title = `No document called “${a.dataset.doc || ""}” under Tatty's root`; return; }
+  openItem(got.name, got.file, got.at); // (ids.js: the split on a workflow tab, else the document's page)
 });
+
+// Where a document link points: { name, file, at } (name: the feature the document
+// is in), { missing: true } when nothing is called that, or null when the link is
+// somewhere with no feature to look in (the document-link rules above).
+async function linkTarget(a) {
+  const at = a.dataset.at || "";
+  if (a.dataset.feature && a.dataset.file) return { name: a.dataset.feature, file: a.dataset.file, at }; // a planning ID's link names its item
+  const r = parseRoute();
+  let feature = "", fallback = null;
+  if (a.closest(".dpane")) {
+    const t = paneActiveTab();
+    if (t) { feature = t.feature; fallback = t.file || null; } // (a chat's tab has its feature, and no file)
+  } else if (r.tag) {
+    const s = sessionInfo.get(r.tag);
+    if (s) feature = s.feature;
+  } else if (r.chat) {
+    feature = (chatList.get(r.chat) || {}).feature || ""; // chat.js
+  } else if (r.page === "feature" && featureCache.get(r.name)) { feature = r.name; fallback = r.doc; }
+  if (!feature) return null;
+  let f;
+  try { f = await featureOf(feature); } catch { return null; }
+  const got = await resolveDoc(f, a.dataset.doc || "", fallback);
+  return got ? { ...got, at } : { missing: true };
+}
+
+// A feature as /api/feature gives it, kept for the session.
+async function featureOf(name) {
+  let f = featureCache.get(name);
+  if (!f) { f = await api("/api/feature?name=" + encodeURIComponent(name)); featureCache.set(name, f); }
+  return f;
+}
+
+// The document a link names, as { name, file } (name: the feature it is in), or null.
+// No name (a [[#Heading]] link) is the document the link is in, `fallback`.
+async function resolveDoc(f, want, fallback) {
+  if (!want) return fallback ? { name: f.name, file: fallback } : null;
+  const hit = [...f.docList, ...f.notes].find(d => d.file.replace(/\.md$/i, "").split("/").pop().toLowerCase() === want.toLowerCase());
+  if (hit) return { name: f.name, file: hit.file };
+  try { const got = await api(`/api/resolve?name=${encodeURIComponent(f.name)}&target=${encodeURIComponent(want)}`); return got.file ? { name: got.name, file: got.file } : null; } catch { return null; }
+}
 
 // The heading, block or planning ID's item a link points at, inside a rendered
 // document. A block id that isn't there yet (a document written before block ids)
@@ -231,13 +272,17 @@ function goToTarget(main, at) {
 
 // ------------------------------------------------------------- home
 
+let homeDraw = 0; // counts the draws of the Features page (the list and each workflow tab), so a slow one can't land on a newer
 async function renderHome(quiet) {
   const box = pageEls.home;
-  if (!quiet) box.replaceChildren(el("p", { class: "dim pad" }, "Looking for features…"));
+  const mine = ++homeDraw;
+  const put = (...nodes) => box.replaceChildren(workflowTabs(""), ...nodes);
+  if (!quiet) put(el("p", { class: "dim pad" }, "Looking for features…"));
   let data;
-  try { data = await api("/api/features"); } catch (e) { box.replaceChildren(el("p", { class: "st missing pad" }, String(e))); return; }
+  try { data = await api("/api/features"); } catch (e) { if (mine === homeDraw) put(el("p", { class: "st missing pad" }, String(e))); return; }
+  if (mine !== homeDraw) return;
   const r = data.root;
-  if (!r.isSet || !r.exists) { box.replaceChildren(rootSetup(r)); return; }
+  if (!r.isSet || !r.exists) { put(rootSetup(r)); return; }
   // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
   const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
     el("strong", {}, "Tatty can't find the TT toolbox. "),
@@ -253,12 +298,116 @@ async function renderHome(quiet) {
     homeNote);
   const form = newFeatureForm.node();
   if (!data.features.length) {
-    box.replaceChildren(missing, head, form, el("div", { class: "card empty-state" },
+    put(missing, head, form, el("div", { class: "card empty-state" },
       el("p", {}, "No features yet. ", el("strong", {}, "New feature…"), " makes one here and starts it with the workflow."),
       el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")));
     return;
   }
-  box.replaceChildren(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)));
+  put(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)));
+}
+
+// ------------------------------------------------------------- workflow tabs
+// Every session Start opened has a tab along the top of the Features page, next
+// to the list of features: the session's live panel (#workflows/<tag>). Each is
+// a Claude session of its own, so several workflows can run at once. Closing a
+// tab stops its session (the server ends that claude) and it is not shown again.
+// After them come the chats that aren't in the documents pane (#chats/<id>,
+// chat.js), and the "+" that opens a new one.
+
+const tabList = new Map();  // tag -> the session, for each open tab
+let tabsNode = null;        // the strip: one element, moved into whichever page shows it
+let tabsActive = "";        // the tab on screen ("" for the list of features, "chat:<id>" for a chat)
+let tabsLoad = null;        // the timer that asks the server for the tabs, once for a burst of events
+
+function workflowTabs(active, reload = true) {
+  tabsActive = active;
+  if (!tabsNode) tabsNode = el("nav", { class: "wtabs", "aria-label": "Workflows" });
+  drawTabs();
+  if (reload) loadTabs();
+  return tabsNode;
+}
+
+function drawTabs() {
+  if (!tabsNode) return;
+  tabsNode.replaceChildren(
+    el("a", { class: "wtab features" + (tabsActive ? "" : " on"), href: "#home" }, "Features"),
+    ...[...tabList.values()].map(s => {
+      const info = sessionInfo.get(s.tag) || s;
+      const [text, cls] = sessionStatus(info, sessionEvents.get(s.tag) || []);
+      return el("span", { class: "wtab" + (s.tag === tabsActive ? " on" : ""), "data-tag": s.tag },
+        el("a", { href: "#workflows/" + encodeURIComponent(s.tag), title: `${info.feature}: ${text}` },
+          el("span", { class: "wdot " + cls }), info.name),
+        el("button", { type: "button", class: "x", title: LIVE.has(info.status) ? "Stop this workflow and close the tab" : "Close the tab",
+          "aria-label": "Close " + info.name, onclick: () => closeTab(s.tag) }, "×"));
+    }),
+    ...[...chatList.values()].filter(c => !paneTabs.some(t => t.key === "chat/" + c.id) || tabsActive === "chat:" + c.id).map(c =>
+      el("span", { class: "wtab chat" + (tabsActive === "chat:" + c.id ? " on" : ""), "data-chat": c.id },
+        el("a", { href: "#chats/" + encodeURIComponent(c.id), title: `${c.kind === "side" ? "Side chat" : "Chat"} in ${c.project}` },
+          el("span", { class: "chat-mark", "aria-hidden": "true" }, "💬"), c.title || "Chat"),
+        el("button", { type: "button", class: "x", title: "Close this chat", "aria-label": "Close " + (c.title || "the chat"),
+          onclick: () => closeChatTab(c.id) }, "×"))),
+    el("button", { type: "button", class: "wtab-add", title: "New chat", "aria-label": "New chat", onclick: () => newChat("strip") }, "+"));
+}
+
+async function loadTabs() {
+  try {
+    const [list] = await Promise.all([api("/api/sessions"), loadChats()]); // (chat.js)
+    tabList.clear();
+    for (const s of list) { tabList.set(s.tag, s); sessionInfo.set(s.tag, s); }
+  } catch { /* the badge says so */ }
+  drawTabs();
+}
+
+async function closeChatTab(id) {
+  if (!(await closeChat(id))) return; // chat.js
+  dropChatFromPane(id); // split.js
+  if (tabsActive === "chat:" + id) location.hash = "#home";
+  else drawTabs();
+}
+function loadTabsSoon() {
+  clearTimeout(tabsLoad);
+  tabsLoad = setTimeout(loadTabs, 250);
+}
+
+async function closeTab(tag) {
+  const info = sessionInfo.get(tag) || tabList.get(tag);
+  if (info && LIVE.has(info.status) && !confirm(`Stop ${info.name}? Its Claude session is ended, and anything it is in the middle of is lost.`)) return;
+  try {
+    const r = await api("/api/session/stop", { tag });
+    if (r.said) alert(r.said);
+  } catch (e) { alert(e.message || e); return; }
+  tabList.delete(tag);
+  if (tabsActive === tag) location.hash = "#home";
+  else drawTabs();
+}
+
+async function renderWorkflowTab(tag) {
+  const box = pageEls.home;
+  tabsActive = tag;
+  const mine = ++homeDraw;
+  await loadTabs();
+  if (mine !== homeDraw) return;
+  const s = tabList.get(tag);
+  if (!s) {
+    box.replaceChildren(workflowTabs(tag, false), el("div", { class: "pad" },
+      el("p", { class: "dim" }, "That session isn't here any more: Tatty was restarted, or its tab was closed."),
+      el("a", { href: "#home" }, "Back to the features")));
+    return;
+  }
+  const info = sessionInfo.get(tag) || s;
+  let rail = "";
+  if (info.feature) {
+    try { const f = await featureOf(info.feature); rail = documentsRail(featureNav(f, null, false, { side: true }), f.name); } catch { /* the workflow is still there without it */ }
+    if (mine !== homeDraw) return;
+  }
+  const ended = info.status === "ended";
+  const panel = sessionPanel({ name: info.feature }, info, () => { location.hash = featureHref(info.feature); }, ended, "Open feature");
+  const w = usageWidget(info.usage);
+  usageViews.set(tag, { tag, update: w.update });
+  box.replaceChildren(el("div", { class: "wf-layout" }, rail, splitLayout([workflowTabs(tag, false), el("div", { class: "wf-body" }, panel, w.node)])));
+  markRail();
+  clearInterval(homeTimer);
+  homeTimer = setInterval(refreshRail, 20000);
 }
 
 function featureCard(f) {
@@ -392,30 +541,88 @@ async function renderFeature(name, doc, at, board) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, featureNav(f, doc, board), main));
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board), f.name), main));
   if (board) await featureBoard(f, main);
   else if (doc) {
     if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
   } else main.append(overview(f));
 }
 
-function featureNav(f, current, board) {
-  const item = (label, href, on, sub) => el("a", { class: "fnav-item" + (on ? " on" : ""), href }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
-  const docs = f.docList.map(d => item(d.doc, featureHref(f.name, d.file), current === d.file, (f.docList.some(o => o.prefix !== d.prefix) ? d.prefix + " · " : "") + ago(d.updated)));
+// The feature's left rail: its overview, whiteboard, documents and working notes.
+// On a workflow tab (opts.side) the documents open in the side panel (split.js)
+// instead of taking the page, and the ones open there are marked (markRail).
+function featureNav(f, current, board, opts = {}) {
+  const item = (label, href, on, sub, file) => {
+    const a = el("a", { class: "fnav-item" + (on ? " on" : ""), href }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
+    if (opts.side && file) {
+      a.dataset.key = f.name + "/" + file;
+      a.addEventListener("click", e => { e.preventDefault(); openInPane(f.name, file, ""); });
+    }
+    return a;
+  };
+  const docs = f.docList.map(d => item(d.doc, featureHref(f.name, d.file), current === d.file, (f.docList.some(o => o.prefix !== d.prefix) ? d.prefix + " · " : "") + ago(d.updated), d.file));
   const groups = new Map();
   for (const n of f.notes) { if (!groups.has(n.group)) groups.set(n.group, []); groups.get(n.group).push(n); }
-  const notesOpen = f.notes.some(n => n.file === current);
+  const notesOpen = opts.notesOpen ?? f.notes.some(n => n.file === current);
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current && !board),
+    item("Overview", featureHref(f.name), !current && !board && !opts.side),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
       el("summary", {}, `Working notes (${f.notes.length})`),
       [...groups].map(([g, ns]) => el("div", {}, el("div", { class: "dim small" }, g),
-        ns.map(n => item(n.name, featureHref(f.name, n.file), current === n.file))))) : "");
+        ns.map(n => item(n.name, featureHref(f.name, n.file), current === n.file, "", n.file))))) : "");
+}
+
+// The rail with its collapse button at the top left: collapsed it is a narrow
+// strip holding just the button. Collapsed or not is kept for next time.
+function documentsRail(nav, feature) {
+  const rail = el("div", { class: "frail" + (localStorage.getItem("tt-rail") === "collapsed" ? " collapsed" : ""), "data-feature": feature });
+  const toggle = el("button", { type: "button", class: "rail-toggle" });
+  const sync = () => {
+    const collapsed = rail.classList.contains("collapsed");
+    toggle.textContent = collapsed ? "»" : "«";
+    toggle.title = collapsed ? "Show the documents panel" : "Hide the documents panel";
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  };
+  toggle.addEventListener("click", () => {
+    rail.classList.toggle("collapsed");
+    localStorage.setItem("tt-rail", rail.classList.contains("collapsed") ? "collapsed" : "open");
+    sync();
+  });
+  sync();
+  rail.append(el("div", { class: "frail-bar" }, toggle), nav);
+  return rail;
+}
+
+// Marks the rail's documents that are open in the side panel (called by split.js
+// whenever its tabs change): the one on show, and the others with a bar.
+function markRail() {
+  for (const it of document.querySelectorAll(".frail .fnav-item[data-key]")) {
+    const open = paneTabs.some(t => t.key === it.dataset.key);
+    it.classList.toggle("on", it.dataset.key === paneActive);
+    it.classList.toggle("open", open && it.dataset.key !== paneActive);
+  }
+}
+
+// A workflow tab's rail is read again now and then: the workflow writes documents.
+async function refreshRail() {
+  const rail = document.querySelector("#page-home .frail[data-feature]");
+  if (!rail || document.hidden) return;
+  const name = rail.dataset.feature, old = rail.querySelector(".fnav");
+  if (!old) return;
+  featureCache.delete(name);
+  let f;
+  try { f = await featureOf(name); } catch { return; }
+  if (!old.isConnected) return;
+  const top = old.scrollTop, fresh = featureNav(f, null, false, { side: true, notesOpen: !!(old.querySelector(".fnav-notes") || {}).open });
+  old.replaceWith(fresh);
+  fresh.scrollTop = top;
+  markRail();
 }
 
 // A feature's whiteboard (#feature/<name>/whiteboard): its documents as cards on
@@ -439,7 +646,7 @@ async function featureBoard(f, main) {
     },
     onOpen: id => { location.hash = featureHref(f.name, id); },
     onError: t => { note.textContent = t; },
-    empty: "No documents yet. Sketch the plan here: T for text (or double-click), 💬 for a comment, ↗ to join two things." });
+    empty: "No documents yet. Sketch the plan here: T for text (or double-click), 💬 for a comment, ↗ to join two things. Drag with the middle button to move around." });
   main.replaceChildren(el("div", { class: "board-page" }, note, wb.element));
   wb.setCards(d.docs.map(x => ({ id: x.file, w: W, h: H,
     node: el("div", { class: "wbdoc", tabindex: "0", role: "button", "aria-label": `Open ${x.doc}` },
@@ -531,13 +738,11 @@ function startPanel(f, row, index, close) {
     try {
       const r = await api("/api/start", { name: f.name, row: index, values });
       if (r.ok) {
-        // show it live straight away: the panel fills in as the session reports
+        // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
           started: Date.now() / 1000, status: "starting" });
-        f.sessions = [sessionInfo.get(r.tag), ...(f.sessions || [])];
-        f.showWhere = false;
-        const main = $(".fmain");
-        if (main) main.replaceChildren(overview(f));
+        featureCache.delete(f.name);
+        location.hash = "#workflows/" + encodeURIComponent(r.tag);
       }
       else result.replaceChildren(el("p", { class: "st missing" }, "Couldn't open a terminal here. Run this yourself:"), el("pre", {}, r.said));
     } catch (e) { result.replaceChildren(el("p", { class: "st missing" }, String(e.message || e))); go.disabled = false; }
@@ -547,38 +752,51 @@ function startPanel(f, row, index, close) {
 }
 
 // ------------------------------------------------------------- a started session, live
-// While a session Start opened is running, the feature page shows it instead of
-// "Where it stands": what it is doing (each tool call, prompt and reply, as its
-// Tatty mod reports them), its questions to answer in place, and a box to
-// message it. Events come from app.js's stream ("tt-event"); history is replayed
-// when the page connects, so the panel can be drawn at any time.
+// A session Start opened has a tab on the Features page (see workflowTabs) that
+// shows what it is doing (each tool call, prompt and reply, as its Tatty mod
+// reports them), its questions to answer in place, and a box to message it. Its
+// feature's page points to the tab. Events come from app.js's stream
+// ("tt-event"); history is replayed when the page connects, so the panel can be
+// drawn at any time.
 
 const sessionEvents = new Map(); // tag -> [activity / ask / say events]
 const sessionInfo = new Map();   // tag -> the latest "session" event
 const LIVE = new Set(["starting", "running", "lost", "unseen"]);
-let livePanel = null;            // the panel on screen: { tag, update(ev) }
-let usageView = null;            // the usage widget on screen: { tag, update(usage) }
+const livePanels = new Map();    // tag -> the panel on screen: { tag, update(ev) }
+const usageViews = new Map();    // tag -> the usage widget on screen: { tag, update(usage) }
 
 document.addEventListener("tt-event", e => {
   const ev = e.detail;
   if (!ev.tag) return;
+  let moved = false; // the session is new, or its status changed
   if (ev.type === "session") {
+    const was = sessionInfo.get(ev.tag);
+    moved = !was || was.status !== ev.status;
     sessionInfo.set(ev.tag, ev);
-    if (usageView && usageView.tag === ev.tag) usageView.update(ev.usage);
+    const usage = usageViews.get(ev.tag);
+    if (usage) usage.update(ev.usage);
   }
   else {
     if (!sessionEvents.has(ev.tag)) sessionEvents.set(ev.tag, []);
     sessionEvents.get(ev.tag).push(ev);
   }
-  if (livePanel && livePanel.tag === ev.tag) livePanel.update(ev);
-  else if (ev.type === "session") {
-    // a session of the feature on screen started, or changed: show it (once,
-    // however many session events arrive together, as on a reconnect's replay)
-    const r = parseRoute();
-    if (r.page === "feature" && !r.doc && ev.feature === r.name) {
-      clearTimeout(redrawSoon);
-      redrawSoon = setTimeout(() => { featureCache.delete(r.name); route(); }, 300);
-    }
+  const panel = ev.closed ? null : livePanels.get(ev.tag); // (a closed tab is going: nothing to redraw)
+  if (panel) panel.update(ev);
+  if (ev.type !== "session") return;
+  // The tabs: a closed one goes (here or in another window), a new one comes, a dot changes.
+  if (ev.closed) {
+    tabList.delete(ev.tag);
+    if (parseRoute().tag === ev.tag) location.hash = "#home";
+  }
+  else if (!tabList.has(ev.tag) && ev.feature) loadTabsSoon();
+  else if (tabList.has(ev.tag)) tabList.set(ev.tag, ev);
+  if (pageEls.home.classList.contains("on")) drawTabs();
+  // a session of the feature on screen started, or changed: its page says so (once,
+  // however many session events arrive together, as on a reconnect's replay)
+  const r = parseRoute();
+  if (moved && r.page === "feature" && !r.doc && ev.feature === r.name) {
+    clearTimeout(redrawSoon);
+    redrawSoon = setTimeout(() => { featureCache.delete(r.name); route(); }, 300);
   }
 });
 let redrawSoon = null;
@@ -619,7 +837,7 @@ function activityRow(ev, rows) {
   if (ev.kind === "reply") {
     const body = mdNode(ev.text);
     linkIds(body, ev.feature || (sessionInfo.get(ev.tag) || {}).feature);
-    const li = el("li", { class: "act reply" }, el("span", { class: "who" }, "Claude"), body);
+    const li = el("li", { class: "act reply", "data-ts": String(ev.ts || "") }, el("span", { class: "who" }, "Claude"), body);
     if (ev.text.split("\n").length > 8 || ev.text.length > 700) {
       li.classList.add("folded");
       li.append(el("button", { type: "button", class: "more", onclick: e => { li.classList.toggle("folded"); e.target.textContent = li.classList.contains("folded") ? "More" : "Less"; } }, "More"));
@@ -629,7 +847,7 @@ function activityRow(ev, rows) {
   return el("li", { class: "act" }, ev.text || "");
 }
 
-function sessionPanel(f, s, showWhere, quiet) {
+function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   const tag = s.tag;
   const events = () => sessionEvents.get(tag) || [];
   const status = el("span", { class: "chip" });
@@ -670,34 +888,37 @@ function sessionPanel(f, s, showWhere, quiet) {
   const ended = () => (sessionInfo.get(tag) || s).status === "ended";
   const panel = el("section", { class: "card live" },
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
-      el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, "Where it stands")),
+      el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
     doing, questions,
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
     ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent));
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();
   if (quiet) return panel; // an ended session's record: nothing more will come
-  livePanel = {
+  livePanels.set(tag, {
     tag, update(ev) {
       if (list.firstChild && list.firstChild.classList.contains("dim")) list.firstChild.remove();
       add(ev);
       refresh();
       if (ev.type === "session" && ev.status === "ended") { featureCache.delete(f.name); route(); }
     },
-  };
+  });
   return panel;
 }
 
 // The panel's derived states (lost, unseen) change with time, not events: ask again now and then.
 setInterval(async () => {
-  if (!livePanel || document.hidden || parseRoute().page !== "feature") return;
+  if ((!livePanels.size && !usageViews.size) || document.hidden || !["feature", "home"].includes(parseRoute().page)) return;
   try {
-    for (const s of await api("/api/sessions?name=" + encodeURIComponent(parseRoute().name))) {
+    for (const s of await api("/api/sessions")) {
       const was = sessionInfo.get(s.tag);
       sessionInfo.set(s.tag, s);
-      if (usageView && usageView.tag === s.tag) usageView.update(s.usage);
-      if (livePanel.tag === s.tag && (!was || was.status !== s.status)) livePanel.update({ type: "session", ...s });
+      if (tabList.has(s.tag)) tabList.set(s.tag, s);
+      const usage = usageViews.get(s.tag), panel = livePanels.get(s.tag);
+      if (usage) usage.update(s.usage);
+      if (panel && (!was || was.status !== s.status)) panel.update({ type: "session", ...s });
     }
+    if (pageEls.home.classList.contains("on")) drawTabs();
   } catch { /* the badge says so */ }
 }, 10000);
 
@@ -739,24 +960,27 @@ function overview(f) {
   const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"),
     stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
-  // A session Start opened that is still going takes the place of "Where it stands".
-  livePanel = null;
-  const live = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s).find(s => LIVE.has(s.status));
-  let process = where;
-  if (live) {
-    const panel = sessionPanel(f, live, () => { f.showWhere = !f.showWhere; redraw(); });
-    process = f.showWhere ? el("div", {}, panel, where) : panel;
-  }
-  const last = !live && (f.sessions || []).map(s => sessionInfo.get(s.tag) || s)[0];
+  // Each session Start opened that is still going has a tab on the Features page: one line
+  // here says so and goes there. (More than one may be going: they are separate sessions.)
+  const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
+  const going = sessions.filter(s => LIVE.has(s.status));
+  const tabs = going.map(s => {
+    const [text, cls] = sessionStatus(s, sessionEvents.get(s.tag) || []);
+    return el("section", { class: "card live-link" }, el("span", { class: "pulse" }), el("strong", {}, s.name), chip(text, cls),
+      el("a", { class: "right", href: "#workflows/" + encodeURIComponent(s.tag) }, "Open its tab"));
+  });
+  const process = tabs.length ? el("div", {}, tabs, where) : where;
+  const live = going[0];
+  const last = !live && sessions[0];
   const ended = last && last.status === "ended" ? el("details", { class: "card ended-session" },
     el("summary", {}, `Last session: ${last.name}, ended`), sessionPanel(f, last, () => {}, true)) : "";
   // What the live session has used so far, or the last one's final total: above the Timeline.
-  usageView = null;
+  usageViews.clear();
   const shown = live || last;
   let usage = "";
   if (shown) {
     const w = usageWidget(shown.usage);
-    usageView = { tag: shown.tag, update: w.update };
+    usageViews.set(shown.tag, { tag: shown.tag, update: w.update });
     usage = w.node;
   }
   return el("div", { class: "overview" },
@@ -848,7 +1072,7 @@ async function showDoc(f, file, main, at) {
       editing = null;
       body.replaceChildren(mode === "edit" ? editor(f, file, d, meta, u => { changedAt.textContent = "changed " + ago(u); })
         : viewOf(kind, d.text, ctx) || mdNode(d.text));
-      if (mode === "view") linkIds(body, f.name); // the IDs it cites, as links to their items
+      if (mode === "view") { linkIds(body, f.name); codeActions(body); } // the IDs it cites, as links to their items; app.js's code bars
     };
     const pick = m => {
       if (m === docMode.get()) return;
