@@ -636,6 +636,7 @@ def check_stories(p):
     bx, by = box[0] + 30, box[1] + box[3] - 60  # the board's bottom-left, clear of notes and the panel
     t0 = p.js("document.querySelector('#board-world').style.transform")
     drag(p, bx + 40, by - 20, bx + 140, by - 70)  # the left button on the background moves nothing
+    res["newPanel"] = check_new_panel(p, "designs", "#new-board", "#new-board-form")
     res["leftDrag"] = {"still": p.js("document.querySelector('#board-world').style.transform") == t0}
     drag(p, bx + 40, by - 20, bx + 140, by - 70, "middle")
     res["pan"] = {"before": t0, "after": p.js("document.querySelector('#board-world').style.transform")}
@@ -912,6 +913,26 @@ def check_tasks(p):
     p.js("location.hash = '#tasks'; 1")
     wait(p, "currentMode === 'production' && document.querySelectorAll('#page-tasks .task-board-card, #page-tasks .empty-state').length > 0")
     res["navInProduction"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
+def check_new_panel(p, page, button, form):
+    """The list page's "create new": no form on the page, the cards first, and the
+    form in a panel from the right that Esc, x and the dimmed page each close."""
+    res = {}
+    root = f"#page-{page}"
+    res["formOnPage"] = p.js(f"!!document.querySelector('{root} {form}')")
+    res["cardsFirst"] = p.js(f"(document.querySelector('{root} .fgrid') || document.querySelector('{root} .empty-state')).getBoundingClientRect().top")
+    for how in ("Esc", "x", "shade"):
+        p.js(f"document.querySelector('{button}').click(); 1")
+        res[how + "Open"] = p.js(f"!!document.querySelector('.spanel {form}') && document.activeElement.closest('.spanel') !== null")
+        if how == "Esc":
+            p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1")
+        elif how == "x":
+            p.js("document.querySelector('.spanel-head button').click(); 1")
+        else:
+            p.js("document.querySelector('.sshade').click(); 1")
+        res[how + "Closed"] = p.js("!document.querySelector('.spanel') && !document.querySelector('.sshade')")
+    return res
+
+
     res["list"] = p.js("[...document.querySelectorAll('#page-tasks .task-board-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())")
     res["newPanel"] = check_new_panel(p, "tasks", "#new-task-board", "#new-task-board-form")
     if not res["list"]:
@@ -930,6 +951,7 @@ def check_tasks(p):
     first, second = p.js("[...document.querySelectorAll('#tasks-board .tcol[data-col^=c]')].slice(0, 2).map(c => c.dataset.col)")
     tid = p.js(f"document.querySelector('.tcol[data-col={first}] .tcard').dataset.id")
     a, b = centre(f".tcol[data-col={first}] .tcard[data-id='{tid}']"), centre(f".tcol[data-col={second}] .tcards")
+    res["newPanel"] = check_new_panel(p, "tasks", "#new-task-board", "#new-task-board-form")
     drag(p, a[0], a[1], b[0], b[1])
     settle()
     res["dragAcross"] = {"id": tid, "status": status(tid), "inSecond": p.js(f"!!document.querySelector('.tcol[data-col={second}] .tcard[data-id=\"{tid}\"]')"),
