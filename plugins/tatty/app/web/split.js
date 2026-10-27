@@ -347,7 +347,7 @@ function askItem(pick) {
 function showMenu(x, y, items, label, heading = "", gone = null) {
   closeLinkMenu();
   const buttons = items.map(it => {
-    const b = el("button", { type: "button", role: "menuitem", class: "linkmenu-item", title: it.ok ? it.title : it.why }, it.label);
+    const b = el("button", { type: "button", role: "menuitem", class: "linkmenu-item" + (it.danger ? " danger" : ""), title: it.ok ? it.title : it.why }, it.label);
     b.disabled = !it.ok;
     b.addEventListener("click", () => { linkMenuGone = null; closeLinkMenu(); it.run(); });
     return b;

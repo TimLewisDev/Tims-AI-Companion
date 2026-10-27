@@ -62,7 +62,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "tasks.js": "text/javascript", "tasks.css": "text/css",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
-          "chat.js": "text/javascript", "chat.css": "text/css",
+          "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -541,7 +541,7 @@ def root_info():
     root, is_set = tatty_root()
     features = root / "features"
     return {"root": root.as_posix(), "features": features.as_posix(), "design": (root / "design").as_posix(),
-            "tasks": (root / "tasks").as_posix(), "isSet": is_set,
+            "tasks": (root / "tasks").as_posix(), "archive": (root / "archive").as_posix(), "isSet": is_set,
             "exists": features.is_dir(), "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
 
 
@@ -953,12 +953,13 @@ def features_list(state):
     base = Path(info["features"])
     toolbox = toolbox_core() is not None
     if not base.is_dir():
-        return {"root": info, "features": [], "toolbox": toolbox}
+        return {"root": info, "features": [], "toolbox": toolbox, "archived": []}
     folders = [d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=6) as pool:
         found = list(pool.map(lambda d: feature_summary(state, d), folders))
-    return {"root": info, "features": sorted(found, key=lambda f: -f["updated"]), "toolbox": toolbox}
+    return {"root": info, "features": sorted(found, key=lambda f: -f["updated"]), "toolbox": toolbox,
+            "archived": archived_list()}
 
 
 # ---------------------------------------------------------------- starting a session
@@ -980,11 +981,15 @@ def chosen_projects():
     return out
 
 
+def write_projects(rows):
+    home().mkdir(parents=True, exist_ok=True)
+    (home() / "projects.tsv").write_text("".join(f"{f}\t{p}\n" for f, p in sorted(rows.items())), encoding="utf-8")
+
+
 def choose_project(folder, project):
     rows = chosen_projects()
     rows[folder.as_posix().rstrip("/").lower()] = Path(project).as_posix()
-    home().mkdir(parents=True, exist_ok=True)
-    (home() / "projects.tsv").write_text("".join(f"{f}\t{p}\n" for f, p in sorted(rows.items())), encoding="utf-8")
+    write_projects(rows)
 
 
 def feature_project(folder, docs):
@@ -3373,7 +3378,7 @@ def task_workflow(state, name, begun):
     the feature, and the newest session Start opened for it."""
     folder = feature_dir(name)
     if not folder:
-        return {"feature": name, "missing": True}
+        return {"feature": name, "missing": True, "archived": archive_dir(name) is not None}
     s = feature_summary(state, folder)
     route = s["route"] if s["route"] != "new" else (begun.get("mode") or "new")
     sess = sessions_of(state, folder)
@@ -4010,6 +4015,274 @@ def workflow_cancel(state, name, client=""):
     return 200, answer
 
 
+# ---------------------------------------------------------------- archiving and deleting a feature
+
+_ARCHIVED_LOCK = threading.Lock()
+
+
+def archive_dir(name):
+    """An archived feature's folder, or None (the same name rules as feature_dir)."""
+    return area_dir("archive", name)
+
+
+def archived_at():
+    """feature name -> when it was archived (<home>/archived.json)."""
+    return read_json(home() / "archived.json", {})
+
+
+def archived_set(name, when):
+    """Record (or, with when None, forget) when a feature was archived."""
+    with _ARCHIVED_LOCK:
+        rows = archived_at()
+        if when is None:
+            rows.pop(name, None)
+        else:
+            rows[name] = when
+        home().mkdir(parents=True, exist_ok=True)
+        tmp = home() / "archived.json.tmp"
+        tmp.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        os.replace(tmp, home() / "archived.json")
+
+
+def archived_list():
+    """The archived features, newest archived first: the Features page's Archived section."""
+    base = tatty_root()[0] / "archive"
+    if not base.is_dir():
+        return []
+    when, out = archived_at(), []
+    for d in base.iterdir():
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        docs = docs_of(d)
+        updated = max([x["updated"] for x in docs] or [d.stat().st_mtime])
+        out.append({"name": d.name, "folder": d.as_posix(), "docs": len(docs), "updated": updated,
+                    "archivedAt": when.get(d.name, updated)})
+    return sorted(out, key=lambda a: -a["archivedAt"])
+
+
+def is_link(path):
+    """Whether a path is a symbolic link or a Windows junction (neither is followed)."""
+    path = str(path)
+    if os.path.islink(path):
+        return True
+    junction = getattr(os.path, "isjunction", None)
+    if junction:
+        return junction(path)
+    try:
+        return bool(os.lstat(path).st_file_attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+    except (OSError, AttributeError):
+        return False
+
+
+def remove_link(path):
+    """Remove a link itself, never what it points at."""
+    try:
+        os.rmdir(path)  # a directory link (a junction too)
+    except OSError:
+        os.unlink(path)
+
+
+def remove_file(path):
+    try:
+        os.unlink(path)
+    except PermissionError:
+        os.chmod(path, 0o666)  # a read-only file
+        os.unlink(path)
+
+
+def remove_tree(path):
+    """Delete what is inside a folder, and count the files. A link met on the way
+    is removed, not followed, so nothing outside the folder is touched."""
+    count = 0
+    for entry in list(os.scandir(path)):
+        if is_link(entry.path):
+            remove_link(entry.path)
+        elif entry.is_dir(follow_symlinks=False):
+            count += remove_tree(entry.path)
+            os.rmdir(entry.path)
+        else:
+            remove_file(entry.path)
+            count += 1
+    return count
+
+
+def tree_size(path, cap=200000):
+    """(files, bytes) in a folder without following links; stops counting at cap files."""
+    files = size = 0
+    stack = [str(path)]
+    while stack and files < cap:
+        for entry in os.scandir(stack.pop()):
+            if is_link(entry.path):
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+            else:
+                files += 1
+                try:
+                    size += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+    return files, size
+
+
+def delete_refused(folder):
+    """Why a feature's real folder must not be deleted, or "": it holds (or is) something
+    Tatty or the person depends on, or it belongs to another feature."""
+    real = folder.resolve()
+    if real.parent == real or len(real.parts) < 3:
+        return "its real folder is a drive or a top-level folder"
+    root = tatty_root()[0].resolve()
+    keep = [root, root / "features", root / "archive", root / "design", root / "tasks", home().resolve(),
+            config_dir().resolve(), Path.home().resolve(), PLUGIN.resolve()]
+    for p in keep:
+        if real == p or real in p.parents:
+            return f"its real folder ({real.as_posix()}) is, or contains, {p.as_posix()}"
+    if real != folder.parent.resolve() / folder.name:
+        for area in ("features", "archive"):
+            base = root / area
+            if base in real.parents:
+                return "it is a link to another feature's folder"
+    return ""
+
+
+def rekey_feature(old, new, old_board):
+    """A feature folder moved from old to new: carry Tatty's own records along (the
+    project chosen for it, keyed by where it is listed, and its whiteboard, keyed by
+    where it really is: a link keeps both of those when only the link moves)."""
+    rows = chosen_projects()
+    key = old.as_posix().rstrip("/").lower()
+    if key in rows:
+        rows[new.as_posix().rstrip("/").lower()] = rows.pop(key)
+        write_projects(rows)
+    new_board = board_path(new)
+    if old_board != new_board and old_board.is_file():
+        with wb_lock(old_board):
+            new_board.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(old_board, new_board)
+
+
+def end_feature_work(state, folder, name):
+    """End what is running for a feature: the sessions Start opened and its open chats.
+    Returns (stopped sessions, what they said)."""
+    with state.cond:
+        tags = [s["tag"] for s in state.sessions.values() if s.get("feature") and is_folder(s["folder"], folder) and not s.get("closed")]
+    stopped, said = 0, []
+    for tag in tags:
+        code, r = stop_session(state, tag)
+        if code == 200:
+            stopped += 1
+            if r.get("said"):
+                said.append(r["said"])
+    for c in chats_open(state):
+        if c.get("feature") == name:
+            chat_close(state, c["id"])
+    return stopped, " ".join(said)
+
+
+def feature_archive(state, name):
+    """Move a feature to <root>/archive (a link moves, not the folder it points at):
+    its sessions and chats are ended; a task started from it is left as it is, as an
+    archived feature is usually a finished one. Restore brings it back. (http code, answer)"""
+    folder = feature_dir(name)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    stopped, said = end_feature_work(state, folder, folder.name)
+    base = tatty_root()[0] / "archive"
+    dest, n = base / folder.name, 1
+    while dest.exists() or is_link(dest):
+        n += 1
+        dest = base / f"{folder.name} ({n})"
+    old_board = board_path(folder)
+    base.mkdir(exist_ok=True)
+    os.replace(folder, dest)
+    rekey_feature(folder, dest, old_board)
+    archived_set(dest.name, time.time())
+    return 200, {"ok": True, "feature": folder.name, "archived": dest.name, "stopped": stopped, "said": said}
+
+
+def feature_restore(state, name):
+    """Bring an archived feature back under features/. (http code, answer)"""
+    folder = archive_dir(name)
+    if not folder:
+        return 404, {"error": "no such archived feature"}
+    base = tatty_root()[0] / "features"
+    if not base.is_dir():
+        return 400, {"error": "Set Tatty's root folder first."}
+    dest = base / folder.name
+    if dest.exists() or is_link(dest):
+        return 409, {"error": f"There's a feature called {folder.name} already. Rename or archive it first."}
+    old_board = board_path(folder)
+    os.replace(folder, dest)
+    rekey_feature(folder, dest, old_board)
+    archived_set(dest.name, None)
+    return 200, {"ok": True, "feature": dest.name}
+
+
+def delete_target(name, archived):
+    return archive_dir(name) if archived else feature_dir(name)
+
+
+def feature_delete_preview(state, name, archived):
+    """What Delete would remove, for the confirmation: (http code, answer)."""
+    folder = delete_target(name, archived)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    real = folder.resolve()
+    files, size = tree_size(real)
+    return 200, {"name": folder.name, "archived": archived, "path": real.as_posix(), "link": is_link(folder),
+                 "files": files, "bytes": size, "refused": delete_refused(folder),
+                 "sessions": len([s for s in sessions_of(state, folder) if s["status"] in ("starting", "running", "lost")]),
+                 "task": bool(task_for_feature(folder.name))}
+
+
+def feature_delete(state, name, archived, confirm, client=""):
+    """Delete a feature and its folder for good. For a link into a vault that is the
+    real folder it points at (and the link). The name must be typed back as the
+    confirmation. (http code, answer)"""
+    folder = delete_target(name, archived)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    if confirm != folder.name:
+        return 400, {"error": "Type the feature's name to confirm."}
+    why = delete_refused(folder)
+    if why:
+        return 409, {"error": f"Won't delete it: {why}."}
+    real, link = folder.resolve(), is_link(folder)
+    board = board_path(folder)
+    stopped, said = end_feature_work(state, folder, folder.name)
+    other = feature_dir(folder.name) if archived else None  # a live feature of the same name keeps its records
+    answer = {"ok": True, "feature": folder.name, "stopped": stopped, "said": said, "task": None, "removed": 0}
+    found = None if other else task_for_feature(folder.name)
+    if found:
+        answer["task"] = {"board": found[0].name, "id": found[1]}
+        task_unstart(state, found[0], found[1], client)
+    try:
+        if link:
+            answer["removed"] = remove_tree(real)
+            os.rmdir(real)
+            remove_link(folder)
+        else:
+            answer["removed"] = remove_tree(folder)
+            os.rmdir(folder)
+    except OSError as e:
+        return 500, {"error": f"couldn't delete it all: {e}", "removed": answer["removed"]}
+    rows = chosen_projects()
+    for k in {folder.as_posix().rstrip("/").lower(), real.as_posix().rstrip("/").lower()}:
+        rows.pop(k, None)
+    write_projects(rows)
+    try:
+        board.unlink()
+    except OSError:
+        pass
+    if not other:
+        started = jira_started()
+        if any(v == folder.name for v in started.values()):
+            jira_dir().mkdir(parents=True, exist_ok=True)
+            (jira_dir() / "started.tsv").write_text("".join(f"{k}\t{v}\n" for k, v in sorted(started.items()) if v != folder.name), encoding="utf-8")
+    archived_set(folder.name, None)
+    return 200, answer
+
+
 def tasks_get(st, path, q):
     one = lambda k, d="": q.get(k, [d])[0]
     if path == "/api/tasks":
@@ -4610,6 +4883,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
         if path == "/api/features":
             return self.send(200, features_list(st))
+        if path == "/api/feature/delete-preview":
+            try:
+                code, answer = feature_delete_preview(st, q.get("name", [""])[0], q.get("archived", [""])[0] == "1")
+            except OSError as e:
+                code, answer = 500, {"error": f"couldn't look: {e}"}
+            return self.send(code, answer)
         if path == "/api/resolve":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -4872,6 +5151,21 @@ class Handler(BaseHTTPRequestHandler):
                 code, answer = 409, {"error": str(e)}
             except OSError as e:
                 code, answer = 500, {"error": f"couldn't cancel: {e}"}
+            return self.send(code, answer)
+        if path in ("/api/feature/archive", "/api/feature/restore", "/api/feature/delete"):
+            name = str(b.get("name", ""))
+            try:
+                if path == "/api/feature/archive":
+                    code, answer = feature_archive(st, name)
+                elif path == "/api/feature/restore":
+                    code, answer = feature_restore(st, name)
+                else:
+                    code, answer = feature_delete(st, name, bool(b.get("archived")), str(b.get("confirm", "")),
+                                                  str(b.get("client", ""))[:40])
+            except BoardBroken as e:
+                code, answer = 409, {"error": str(e)}
+            except OSError as e:
+                code, answer = 500, {"error": f"couldn't do that: {e}"}
             return self.send(code, answer)
         if path == "/api/chat/new":
             code, answer = chat_new(st, b if isinstance(b, dict) else {})

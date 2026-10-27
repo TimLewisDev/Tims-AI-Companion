@@ -7,14 +7,17 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --archive]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --archive]
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
 --split only the documents split beside a workflow tab: it starts two sessions (no terminal opens), uses real mouse input and
 writes nothing to the features, so a throwaway home is still best;
 --chats only the chats: side chats from selected text and from a code block in a workflow's reply, the "+" on
 either side of the split, a reload; it starts a session (no terminal opens) and sends messages, so run it on a
 throwaway home whose server has a stand-in claude (TATTY_CLAUDE), or every message is a real turn;
+--archive only Archive, Restore and Delete on a feature it makes itself ("Walk archive"): real mouse and
+keys on the split button, its menu, the Delete panel and the Archived section. It deletes a folder, so only ever on a
+throwaway root;
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -913,6 +916,81 @@ def whiteboard_steps(p, res):
     return res
 
 
+def center(p, sel):
+    x, y = p.js(f"(() => {{ const e = document.querySelector({json.dumps(sel)}); e.scrollIntoView({{ block: 'center' }}); const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; }})()")
+    return x, y
+
+
+def check_archive(p):
+    """Archive and Delete on a feature of its own, with real mouse and keys: the split
+    button and its menu, the Delete panel (the name must be typed), Archive into the
+    Archived section, Restore, and Delete from the section. It makes and removes a
+    feature, so only ever on a throwaway root."""
+    res, name = {}, "Walk archive"
+    q = json.dumps(name)
+    p.js(f"api('/api/new-feature', {{ name: {q} }}).then(() => 1); 1")
+    time.sleep(0.5)
+    p.js(f"location.hash = '#feature/' + encodeURIComponent({q}); 1")
+    wait(p, "!!document.querySelector('#feature-archive')")
+    res["button"] = p.js("""({ primary: document.querySelector('#feature-archive').textContent,
+                              caret: document.querySelector('#feature-archive-more').getAttribute('aria-haspopup'),
+                              expanded: document.querySelector('#feature-archive-more').getAttribute('aria-expanded'),
+                              joined: document.querySelector('#feature-archive').parentNode === document.querySelector('#feature-archive-more').parentNode })""")
+    click(p, *center(p, "#feature-archive-more"))
+    res["menuOpen"] = wait(p, "!!document.querySelector('.linkmenu')")
+    res["menu"] = p.js("""({ items: [...document.querySelectorAll('.linkmenu-item')].map(b => b.textContent + (b.classList.contains('danger') ? ' (danger)' : '')),
+                             expanded: document.querySelector('#feature-archive-more').getAttribute('aria-expanded'),
+                             focused: document.activeElement.classList.contains('linkmenu-item') })""")
+    key(p, "Escape", 27)
+    res["escCloses"] = p.js("!document.querySelector('.linkmenu') && document.querySelector('#feature-archive-more').getAttribute('aria-expanded') === 'false'")
+    time.sleep(0.4)
+    click(p, *center(p, "#feature-archive-more"))
+    wait(p, "!!document.querySelector('.linkmenu')")
+    click(p, *center(p, "#feature-archive-more"))  # the caret again: closes, doesn't reopen
+    time.sleep(0.5)
+    res["caretToggles"] = p.js("!document.querySelector('.linkmenu')")
+    time.sleep(0.4)
+    click(p, *center(p, "#feature-archive-more"))
+    wait(p, "!!document.querySelector('.linkmenu')")
+    click(p, *center(p, ".linkmenu-item"))
+    res["panelOpen"] = wait(p, "!!document.querySelector('.spanel #delete-confirm')")
+    wait(p, "!!document.querySelector('.del-facts strong')")
+    res["panel"] = p.js("""({ facts: document.querySelector('.del-facts').innerText.replace(/\\s+/g, ' ').trim(),
+                             disabled: document.querySelector('#delete-go').disabled,
+                             focusInPanel: document.activeElement.closest('.spanel') !== null })""")
+    p.js("(() => { const i = document.querySelector('#delete-confirm'); i.value = 'walk archive'; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["wrongCaseStaysDisabled"] = p.js("document.querySelector('#delete-go').disabled")
+    p.js(f"(() => {{ const i = document.querySelector('#delete-confirm'); i.value = {q}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); }})()")
+    res["rightNameEnables"] = p.js("!document.querySelector('#delete-go').disabled")
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1")
+    res["escClosesPanel"] = p.js("!document.querySelector('.spanel')")
+    # Archive
+    click(p, *center(p, "#feature-archive"))
+    res["archiveGoesHome"] = wait(p, "location.hash === '#home' && !!document.querySelector('#archived-section')")
+    res["section"] = p.js(f"""({{ summary: document.querySelector('#archived-section summary').innerText.replace(/\\s+/g, ' ').trim(),
+                                 open: document.querySelector('#archived-section').open,
+                                 row: !!document.querySelector('.arow[data-name=' + JSON.stringify({q}) + ']'),
+                                 card: [...document.querySelectorAll('#page-home .fcard strong')].some(s => s.textContent === {q}),
+                                 note: document.querySelector('.home-note').textContent }})""")
+    click(p, *center(p, "#archived-section summary"))
+    res["opens"] = wait(p, "document.querySelector('#archived-section').open")
+    # Restore
+    click(p, *center(p, ".arow .restore-btn"))
+    res["restored"] = wait(p, f"[...document.querySelectorAll('#page-home .fcard strong')].some(s => s.textContent === {q}) && !document.querySelector('#archived-section')")
+    # Archive again, then Delete from the section
+    p.js(f"location.hash = '#feature/' + encodeURIComponent({q}); 1")
+    wait(p, "!!document.querySelector('#feature-archive')")
+    click(p, *center(p, "#feature-archive"))
+    wait(p, "!!document.querySelector('#archived-section')")
+    res["staysOpen"] = p.js("document.querySelector('#archived-section').open")
+    click(p, *center(p, ".arow .delete-btn"))
+    wait(p, "!!document.querySelector('#delete-confirm') && !!document.querySelector('.del-facts strong')")
+    p.js(f"(() => {{ const i = document.querySelector('#delete-confirm'); i.value = {q}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); }})()")
+    click(p, *center(p, "#delete-go"))
+    res["deleted"] = wait(p, "!document.querySelector('#archived-section') && !document.querySelector('.spanel')")
+    return res
+
+
 def check_new_panel(p, page, button, form):
     """The list page's "create new": no form on the page, the cards first, and the
     form in a panel from the right that Esc, x and the dimmed page each close."""
@@ -1093,10 +1171,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--archive"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats}[feature](p)
+                                "--chats": check_chats, "--archive": check_archive}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")

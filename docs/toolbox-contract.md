@@ -324,7 +324,9 @@ has no part in it:
   other sections. The workflow plans from it; Tatty never touches it again,
   except that **Cancel workflow** moves a feature folder holding nothing but
   this ticket to `<root>/features/.deleted` (a folder with any other file is
-  left alone). The task's own file names the feature (`- **Feature:**`) until
+  left alone). A person's **Archive** moves a feature folder to
+  `<root>/archive`, and **Delete** removes it (the real folder, when it is a link
+  into a vault) after its name is typed back. The task's own file names the feature (`- **Feature:**`) until
   then. Cancel also ends the sessions Tatty started for the feature, through
   the process id in Claude's own `sessions/<pid>.json` registry.
 
@@ -352,7 +354,9 @@ a person's message, never on its own:
 
 - `${TATTY_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tatty}/`:
   - `root`: Tatty's root folder, whose `features` folder Tatty lists;
-  - `projects.tsv`: the projects chosen per feature;
+  - `projects.tsv`: the projects chosen per feature (moved along by Archive and
+    Restore, dropped by Delete);
+  - `archived.json`: when each archived feature was archived;
   - `settings.json`: what the Settings page sets;
   - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
     (`issues/<KEY>.json`), and which feature was started from which ticket
@@ -373,6 +377,9 @@ a person's message, never on its own:
   - its WebView2 data;
   - the full panel's last size and position.
 - `<root>/tasks/`: the task boards (see "Tasks").
+- `<root>/archive/<name>/`: the features a person archived, as they were (a
+  link stays a link). Tatty lists them and Restore moves one back; it doesn't
+  read their documents.
 
 None of these are the toolbox's. The toolbox's settings and records (the event
 ledger, the workflow links) are never written, and its documents only on a

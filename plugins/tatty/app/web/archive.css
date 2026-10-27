@@ -1,0 +1,19 @@
+/* The split Archive button, its Delete panel and the Archived section (archive.js). */
+.ov-acts { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.splitbtn { display: inline-flex; }
+.splitbtn > button:first-child { border-radius: 4px 0 0 4px; }
+.splitbtn > .splitbtn-caret { border-radius: 0 4px 4px 0; border-left-color: var(--on-accent); padding: 4px 7px; }
+button.danger { background: var(--bad); color: var(--on-accent); border-color: var(--bad); }
+button.danger:disabled { opacity: .45; cursor: default; }
+.linkmenu-item.danger, .linkmenu-item.danger:hover:not(:disabled), .linkmenu-item.danger:focus-visible { color: var(--bad); }
+.del-panel { display: flex; flex-direction: column; gap: 12px; }
+.del-panel label { display: flex; flex-direction: column; gap: 4px; }
+.del-panel p { margin: 0 0 6px; }
+.del-acts { display: flex; gap: 8px; }
+details.archived { margin: 12px 20px; }
+details.archived > summary { padding: 2px 0; }
+.arows { display: flex; flex-direction: column; margin-top: 8px; }
+.arow { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--line); }
+.arow-acts { display: flex; gap: 6px; margin-left: auto; }
+.arow-acts button { padding: 1px 8px; font-size: 12px; }
+.arow-acts .delete-btn:hover { border-color: var(--bad); color: var(--bad); }

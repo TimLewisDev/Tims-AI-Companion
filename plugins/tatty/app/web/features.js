@@ -324,10 +324,10 @@ async function renderHome(quiet) {
   if (!data.features.length) {
     put(missing, head, form, el("div", { class: "card empty-state" },
       el("p", {}, "No features yet. ", el("strong", {}, "New feature…"), " makes one here and starts it with the workflow."),
-      el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")));
+      el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")), archivedSection(data.archived));
     return;
   }
-  put(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)));
+  put(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)), archivedSection(data.archived)); // archive.js
 }
 
 // ------------------------------------------------------------- workflow tabs
@@ -1212,12 +1212,14 @@ function overview(f) {
       el("h2", {}, f.name), chip(ROUTES[f.route] || f.route, "route"),
       chip(PHASES[f.phase] || f.phase || "—", f.phase === "complete" ? "done" : "now"),
       el("span", { class: "dim small" }, "updated " + ago(f.updated)),
-      f.task || going.length ? el("button", { type: "button", class: "right", id: "feature-cancel",
-        title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
-          const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
-          if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
-        } }, "Cancel workflow") : "",
-      el("button", { type: "button", class: f.task || going.length ? "" : "right", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh")),
+      el("span", { class: "ov-acts" },
+        f.task || going.length ? el("button", { type: "button", id: "feature-cancel",
+          title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
+            const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
+            if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
+          } }, "Cancel workflow") : "",
+        el("button", { type: "button", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh"),
+        archiveCombo(f))), // archive.js
     el("div", { class: "dim small" }, copyable(f.folder)),
     tracker(f),
     process, ended,

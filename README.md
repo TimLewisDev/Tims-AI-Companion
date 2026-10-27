@@ -79,7 +79,7 @@ visually:
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
 Edit mode, a ticket's when you start a workflow from a Jira ticket or a task, or a User Stories
-document through the toolbox's own script when you change a story) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
+document through the toolbox's own script when you change a story; and it moves or removes a feature's folder only when you choose Archive or Delete on that feature) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
 
 ## Install
 

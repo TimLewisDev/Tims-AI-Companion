@@ -655,6 +655,35 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   Cancelling after a failed launch works the same, so the task can be started
   again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
   are left alone; it asks again when its folder is missing.
+- **Archive and Delete** (archive.js; server.py "archiving and deleting a
+  feature"). The feature page's header has a split button: **Archive**, with
+  **Delete…** behind its caret (the menu is split.js's `showMenu`).
+  - **Archive** (`POST /api/feature/archive {name}`) ends the feature's sessions
+    and chats and moves its folder to `<root>/archive/<name>` (" (2)" if the
+    name is taken there). A feature that is a link (a junction into a vault) is
+    moved as the link, and the vault's folder stays where it is. The task it
+    was started from is left as it is (an archived feature is usually a finished
+    one); its card says the feature is archived. `GET /api/features` lists them
+    as `archived`, newest archived first (when: `<home>/archived.json`), under a
+    collapsed **Archived (n)** section on the Features page. **Restore**
+    (`/api/feature/restore {name}`) moves it back (409 if the name is taken).
+    Both carry the project chosen for the feature (`projects.tsv`, keyed by the
+    listed path) and its whiteboard (`boards/<key>.json`, keyed by where the folder
+    really is, which only changes for a folder that isn't a link) along: `rekey_feature`.
+    Archived features can't be opened; restore one first.
+  - **Delete** is for good, and the one thing in Tatty that is. The side panel
+    (`deleteFeaturePanel`) first reads `GET /api/feature/delete-preview` (the real
+    path, whether it's a link, how many files and bytes) and asks for the feature's
+    name to be typed; `POST /api/feature/delete {name, archived, confirm}` is a 400
+    without it. It ends the sessions and chats, undoes a task's Start
+    (`task_unstart`, as Cancel workflow does), removes the folder (for a link: the
+    real folder it points at, then the link) and forgets the project choice,
+    whiteboard and Jira "started" row. A link met *inside* the folder is removed,
+    not followed (`remove_tree`), so what it points at is untouched. `delete_refused`
+    answers 409 for a real folder that is, or holds, Tatty's root, its features,
+    archive, design or tasks folders, Tatty's or Claude's home, the user's home or the
+    plugin, for a drive or top-level folder, and for a link to another feature.
+    The toolbox's links and ledger are not touched.
 
 ## User Stories (the design mode)
 
@@ -833,6 +862,11 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   nothing in the stories document. It also reports how the view is drawn: a pan
   leaves the content as drawn (`contentSame`), and a zoom or an ease settles
   back to a sharp drawing (`crisp`, `settledAfterEase`, `layer`).
+  `features-check.py ... --archive` makes a feature of its own ("Walk archive") and walks
+  the split button with real mouse and keys: the caret's menu (Esc, the caret again), the
+  Delete panel (the name typed, case matters, Esc), Archive into the Archived section,
+  Restore, and Delete from the section. It deletes a folder, so run it only on a
+  throwaway root.
   `features-check.py ... --export` clicks through Export to Tasks on the first
   User Stories board (the panel, two stories exported, their IDs on the notes,
   the backlog, a task's panel, the panel again). It writes task files, so run

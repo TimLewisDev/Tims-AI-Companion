@@ -979,7 +979,7 @@ const { renderTasks, renderTaskBoard } = (() => {
         words ? el("div", { id: "task-workflow-state" }, chip(words[0], "route"), " ", chip(words[1], "now"), " ",
           s ? el("a", { href: "#workflows/" + encodeURIComponent(s.tag), onclick: () => closePanel(true), title: s.name }, words[2])
             : el("span", { class: "dim" }, words[2]))
-          : el("div", { class: "dim small" }, w && w.missing ? "Its feature folder is gone." : "Where it stands shows once the board has been read."),
+          : el("div", { class: "dim small" }, w && w.missing ? (w.archived ? "Its feature is archived: restore it on the Features page." : "Its feature folder is gone.") : "Where it stands shows once the board has been read."),
         el("div", { class: "start-actions" },
           el("a", { href: featureHref(feature), onclick: () => closePanel(true) }, feature + " →"), " ", cancel));
     };
