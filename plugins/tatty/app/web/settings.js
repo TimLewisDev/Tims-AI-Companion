@@ -62,6 +62,7 @@ function drawSettings() {
         (u.plugins || []).map(r => el("tr", { class: r.status }, el("td", {}, r.name), el("td", {}, r.installed || "?"),
           el("td", {}, r.available || "?"), el("td", { class: "dim small" }, { ready: "installed, not in use yet", available: "update waiting", current: "up to date" }[r.status] || "")))) : null,
       el("p", { class: "upd-status " + u.status, id: "update-status" }, words !== undefined && words !== "" ? words : (u.message || "")),
+      restartPanel(u),
       el("p", { class: "dim small" }, when),
       el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null)),
     llmSettings(),
@@ -69,6 +70,39 @@ function drawSettings() {
     stepSettings(),
     chatSettings(s),
     jiraSettings(s)));
+}
+
+// What an installed update leaves to restart (server.py's "restarting"): this server,
+// when Tatty itself was updated, and the sessions going. A restart keeps the sessions:
+// they are written down and the new server takes them back, each one saying hello
+// again by itself. Sessions started before the update still have the old mod and
+// skills until they are started again.
+function restartPanel(u) {
+  const r = u.restart;
+  if (!r || (!r.server && !r.stale)) return null;
+  const going = r.sessions.length, plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const say = el("p", { class: "dim small", id: "restart-say" });
+  const go = el("button", { type: "button", id: "update-restart", class: "primary" }, "Restart Tatty");
+  go.addEventListener("click", async () => {
+    const risks = [r.openQuestions && `${plural(r.openQuestions, "unanswered question")} will be lost`,
+      r.busy && `${plural(r.busy, "background job")} will be stopped`].filter(Boolean);
+    if (risks.length && !confirm(risks.join(" and ") + ". Restart anyway?")) return;
+    go.disabled = true;
+    say.textContent = "Restarting…";
+    try {
+      const a = await api("/api/restart", {});
+      restarting = true;
+      say.textContent = `Restarting${a.kept ? `, keeping ${plural(a.kept, "session")}` : ""}. The tray window reconnects by itself; a browser tab needs reopening.`;
+    } catch (e) { say.textContent = ""; go.disabled = false; alert(e.message || e); }
+  });
+  return el("div", { class: "restart-panel", id: "restart-panel" },
+    r.server ? el("p", { id: "restart-server" }, `Tatty ${u.installed} is installed, but this server is still ${u.running}. Restarting loads it.`) : null,
+    going ? el("p", { class: "dim small", id: "restart-sessions" },
+      `${plural(going, "session")} going: ${r.sessions.map(s => s.name || s.tag).join(", ")}.`,
+      r.server ? " They are kept, and reattach by themselves after the restart." : "") : null,
+    r.stale ? el("p", { class: "dim small", id: "restart-stale" },
+      `${plural(r.stale, "session")} started before the update, so still on the old mod and skills until started again.`) : null,
+    r.server ? [go, say] : null);
 }
 
 // Chats (chat.js): who writes the summary of what a side chat is about, and the
@@ -253,7 +287,21 @@ function stepSettings() {
 }
 
 // What the server says about an update, as it happens.
-document.addEventListener("tt-event", e => {
+let restartAsked = 0;
+let restarting = false; // a restart was asked for: leave its panel as it is
+document.addEventListener("tt-event", async e => {
+  // The sessions going change as they start and end: ask again (at most every two seconds)
+  // while the page says something is waiting to restart.
+  const r = settingsNow && settingsNow.update && settingsNow.update.restart;
+  if (e.detail.type === "session" && r && (r.server || r.stale) && settingsBox && settingsBox.classList.contains("on")
+      && !restarting && Date.now() - restartAsked > 2000) {
+    restartAsked = Date.now();
+    try {
+      settingsNow.update = (await api("/api/settings")).update;
+      const old = $("#restart-panel"), fresh = restartPanel(settingsNow.update);
+      if (old && fresh) old.replaceWith(fresh); else if (old) old.remove();  // only the panel: the rest may be mid-edit
+    } catch { /* the connection badge says so */ }
+  }
   if (e.detail.type !== "update") return;
   const { type, seq, ts, ...update } = e.detail;
   if (settingsNow) settingsNow.update = { ...settingsNow.update, ...update };

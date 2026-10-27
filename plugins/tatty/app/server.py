@@ -222,6 +222,7 @@ class State:
                        "checked": 0.0, "message": "", "plugins": []}  # see "updates" below
         self.baseline = {}  # plugin name -> the version it was at when this server first looked
         self.update_lock = threading.Lock()
+        self.httpd = None  # the listening server, so a restart can stop it (see "restarting")
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
@@ -350,7 +351,7 @@ def install_records():
                 continue
             e = next((i for i in installs if i.get("scope") == "user"), installs[0])
             out.append({"name": name, "id": pid, "market": market, "scope": str(e.get("scope", "user")),
-                        "installed": str(e.get("version", ""))})
+                        "installed": str(e.get("version", "")), "path": str(e.get("installPath", ""))})
     except (OSError, ValueError, AttributeError, TypeError):
         pass
     if not installed():
@@ -395,11 +396,133 @@ def run_claude(state, args):
 def set_update(state, **fields):
     with state.cond:
         state.update.update(fields)
-    state.emit("update", **state.update)
+    state.emit("update", **state.update, restart=restart_needs(state))
 
 
 def update_view(state):
-    return {**state.update, "autoUpdate": load_settings()["autoUpdate"]}
+    return {**state.update, "autoUpdate": load_settings()["autoUpdate"], "restart": restart_needs(state)}
+
+
+# ---------------------------------------------------------------- restarting
+# An installed update isn't live until Tatty restarts: the server runs the code it
+# started with, and a Claude session keeps the mod and skills it loaded. After an
+# update Settings says what needs restarting. Restarting the server loses what it
+# only holds in memory, and that includes the sessions Start opened (their feature,
+# name, model and what they were doing), so the ones still going are written to a
+# file first and the new server takes them back. Each session's mod finds the new
+# server through server.json and says hello again, so the session carries on under
+# the same tag. The new server starts beside the old one, writes server.json, and
+# only then does the old one stop: the tray app and the mods follow it without a gap.
+
+SESSION_CACHE_TTL = 600  # seconds a cache stays good for: it is for a restart, not for keeping
+SESSION_CACHE_ROWS = 300  # feed rows kept per session
+
+
+def sessions_cache_file():
+    return home() / "sessions-cache.json"
+
+
+def cache_sessions(state):
+    """Write the sessions still going (and their feed) to the cache; how many.
+    Nothing going removes any older cache."""
+    with state.cond:
+        keep = [dict(s) for s in state.sessions.values() if state.session_view(s)["status"] in ("starting", "running", "lost")]
+        tags = {s["tag"] for s in keep}
+        feed = {}
+        for ev in state.events:
+            if ev.get("tag") in tags and ev["type"] in ("activity", "card"):
+                feed.setdefault(ev["tag"], []).append({k: v for k, v in ev.items() if k != "seq"})
+    if not keep:
+        sessions_cache_file().unlink(missing_ok=True)
+        return 0
+    rows = sorted((r for t in feed.values() for r in t[-SESSION_CACHE_ROWS:]), key=lambda r: r["ts"])
+    home().mkdir(parents=True, exist_ok=True)
+    tmp = sessions_cache_file().with_suffix(".tmp")
+    tmp.write_text(json.dumps({"cachedAt": time.time(), "sessions": keep, "events": rows}, default=str), encoding="utf-8")
+    os.replace(tmp, sessions_cache_file())
+    return len(keep)
+
+
+def restore_sessions(state):
+    """Take back the sessions a restart cached, once: how many. A session counts as just
+    heard from, so it shows as running until its mod says hello (or, if the Claude session
+    was closed meanwhile, turns lost after the usual wait)."""
+    f = sessions_cache_file()
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        f.unlink(missing_ok=True)
+        if not isinstance(data, dict) or time.time() - float(data.get("cachedAt") or 0) > SESSION_CACHE_TTL:
+            return 0
+        saved = [s for s in data.get("sessions") or [] if isinstance(s, dict) and isinstance(s.get("tag"), str)]
+    except (OSError, ValueError, TypeError):
+        return 0
+    now = time.time()
+    with state.cond:
+        for s in saved:
+            state.sessions.setdefault(s["tag"], {**s, "seen": now, "restored": True})
+    for ev in data.get("events") or []:
+        if isinstance(ev, dict) and ev.get("tag") in state.sessions and ev.get("type") in ("activity", "card"):
+            state.emit(ev.pop("type"), **{k: v for k, v in ev.items() if k != "seq"})
+    for s in saved:
+        state.session_event(s["tag"])
+    return len(saved)
+
+
+def restart_needs(state):
+    """What the installed updates leave to restart: server (this one runs an older
+    Tatty than is installed); the sessions going, each with `stale` when it started before
+    an update this server installed (it still has the old mod and skills); and what a
+    restart would cut off: questions still open and background work running."""
+    plugins = state.update.get("plugins") or []
+    server = any(r.get("name") == "tatty" and r.get("status") == "ready" for r in plugins)
+    updated = state.update.get("updatedAt") or 0.0
+    with state.cond:
+        going = []
+        for s in state.sessions.values():
+            v = state.session_view(s)
+            if v["status"] not in ("ended", "unseen"):
+                going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
+                              "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
+        asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
+        busy = len(state.chat_runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0)
+    return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
+            "busy": busy, "cached": sessions_cache_file().exists()}
+
+
+def installed_server_script():
+    """The server.py of the Tatty that is installed now (an update puts it in a new
+    folder), else this one's."""
+    for r in install_records():
+        if r["name"] == "tatty" and r.get("path") and (Path(r["path"]) / "app" / "server.py").is_file():
+            return Path(r["path"]) / "app" / "server.py"
+    return Path(__file__).resolve()
+
+
+def hand_over(state):
+    """Once the new server has written server.json, stop this one."""
+    for _ in range(300):  # a minute
+        time.sleep(0.2)
+        info = load_info()
+        if info and info.get("pid") != os.getpid():
+            break
+    else:
+        return set_update(state, message="The restart didn't finish: the new server didn't start, so this one carries on. See server.log.")
+    time.sleep(1)  # the tray app and the mods look for the new server as this one's answers stop
+    if state.httpd:
+        state.httpd.shutdown()
+
+
+def restart_server(state):
+    """Restart the server on the installed Tatty, keeping the sessions going: (http code, answer)."""
+    if not restart_needs(state)["server"]:
+        return 409, {"error": "Nothing needs restarting: this server is the installed version."}
+    kept = cache_sessions(state)
+    try:
+        spawn_server(state.cwd, state.bash, installed_server_script())
+    except OSError as e:
+        return 500, {"error": f"Couldn't start the new server: {e}"}
+    threading.Thread(target=hand_over, args=(state,), daemon=True).start()
+    return 200, {"ok": True, "kept": kept}
 
 
 def update_work(state, apply):
@@ -434,6 +557,7 @@ def update_work(state, apply):
                     errors.append(f"Couldn't update {name}: {got[1]}")
                 else:
                     have = next((r["installed"] for r in install_records() if r["id"] == t["id"]), have)
+                    set_update(state, updatedAt=time.time())  # the sessions started before this are on the old one
             if version_key(have) > version_key(running):
                 status = "ready"
             elif version_key(available) > version_key(have):
@@ -455,6 +579,11 @@ def update_work(state, apply):
                   else "available" if waiting else "current")
         set_update(state, status=status, installed=first["installed"], available=first["available"], plugins=rows,
                    checked=time.time(), message=" ".join(errors + said) or "Everything is up to date.")
+        # The server needs restarting and sessions are going: keep them now, so that a
+        # restart by hand (not only the button) takes them back.
+        if restart_needs(state)["server"]:
+            cache_sessions(state)
+            set_update(state)
     except Exception as e:  # a background check must never take the server down
         set_update(state, status="error", checked=time.time(), message=f"{type(e).__name__}: {e}")
     finally:
@@ -5047,6 +5176,10 @@ class Handler(BaseHTTPRequestHandler):
             # only on a click in Settings.
             code, answer = (llms_change if path == "/api/llms" else model_config_change)(st, b if isinstance(b, dict) else {})
             return self.send(code, answer)
+        if path == "/api/restart":
+            # After an update: start the installed Tatty, keep the sessions going, stop this server.
+            code, answer = restart_server(st)
+            return self.send(code, answer)
         if path == "/api/update":
             # check: look only; apply: look, and install what is newer. Runs in the
             # background (the claude command takes seconds); the page hears the result
@@ -5206,6 +5339,8 @@ def serve(cwd, bash):
     httpd.daemon_threads = True
     port = httpd.server_address[1]
     Handler.state, Handler.token, Handler.port = state, token, port
+    state.httpd = httpd
+    restore_sessions(state)  # the sessions a restart was told to keep (see "restarting")
     url = f"http://127.0.0.1:{port}/#token={token}"
     tmp = h / "server.json.tmp"
     tmp.write_text(json.dumps({"port": port, "token": token, "pid": os.getpid(), "url": url,
@@ -5291,11 +5426,13 @@ def flag(args, name):
     return False
 
 
-def start_detached(cwd, bash):
+def spawn_server(cwd, bash, script=None):
+    """Start a window server in the background, from `script` (a server.py; this
+    one when none is given). It is not waited for: see start_detached."""
     h = home()
     h.mkdir(parents=True, exist_ok=True)
     log = open(h / "server.log", "ab")
-    argv = [sys.executable, str(Path(__file__).resolve()), "serve", "--cwd", cwd, "--bash", bash]
+    argv = [sys.executable, str(script or Path(__file__).resolve()), "serve", "--cwd", cwd, "--bash", bash]
     kw = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "close_fds": True, "cwd": cwd}
     if os.name == "nt":
         # A hidden console, not none: a console program started by a process
@@ -5308,6 +5445,11 @@ def start_detached(cwd, bash):
             subprocess.Popen(argv, creationflags=base, **kw)
     else:
         subprocess.Popen(argv, start_new_session=True, **kw)
+
+
+def start_detached(cwd, bash):
+    h = home()
+    spawn_server(cwd, bash)
     for _ in range(100):
         time.sleep(0.1)
         info = alive()

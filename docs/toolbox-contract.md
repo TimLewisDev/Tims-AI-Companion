@@ -381,6 +381,9 @@ four aliases (sonnet, opus, haiku, fable) and nothing else; one without
   - `settings.json`: what the Settings page sets;
   - `session-models.json`: the model and effort each feature's workflow was
     started on, for its chats;
+  - `sessions-cache.json`: the sessions going (and their feed) when an update
+    left the server to restart, written for the restart and used once by the new
+    server, which deletes it (and ignores one older than ten minutes);
   - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
     (`issues/<KEY>.json`), and which feature was started from which ticket
     (`started.tsv`);

@@ -1,7 +1,7 @@
 {
   "name": "tatty",
   "displayName": "Tatty",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Tatty, a companion to the TT toolbox: a tray app and window that show your features, where each stands in the workflow and its documents, start the next step in a new session and watch it, and answer the session's questions",
   "author": {
     "name": "Tim Lewis"

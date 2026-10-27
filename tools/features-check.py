@@ -1089,6 +1089,20 @@ def check_settings(p):
     p.js("""(() => { const s = document.querySelector('#zz-model'); s.value = 'opus'; s.dispatchEvent(new Event('change')); return 1; })()""")
     res["opusEfforts"] = p.js("[...document.querySelectorAll('#zz-effort option')].map(o => o.value)")
     p.js("document.querySelector('#zz-holder').remove(); 1")
+    # the panel an update leaves, from sample answers: the server to restart with a session going,
+    # and sessions only (a toolbox update): no button then
+    p.js("""(() => {
+      const s = { tag: 's-1', name: 'Demo : Build', feature: 'Demo', status: 'running', stale: true };
+      const a = restartPanel({ installed: '99.0.0', running: '0.11.0', restart: { server: true, sessions: [s], stale: 1, openQuestions: 0, busy: 0, cached: true } });
+      const b = restartPanel({ installed: '', running: '0.11.0', restart: { server: false, sessions: [s], stale: 1, openQuestions: 0, busy: 0, cached: false } });
+      const c = restartPanel({ installed: '', running: '0.11.0', restart: { server: false, sessions: [], stale: 0, openQuestions: 0, busy: 0, cached: false } });
+      a.id = 'zz-restart-a'; b.id = 'zz-restart-b'; document.body.append(a, b); window.__noPanel = c === null; return 1; })()""")
+    res["restartServer"] = p.js("""({ text: document.querySelector('#zz-restart-a').innerText.replace(/\\s+/g, ' '),
+                                     button: !!document.querySelector('#zz-restart-a #update-restart') })""")
+    res["restartSessionsOnly"] = p.js("""({ text: document.querySelector('#zz-restart-b').innerText.replace(/\\s+/g, ' '),
+                                          button: !!document.querySelector('#zz-restart-b #update-restart') })""")
+    res["nothingToRestart"] = p.js("window.__noPanel")
+    p.js("document.querySelector('#zz-restart-a').remove(); document.querySelector('#zz-restart-b').remove(); 1")
     return res
 
 

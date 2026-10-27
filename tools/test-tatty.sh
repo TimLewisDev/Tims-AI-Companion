@@ -1579,6 +1579,52 @@ hasnt "it leaves the tabs" "$T/c" "$C1"
 [ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Hello?\"}")" = 404 ] && ok "a closed chat takes no message" || bad "a closed chat takes no message"
 post /api/bye '{"tag":"s-chatwf"}' >/dev/null
 
+echo "# restarting after an update, keeping the sessions"
+# A session Start opened, heard from: the one a restart has to keep.
+post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >"$T/j"
+RT=$(pick "$T/j" "d['tag']")
+RN=$(pick "$T/j" "d['name']")
+post /api/hello "{\"tag\":\"$RT\",\"session\":\"claude-keep\"}" >/dev/null
+# the marketplace offers 99.0.0 again; installing it leaves this server older than what is installed
+write_installed
+post /api/update '{"action":"apply"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "an update is installed" || bad "an update is installed" "$(head -c 300 "$T/set")"
+[ "$(pick "$T/set" "d['update']['restart']['server']")" = True ] && ok "the checker says the server needs restarting" || bad "the checker says the server needs restarting" "$(head -c 400 "$T/set")"
+[ "$(pick "$T/set" "'$RT' in [s['tag'] for s in d['update']['restart']['sessions']]")" = True ] && ok "and lists the session going" || bad "and lists the session going" "$(head -c 600 "$T/set")"
+[ "$(pick "$T/set" "[s['stale'] for s in d['update']['restart']['sessions'] if s['tag'] == '$RT'][0]")" = True ] && ok "which started before the update, so is on the old one" || bad "stale session"
+[ "$(pick "$T/set" "d['update']['restart']['openQuestions']")" = 0 ] && ok "no question would be lost" || bad "no question would be lost"
+[ -f "$TATTY_HOME/sessions-cache.json" ] && ok "the sessions going are cached at once" || bad "the sessions going are cached at once"
+has "with its name" "$TATTY_HOME/sessions-cache.json" "$RN"
+has "and its feature" "$TATTY_HOME/sessions-cache.json" '"feature": "Demo"'
+[ "$(pick "$T/set" "d['update']['restart']['cached']")" = True ] && ok "the page is told they are cached" || bad "the page is told they are cached"
+get /api/events >"$T/ev"
+has "the page hears of what needs restarting" "$T/ev" '"restart"'
+# restart
+OLDPID=$(json x 'd["pid"]'); OLDPORT=$P
+post /api/restart '{}' >"$T/j"
+has "the restart starts" "$T/j" '"ok": true'
+[ "$(pick "$T/j" "d['kept'] >= 1")" = True ] && ok "and says how many sessions it keeps" || bad "and says how many sessions it keeps" "$(cat "$T/j")"
+NEWPID=$OLDPID
+for _ in $(seq 1 100); do NEWPID=$(json x 'd["pid"]' 2>/dev/null || echo "$OLDPID"); [ "$NEWPID" != "$OLDPID" ] && break; sleep 0.2; done
+[ "$NEWPID" != "$OLDPID" ] && ok "a new server takes over" || bad "a new server takes over"
+P=$(json x 'd["port"]'); K=$(json x 'd["token"]'); U="http://127.0.0.1:$P"
+for _ in $(seq 1 50); do [ -n "$(get /api/status)" ] && break; sleep 0.2; done
+[ "$P" != "$OLDPORT" ] && ok "on a port of its own" || bad "on a port of its own"
+for _ in $(seq 1 50); do [ "$(code "http://127.0.0.1:$OLDPORT/api/status")" = 000 ] && break; sleep 0.2; done
+[ "$(code "http://127.0.0.1:$OLDPORT/api/status")" = 000 ] && ok "and the old one has stopped" || bad "and the old one has stopped"
+get /api/sessions >"$T/j"
+[ "$(pick "$T/j" "[s['name'] for s in d if s['tag'] == '$RT']")" = "['$RN']" ] && ok "the session is back, with its name" || bad "the session is back, with its name" "$(head -c 600 "$T/j")"
+[ "$(pick "$T/j" "[s['feature'] for s in d if s['tag'] == '$RT']")" = "['Demo']" ] && ok "and its feature" || bad "and its feature"
+[ "$(pick "$T/j" "[s['status'] for s in d if s['tag'] == '$RT']")" = "['running']" ] && ok "running until it says otherwise" || bad "running until it says otherwise"
+[ ! -f "$TATTY_HOME/sessions-cache.json" ] && ok "the cache is used once" || bad "the cache is used once"
+post /api/hello "{\"tag\":\"$RT\",\"session\":\"claude-keep\"}" >/dev/null
+get /api/sessions >"$T/j"
+[ "$(pick "$T/j" "[s['name'] for s in d if s['tag'] == '$RT']")" = "['$RN']" ] && ok "its mod saying hello again keeps what was restored" || bad "hello again keeps what was restored"
+get /api/settings >"$T/set"
+[ "$(pick "$T/set" "d['update']['restart']['server']")" = False ] && ok "nothing is left to restart" || bad "nothing is left to restart" "$(head -c 400 "$T/set")"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/restart")" = 409 ] && ok "so a restart is refused" || bad "so a restart is refused"
+[ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served by the new server" || bad "settings.js served by the new server"
+
 echo "# close"
 expect "close" 0 bash "$W" close
 sleep 1

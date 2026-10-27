@@ -311,6 +311,21 @@ folders and Claude Code's own install records; see
     mod.
   - The page then opens that session's tab (see Workflow tabs, below). The
     feature page keeps "Where it stands" and adds a line pointing to the tab.
+- **Updates and restarts:** an installed update isn't live until Tatty restarts,
+  so after Check or Update now Settings says what needs it (`restart_needs`):
+  this server, when Tatty itself was updated, and the sessions going, with the
+  ones that started before the update marked as still on the old mod. The server
+  only holds its sessions in memory, so the ones going are written to
+  `sessions-cache.json` as soon as a restart is due, and again when **Restart
+  Tatty** is pressed. That starts the installed Tatty's server beside this one;
+  it takes the cache back (the sessions with their feature, name and model, and
+  their feed), writes `server.json`, and only then does the old one stop, so the
+  tray app (`FollowNewServer`) and each session's mod (which looks up
+  `server.json` and says hello again under the same tag) move over without a
+  gap. A browser tab needs reopening: the token and port are new. Questions
+  still open and background work (chats, Jira, Stories) are lost, and the
+  button asks first when there are any. The tray app's own build updates the
+  next time it is started.
 - **Workflow tabs:** the Features page (`#home`) has a strip of tabs along the
   top (`workflowTabs` in `features.js`): Features, the list of features, then one
   tab for each session Start opened (`#workflows/<tag>`), each showing that
@@ -778,7 +793,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  686 checks against a real toolbox (the User Stories board's with a stand-in
+  709 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
