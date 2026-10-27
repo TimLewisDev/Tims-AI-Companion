@@ -266,11 +266,35 @@ def check_tabs(p):
     res["goLands"] = {"hash": p.js("location.hash"), "toasts": p.js("document.querySelectorAll('#toasts .toast').length"),
                       "card": p.js("document.querySelector('#page-home .live-questions .card.nudge').innerText.replace(/\\s+/g, ' ').slice(0, 60)"),
                       "inView": p.js("(r => r.bottom > 0 && r.top < innerHeight)(document.querySelector('#page-home .live-questions .card.nudge').getBoundingClientRect())")}
-    p.js("onEvent({ type: 'answered', id: 'zz9', tag: 's-t1', declined: true }); 1")
+    # The panel's order, then the answer: the card flies to "Previously answered" as a
+    # small box titled by the question, opened and closed by a click; a second answer
+    # lands above the first; a declined one says so when opened.
+    res["order"] = p.js("""[...document.querySelectorAll('#page-home .card.live > *')].map(n => n.className.split(' ')[0])
+                            .filter(c => ['live-questions', 'live-say', 'activity', 'live-answered'].includes(c))""")
+    p.js("onEvent({ type: 'answered', id: 'zz9', tag: 's-t1', answers: { 'Which way?': 'Left' } }); 1")
+    res["flight"] = {"ghost": p.js("!!document.querySelector('.abox-ghost')")}
+    wait(p, "!document.querySelector('.abox-ghost')")
+    boxes = "[...document.querySelectorAll('#page-home .live-answered .abox .abox-title')].map(t => t.textContent)"
+    body = "getComputedStyle(document.querySelector('#page-home .abox-body')).display"
+    res["answeredBox"] = {"boxes": p.js(boxes), "active": p.js("getComputedStyle(document.querySelector('#page-home .live-questions')).display"),
+                          "bodyClosed": p.js(body), "spacers": p.js("document.querySelectorAll('.abox-spacer').length")}
+    p.js("document.querySelector('#page-home .abox-head').click(); 1")
+    res["opened"] = {"expanded": p.js("document.querySelector('#page-home .abox-head').getAttribute('aria-expanded')"), "body": p.js(body),
+                     "answer": p.js("document.querySelector('#page-home .abox-body .answer').textContent")}
+    p.js("document.querySelector('#page-home .abox-head').click(); 1")
+    res["closed"] = {"expanded": p.js("document.querySelector('#page-home .abox-head').getAttribute('aria-expanded')"), "body": p.js(body)}
+    p.js("""(() => {
+      onEvent({ type: 'ask', id: 'zz8', tag: 's-t1', feature: 'Demo', source: 'Demo : Workflow', ts: Date.now() / 1000,
+                link: '#workflows/s-t1/ask/zz8', questions: [{ question: 'Which colour?', options: ['Red', 'Blue'] }] });
+      onEvent({ type: 'answered', id: 'zz8', tag: 's-t1', declined: true }); return 1; })()""")
+    wait(p, "document.querySelectorAll('#page-home .live-answered .abox').length === 2 && !document.querySelector('.abox-ghost')")
+    p.js("document.querySelector('#page-home .abox-head').click(); 1")
+    res["second"] = {"boxes": p.js(boxes), "declined": p.js("document.querySelector('#page-home .abox-body').innerText.trim()")}
     p.js("location.hash = '#home'; 1")
     wait(p, "!!document.querySelector('#page-home .wtab[data-tag]')")
     p.js("location.hash = '#workflows/s-t1'; 1")
     wait(p, "!!document.querySelector('#page-home .live-head')")
+    res["redrawn"] = {"boxes": p.js(boxes), "ghost": p.js("!!document.querySelector('.abox-ghost')")}
     res["onTab"] = {"tabs": p.js(tabs), "panel": p.js("document.querySelector('#page-home .live-head h4').textContent"),
                     "open": p.js("document.querySelector('#page-home .live-head button').textContent")}
     p.js("document.querySelector('#page-home .wtab[data-tag=\"s-t1\"] .x').click(); 1")

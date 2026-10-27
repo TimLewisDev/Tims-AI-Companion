@@ -310,6 +310,16 @@ folders and Claude Code's own install records; see
   process of its own, so any number of workflows can run at once, in different
   features or in one. The live panels and usage widgets are kept per tag
   (`livePanels`, `usageViews`), and `route()` clears them as the page is redrawn.
+  - **The panel's order** is the question waiting for an answer, the box to
+    message the session, the activity log, then **Previously answered**: the
+    questions answered, as small boxes titled by the question's headline, newest
+    first, each opened and closed by a click (`answeredBox` in `app.js`). The
+    section shows once there is a first answer. When a question is answered the
+    card shrinks into its box and flies down to the top of the section, and the
+    boxes already there are pushed down with a bounce (`settleAnswered`). Like the
+    status bar, that motion is *not* gated on `prefers-reduced-motion`. Questions
+    answered before the panel was drawn go straight into the section. The feed's
+    own answered cards (`answeredCard`) are unchanged.
   - **What a session is doing** (`sessionStatus` in `features.js`) is a *mode*:
     starting, thinking, tool, agents, ask, idle, lost or ended. The mod reports
     the main loop's turns (`turn.start` / `turn.complete`, `kind: "turn"`) and the
