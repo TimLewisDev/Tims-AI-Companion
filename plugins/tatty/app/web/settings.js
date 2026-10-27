@@ -1,10 +1,13 @@
 // Tatty's Settings page (#settings, the gear beside the connection badge): the
 // updates -- the version running, whether Tatty keeps itself up to date, and
-// buttons to look and to install by hand -- what the Jira board reads, and how
-// chats work (chat.js): who sums up a side chat's context, and their model. The
+// buttons to look and to install by hand -- the LLM tools that are connected (their
+// models feed every picker), the model a workflow session starts on and the model of
+// each workflow step (both kept by the toolbox's tt-config) -- what the Jira board
+// reads, and how chats work (chat.js): who sums up a side chat's context, and their
+// model. The
 // server does the work (server.py's "updates") and says how it went as "update"
 // events.
-// Uses app.js's $, el and api, and features.js's pageEls and ago.
+// Uses app.js's $, el and api, features.js's pageEls and ago, and models.js's pickers.
 "use strict";
 
 let settingsBox = null; // the page's element while it is on screen
@@ -61,6 +64,9 @@ function drawSettings() {
       el("p", { class: "upd-status " + u.status, id: "update-status" }, words !== undefined && words !== "" ? words : (u.message || "")),
       el("p", { class: "dim small" }, when),
       el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null)),
+    llmSettings(),
+    sessionSettings(),
+    stepSettings(),
     chatSettings(s),
     jiraSettings(s)));
 }
@@ -106,6 +112,144 @@ function jiraSettings(s) {
     field("jiraServer", "MCP server", "Its name in claude mcp list."),
     field("jiraSite", "Site", "Only when your sign-in reaches several, e.g. example.atlassian.net. Blank: the first."),
     field("jiraModel", "Model", "The model that reads Jira; a small one keeps it cheap."));
+}
+
+// The LLM tools: claude, copilot and codex. Connecting one lists the models it
+// offers; the pickers and the step table below take their choices from that list.
+// A tool other than claude is listed but can't run a step or a session yet.
+const LLM_STATE = {
+  connected: "Connected", available: "Installed, not connected", missing: "Connected, but the tool is gone",
+  "not installed": "Not installed",
+};
+
+function llmSettings() {
+  const box = el("section", { id: "llm-settings" }, el("h3", {}, "Connections"),
+    el("p", { class: "dim small" }, "The LLM tools Tatty and the toolbox can use. Their models fill the pickers below; today only Claude's can run a workflow."));
+  const body = el("div", {});
+  const note = el("p", { class: "dim small", id: "llm-note" });
+  box.append(body, note);
+  const act = async (action, provider) => {
+    note.textContent = "Working…";
+    try {
+      const d = await api("/api/llms", { action, provider });
+      note.textContent = d.said || "";
+      loadModels(true);
+      draw(d);
+    } catch (e) { note.textContent = ""; alert(e.message || e); }
+  };
+  const draw = d => {
+    if (!d.available) {
+      body.replaceChildren(el("p", { class: "dim small" }, "This toolbox is too old to connect LLMs, so Tatty offers Claude's models only. Update the core plugin."));
+      return;
+    }
+    body.replaceChildren(el("table", { class: "plugins", id: "llm-table" },
+      el("tr", {}, el("th", {}, "Tool"), el("th", {}, "State"), el("th", {}, "Version"), el("th", {}, "Models"), el("th", {})),
+      d.providers.map(p => {
+        const here = d.models.filter(m => m.provider === p.provider);
+        const listed = here.length ? here.map(m => m.id).join(", ") : "none";
+        const buttons = [];
+        if (p.state === "available") buttons.push(el("button", { type: "button", id: `llm-connect-${p.provider}`, onclick: () => act("connect", p.provider) }, "Connect"));
+        if (p.state === "connected" || p.state === "missing") {
+          buttons.push(el("button", { type: "button", id: `llm-refresh-${p.provider}`, onclick: () => act("refresh", p.provider) }, "Refresh models"));
+          if (p.provider !== "claude") buttons.push(" ", el("button", { type: "button", id: `llm-disconnect-${p.provider}`, onclick: () => act("disconnect", p.provider) }, "Disconnect"));
+        }
+        return el("tr", { class: p.state === "connected" ? "current" : "", id: "llm-" + p.provider },
+          el("td", {}, p.provider), el("td", {}, LLM_STATE[p.state] || p.state), el("td", { class: "dim small" }, p.version || "-"),
+          el("td", { class: "dim small" }, `${listed}${p.provider !== "claude" && here.length ? " (not yet runnable)" : ""}`),
+          el("td", {}, buttons));
+      })));
+  };
+  loadModels(true).then(d => { if (d) draw(d); else body.replaceChildren(el("p", { class: "dim small" }, "Can't read the connections.")); });
+  return box;
+}
+
+// The model and effort a workflow session starts on when a Start doesn't choose
+// (the toolbox's `session` setting in its tt-config), which the Start panels offer first.
+function sessionSettings() {
+  const box = el("section", { id: "session-settings" }, el("h3", {}, "Workflow session"),
+    el("p", { class: "dim small" }, "The model and effort Start launches the main Claude session with, for /tt-workflow and /tt-workflow-lite. A running session can't be switched, so this is set when it starts; each Start can still choose its own."));
+  loadModels(true).then(d => {
+    if (!d || !d.models) { box.append(el("p", { class: "dim small" }, "Can't read the models.")); return; }
+    const model = el("select", { id: "set-sessionModel", "aria-label": "Model" }, modelOptions(d.models));
+    const effort = el("select", { id: "set-sessionEffort", "aria-label": "Effort" });
+    const fillEfforts = () => {
+      const list = effortsOf(d.models, model.value), was = effort.value;
+      effort.replaceChildren(...effortOptions(list));
+      effort.value = list.includes(was) ? was : "";
+    };
+    const save = async () => {
+      try {
+        const r = await api("/api/model-config", { action: "set", role: "session", model: model.value || "-", effort: effort.value || "-" });
+        d.session = { model: model.value, effort: effort.value };
+        modelsAsked = null;
+        return r;
+      } catch (e) { alert(e.message || e); }
+    };
+    model.addEventListener("change", () => { fillEfforts(); save(); });
+    effort.addEventListener("change", save);
+    model.value = d.models.some(m => m.id === d.session.model && m.runnable) ? d.session.model : "";
+    fillEfforts();
+    if (effortsOf(d.models, model.value).includes(d.session.effort)) effort.value = d.session.effort;
+    box.append(el("label", { class: "field-row" }, el("strong", {}, "Model"), model, el("span", { class: "dim small" }, "Blank: Claude Code's own choice.")),
+      el("label", { class: "field-row" }, el("strong", {}, "Effort"), effort, el("span", { class: "dim small" }, "How hard it thinks.")));
+  });
+  return box;
+}
+
+// The model and effort of each workflow step, through the toolbox's tt-config: the
+// steps that start a subagent apply them when it starts; a step that runs in your
+// own session is advisory (the session's model is the one above).
+function stepSettings() {
+  const box = el("section", { id: "step-settings" }, el("h3", {}, "Step models"),
+    el("p", { class: "dim small" }, "Which model and effort each step of the workflow uses for its subagents, in the active mode. Steps marked advisory run in your own session, which the toolbox can only recommend a model for."));
+  const body = el("div", {});
+  const note = el("p", { class: "dim small", id: "step-note" });
+  box.append(body, note);
+  let now = null;
+  const act = async change => {
+    note.textContent = "Working…";
+    try { now = await api("/api/model-config", change); note.textContent = now.said || ""; draw(); }
+    catch (e) { note.textContent = ""; alert(e.message || e); }
+  };
+  const draw = () => {
+    if (!now || !now.available) {
+      body.replaceChildren(el("p", { class: "dim small" }, "This toolbox is too old to configure models. Update the core plugin."));
+      return;
+    }
+    const active = now.modes.find(m => m.name === now.mode) || { kind: "" };
+    const modeSel = el("select", { id: "step-mode", "aria-label": "Mode" }, now.modes.map(m => el("option", { value: m.name }, `${m.name} (${m.kind})`)));
+    modeSel.value = now.mode;
+    modeSel.addEventListener("change", () => act({ action: "use", mode: modeSel.value }));
+    const saveName = el("input", { id: "step-save-name", placeholder: "name", "aria-label": "Name for a new mode" });
+    const tools = el("div", { class: "actions" }, el("span", { class: "dim small" }, "Mode "), modeSel, " ",
+      saveName, el("button", { type: "button", id: "step-save", onclick: () => saveName.value.trim() && act({ action: "save", name: saveName.value.trim() }) }, "Save as new mode"),
+      active.kind === "shipped, edited" ? el("button", { type: "button", id: "step-reset", onclick: () => act({ action: "reset", mode: now.mode }) }, "Reset edits") : null,
+      active.kind === "saved" ? el("button", { type: "button", id: "step-delete", onclick: () => act({ action: "delete", mode: now.mode }) }, "Delete mode") : null);
+    const row = r => {
+      const model = el("select", { id: `step-${r.role}-model`, "aria-label": `${r.role} model` }, modelOptions(now.models, "Session's own"));
+      const effort = el("select", { id: `step-${r.role}-effort`, "aria-label": `${r.role} effort` });
+      const fill = () => {
+        const list = effortsOf(now.models, model.value), was = effort.value;
+        effort.replaceChildren(...effortOptions(list, "Default"));
+        effort.value = list.includes(was) ? was : "";
+      };
+      model.value = r.model === "-" ? "" : r.model;
+      fill();
+      effort.value = r.effort === "-" ? "" : r.effort;
+      const save = () => act({ action: "set", role: r.role, model: model.value || "-", effort: effort.value || "-" });
+      model.addEventListener("change", () => { fill(); save(); });
+      effort.addEventListener("change", save);
+      const changed = r.model !== r.defaultModel || r.effort !== r.defaultEffort;
+      return el("tr", { id: "step-" + r.role, class: changed ? "current" : "" },
+        el("td", {}, r.kind === "main" ? el("span", {}, r.role, " ", el("span", { class: "dim small" }, "advisory")) : r.role),
+        el("td", { class: "dim small" }, r.label), el("td", {}, model), el("td", {}, effort));
+    };
+    body.replaceChildren(tools, el("table", { class: "plugins", id: "step-table" },
+      el("tr", {}, el("th", {}, "Step"), el("th", {}, "What it does"), el("th", {}, "Model"), el("th", {}, "Effort")),
+      now.roles.filter(r => r.role !== "session").map(row)));
+  };
+  api("/api/model-config").then(d => { now = d; draw(); }).catch(() => body.replaceChildren(el("p", { class: "dim small" }, "Can't read the step models.")));
+  return box;
 }
 
 // What the server says about an update, as it happens.

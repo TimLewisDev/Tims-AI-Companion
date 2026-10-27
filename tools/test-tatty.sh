@@ -27,6 +27,12 @@ printf '#!/usr/bin/env bash\necho "$*" >>"%s/picker.log"\nout=""; while [ $# -gt
 export TATTY_PICKER="$T/picker.sh"
 # Start reports the session it would open instead of opening it.
 export TATTY_DRYRUN=1
+# The toolbox's model choices and LLM connections are kept in its own folders;
+# these tests keep theirs in the throwaway one, with a stand-in copilot and codex
+# when the toolbox checkout has them.
+export TT_CONFIG_DIR="$T/ttconfig" TT_LLMS_HOME="$T/llms"
+LLMS_FX="${TATTY_TOOLBOX:-/none}/tools/fixtures/llms"
+if [ -f "$LLMS_FX/fake-copilot.sh" ]; then export TT_COPILOT_BIN="$LLMS_FX/fake-copilot.sh" TT_CODEX_BIN="$LLMS_FX/fake-codex.sh"; fi
 # The updates run the claude command: a stand-in logs what it is asked and, for
 # `plugin update`, raises the version in the install record. The server's own
 # look at start-up is put off, so only the checks the tests ask for happen.
@@ -1362,6 +1368,71 @@ get "/api/whiteboard?kind=feature&ref=Demo" >"$T/j"
 ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in <home>/boards" || bad "in <home>/boards"
 [ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=feature&ref=Nope")" = 404 ] && ok "an unknown feature" || bad "an unknown feature"
 
+
+echo "# model and effort at start"
+HAVE_LLMS=""
+[ -n "${TATTY_TOOLBOX:-}" ] && [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-connections/scripts/llms.sh" ] && HAVE_LLMS=1
+scode() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/start"; }
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+hasnt "nothing is forced when nothing is chosen" "$T/j" "--model"
+if [ -n "$HAVE_LLMS" ]; then
+	post /api/start '{"name":"Demo","row":0,"model":"opus","effort":"high"}' >"$T/j"
+	has "started on the chosen model and effort" "$T/j" "--model opus --effort high"
+	has "the answer says which" "$T/j" '"model": "opus"'
+	[ "$(pick "$T/j" "d['said'].index('--model') < d['said'].index(' -n ')")" = True ] && ok "the flags go before the session's name" || bad "the flags go before the session's name"
+	post /api/start '{"name":"Demo","row":0,"model":"sonnet","effort":""}' >"$T/j"
+	has "a model alone" "$T/j" "--model sonnet"
+	hasnt "with no effort flag" "$T/j" "--effort"
+	post /api/start '{"name":"Demo","row":0,"model":"","effort":"low"}' >"$T/j"
+	has "an effort alone" "$T/j" "--effort low"
+	hasnt "with no model flag" "$T/j" "--model"
+	[ "$(scode '{"name":"Demo","row":0,"model":"gpt-9"}')" = 400 ] && ok "an unknown model is refused" || bad "an unknown model is refused"
+	[ "$(scode '{"name":"Demo","row":0,"model":"opus","effort":"loud"}')" = 400 ] && ok "an unknown effort is refused" || bad "an unknown effort is refused"
+	[ "$(scode '{"name":"Demo","row":0,"model":"opus; rm -rf /"}')" = 400 ] && ok "a model is a single word" || bad "a model is a single word"
+	post /api/model-config '{"action":"set","role":"session","model":"sonnet","effort":"-"}' >"$T/j"
+	has "the session setting is kept by the toolbox" "$T/j" '"mode": "recommended"'
+	post /api/start '{"name":"Demo","row":0}' >"$T/j"
+	has "a Start that chooses nothing uses the session setting" "$T/j" "--model sonnet"
+	post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >"$T/j"
+	hasnt "choosing Claude Code's own beats the setting" "$T/j" "--model"
+	post /api/model-config '{"action":"set","role":"session","model":"-","effort":"-"}' >/dev/null
+	has "what a feature was started on is remembered for its chats" "$TATTY_HOME/session-models.json" '"Demo"'
+fi
+[ "$(code "$U/static/models.js")" = 200 ] && ok "models.js served" || bad "models.js served"
+
+echo "# LLM connections and step models"
+if [ -n "$HAVE_LLMS" ]; then
+	get /api/llms >"$T/j"
+	[ "$(pick "$T/j" "[p['provider'] + ':' + p['state'] for p in d['providers']]")" = "['claude:connected', 'copilot:available', 'codex:available']" ] &&
+		ok "claude is connected; copilot and codex are installed but not" || bad "connections" "$(head -c 400 "$T/j")"
+	[ "$(pick "$T/j" "sorted(m['id'] for m in d['models'] if m['runnable'])")" = "['fable', 'haiku', 'opus', 'sonnet']" ] && ok "claude's models are runnable" || bad "claude's models" "$(head -c 400 "$T/j")"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"connect","provider":"gemini"}' "$U/api/llms")" = 400 ] && ok "an unknown tool is refused" || bad "an unknown tool is refused"
+	post /api/llms '{"action":"connect","provider":"copilot"}' >"$T/j"
+	[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'copilot']")" = "['gpt-5', 'claude-sonnet-4.5', 'o4-mini']" ] && ok "connecting lists the tool's models" || bad "connect copilot" "$(head -c 400 "$T/j")"
+	[ "$(pick "$T/j" "any(m['runnable'] for m in d['models'] if m['provider'] == 'copilot')")" = False ] && ok "which can't run yet" || bad "copilot models are not runnable"
+	[ "$(scode '{"name":"Demo","row":0,"model":"gpt-5"}')" = 400 ] && ok "a session can't start on a model that can't run yet" || bad "a session can't start on a model that can't run yet"
+	post /api/start '{"name":"Demo","row":0,"model":"gpt-5"}' >"$T/j"
+	has "and says why" "$T/j" "can't run a workflow session yet"
+	post /api/llms '{"action":"disconnect","provider":"copilot"}' >"$T/j"
+	hasnt "disconnecting forgets its models" "$T/j" "gpt-5"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"disconnect","provider":"claude"}' "$U/api/llms")" = 409 ] && ok "claude stays connected" || bad "claude stays connected"
+	get /api/model-config >"$T/j"
+	[ "$(pick "$T/j" "any(r['role'] == 'coder' and r['kind'] == 'sub' for r in d['roles'])")" = True ] && ok "the steps are listed" || bad "the steps are listed" "$(head -c 300 "$T/j")"
+	[ "$(pick "$T/j" "d['mode']")" = recommended ] && ok "in the active mode" || bad "in the active mode"
+	post /api/model-config '{"action":"set","role":"coder","model":"haiku","effort":"-"}' >"$T/j"
+	[ "$(pick "$T/j" "[r['model'] for r in d['roles'] if r['role'] == 'coder'][0]")" = haiku ] && ok "a step's model is changed" || bad "a step's model is changed"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"set","role":"nope","model":"haiku","effort":"-"}' "$U/api/model-config")" = 400 ] && ok "an unknown step is refused" || bad "an unknown step is refused"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"set","role":"coder","model":"gpt-5","effort":"-"}' "$U/api/model-config")" = 400 ] && ok "so is a model that can't run" || bad "so is a model that can't run"
+	post /api/model-config '{"action":"save","name":"mine"}' >"$T/j"
+	[ "$(pick "$T/j" "d['mode']")" = mine ] && ok "a mode is saved" || bad "a mode is saved" "$(head -c 300 "$T/j")"
+	post /api/model-config '{"action":"use","mode":"economy"}' >"$T/j"
+	[ "$(pick "$T/j" "[r['model'] for r in d['roles'] if r['role'] == 'adversary'][0]")" = sonnet ] && ok "a mode is switched" || bad "a mode is switched"
+	post /api/model-config '{"action":"delete","mode":"mine"}' >"$T/j"
+	[ "$(pick "$T/j" "[m['name'] for m in d['modes']]")" = "['economy', 'recommended', 'thorough']" ] && ok "a saved mode is deleted" || bad "a saved mode is deleted" "$(head -c 300 "$T/j")"
+	post /api/model-config '{"action":"use","mode":"recommended"}' >/dev/null
+else
+	ok "the LLM connection checks need a toolbox checkout (TATTY_TOOLBOX) with llms.sh (skipped)"
+fi
 echo "# chats"
 # A chat is a headless claude of its own, one run a turn: the first names its
 # conversation (--session-id), the rest go on with it (--resume). It only reads.
@@ -1422,6 +1493,7 @@ get "/api/chat?id=$C1" >"$T/c"
 [ "$(pick "$T/c" "(d['messages'][1]['steps'], d['cost'], d['busy'])")" = "(['Reading README.md'], 0.02, False)" ] &&
 	ok "with its steps and what it cost" || bad "with its steps and what it cost" "$(head -c 400 "$T/c")"
 [ "$(after --session-id)" = "$SID" ] && ok "the first turn names its conversation" || bad "the first turn names its conversation" "$(cat "$T/chat.args")"
+hasnt "a feature started on Claude Code's own model forces none" "$T/chat.args" "--model"
 [ "$(after --tools)" = "Read,Glob,Grep,Skill" ] && ok "it may only read, and use skills" || bad "it may only read, and use skills" "$(after --tools)"
 [ "$(after --permission-mode)" = dontAsk ] && ok "and asks nobody" || bad "and asks nobody"
 hasnt "nothing that writes" "$T/chat.args" "Write"
@@ -1435,6 +1507,16 @@ hasnt "with no side-chat skill" "$T/chat.prompt" "/tatty:side-chat"
 [ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"And then?\"}")" = 202 ] && chat_done "$C1" 2 && ok "a second turn" || bad "a second turn"
 [ "$(after --resume)" = "$SID" ] && ok "goes on with the same conversation" || bad "goes on with the same conversation" "$(cat "$T/chat.args")"
 hasnt "rather than naming a new one" "$T/chat.args" "--session-id"
+# a chat of a feature whose workflow was started on a model answers on that model
+if [ -n "$HAVE_LLMS" ]; then
+	printf '{"Demo":{"model":"opus","effort":"high"}}' >"$TATTY_HOME/session-models.json"
+	cpost /api/chat/new "{\"kind\":\"main\",\"project\":\"$CP\",\"feature\":\"Demo\"}" >/dev/null
+	C4=$(pick "$T/j" "d['id']")
+	cpost /api/chat/say "{\"id\":\"$C4\",\"text\":\"Hi\"}" >/dev/null && chat_done "$C4" 1
+	[ "$(after --model)" = opus ] && ok "a chat uses its feature's model" || bad "a chat uses its feature's model" "$(cat "$T/chat.args")"
+	[ "$(after --effort)" = high ] && ok "and its effort" || bad "and its effort"
+	rm -f "$TATTY_HOME/session-models.json"
+fi
 get /api/events >"$T/ev"
 [ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'chat' and 'tag' in e])")" = 0 ] && ok "a chat's events carry no tag" || bad "a chat's events carry no tag"
 [ "$(pick "$T/ev" "len([e for e in d if e.get('tag') == 's-chatwf'])")" = "$n_wf" ] && ok "the workflow beside it hears nothing of it" || bad "the workflow beside it hears nothing of it"

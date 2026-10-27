@@ -776,6 +776,7 @@ function startPanel(f, row, index, close) {
   const preview = el("code", {});
   const name = row.phase === "empty" ? `${f.name} : Start` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
   const result = el("div", { class: "start-result" });
+  const picker = modelPicker("start-" + index);
   const go = el("button", { type: "button", class: "primary" }, "Start session");
   const refresh = () => {
     let c = cmd;
@@ -792,6 +793,7 @@ function startPanel(f, row, index, close) {
       inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
       el("div", { class: "small" }, "running ", preview),
       el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
+      picker.node,
       el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
       result);
   };
@@ -801,7 +803,7 @@ function startPanel(f, row, index, close) {
     tell("allow-foreground");
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
-      const r = await api("/api/start", { name: f.name, row: index, values });
+      const r = await api("/api/start", { name: f.name, row: index, values, ...picker.fields() });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,

@@ -315,6 +315,10 @@ table.units td { padding: 3px 8px; }
 .start-panel { margin: 8px 0 4px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft);
   display: flex; flex-direction: column; gap: 6px; }
 .start-panel .project-line { border-top: none; margin: 0; padding: 0; }
+.model-picker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-picker select, .settings-page select { font: inherit; padding: 1px 4px; }
+.settings-page table.plugins select { max-width: 170px; }
+.settings-page table.plugins td { vertical-align: top; }
 .start-title { font-weight: 600; }
 .start-inputs { display: flex; flex-direction: column; gap: 4px; }
 .start-inputs label { display: flex; flex-direction: column; gap: 2px; }

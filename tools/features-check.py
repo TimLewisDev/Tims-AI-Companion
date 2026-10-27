@@ -7,8 +7,10 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings]
+--settings only the Settings page's connections, session and step models, and a model picker; it
+changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
 --split only the documents split beside a workflow tab: it starts two sessions (no terminal opens), uses real mouse input and
 writes nothing to the features, so a throwaway home is still best;
@@ -1060,6 +1062,36 @@ def check_tasks(p):
     return res
 
 
+def check_settings(p):
+    """The Settings page's model sections and the Start panel's picker, against the
+    toolbox the server was started with: the LLM connections table, the workflow
+    session setting, the step table (a step's model changed and put back), and a
+    model picker drawn on the page. Changes the toolbox's model choices (its tt-config),
+    so only ever on a server with a throwaway TT_CONFIG_DIR."""
+    res = {}
+    p.js("location.hash = '#settings'; 1")
+    wait(p, "!!document.querySelector('#llm-table') && !!document.querySelector('#step-table') && !!document.querySelector('#set-sessionModel option:nth-child(2)')")
+    res["connections"] = p.js("""[...document.querySelectorAll('#llm-table tr[id]')].map(r => r.id + ': ' + r.children[1].textContent)""")
+    res["sessionModels"] = p.js("""[...document.querySelectorAll('#set-sessionModel option')].map(o => o.value + (o.disabled ? ' (disabled)' : ''))""")
+    res["steps"] = p.js("document.querySelectorAll('#step-table tr[id]').length")
+    res["noSessionRow"] = p.js("!document.querySelector('#step-session')")
+    # change one step's model, as a person would, and wait for the table to redraw with it marked
+    p.js("""(() => { const s = document.querySelector('#step-coder-model'); s.value = 'haiku'; s.dispatchEvent(new Event('change')); return 1; })()""")
+    res["changed"] = wait(p, "document.querySelector('#step-coder.current') && document.querySelector('#step-coder-model').value === 'haiku'")
+    p.js("""(() => { const s = document.querySelector('#step-coder-model'); s.value = 'sonnet'; s.dispatchEvent(new Event('change')); return 1; })()""")
+    res["restored"] = wait(p, "!document.querySelector('#step-coder.current') && document.querySelector('#step-coder-model').value === 'sonnet'")
+    # a model picker, as a Start panel draws it
+    p.js("""(() => { const m = modelPicker('zz'); m.node.id = 'zz-holder'; document.body.append(m.node); return 1; })()""")
+    wait(p, "document.querySelectorAll('#zz-model option').length > 1")
+    res["picker"] = p.js("""({ models: [...document.querySelectorAll('#zz-model option')].map(o => o.value + (o.disabled ? ' (disabled)' : '')),
+                              efforts: [...document.querySelectorAll('#zz-effort option')].map(o => o.value),
+                              fields: document.querySelector('#zz-holder') ? 1 : 0 })""")
+    p.js("""(() => { const s = document.querySelector('#zz-model'); s.value = 'opus'; s.dispatchEvent(new Event('change')); return 1; })()""")
+    res["opusEfforts"] = p.js("[...document.querySelectorAll('#zz-effort option')].map(o => o.value)")
+    p.js("document.querySelector('#zz-holder').remove(); 1")
+    return res
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -1093,10 +1125,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")

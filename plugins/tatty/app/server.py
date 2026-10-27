@@ -56,6 +56,7 @@ HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a checkout)
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
+          "models.js": "text/javascript",
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
@@ -510,6 +511,207 @@ def run_view(state, name, query):
         return {"exit": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"exit": 2, "stdout": "", "stderr": str(e)}
+
+
+# ---------------------------------------------------------------- models
+# Which model and thinking effort a session, or a step of the workflow, runs on.
+# The models come from the LLM connections the toolbox keeps (tt-connections'
+# llms.sh: claude, copilot, codex), the choices per step from its tt-config
+# (model-config.sh), and that config's `session` role is what a Start launches
+# claude with. Tatty only runs those scripts, by argv, on a Start or a click in
+# Settings; the files stay the toolbox's (see docs/toolbox-contract.md).
+
+LLMS = "tt-connections/scripts/llms.sh"
+MODEL_CONFIG = "tt-common/scripts/model-config.sh"
+PROVIDERS = ("claude", "copilot", "codex")
+DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+# What claude offers when the toolbox has no llms.sh (an older install).
+BUILTIN_MODELS = [{"provider": "claude", "id": a, "label": a, "efforts": DEFAULT_EFFORTS, "runnable": True}
+                  for a in ("sonnet", "opus", "haiku", "fable")]
+MODEL_WORD = re.compile(r"[A-Za-z0-9._:/-]+\Z")
+_models = {"at": 0.0, "rows": None}
+
+
+def toolbox_run(state, rel, args, timeout=60):
+    """Run a toolbox script (by its path under core's skills folder) with args, no
+    shell: (exit code, stdout, stderr), or None when this toolbox doesn't have it."""
+    script = toolbox_script(rel)
+    if not script:
+        return None
+    try:
+        p = subprocess.run([state.bash, str(script), *args], cwd=state.cwd, capture_output=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+        return p.returncode, p.stdout.replace("\r", ""), p.stderr.replace("\r", "")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 2, "", str(e)
+
+
+def tsv_rows(text, n):
+    return [r for r in (line.split("\t") for line in text.splitlines() if line.strip()) if len(r) >= n]
+
+
+def llm_models(state, fresh=False):
+    """The models of the connected LLMs: dicts of provider, id, label, efforts (a
+    list, empty when none is offered) and runnable (a skill or session can use it).
+    Cached for a few seconds, as a Start asks for them."""
+    if not fresh and _models["rows"] is not None and time.time() - _models["at"] < 15:
+        return _models["rows"]
+    got = toolbox_run(state, LLMS, ["models", "--tsv"])
+    rows = []
+    if got and got[0] == 0:
+        rows = [{"provider": r[0], "id": r[1], "label": r[2], "efforts": [] if r[3] in ("", "-") else r[3].split(","),
+                 "runnable": r[4].strip() == "yes"} for r in tsv_rows(got[1], 5)]
+    _models.update(at=time.time(), rows=rows or BUILTIN_MODELS)
+    return _models["rows"]
+
+
+def model_choice(state, model, effort):
+    """Check a model and effort a session may start on: ([claude flags], "") or
+    (None, why not). Blank or "-" leaves that choice to Claude Code."""
+    model, effort = str(model or "").strip(), str(effort or "").strip()
+    model = "" if model == "-" else model
+    effort = "" if effort == "-" else effort
+    flags, allowed = [], DEFAULT_EFFORTS
+    if model:
+        if not MODEL_WORD.match(model):
+            return None, "That isn't a model name."
+        known = [m for m in llm_models(state) if m["id"] == model]
+        found = next((m for m in known if m["runnable"]), known[0] if known else None)
+        if not found:
+            return None, f"{model} isn't one of the models Tatty knows. Refresh the connections in Settings."
+        if not found["runnable"]:
+            return None, f"{model} ({found['provider']}) is connected, but can't run a workflow session yet."
+        allowed = found["efforts"] or allowed
+        flags += ["--model", model]
+    if effort:
+        if effort not in allowed:
+            return None, f"{model or 'The session model'} doesn't take the effort {effort} (it takes {', '.join(allowed)})."
+        flags += ["--effort", effort]
+    return flags, ""
+
+
+def model_fields(body):
+    """The model and effort a Start's body chose, to pass on to start_session
+    (left out when it chose nothing, so the toolbox's `session` setting applies)."""
+    return {k: body[k] for k in ("model", "effort") if k in body}
+
+
+def model_fields_error(state, body):
+    """Why the model and effort a body chose won't do, or "". Checked before a Start
+    makes a feature folder, so a bad choice leaves nothing behind."""
+    if "model" not in body and "effort" not in body:
+        return ""
+    return model_choice(state, body.get("model"), body.get("effort"))[1]
+
+
+def kv_pairs(text):
+    """model=opus effort=high -> {"model": "opus", "effort": "high"}"""
+    return dict(w.split("=", 1) for w in text.split() if "=" in w)
+
+
+def session_default(state):
+    """The model and effort the toolbox's `session` setting starts claude with ("" = Claude Code's own)."""
+    got = toolbox_run(state, MODEL_CONFIG, ["get", "session"])
+    pairs = kv_pairs(got[1]) if got and got[0] == 0 else {}
+    return {k: "" if pairs.get(k, "-") == "-" else pairs[k] for k in ("model", "effort")}
+
+
+def feature_models_file():
+    return home() / "session-models.json"
+
+
+def feature_model(feature):
+    """The model and effort a feature's workflow was last started on, else None."""
+    try:
+        got = json.loads(feature_models_file().read_text(encoding="utf-8")).get(feature)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return got if isinstance(got, dict) and (got.get("model") or got.get("effort")) else None
+
+
+def remember_feature_model(feature, model, effort):
+    """So the chats and runs of that feature use the same choice."""
+    try:
+        data = json.loads(feature_models_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[feature] = {"model": model, "effort": effort}
+    home().mkdir(parents=True, exist_ok=True)
+    tmp = feature_models_file().with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, feature_models_file())
+
+
+def llms_view(state):
+    got = toolbox_run(state, LLMS, ["status", "--tsv"])
+    providers = [{"provider": r[0], "state": r[1], "version": r[2], "models": int(r[3] or 0), "runnable": int(r[4] or 0)}
+                 for r in tsv_rows(got[1], 5)] if got and got[0] == 0 else []
+    return {"available": got is not None, "providers": providers, "models": llm_models(state, fresh=True),
+            "session": session_default(state)}
+
+
+def llms_change(state, b):
+    """connect / disconnect / refresh one LLM tool: (http code, answer)."""
+    action, provider = str(b.get("action", "")), str(b.get("provider", ""))
+    if action not in ("connect", "disconnect", "refresh") or (provider not in PROVIDERS and not (action == "refresh" and not provider)):
+        return 400, {"error": "action: connect, disconnect or refresh; provider: claude, copilot or codex"}
+    got = toolbox_run(state, LLMS, [action, *([provider] if provider else [])], timeout=90)
+    if got is None:
+        return 501, {"error": "This toolbox is too old to connect LLMs. Update the core plugin."}
+    _models["rows"] = None
+    if got[0] != 0:
+        return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
+    return 200, {**llms_view(state), "said": got[1].strip()}
+
+
+def model_config_view(state):
+    got = toolbox_run(state, MODEL_CONFIG, ["list", "--tsv"])
+    roles = [{"role": r[0], "kind": r[1], "tier": int(r[2]) if r[2].isdigit() else 4, "usedBy": r[3], "label": r[4],
+              "model": r[5], "effort": r[6], "defaultModel": r[7], "defaultEffort": r[8]}
+             for r in tsv_rows(got[1], 9)] if got and got[0] == 0 else []
+    modes, active = [], ""
+    shown = toolbox_run(state, MODEL_CONFIG, ["modes"])
+    for line in (shown[1].splitlines() if shown and shown[0] == 0 else []):
+        m = re.match(r"([* ]) (\S+) \((.+)\)\Z", line.rstrip())
+        if m:
+            modes.append({"name": m.group(2), "kind": m.group(3)})
+            if m.group(1) == "*":
+                active = m.group(2)
+    return {"available": bool(roles), "mode": active, "modes": modes, "roles": roles, "models": llm_models(state)}
+
+
+def model_config_change(state, b):
+    """set one role / use, reset, save or delete a mode, through model-config.sh: (http code, answer)."""
+    action = str(b.get("action", ""))
+    now = model_config_view(state)
+    if not now["available"]:
+        return 501, {"error": "This toolbox is too old to configure models. Update the core plugin."}
+    names = {m["name"] for m in now["modes"]}
+    if action == "set":
+        role = str(b.get("role", ""))
+        if role not in {r["role"] for r in now["roles"]}:
+            return 400, {"error": "no such step"}
+        args = ["set", role, str(b.get("model") or "-").strip() or "-", str(b.get("effort") or "-").strip() or "-"]
+    elif action in ("use", "reset", "delete"):
+        mode = str(b.get("mode", ""))
+        if mode not in names:
+            return 400, {"error": "no such mode"}
+        args = [action, mode]
+    elif action == "save":
+        name = str(b.get("name", "")).strip()
+        if not re.match(r"[a-z0-9][a-z0-9_-]*\Z", name):
+            return 400, {"error": "A mode's name is lowercase letters, digits, - and _."}
+        args = ["save", name]
+    else:
+        return 400, {"error": "action: set, use, reset, save or delete"}
+    if any(not MODEL_WORD.match(a) for a in args):
+        return 400, {"error": "model and effort are single words"}
+    got = toolbox_run(state, MODEL_CONFIG, args)
+    if got[0] != 0:
+        return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
+    return 200, {**model_config_view(state), "said": got[1].strip()}
 
 
 # ---------------------------------------------------------------- features (Tatty's root)
@@ -1066,11 +1268,13 @@ def session_name(base):
     return name
 
 
-def launch(state, project, name, prompt, tag, workdir=""):
+def launch(state, project, name, prompt, tag, workdir="", flags=()):
     """Open a new terminal running claude in the project, named, started with the
     prompt, carrying TATTY_SESSION so Tatty's mod there reports to this window.
     A workdir (the folder the work is done in, when that isn't the project) is
-    added to the session with --add-dir.
+    added to the session with --add-dir. flags (--model, --effort) force the
+    session's model and effort: a running session can't be switched, so they go
+    on the command that starts it.
     From a checkout (not an install) the session loads this plugin with
     --plugin-dir. Windows Terminal, else a cmd window; elsewhere Terminal.app;
     else the command to run is given. TATTY_DRYRUN=1 opens nothing.
@@ -1080,7 +1284,7 @@ def launch(state, project, name, prompt, tag, workdir=""):
     claude = shutil.which("claude")
     if not claude:
         return False, "There's no claude command on this machine's PATH."
-    args = [] if installed() else ["--plugin-dir", PLUGIN.as_posix()]
+    args = [*flags] + ([] if installed() else ["--plugin-dir", PLUGIN.as_posix()])
     if workdir:
         args += ["--add-dir", Path(workdir).as_posix()]
     exports = {"TATTY_SESSION": tag}
@@ -1153,6 +1357,16 @@ def start_session(state, folder, body):
     workdir = str(body.get("workdir") or "").strip()
     if workdir and not os.path.isdir(workdir):
         return 400, {"error": f"no such folder: {workdir}"}
+    # The model and effort the session starts on: what the page sent (blank = Claude
+    # Code's own), else the toolbox's `session` setting.
+    if "model" in body or "effort" in body:
+        model, effort = str(body.get("model") or "").strip(), str(body.get("effort") or "").strip()
+    else:
+        default = session_default(state)
+        model, effort = default["model"], default["effort"]
+    flags, why = model_choice(state, model, effort)
+    if flags is None:
+        return 400, {"error": why}
     if row.get("phase") in ("empty", "workflow", "lite"):
         base = f"{folder.name} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite"}[row["phase"]]
     else:
@@ -1161,13 +1375,15 @@ def start_session(state, folder, body):
     # The new session carries a tag naming it (TATTY_SESSION): Tatty's mod there
     # joins this window and reports what it does, for this feature's page.
     tag = "s-" + secrets.token_hex(4)
-    ok, said = launch(state, project, name, cmd, tag, workdir)
-    answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag}
+    ok, said = launch(state, project, name, cmd, tag, workdir, flags)
+    answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag,
+              "model": model, "effort": effort}
     if ok:
+        remember_feature_model(folder.name, model, effort)  # its chats use the same choice
         with state.cond:
             state.sessions[tag] = {"tag": tag, "feature": folder.name, "folder": folder.as_posix(), "name": name,
                                    "command": cmd, "project": project, "workdir": workdir, "started": time.time(), "status": "starting",
-                                   "seen": 0.0, "claude": "", "doing": "", "usage": None}
+                                   "seen": 0.0, "claude": "", "doing": "", "usage": None, "model": model, "effort": effort}
         state.session_event(tag)
     return 200, answer
 
@@ -1628,6 +1844,9 @@ def jira_start(state, body):
     project = str(body.get("project") or "").strip()
     if not project or not os.path.isdir(project):
         return 400, {"error": "Choose the project (repo) the session should run in."}
+    why = model_fields_error(state, body)
+    if why:
+        return 400, {"error": why}
     code, made = new_feature(str(body.get("name") or "").strip() or jira_name(issue))
     if code != 200:
         return code, made
@@ -1643,7 +1862,8 @@ def jira_start(state, body):
     first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
     said = f'the Jira ticket {key} in "{doc.as_posix()}". Folder: {folder.as_posix()}. Prefix: {made["name"]}'
     values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
-    code, answer = start_session(state, folder, {"row": 0 if first else "workflow", "values": values, "project": project})
+    code, answer = start_session(state, folder, {"row": 0 if first else "workflow", "values": values, "project": project,
+                                                 **model_fields(body)})
     answer = {**answer, "feature": made["name"], "ticket": doc.name}
     if code == 200 and answer.get("ok"):
         answer["moving"] = jira_job(state, f"move:{key}", jira_move_work, key)
@@ -3877,6 +4097,9 @@ def task_start(state, folder, body, client):
             return 400, {"error": f"No such work folder: {workdir}"}
         if workdir and is_folder(workdir, Path(project)):
             workdir = ""  # the same folder: nothing is split
+        why = model_fields_error(state, body)
+        if why:
+            return 400, {"error": why}
         detail = task_detail(folder, t)
         code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t))
         if code != 200:
@@ -3904,7 +4127,7 @@ def task_start(state, folder, body, client):
         first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
         values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
         go = {"row": 0 if first else "workflow", "values": values}
-    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir})
+    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body)})
     answer = {**answer, "feature": made["name"], "ticket": doc.name}
     if code == 200 and answer.get("ok"):
         with task_store(folder)["lock"]:
@@ -4337,7 +4560,12 @@ def chat_argv(state, claude, c):
              "--tools", ",".join(CHAT_TOOLS), "--allowedTools", *CHAT_TOOLS,
              "--permission-mode", "dontAsk", "--setting-sources", "user", "--strict-mcp-config",
              "--max-budget-usd", CHAT_BUDGET]
-    if load_settings()["chatModel"].strip():
+    # The model and effort the feature's workflow was started on, else the chat model setting.
+    started = feature_model(c.get("feature", ""))
+    flags = model_choice(state, started["model"], started["effort"])[0] if started else None
+    if flags:
+        argv += flags
+    elif load_settings()["chatModel"].strip():
         argv += ["--model", load_settings()["chatModel"].strip()]
     if not installed():
         argv += ["--plugin-dir", PLUGIN.as_posix()]  # for /tatty:side-chat
@@ -4608,6 +4836,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, root_info())
         if path == "/api/settings":
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+        if path == "/api/llms":
+            return self.send(200, llms_view(st))
+        if path == "/api/model-config":
+            return self.send(200, model_config_view(st))
         if path == "/api/features":
             return self.send(200, features_list(st))
         if path == "/api/resolve":
@@ -4810,6 +5042,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             save_settings(b if isinstance(b, dict) else {})
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+        if path in ("/api/llms", "/api/model-config"):
+            # The toolbox's own scripts change its connections and its model choices;
+            # only on a click in Settings.
+            code, answer = (llms_change if path == "/api/llms" else model_config_change)(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
         if path == "/api/update":
             # check: look only; apply: look, and install what is newer. Runs in the
             # background (the claude command takes seconds); the page hears the result

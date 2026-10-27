@@ -170,6 +170,7 @@ function startForm(i) {
   const where = el("span", {});
   const go = el("button", { type: "button", class: "primary", id: "jira-start" }, "Start workflow");
   const result = el("div", { class: "start-result" });
+  const picker = modelPicker("jira-start-" + i.key);
   const drawWhere = () => {
     where.replaceChildren(project ? copyable(project) : el("strong", { class: "st missing" }, "no project chosen yet"));
     go.disabled = !project || !name.value.trim();
@@ -184,7 +185,7 @@ function startForm(i) {
     result.replaceChildren(el("span", { class: "dim small" }, "Making the feature and opening a session…"));
     tell("allow-foreground");
     try {
-      const r = await api("/api/jira/start", { key: i.key, name: name.value.trim(), project });
+      const r = await api("/api/jira/start", { key: i.key, name: name.value.trim(), project, ...picker.fields() });
       jiraNow.started = { ...(jiraNow.started || {}), [i.key]: r.feature };
       if (r.ok) {
         closeTicket();
@@ -205,6 +206,7 @@ function startForm(i) {
     el("div", { class: "start-title" }, "Start a workflow from this ticket"),
     el("label", { class: "jname" }, el("span", { class: "dim small" }, "Feature folder"), name),
     el("div", { class: "project-line small" }, "Runs in ", where, " ", choose),
+    picker.node,
     el("div", { class: "small dim" }, `Writes the ticket into the feature's folder, opens a new Claude session that starts planning from it, ${moving}.`),
     el("div", { class: "start-actions" }, go),
     result);

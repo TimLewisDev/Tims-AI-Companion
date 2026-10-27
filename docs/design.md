@@ -294,9 +294,17 @@ folders and Claude Code's own install records; see
   `/tt-workflow "<folder>"`, so the toolbox links and starts the feature.
   Tatty never changes the workflow's records.
 - **Start session:**
-  - It opens a terminal with `claude -n "<Feature> : <Stage>" "<command>"` in
-    the feature's project. The project comes from a choice on the page, a
-    tt-workflow link, the ledger, or a `Repo` path in the documents.
+  - It opens a terminal with `claude [--model <m>] [--effort <e>] -n
+    "<Feature> : <Stage>" "<command>"` in the feature's project. The project
+    comes from a choice on the page, a tt-workflow link, the ledger, or a
+    `Repo` path in the documents.
+  - The model and effort come from the picker on the Start panel (also on a
+    Jira ticket's and a task's Start), which starts on the toolbox's `session`
+    setting. A running session can't be switched, so they are forced only at
+    launch. Only models the toolbox marks runnable are accepted (today claude's);
+    the feature's chats then answer on the same model (`session-models.json`).
+    Settings holds the connections (`llms.sh`), the session default and the
+    step models (`model-config.sh`).
   - It sets `TATTY_SESSION=<tag>` in the launcher script, because a new
     Windows Terminal tab doesn't inherit environment variables.
   - From a checkout it also passes `--plugin-dir`, so the new session loads the
@@ -770,7 +778,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  599 checks against a real toolbox (the User Stories board's with a stand-in
+  686 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
@@ -819,6 +827,10 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   dragged, keyed, reset and held to its minimums, the pane across another workflow
   tab and a reload, the documents rail (opening in the pane, collapsing, kept over a reload), the right-click link menu, an unsaved edit asked about, and the
   pane closing with its last tab. It needs the toolbox (for the planning IDs).
+  `features-check.py ... --settings` walks the Settings page's connections
+  table, session setting and step table (a step's model changed and put back,
+  so run it on a server with a throwaway `TT_CONFIG_DIR`), and a model picker
+  drawn on the page.
   `features-check.py ... --chats` starts a session without opening a terminal
   and posts it a reply with a sentence and a code block, then walks the chats:
   the old chat column gone, a right-click with nothing selected left alone, a
