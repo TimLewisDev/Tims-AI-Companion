@@ -25,6 +25,14 @@ const PHASES = {
   "debug-done": "Root cause found", debugged: "Written up",
 };
 const ROUTES = { full: "Feature", lite: "Small change", bug: "Bug", new: "New" };
+
+// The toolbox's last phase is "complete" (built and validated); Tatty's Merging step follows it.
+function phaseDone(f) { return f.phase === "complete" && (f.merge || {}).state === "merged"; }
+function phaseWord(f) {
+  if (f.phase !== "complete") return PHASES[f.phase] || f.phase || "—";
+  const state = (f.merge || {}).state;
+  return state === "merged" ? "Merged" : state === "opened" ? "In review" : "Ready to merge";
+}
 const EVENTS = {
   "explore.focus_confirmed": "Exploration focus confirmed", "explore.documented": "Familiarisation written",
   "plan.familiarisation_closed": "Familiarisation stage closed", "plan.requirements_closed": "Requirements closed",
@@ -33,7 +41,7 @@ const EVENTS = {
   "plan.signed_off": "Plan signed off", "breakdown.written": "Task Breakdown written",
   "lite.brief_written": "Lite Brief written", "build.unit_validated": "validated",
   "build.complete": "Build complete", "debug.root_cause_confirmed": "Root cause confirmed",
-  "debug.report_written": "Debug Report written",
+  "debug.report_written": "Debug Report written", "merge.opened": "Request opened", "merge.merged": "Merged",
 };
 
 function ago(seconds) {
@@ -457,7 +465,7 @@ function featureCard(f) {
   return el("a", { class: "fcard route-" + f.route, href: featureHref(f.name) },
     el("div", { class: "fcard-top" }, el("strong", {}, f.name), chip(ROUTES[f.route] || f.route, "route")),
     f.live ? el("div", {}, chip(`● Live: ${f.live.name}`, "live")) : "",
-    el("div", {}, chip(PHASES[f.phase] || f.phase || "—", f.phase === "complete" ? "done" : f.phase === "empty" ? "todo" : "now"),
+    el("div", {}, chip(phaseWord(f), phaseDone(f) ? "done" : f.phase === "empty" ? "todo" : "now"),
       f.stage && f.phase !== "complete" ? el("span", { class: "dim small" }, " · " + f.stage) : ""),
     el("p", { class: "ftext" }, f.text || ""),
     building ? bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} units · ${f.tasks.done} of ${f.tasks.total} tasks`) : "",
@@ -698,18 +706,19 @@ async function featureBoard(f, main) {
 // The steps of the feature's route, and which one it is on.
 function pipeline(f) {
   const p = f.phase;
+  const done = phaseDone(f); // the build is done at "complete"; the work is done once it is merged
   if (f.route === "lite") {
     const at = { "lite-focus": 0, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
-    return { steps: ["Explore", "Lite Brief", "Build", "Done"], at, done: p === "complete" };
+    return { steps: ["Explore", "Lite Brief", "Build", "Merge", "Done"], at, done };
   }
   if (f.route === "bug") {
     const kinds = new Set(f.docList.map(d => d.doc));
     const at = p === "debugging" ? 0 : p === "debug-done" ? 1 : p === "complete" ? 3 : kinds.has("Lite Brief") ? 2 : p === "debugged" ? 2 : 1;
-    return { steps: ["Debug", "Write-up", "Fix", "Done"], at, done: p === "complete" };
+    return { steps: ["Debug", "Write-up", "Fix", "Merge", "Done"], at, done };
   }
   const at = { empty: 0, exploring: 0, explored: 1, planning: 1, "signed-off": 2, "breakdown-draft": 2, "breakdown-orphan": 2,
     "breakdown-written": 3, building: 3, complete: 4 }[p] ?? 0;
-  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Done"], at, done: p === "complete" };
+  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Merge", "Done"], at, done };
 }
 
 function tracker(f) {
@@ -719,7 +728,13 @@ function tracker(f) {
     const sub = s === "Plan" && f.stages.length ? el("div", { class: "substeps" },
       f.stages.map(st => el("span", { class: "chip " + statusClass(st.status), title: `${st.stage}: ${st.status}` + (st.ts ? ` (${new Date(st.ts).toLocaleDateString()})` : "") }, st.stage))) : "";
     const units = s === "Build" && f.tasks.total ? el("div", { class: "substeps" }, bar(f.tasks.done, f.tasks.total)) : "";
-    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units);
+    const m = f.merge || {};
+    const merge = s === "Merge" && m.branch ? el("div", { class: "substeps" },
+      m.url ? el("a", { class: "chip " + (m.state === "merged" ? "done" : "now"), href: m.url, target: "_blank", rel: "noopener", title: m.url },
+        m.state === "merged" ? "merged" : "request open")
+        : el("span", { class: "chip " + (m.state === "merged" ? "done" : m.state ? "now" : "todo"), title: m.branch },
+          m.state === "merged" ? "merged" : m.state ? "request open" : "no request yet")) : "";
+    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units, merge);
   }));
 }
 
@@ -773,27 +788,52 @@ async function cancelWorkflow(name, text, client) {
 function startPanel(f, row, index, close) {
   const cmd = command(row);
   const inputs = placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
+  // A new feature's lite entry may say what the task is (tt-workflow-lite then needn't ask); a resume has no use for it.
+  const said = row.phase === "lite" && f.route === "new" ? el("input", { placeholder: "what is it (optional)", "aria-label": "what is it (optional)" }) : null;
   const preview = el("code", {});
   const name = row.phase === "empty" ? `${f.name} : Start` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
   const result = el("div", { class: "start-result" });
+  const picker = modelPicker("start-" + index);
   const go = el("button", { type: "button", class: "primary" }, "Start session");
   const refresh = () => {
     let c = cmd;
     for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
+    if (said && said.value.trim()) c += " " + said.value.trim();
     preview.textContent = c;
     go.disabled = !f.project || inputs.some(i => !i.input.value.trim());
   };
   for (const { input } of inputs) input.addEventListener("input", refresh);
+  if (said) said.addEventListener("input", refresh);
   const panel = el("div", { class: "start-panel" });
+  // The branch the work will be on: Tatty makes one on a feature's first Start, and switches the repo back to it later.
+  const branchLine = el("div", { class: "small branch-line" });
+  const showBranch = async () => {
+    branchLine.replaceChildren();
+    if (!f.project) return;
+    try {
+      const b = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(f.project));
+      const code = t => el("code", {}, t);
+      if (!b.repo) { branchLine.replaceChildren(el("span", { class: "dim" }, b.note || "")); return; }
+      branchLine.replaceChildren(el("span", {},
+        b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
+          : b.create ? ["A new branch ", code(b.create), " is made from ", code(b.current || "the detached HEAD")]
+            : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
+        b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "");
+    } catch { /* the server says so at Start */ }
+  };
   const draw = () => {
     panel.replaceChildren(
       el("div", { class: "start-title" }, "Start a new Claude session"),
       projectLine(f, () => { draw(); refresh(); }),
+      branchLine,
       inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
+      said ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "what is it (optional)"), said)) : "",
       el("div", { class: "small" }, "running ", preview),
       el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
+      picker.node,
       el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
       result);
+    showBranch();
   };
   go.addEventListener("click", async () => {
     go.disabled = true;
@@ -801,7 +841,7 @@ function startPanel(f, row, index, close) {
     tell("allow-foreground");
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
-      const r = await api("/api/start", { name: f.name, row: index, values });
+      const r = await api("/api/start", { name: f.name, row: index, values, ...picker.fields(), ...(said && said.value.trim() ? { hint: said.value.trim() } : {}) });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
@@ -1100,8 +1140,8 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
     agents, doing, questions,
-    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
+    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();
@@ -1148,6 +1188,36 @@ function stepActions(f, row, index, openNow) {
   return el("div", {}, cell, slot);
 }
 
+// The feature's branch (Tatty makes one when a workflow starts) and, once the build is done, its pull / merge
+// request: the Merge step's Start (in Where it stands) walks through opening it; these buttons tell Tatty
+// what happened when it can't see for itself (it looks with glab / gh when asked, and once when the page opens).
+function mergeCard(f) {
+  const m = f.merge || {};
+  if (!m.branch) return "";
+  const atMerge = f.phase === "complete" && m.state !== "merged";
+  const act = async (action, extra = {}) => {
+    try { await api("/api/merge", { name: f.name, action, ...extra }); featureCache.delete(f.name); route(); }
+    catch (e) { alert(e.message || e); }
+  };
+  if (atMerge) {  // one quiet look at the host; the page is drawn again only if it found something new
+    api("/api/merge", { name: f.name, action: "check" }).then(r => {
+      if (r.state !== m.state) { featureCache.delete(f.name); route(); }
+    }).catch(() => {});
+  }
+  return el("section", { class: "card merge-card" }, el("h4", {}, "Branch and merge"),
+    el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
+      m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : ""),
+    m.url ? el("div", { class: "small" }, "Request: ", el("a", { href: m.url, target: "_blank", rel: "noopener" }, m.url)) : "",
+    m.note ? el("div", { class: "small dim" }, m.note) : "",
+    atMerge ? el("div", { class: "start-actions" },
+      el("button", { type: "button", id: "merge-check", onclick: () => act("check", { force: true }) }, "Check now"),
+      el("button", { type: "button", id: "merge-opened", onclick: () => {
+        const url = prompt("The pull / merge request's link (optional):", m.url || "");
+        if (url !== null) act("opened", { url: url.trim() });
+      } }, "I opened the request"),
+      el("button", { type: "button", id: "merge-merged", onclick: () => act("merged") }, "Mark merged")) : "");
+}
+
 function overview(f) {
   const stand = (f.rows || []).map((r, i) => r.kind ? el("div", { class: "stand " + r.kind },
     el("p", {}, r.kind === "warn" ? "⚠ " : r.kind === "alt" ? "Or: " : "", r.text),
@@ -1157,6 +1227,11 @@ function overview(f) {
   if (f.workflowStep) stand.push(el("div", { class: "stand alt" }, el("p", {}, f.workflowStep.text),
     stepActions(f, f.workflowStep, "workflow", openStartFor === f.name)));
   if (openStartFor === f.name) openStartFor = null;
+  // A small change or a bug fix is carried on by tt-workflow-lite (Resume, first); a new feature can go either way.
+  if (f.liteStep) {
+    const lite = el("div", { class: "stand " + (f.route === "new" ? "alt" : "resume") }, el("p", {}, f.liteStep.text), stepActions(f, f.liteStep, "lite"));
+    if (f.route === "new") stand.push(lite); else stand.unshift(lite);
+  }
   if (!f.toolbox) stand.unshift(el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."));
   const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
     bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
@@ -1210,7 +1285,7 @@ function overview(f) {
   return el("div", { class: "overview" },
     el("div", { class: "ov-head" },
       el("h2", {}, f.name), chip(ROUTES[f.route] || f.route, "route"),
-      chip(PHASES[f.phase] || f.phase || "—", f.phase === "complete" ? "done" : "now"),
+      chip(phaseWord(f), phaseDone(f) ? "done" : "now"),
       el("span", { class: "dim small" }, "updated " + ago(f.updated)),
       el("span", { class: "ov-acts" },
         f.task || going.length ? el("button", { type: "button", id: "feature-cancel",
@@ -1222,6 +1297,7 @@ function overview(f) {
         archiveCombo(f))), // archive.js
     el("div", { class: "dim small" }, copyable(f.folder)),
     tracker(f),
+    mergeCard(f),
     process, ended,
     units, usage, events);
 }
