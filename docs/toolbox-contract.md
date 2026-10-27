@@ -436,6 +436,8 @@ are therefore Tatty's own, outside the workflow's records:
     conversation's id, what a side chat is about, the messages and the cost;
   - `server.json` and `server.log`.
 - `%LOCALAPPDATA%\Tatty\`, on Windows:
+  - the launcher's build, and `boot.json`: which Tatty the launcher runs (the one
+    Claude Code has installed, unless a checkout was pinned on purpose);
   - the tray app's build;
   - its WebView2 data;
   - the full panel's last size and position.

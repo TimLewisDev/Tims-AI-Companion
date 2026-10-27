@@ -66,13 +66,16 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     `%LOCALAPPDATA%\Tatty\launcher`, that the Desktop and Start menu shortcuts run. It
     finds the plugin and runs `tatty.sh boot` hidden, so a plugin update never
     breaks the shortcut. The plugin is the one Claude Code has installed
-    (`installed_plugins.json`) unless `boot.json`, which every boot rewrites, names
-    a folder outside Claude Code's plugin cache (a checkout run on purpose). A
-    cache folder is never taken from `boot.json`: an update leaves the old
-    version's folder in the cache, so a pin to it would be rewritten by every
-    boot from it and Tatty would stay on that version for good. The choice is
-    `ChoosePlugin`. The exe is rebuilt by `/tatty install`, which does it when the
-    sources are newer than the exe. The
+    (`installed_plugins.json`: from the marketplace, which is GitHub) unless
+    `boot.json` names a folder outside Claude Code's plugin cache, which only a
+    pin does: `tatty.sh install --pin` for working on Tatty from a checkout
+    (`write_boot_json`: `{bash, pluginRoot, pin}`). A boot never repoints it at the
+    checkout it happens to run from (a test run once did, and the launcher then
+    ran a worktree): unpinned, it names the installed Tatty, and pinned it is
+    left alone. A cache folder is never taken from `boot.json`: an update leaves
+    the old version's folder in the cache. The choice is `ChoosePlugin`. The exe
+    is rebuilt by `/tatty install`, which does it when the sources are newer than
+    the exe. The
     shortcuts carry the AppUserModelID the tray app names itself with
     (`TimsAICompanion.Tatty`), so a taskbar pin and the running window are one button.
   - `server.py boot` starts the server and shows the tray app (or rings the
@@ -81,6 +84,19 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     what that session was for is now the headless chats (see [Chats](#chats)).
     `--no-claude` is still taken and does nothing; an old `claude-link.json` is
     left where it is.
+  - **Every launch looks for an update** (unless pinned). With no server up,
+    `update_at_launch` runs the same look as Settings' (`update_work`: refresh
+    the marketplace, then `claude plugin update` for what is newer, when
+    auto-update is on) before starting anything, waiting at most
+    `TATTY_LAUNCH_UPDATE_WAIT` (45 s) for it; if a newer Tatty was installed, `boot`
+    runs that copy's `boot` instead (`TATTY_LAUNCH_UPDATED=1` stops it looping), so
+    the server and the tray app of the launch are the new version's. Offline or
+    failing, it starts as it is. With the server already up, `boot` posts
+    `/api/update {launch: true}`: the server looks (and installs, with auto-update
+    on) and then restarts onto the new Tatty if that cuts nothing off
+    (`relaunch_restart_ok`: no open question, no chat or Jira run going; the
+    sessions are kept as for any restart), else Settings says to restart.
+    `TATTY_NO_LAUNCH_UPDATE=1` turns the look off.
   - The icon is `assets/tatty.ico`, drawn natively at each size by
     `tools/make-icon` (which also writes the plugin's `icon.png`) from the same
     geometry as `TattyWindow.xaml`'s head. It is built into both exes as their file

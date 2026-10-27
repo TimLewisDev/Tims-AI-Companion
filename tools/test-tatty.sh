@@ -21,6 +21,9 @@ fi
 # Everything else is the tests' own: Tatty's state, the Claude config folder
 # (open sessions' names), the events ledger and the workflow's links.
 export CLAUDE_CONFIG_DIR="$T/claude" TATTY_HOME="$T/home" TT_EVENTS_HOME="$T/events" TT_WORKFLOW_HOME="$T/workflow"
+# The desktop launcher's folder (%LOCALAPPDATA%\Tatty: boot.json, the tray app's builds) is the tests' own too: `boot` writes
+# there, and a test run from a checkout must never repoint the real launcher at it.
+export LOCALAPPDATA="$T/localappdata"; mkdir -p "$LOCALAPPDATA"
 mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
 # A stand-in for Windows' folder dialog: "chooses" what $T/pick-answer says.
 printf '#!/usr/bin/env bash\necho "$*" >>"%s/picker.log"\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done\ncat "%s/pick-answer" >"$out" 2>/dev/null\n' "$T" "$T" >"$T/picker.sh"
@@ -996,6 +999,79 @@ post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = error ] && ok "a failed refresh is an error" || bad "a failed refresh is an error" "$(head -c 300 "$T/set")"
 has "with claude's words" "$T/set" "network is down"
 rm -f "$T/claude-fail"
+
+echo "# launching: the installed Tatty, and a look for updates"
+# The launcher's folder is the tests' own: a boot or an install run from a checkout must not repoint the real one.
+case "$LOCALAPPDATA" in "$T"*) ok "the launcher's folder is the tests' own" ;; *) bad "the launcher's folder is the tests' own" "$LOCALAPPDATA" ;; esac
+IT="$T/installed-tatty"
+mkdir -p "$IT/scripts" "$IT/app" "$IT/.claude-plugin" "$LOCALAPPDATA/Tatty"
+: >"$IT/scripts/tatty.sh"; printf '{"name":"tatty","version":"99.0.0"}' >"$IT/.claude-plugin/plugin.json"
+ITW=$(cygpath -m "$IT" 2>/dev/null || echo "$IT")
+CKW=$(cygpath -m "$root/plugins/tatty" 2>/dev/null || echo "$root/plugins/tatty")
+printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"99.0.0","installPath":"%s"}]}}' "$ITW" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+bootj() { $PY -c "import json,sys; d=json.load(open(sys.argv[1])); print($1)" "$LOCALAPPDATA/Tatty/boot.json"; }
+looked() { grep -c "marketplace update fake-market" "$T/claude.log"; }
+waitlook() { for _ in $(seq 1 50); do [ "$(looked)" -gt "$1" ] && return 0; sleep 0.2; done; return 1; }
+# A boot.json that names a checkout (as a test run from a worktree once left it) is not kept: the launcher follows the install.
+post /api/settings '{"autoUpdate":false}' >/dev/null  # so the relaunch below only looks, and doesn't restart the test server
+printf '{"bash":"bash","pluginRoot":"%s"}' "$CKW" >"$LOCALAPPDATA/Tatty/boot.json"
+N=$(looked)
+expect "boot, with the server up" 0 bash "$W" boot --no-browser
+[ "$(bootj "d['pluginRoot']")" = "$ITW" ] && ok "boot points the launcher at the installed Tatty, not the checkout it ran from" || bad "boot points the launcher at the installed Tatty" "$(bootj "d")"
+[ "$(bootj "d['pin']")" = False ] && ok "unpinned" || bad "unpinned"
+waitlook "$N" && ok "a launch with the server up has it look for an update" || bad "a launch with the server up has it look for an update"
+# A checkout pinned on purpose stays what it is, and isn't looked at for updates.
+printf '{"bash":"bash","pluginRoot":"%s","pin":true}' "$CKW" >"$LOCALAPPDATA/Tatty/boot.json"
+N=$(looked)
+expect "boot, pinned" 0 bash "$W" boot --no-browser
+sleep 1.5
+[ "$(bootj "d['pluginRoot']")" = "$CKW" ] && [ "$(bootj "d['pin']")" = True ] && ok "a pinned checkout stays pinned" || bad "a pinned checkout stays pinned" "$(bootj "d")"
+[ "$(looked)" = "$N" ] && ok "and no look for an update" || bad "and no look for an update"
+post /api/settings '{"autoUpdate":true}' >/dev/null
+# The rest in-process: the launcher file's rules, the look before a cold start, and when a relaunch may restart.
+$PY - "$SRV" "$ITW" "$CKW" >"$T/m" 2>&1 <<'EOF'
+import importlib.util, json, os, sys
+os.environ.pop("TATTY_LAUNCH_UPDATED", None); os.environ.pop("TATTY_NO_LAUNCH_UPDATE", None)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+it, ck = sys.argv[2], sys.argv[3]
+def boot(): return json.loads(m.BOOT_JSON.read_text(encoding="utf-8"))
+m.BOOT_JSON.unlink(missing_ok=True)
+m.write_boot_json("b"); print("default:", boot()["pluginRoot"] == it, boot()["pin"])
+m.write_boot_json("b", pin=True); print("pin:", boot()["pluginRoot"].lower() == m.PLUGIN.as_posix().lower(), boot()["pin"])
+m.write_boot_json("b"); print("kept:", boot()["pluginRoot"].lower() == m.PLUGIN.as_posix().lower(), boot()["pin"])
+m.write_boot_json("b", pin=False); print("unpin:", boot()["pluginRoot"] == it, boot()["pin"])
+print("ok:", m.relaunch_restart_ok({"server": True, "openQuestions": 0, "busy": 0}),
+      "question:", m.relaunch_restart_ok({"server": True, "openQuestions": 1, "busy": 0}),
+      "busy:", m.relaunch_restart_ok({"server": True, "openQuestions": 0, "busy": 2}),
+      "nothing:", m.relaunch_restart_ok({"server": False, "openQuestions": 0, "busy": 0}))
+st = m.State(os.getcwd(), "bash")
+print("newer:", str(m.update_at_launch("bash", os.getcwd())).replace("\\", "/").lower() == it.lower())
+os.environ["TATTY_LAUNCH_UPDATED"] = "1"
+print("again:", m.update_at_launch("bash", os.getcwd()))
+del os.environ["TATTY_LAUNCH_UPDATED"]
+os.environ["TATTY_NO_LAUNCH_UPDATE"] = "1"
+print("off:", m.update_at_launch("bash", os.getcwd()))
+del os.environ["TATTY_NO_LAUNCH_UPDATE"]
+# the installed Tatty is this very copy: nothing to move to
+rec = m.config_dir() / "plugins" / "installed_plugins.json"
+rec.write_text(json.dumps({"version": 2, "plugins": {"tatty@fake-market": [{"scope": "user", "version": "99.0.0", "installPath": ck}]}}), encoding="utf-8")
+print("same:", m.update_at_launch("bash", os.getcwd()))
+rec.write_text(json.dumps({"version": 2, "plugins": {}}), encoding="utf-8")
+m.BOOT_JSON.unlink(missing_ok=True)
+m.write_boot_json("b"); print("no install:", boot()["pluginRoot"].lower() == m.PLUGIN.as_posix().lower())
+EOF
+has "the launcher file names the install by default" "$T/m" "default: True False"
+has "pinning names the checkout" "$T/m" "pin: True True"
+has "a boot after it keeps the pin" "$T/m" "kept: True True"
+has "unpinning goes back to the install" "$T/m" "unpin: True False"
+has "a relaunch restarts only when nothing is cut off" "$T/m" "ok: True question: False busy: False nothing: False"
+has "a cold start looks, and carries on from a newer install" "$T/m" "newer: True"
+has "but not twice in one launch" "$T/m" "again: None"
+has "nor when switched off" "$T/m" "off: None"
+has "nor when the install is this very copy" "$T/m" "same: None"
+has "with no install, the checkout is all there is to name" "$T/m" "no install: True"
+write_installed
 
 echo "# the Jira board"
 # The claude stand-in answers the headless runs (see claude.sh above): a board of

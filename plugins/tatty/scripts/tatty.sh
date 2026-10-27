@@ -10,7 +10,9 @@ usage() {
 	cat >&2 <<'EOF'
 usage: tatty.sh open [--no-browser]     start Tatty (if needed) and show it; prints the URL
        tatty.sh boot [--project DIR]    what the Desktop shortcut runs: the server and the tray app
-       tatty.sh install                 Desktop and Start menu shortcuts for Tatty (Windows)
+                                        (looks for a newer Tatty first, and installs it with auto-update on)
+       tatty.sh install [--pin]         Desktop and Start menu shortcuts for Tatty (Windows); they run the
+                                        installed Tatty, or with --pin this checkout (no update look)
        tatty.sh uninstall               take them away
        tatty.sh status                  attached | attached (claude mod) | not open
        tatty.sh url                     the window's URL

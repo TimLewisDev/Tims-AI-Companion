@@ -76,9 +76,14 @@ change it. The server starts in Tatty's root folder, else your home folder;
 `tatty.sh boot --project <dir>` chooses another.
 
 The launcher finds the plugin each time, so updating the plugin doesn't break the
-shortcut: it runs the version Claude Code has installed, or, for a checkout you
-run on purpose, the folder `%LOCALAPPDATA%\Tatty\boot.json` names (every start
-keeps it up to date). A launcher built before this was a rule keeps starting the
+shortcut: it runs the version Claude Code has installed (from the marketplace, which
+is GitHub when you installed it with `/plugin marketplace add TimLewisDev/Tims-AI-Companion`).
+**Every time it starts, Tatty looks for a newer version first**, and with auto-update on
+(the default) installs it and carries on from it, so the shortcut always opens the latest
+release; if you are offline it starts the version you have. To run a checkout of this
+repository instead, for working on Tatty itself, use `tatty.sh install --pin`: the
+launcher then runs that folder (`%LOCALAPPDATA%\Tatty\boot.json` names it) and doesn't look
+for updates; `tatty.sh install` without `--pin` goes back. A launcher built before this was a rule keeps starting the
 version it last ran, so run `/tatty install` once after updating to rebuild it. `/tatty uninstall` removes the
 shortcuts, the launcher and `boot.json`.
 
@@ -92,8 +97,10 @@ pushed to GitHub): with the same version, nothing counts as new.
 Tatty can do the updating itself. Open **Settings** (the gear beside the
 *connected* label in the top bar):
 
-- **Keep Tatty and the toolbox up to date automatically** (on by default). The
-  window's server looks 30 seconds after it starts and every 6 hours after. For
+- **Keep Tatty and the toolbox up to date automatically** (on by default). Tatty
+  looks each time it is launched (a newer one is installed before it starts; if it
+  was already open, it restarts onto the new one when nothing would be cut off), the
+  window's server looks 30 seconds after it starts, and every 6 hours after. For
   Tatty and each toolbox plugin installed (`core`, and the disciplines such as
   `engineering`, from the `tims-ai-toolbox` marketplace) it runs
   `claude plugin marketplace update <marketplace>` and then, for each plugin whose
@@ -125,6 +132,13 @@ claude plugin marketplace add TimLewisDev/Tims-AI-Toolbox      # if not added al
 claude plugin marketplace add P:\Tatty-Companion\Tims-AI-Companion
 claude plugin install tatty@tims-ai-companion
 ```
+
+**This makes the folder, not GitHub, the source of Tatty's updates:** Settings then
+offers whatever version that folder has checked out (a feature branch's, say), and a
+release pushed to GitHub is never seen. For Tatty's own use, install from GitHub
+instead (`claude plugin marketplace remove tims-ai-companion`, then
+`claude plugin marketplace add TimLewisDev/Tims-AI-Companion`, then
+`claude plugin install tatty@tims-ai-companion`) and use `--plugin-dir` for a checkout.
 
 A marketplace that is a folder is read from that folder. After an edit,
 `/reload-plugins` picks it up, and a server or tray-app change needs

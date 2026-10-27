@@ -5950,7 +5950,11 @@ class Handler(BaseHTTPRequestHandler):
             # as an "update" event.
             if st.update_lock.locked():
                 return self.send(409, {"error": "an update check is already running"})
-            threading.Thread(target=update_work, args=(st, b.get("action") == "apply"), daemon=True).start()
+            apply = b.get("action") == "apply"
+            if b.get("launch"):  # Tatty was launched again: also move to what was installed, if nothing is lost
+                threading.Thread(target=update_on_relaunch, args=(st, apply), daemon=True).start()
+            else:
+                threading.Thread(target=update_work, args=(st, apply), daemon=True).start()
             return self.send(202, update_view(st))
         if path == "/api/mode/install":
             # Add a discipline from the modes page: Claude Code installs the
@@ -6416,15 +6420,79 @@ def wake_companion():
     return bool(h)
 
 
-def write_boot_json(bash):
-    """Tell the launcher where this plugin and bash are. The launcher runs from a
-    stable place; the plugin moves with every update. (A copy in Claude Code's plugin
-    cache is only a fallback: the launcher runs the installed version before it, since
-    an update leaves the old folder there. A checkout is what this keeps for it.)"""
+def read_boot():
+    return read_json(BOOT_JSON, {})
+
+
+def installed_tatty_root():
+    """The folder of the Tatty Claude Code has installed (its record of installs: from the
+    marketplace, which is GitHub), else None. An update puts the new version in a new folder."""
+    found = None
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for pid, installs in recorded.get("plugins", {}).items():
+            if pid.startswith("tatty@"):
+                for e in installs:
+                    p = Path(str(e.get("installPath", "")))
+                    if (p / "scripts" / "tatty.sh").is_file():
+                        found = p
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return found
+
+
+def write_boot_json(bash, pin=None):
+    """Tell the launcher where Tatty and bash are. The launcher runs the Tatty Claude Code
+    has installed (the one the marketplace, GitHub, offers and updates), not a checkout of
+    the repository: a copy in the plugin cache is what this names, and the launcher looks the
+    installed one up itself since an update leaves the old folder there. A checkout is run
+    only when pinned on purpose (`tatty.sh install --pin`): boot.json then names it, and a
+    boot leaves it so until installed again without. Without an install, the checkout
+    that is running is the only thing there is to name. pin None: keep what it is now."""
+    cur = read_boot()
+    pinned = bool(cur.get("pin")) if pin is None else bool(pin)
+    if pinned:
+        root = PLUGIN.as_posix() if pin else (cur.get("pluginRoot") or PLUGIN.as_posix())
+    else:
+        root = (installed_tatty_root() or PLUGIN).as_posix()
     APP.mkdir(parents=True, exist_ok=True)
     tmp = BOOT_JSON.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"bash": bash, "pluginRoot": PLUGIN.as_posix()}, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps({"bash": bash, "pluginRoot": root, "pin": pinned}, indent=2), encoding="utf-8")
     os.replace(tmp, BOOT_JSON)
+
+
+LAUNCH_UPDATE_WAIT = float(os.environ.get("TATTY_LAUNCH_UPDATE_WAIT", "45"))  # seconds a launch waits for the look
+
+
+def relaunch_restart_ok(needs):
+    """After an update found on a relaunch: restart the server onto it only if that cuts nothing off."""
+    return bool(needs["server"]) and not needs["openQuestions"] and not needs["busy"]
+
+
+def update_on_relaunch(state, apply):
+    """A launch with the server already up: look for a newer Tatty (and, with auto-update on,
+    install it) and move to it when nothing would be lost; else Settings says to restart."""
+    update_work(state, apply)
+    if apply and relaunch_restart_ok(restart_needs(state)):
+        restart_server(state)
+
+
+def update_at_launch(bash, cwd):
+    """Every launch with no server up: look for a newer Tatty and the toolbox plugins before
+    starting, installing what it finds when auto-update is on. The folder of a Tatty newer than
+    this one to carry on from, else None. It never stops a launch: offline, slow or failing,
+    Tatty starts as it is."""
+    if os.environ.get("TATTY_LAUNCH_UPDATED") or os.environ.get("TATTY_NO_LAUNCH_UPDATE"):
+        return None
+    state = State(cwd, bash)
+    look = threading.Thread(target=update_work, args=(state, load_settings()["autoUpdate"]), daemon=True)
+    look.start()
+    look.join(LAUNCH_UPDATE_WAIT)
+    root = installed_tatty_root()
+    if not root or root.resolve() == PLUGIN.resolve():
+        return None
+    now = read_json(root / ".claude-plugin" / "plugin.json", {}).get("version", "")
+    return root if version_key(now) > version_key(plugin_version()) else None
 
 
 def boot(bash, project, no_ui, no_claude=False):
@@ -6440,10 +6508,21 @@ def boot(bash, project, no_ui, no_claude=False):
         return 2
     if BOOT_JSON.exists():
         write_boot_json(bash)
+    pinned = bool(read_boot().get("pin"))
     info = alive()
     if not info:
+        newer = None if pinned else update_at_launch(bash, cwd)
+        if newer:  # an update was installed: carry on from the new Tatty, so everything of this launch is its
+            argv = [sys.executable, str(newer / "app" / "server.py"), "boot", "--bash", bash]
+            argv += (["--project", project] if project else []) + (["--no-browser"] if no_ui else []) + (["--no-claude"] if no_claude else [])
+            return subprocess.run(argv, env={**os.environ, "TATTY_LAUNCH_UPDATED": "1"}).returncode
         info = start_detached(cwd, bash)
         greet(info, cwd, bash)
+    elif not pinned and not os.environ.get("TATTY_NO_LAUNCH_UPDATE"):
+        try:  # the server that is up looks for an update (and moves to it if nothing is lost): not waited for
+            call(info, "POST", "/api/update", {"action": "apply" if load_settings()["autoUpdate"] else "check", "launch": True})
+        except (OSError, urllib.error.URLError, ValueError):
+            pass
     print(info["url"])
     if not no_ui:
         ui = show_ui(info)
@@ -6453,16 +6532,24 @@ def boot(bash, project, no_ui, no_claude=False):
     return 0
 
 
-def install(bash):
+def install(bash, pin=False):
     """Put Tatty on the Desktop and in the Start menu: build the launcher, tell it
-    where the plugin is, and make the shortcuts. 0 ok, 2 when it can't."""
+    where the plugin is, and make the shortcuts. The shortcut runs the Tatty Claude Code
+    has installed, and looks for an update each time; with pin it runs this checkout
+    instead (for working on Tatty itself). 0 ok, 2 when it can't."""
     if os.name != "nt":
         print("install: the desktop app is Windows-only; elsewhere Tatty opens in a browser tab.", file=sys.stderr)
         return 2
     if build_stale(LAUNCHER, LAUNCHER_EXE) and not build_exe(LAUNCHER, LAUNCHER_BUILD, LAUNCHER_EXE, "Tatty's launcher"):
         print(f"install: couldn't build the launcher (it needs the .NET 9 SDK); see {home() / 'server.log'}", file=sys.stderr)
         return 2
-    write_boot_json(bash)
+    write_boot_json(bash, pin=pin)
+    if pin:
+        print(f"The launcher is pinned to this checkout ({PLUGIN.as_posix()}): it will not use the installed Tatty or look for updates.")
+    elif installed_tatty_root():
+        print(f"The launcher runs the installed Tatty ({installed_tatty_root().as_posix()}) and looks for an update each time it starts.")
+    else:
+        print("Tatty isn't installed through Claude Code, so the launcher runs this folder. Install it for updates: /plugin install tatty@tims-ai-companion")
     p = subprocess.run([str(LAUNCHER_EXE), "--make-shortcuts"], stdin=subprocess.DEVNULL, capture_output=True,
                        encoding="utf-8", errors="replace", timeout=60)
     if p.returncode != 0:
@@ -6536,7 +6623,7 @@ def main(argv):
     if cmd == "boot":
         return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"))
     if cmd == "install":
-        return install(bash)
+        return install(bash, flag(args, "--pin"))
     if cmd == "uninstall":
         return uninstall()
     if cmd == "status":
