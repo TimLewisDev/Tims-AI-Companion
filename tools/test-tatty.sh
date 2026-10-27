@@ -966,6 +966,28 @@ has "and names its feature" "$(taskfile T-0006)" "- **Feature:** T-0006 - Pause 
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 409 ] && ok "not started twice" || bad "not started twice"
 get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(pick "$T/j" "(d['started'].get('T-0006'), d['options']['project'])")" = "('T-0006 - Pause menu', '$HERE')" ] && ok "the board remembers the feature and the project" || bad "the board remembers the feature and the project" "$(pick "$T/j" "(d['started'], d['options'])")"
+hasnt "no work folder: the session isn't widened" "$T/tk" "--add-dir"
+hasnt "and the ticket has no work-folder section" "$TK" "## Working folder"
+# the linked project is where the session runs; the work folder is added to it
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0005\",\"project\":\"$HERE\",\"workdir\":\"$FX/nope\"}")" = 400 ] && ok "a work folder must exist" || bad "a work folder must exist"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0005\",\"project\":\"$HERE\",\"workdir\":\"$FX\"}")" = 200 ] && ok "a workflow starts with a work folder" || bad "a workflow starts with a work folder" "$(cat "$T/tk")"
+has "the session adds the work folder" "$T/tk" "--add-dir $FX"
+has "and still runs in the project" "$T/tk" "cd $HERE &&"
+has "the planning command is the full one" "$T/tk" "Prompt: /tt-adversarial-plan the task T-0005 in"
+has "and says where the work is done" "$T/tk" "Never read, build or verify against $HERE"
+TW=$(ls "$FX/features/T-0005"*/*Ticket.md | head -1)
+has "the ticket says it too" "$TW" "## Working folder"
+has "and which repo to write in its documents" "$TW" "Write **Repo:** $FX in every document"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "d['options']['workdir']")" = "$FX" ] && ok "the board remembers the work folder" || bad "the board remembers the work folder" "$(pick "$T/j" "d['options']")"
+# the lite button
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"workdir\":\"$FX\",\"mode\":\"lite\"}")" = 200 ] && ok "a lite workflow starts from a task" || bad "a lite workflow starts from a task" "$(cat "$T/tk")"
+has "with the lite route's own command" "$T/tk" "Prompt: /tt-workflow-lite \\\""
+has "on the task" "$T/tk" "the task T-0007 in"
+has "named as lite" "$T/tk" "Name: T-0007 - Some idea : Lite"
+has "with the work folder added" "$T/tk" "--add-dir $FX"
+has "and the task moves on" "$T/tk" '"moved": "Doing"'
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 409 ] && ok "lite isn't started twice either" || bad "lite isn't started twice either"
 # a board.json that won't read is never written over
 cp "$GB/board.json" "$T/board.json"; printf '{ nope' >"$GB/board.json"
 [ "$(tk create '{"name":"Game","title":"x"}')" = 409 ] && ok "a broken board.json refuses changes" || bad "a broken board.json refuses changes"

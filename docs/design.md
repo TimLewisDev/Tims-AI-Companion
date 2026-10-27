@@ -564,6 +564,20 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   board's start column (the option, else the first column that sounds under
   way). The task's file and board.json name the feature before the session
   starts, so a second Start is refused rather than making a second feature.
+  Two buttons: **Start workflow** (the full route, as above) and **Start lite**
+  (`mode: "lite"`: `/tt-workflow-lite "<feature folder>"` followed by the task
+  said as for the full route, named `<feature> : Lite`). The session runs in the
+  **linked project**; an optional **work folder** (`workdir`, remembered in
+  board.json `options.workdir` next to `options.project`) is added to the
+  session with `--add-dir`. The toolbox keys its link and ledger on the git
+  root of the session's folder, so the linked project is what the session is
+  filed under, but it also runs git and `verify-refs.sh` from there. The
+  toolbox can't change for this, so Tatty says where the work is done in words:
+  a "Working folder" section written into the Ticket (the one document both
+  routes read) and the same text after the task in the command. It names the
+  folder as the only repo to read, build and verify against, and as the
+  `**Repo:**` of every document. This depends on the model following it; it is
+  not enforced.
 
 ## User Stories (the design mode)
 

@@ -1030,6 +1030,15 @@ def workflow_row(folder):
             "hint": "", "stage": "Workflow"}
 
 
+def lite_row(folder, hint=""):
+    """The lite route's entry: tt-workflow-lite links the folder (in its own link
+    file, so the full pipeline's link stays) and asks bug or feature if the folder
+    holds no tt documents yet. The hint is what the task is, said after the folder."""
+    return {"prefix": "", "kind": "alt", "phase": "lite", "skill": "tt-workflow-lite", "verb": "",
+            "arg": folder.as_posix(), "text": "Start a small change on the lite route.",
+            "hint": hint, "stage": "Lite"}
+
+
 def session_name(base):
     """<Feature> : <Stage>, with " (2)", " (3)", ... when an open Claude session has
     it already (live sessions keep a <pid>.json naming themselves)."""
@@ -1045,9 +1054,11 @@ def session_name(base):
     return name
 
 
-def launch(state, project, name, prompt, tag):
+def launch(state, project, name, prompt, tag, workdir=""):
     """Open a new terminal running claude in the project, named, started with the
     prompt, carrying TATTY_SESSION so Tatty's mod there reports to this window.
+    A workdir (the folder the work is done in, when that isn't the project) is
+    added to the session with --add-dir.
     From a checkout (not an install) the session loads this plugin with
     --plugin-dir. Windows Terminal, else a cmd window; elsewhere Terminal.app;
     else the command to run is given. TATTY_DRYRUN=1 opens nothing.
@@ -1058,6 +1069,8 @@ def launch(state, project, name, prompt, tag):
     if not claude:
         return False, "There's no claude command on this machine's PATH."
     args = [] if installed() else ["--plugin-dir", PLUGIN.as_posix()]
+    if workdir:
+        args += ["--add-dir", Path(workdir).as_posix()]
     exports = {"TATTY_SESSION": tag}
     if os.environ.get("TATTY_HOME"):
         exports["TATTY_HOME"] = Path(os.environ["TATTY_HOME"]).as_posix()
@@ -1099,7 +1112,12 @@ def start_session(state, folder, body):
     its next commands (Tatty's own launcher). Returns (http code, answer)."""
     rows = workflow_rows(state, folder)
     try:
-        row = workflow_row(folder) if body.get("row") == "workflow" else rows[int(body.get("row", 0))]
+        if body.get("row") == "workflow":
+            row = workflow_row(folder)
+        elif body.get("row") == "lite":
+            row = lite_row(folder, " ".join(str(body.get("hint") or "").split())[:2000])
+        else:
+            row = rows[int(body.get("row", 0))]
     except (ValueError, IndexError, TypeError):
         return 400, {"error": "no such step"}
     cmd = command(row)
@@ -1120,20 +1138,23 @@ def start_session(state, folder, body):
         project = feature_project(folder, docs_of(folder))[0]
     if not project:
         return 400, {"error": "choose the project this should run in"}
-    if row.get("phase") in ("empty", "workflow"):
-        base = f"{folder.name} : Start" if row.get("phase") == "empty" else f"{folder.name} : Workflow"
+    workdir = str(body.get("workdir") or "").strip()
+    if workdir and not os.path.isdir(workdir):
+        return 400, {"error": f"no such folder: {workdir}"}
+    if row.get("phase") in ("empty", "workflow", "lite"):
+        base = f"{folder.name} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite"}[row["phase"]]
     else:
         base = f"{row.get('prefix') or folder.name} : {row.get('stage') or 'Next'}"
     name = session_name(base)
     # The new session carries a tag naming it (TATTY_SESSION): Tatty's mod there
     # joins this window and reports what it does, for this feature's page.
     tag = "s-" + secrets.token_hex(4)
-    ok, said = launch(state, project, name, cmd, tag)
-    answer = {"ok": ok, "name": name, "command": cmd, "project": project, "said": said, "tag": tag}
+    ok, said = launch(state, project, name, cmd, tag, workdir)
+    answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag}
     if ok:
         with state.cond:
             state.sessions[tag] = {"tag": tag, "feature": folder.name, "folder": folder.as_posix(), "name": name,
-                                   "command": cmd, "project": project, "started": time.time(), "status": "starting",
+                                   "command": cmd, "project": project, "workdir": workdir, "started": time.time(), "status": "starting",
                                    "seen": 0.0, "claude": "", "doing": "", "usage": None}
         state.session_event(tag)
     return 200, answer
@@ -3144,6 +3165,7 @@ def task_board_fill(raw):
     o["autoCompleteDays"] = min(365, max(0, days)) if isinstance(days, int) and not isinstance(days, bool) else 0
     o["startColumn"] = o["startColumn"] if isinstance(o.get("startColumn"), str) else ""
     o["project"] = o["project"] if isinstance(o.get("project"), str) else ""
+    o["workdir"] = o["workdir"] if isinstance(o.get("workdir"), str) else ""
     o["celebrate"] = o["celebrate"] if isinstance(o.get("celebrate"), bool) else True
     pr = o.get("priorities")
     o["priorities"] = [task_line(x, 40) for x in pr if task_line(x, 40)][:12] if isinstance(pr, list) and pr else list(TASK_PRIORITIES)
@@ -3733,8 +3755,23 @@ def task_feature_name(t):
     return f"{t['id']} - {title}"[:70].rstrip(" .-") if title else t["id"]
 
 
-def task_ticket_md(board, d):
-    """The task as a feature's Ticket document: what the workflow plans from."""
+def work_folder_note(project, workdir):
+    """What a session must be told when it runs in one folder (the linked project,
+    which keys the toolbox's workflow link) but the work is done in another. The
+    toolbox runs git and verify-refs.sh from the session's folder unless told a
+    repo, so the instruction has to say where the work and its checks belong."""
+    p, w = Path(project).as_posix(), Path(workdir).as_posix()
+    return (f"The work is done in {w}, not in the folder this session runs in ({p}), which is only "
+            f"linked to the workflow. Read and change code only in {w}. Run git there (git -C), run "
+            f"verify-refs.sh with --repo {w}, pin the base commit from it, and build and check there. "
+            f"Write **Repo:** {w} in every document. Never read, build or verify against {p}. "
+            f"Take the project's rules from {w} (its AGENTS.md and CLAUDE.md, if it has them), "
+            f"not from {p}.")
+
+
+def task_ticket_md(board, d, work=""):
+    """The task as a feature's Ticket document: what the workflow plans from. `work`
+    is the work-folder note, when the work is done in another folder."""
     meta = [("Status", d["status"] or "Backlog"), ("Priority", d["priority"]), ("Labels", ", ".join(d["labels"])),
             ("Created", d["created"])] + [tuple(x) for x in d["extra"]] + \
         [("Task", f'{d["id"]} on the Tasks board "{board}"'),
@@ -3743,6 +3780,8 @@ def task_ticket_md(board, d):
     out += ["", "## Description", "", d["description"] or "*(none)*", ""]
     for s in d["sections"]:
         out += [f"## {s['heading']}", ""] + ([s["text"], ""] if s["text"] else [])
+    if work:
+        out += ["## Working folder", "", work, ""]
     return "\n".join(out)
 
 
@@ -3754,6 +3793,8 @@ def task_start(state, folder, body, client):
     refused rather than making a second feature."""
     tid = str(body.get("id", "")).strip().upper()
     project = str(body.get("project") or "").strip()
+    workdir = str(body.get("workdir") or "").strip()
+    lite = body.get("mode") == "lite"
     with task_store(folder)["lock"]:
         b = task_board(folder, strict=True)
         by, _ = task_ids(task_index(folder))
@@ -3765,24 +3806,37 @@ def task_start(state, folder, body, client):
                          "feature": b["started"].get(tid) or t["feature"]}
         if not project or not os.path.isdir(project):
             return 400, {"error": "Choose the project (repo) the session should run in."}
+        if workdir and not os.path.isdir(workdir):
+            return 400, {"error": f"No such work folder: {workdir}"}
+        if workdir and is_folder(workdir, Path(project)):
+            workdir = ""  # the same folder: nothing is split
         detail = task_detail(folder, t)
         code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t))
         if code != 200:
             return code, made
         feature = feature_dir(made["name"])
         doc = feature / f"{made['name']} - Ticket.md"
-        doc.write_text(task_ticket_md(folder.name, detail), encoding="utf-8")
+        note = work_folder_note(project, workdir) if workdir else ""
+        doc.write_text(task_ticket_md(folder.name, detail, note), encoding="utf-8")
         b["started"][tid] = made["name"]
         b["options"]["project"] = Path(project).as_posix()
+        b["options"]["workdir"] = Path(workdir).as_posix() if workdir else ""
         task_rewrite(folder, t, {"Feature": made["name"]})
         task_board_save(folder, b)
     # The folder holds only the ticket, so the workflow's own first step names a
     # <placeholder> for what the feature is: the task, said as jira_start says it.
-    rows = workflow_rows(state, feature)
-    first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
     said = f'the task {tid} in "{doc.as_posix()}". Folder: {feature.as_posix()}. Prefix: {made["name"]}'
-    values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
-    code, answer = start_session(state, feature, {"row": 0 if first else "workflow", "values": values, "project": project})
+    if note:
+        said += f". {note}"
+    if lite:
+        # the lite route's own entry: no planning command to fill, the task is said after the folder
+        go = {"row": "lite", "hint": said}
+    else:
+        rows = workflow_rows(state, feature)
+        first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
+        values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
+        go = {"row": 0 if first else "workflow", "values": values}
+    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir})
     answer = {**answer, "feature": made["name"], "ticket": doc.name}
     if code == 200 and answer.get("ok"):
         with task_store(folder)["lock"]:

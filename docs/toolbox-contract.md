@@ -258,7 +258,13 @@ way `tt-workflow` hands a new folder to planning: `the Jira ticket <KEY> in
 
 **Start workflow** on a task (see "Tasks") does the same, with the task as the
 ticket: `the task <ID> in "<ticket document>". Folder: <folder>. Prefix:
-<name>`.
+<name>`. **Start lite** on a task starts `/tt-workflow-lite "<folder>"` with the
+same words after it, instead; the lite route keeps its own link
+(`lite-links.tsv`), so the full pipeline's link for that project is left alone.
+When the task is given a work folder apart from the project, Tatty adds a
+"Working folder" section to the ticket and the same text to the command, saying
+where code, git and `verify-refs.sh --repo` belong; the toolbox itself is
+unchanged.
 
 ## Jira
 

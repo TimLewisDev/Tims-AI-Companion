@@ -948,7 +948,10 @@ def check_tasks(p):
     res["panel"] = p.js("""({ hash: decodeURIComponent(location.hash), title: document.querySelector('#task-title').value,
                              status: document.querySelector('#task-status').selectedOptions[0].textContent,
                              preview: !document.querySelector('#task-preview').hidden, previewText: document.querySelector('#task-preview').innerText.slice(0, 60),
-                             start: !!document.querySelector('#task-start'), sections: document.querySelectorAll('.tsection').length })""")
+                             start: !!document.querySelector('#task-start'), startLite: !!document.querySelector('#task-start-lite'),
+                             workdirPicker: !!document.querySelector('#task-workdir'),
+                             startOff: [document.querySelector('#task-start'), document.querySelector('#task-start-lite')].map(b => b && b.disabled),
+                             sections: document.querySelectorAll('.tsection').length })""")
     p.js("document.querySelector('#task-write').click(); document.querySelector('#task-desc').value += ' (typed)'; 1")
     res["write"] = p.js("({ textarea: !document.querySelector('#task-desc').hidden, preview: document.querySelector('#task-preview').hidden })")
     p.js("document.querySelector('#task-show').click(); 1")

@@ -952,24 +952,33 @@ const { renderTasks, renderTaskBoard } = (() => {
     const name = el("input", { id: "task-feature", value: clean(d.title) ? `${d.id} - ${clean(d.title)}`.slice(0, 70).replace(/[ .-]+$/, "") : d.id,
       "aria-label": "Feature name" });
     let project = t.data.options.project || "";
+    let workdir = t.data.options.workdir || "";
     const where = el("span", {});
+    const whereWork = el("span", {});
     const go = el("button", { type: "button", class: "primary", id: "task-start" }, "Start workflow");
+    const goLite = el("button", { type: "button", id: "task-start-lite" }, "Start lite");
     const result = el("div", { class: "start-result" });
     const drawWhere = () => {
       where.replaceChildren(project ? copyable(project) : el("strong", { class: "st missing" }, "no project chosen yet"));
-      go.disabled = !project || !name.value.trim();
+      whereWork.replaceChildren(workdir ? copyable(workdir) : el("span", { class: "dim" }, "the project itself"));
+      go.disabled = goLite.disabled = !project || !name.value.trim();
     };
     const choose = el("button", { type: "button", onclick: async () => {
       try { const p = await pickFolder(`Choose the project (repo) for ${d.id}`, project); if (p) { project = p; drawWhere(); } }
       catch (e) { alert(e.message || e); }
     } }, "Choose…");
+    const chooseWork = el("button", { type: "button", id: "task-workdir", onclick: async () => {
+      try { const p = await pickFolder(`Choose the folder ${d.id} is worked on in`, workdir || project); if (p) { workdir = p; drawWhere(); } }
+      catch (e) { alert(e.message || e); }
+    } }, "Choose…");
+    const clearWork = el("button", { type: "button", onclick: () => { workdir = ""; drawWhere(); } }, "Clear");
     name.addEventListener("input", drawWhere);
-    go.addEventListener("click", async () => {
-      go.disabled = true;
+    const begin = mode => async () => {
+      go.disabled = goLite.disabled = true;
       result.replaceChildren(el("span", { class: "dim small" }, "Making the feature and opening a session…"));
       tell("allow-foreground");
       try {
-        const r = await send("/api/tasks/start", { name: t.name, id: d.id, project, feature: name.value.trim() });
+        const r = await send("/api/tasks/start", { name: t.name, id: d.id, project, workdir, mode, feature: name.value.trim() });
         if (r.ok) {
           closePanel(true);
           location.hash = featureHref(r.feature); // its page shows the session as it runs
@@ -979,18 +988,23 @@ const { renderTasks, renderTaskBoard } = (() => {
         refresh();
       } catch (e) {
         result.replaceChildren(el("p", { class: "st missing" }, String(e.message || e)));
-        go.disabled = false;
+        drawWhere();
       }
-    });
+    };
+    go.addEventListener("click", begin("full"));
+    goLite.addEventListener("click", begin("lite"));
     const start = columnOf(t.data.options.startColumn);
     drawWhere();
     return el("div", { class: "start-panel" },
       el("div", { class: "start-title" }, "Start a workflow from this task"),
       el("label", { class: "jname" }, el("span", { class: "dim small" }, "Feature folder"), name),
-      el("div", { class: "project-line small" }, "Runs in ", where, " ", choose),
-      el("div", { class: "small dim" }, "Writes the task into the feature's folder as its Ticket, opens a new Claude session that starts planning from it",
-        start ? `, and moves ${d.id} to ${start.name}.` : "."),
-      el("div", { class: "start-actions" }, go),
+      el("div", { class: "project-line small" }, "Linked project (the session runs here) ", where, " ", choose),
+      el("div", { class: "project-line small" }, "Works in ", whereWork, " ", chooseWork, " ", clearWork),
+      el("div", { class: "small dim" }, "Writes the task into the feature's folder as its Ticket and opens a new Claude session. ",
+        "Start workflow plans it in full; Start lite writes a one-page brief for a small change. ",
+        "When it works in another folder, code, git and checks are for that folder only",
+        start ? `. ${d.id} moves to ${start.name}.` : "."),
+      el("div", { class: "start-actions" }, go, " ", goLite),
       result);
   }
 
