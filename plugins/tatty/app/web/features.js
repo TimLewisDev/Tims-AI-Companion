@@ -785,6 +785,25 @@ async function cancelWorkflow(name, text, client) {
   } catch (e) { alert(e.message || e); return null; }
 }
 
+// A dropdown of the repo's local branches, to say which one this feature's work is on. Tatty otherwise makes a
+// branch from the feature's name, or takes the one the repo is on, the first time it starts a step, and
+// switches the repo back to it at every later Start. b is what /api/branch answered.
+function branchSelect(f, b, project, done) {
+  const have = b.branch || "";
+  const sel = el("select", { class: "branch-select", "aria-label": "branch", title: "Which branch is this feature's work on?" });
+  if (!have && b.create) sel.append(el("option", { value: "" }, "New branch " + b.create));
+  const all = b.branches || [];
+  for (const n of have && !all.includes(have) ? [have, ...all] : all) sel.append(el("option", { value: n }, n + (n === b.current ? " (checked out)" : "")));
+  sel.value = have || (b.create ? "" : b.current || "");
+  sel.addEventListener("change", async () => {
+    if (!sel.value) return;
+    sel.disabled = true;
+    try { await api("/api/branch", { name: f.name, project, branch: sel.value }); featureCache.delete(f.name); await done(); }
+    catch (e) { alert(e.message || e); sel.disabled = false; }
+  });
+  return sel;
+}
+
 function startPanel(f, row, index, close) {
   const cmd = command(row);
   const inputs = placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
@@ -818,6 +837,7 @@ function startPanel(f, row, index, close) {
         b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
           : b.create ? ["A new branch ", code(b.create), " is made from ", code(b.current || "the detached HEAD")]
             : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
+        el("div", {}, "Use branch ", branchSelect(f, b, f.project, showBranch)),
         b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "");
     } catch { /* the server says so at Start */ }
   };
@@ -1193,8 +1213,14 @@ function stepActions(f, row, index, openNow) {
 // what happened when it can't see for itself (it looks with glab / gh when asked, and once when the page opens).
 function mergeCard(f) {
   const m = f.merge || {};
-  if (!m.branch) return "";
-  const atMerge = f.phase === "complete" && m.state !== "merged";
+  if (!m.branch && (f.phase !== "complete" || !f.project)) return "";
+  const atMerge = !!m.branch && f.phase === "complete" && m.state !== "merged";
+  // which branch the work is on: Tatty's record may be a branch it made or took, not the one the work went on
+  const chooser = el("div", { class: "small" });
+  const project = f.project || m.repo;
+  if (project) api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project)).then(b => {
+    if (b.repo) chooser.replaceChildren(m.branch ? "Wrong branch? " : "Which branch is the work on? ", branchSelect(f, b, project, () => route()));
+  }).catch(() => {});
   const act = async (action, extra = {}) => {
     try { await api("/api/merge", { name: f.name, action, ...extra }); featureCache.delete(f.name); route(); }
     catch (e) { alert(e.message || e); }
@@ -1205,8 +1231,9 @@ function mergeCard(f) {
     }).catch(() => {});
   }
   return el("section", { class: "card merge-card" }, el("h4", {}, "Branch and merge"),
-    el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
-      m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : ""),
+    m.branch ? el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
+      m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : "") : el("div", { class: "small dim" }, "No branch is recorded for this feature yet."),
+    chooser,
     m.url ? el("div", { class: "small" }, "Request: ", el("a", { href: m.url, target: "_blank", rel: "noopener" }, m.url)) : "",
     m.note ? el("div", { class: "small dim" }, m.note) : "",
     atMerge ? el("div", { class: "start-actions" },

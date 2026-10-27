@@ -1376,6 +1376,12 @@ def branch_name(repo, feature):
     return name
 
 
+def local_branches(repo):
+    """The repo's local branches, the most recently committed first."""
+    code, out = git(repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
+    return [b for b in out.splitlines() if b.strip()][:300] if code == 0 else []
+
+
 def branch_info(state, folder, project, workdir=""):
     """What a Start would do about the branch, for the Start panel; changes nothing."""
     repo = repo_of(project, workdir)
@@ -1385,7 +1391,7 @@ def branch_info(state, folder, project, workdir=""):
     here = current_branch(repo)
     rows = workflow_rows(state, folder)
     fresh = bool(rows) and rows[0].get("phase") == "empty"
-    out = {"repo": repo, "current": here, "branch": "", "base": "", "create": "", "others": []}
+    out = {"repo": repo, "current": here, "branch": "", "base": "", "create": "", "others": [], "branches": local_branches(repo)}
     if rec.get("branch") and same_folder(rec.get("repo", ""), repo):
         out.update(branch=rec["branch"], base=rec.get("base", ""))
     elif fresh:
@@ -1434,6 +1440,27 @@ def ensure_branch(folder, project, workdir, fresh):
             return True, {"repo": repo, "note": "The repo is on a detached HEAD: no branch recorded."}
         save_branch(feature, {"repo": repo, "branch": here, "base": "", "created": time.time(), "merge": {}})
         return True, {"repo": repo, "branch": here, "base": "", "note": f"Working on {here}."}
+
+
+def set_branch(folder, project, branch):
+    """(http code, answer): the person says which existing branch of the repo is this
+    feature's, in place of the one Tatty made or adopted. Only the record changes
+    (the next Start switches the repo to it); a request found for the old branch is
+    forgotten, since it was not this branch's."""
+    repo = repo_of(project)
+    if not repo:
+        return 400, {"error": "That isn't in a git repository."}
+    branch = str(branch or "").strip()
+    if not branch_exists(repo, branch):
+        return 400, {"error": f"{repo} has no branch called {branch or '(none)'}."}
+    feature = folder.name
+    with BRANCH_LOCK:
+        rec = branch_record(feature)
+        same = same_folder(rec.get("repo", ""), repo)
+        if not (same and rec.get("branch") == branch):
+            save_branch(feature, {"repo": repo, "branch": branch, "base": rec.get("base", "") if same and rec.get("base") != branch else "",
+                                  "created": rec.get("created") or time.time(), "merge": {}})
+    return 200, merge_view(feature)
 
 
 def merge_host(repo):
@@ -5943,6 +5970,13 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(text, str) or isinstance(expected, bool) or not isinstance(expected, (int, float)):
                 return self.send(400, {"error": "text (a string) and expected (the mtime /api/doc gave) are required"})
             code, answer = save_doc(p, text, float(expected))
+            return self.send(code, answer)
+        if path == "/api/branch":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            project = str(b.get("project") or "").strip() or feature_project(folder, docs_of(folder))[0]
+            code, answer = set_branch(folder, project, b.get("branch"))
             return self.send(code, answer)
         if path == "/api/merge":
             folder = feature_dir(str(b.get("name", "")))

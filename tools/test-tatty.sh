@@ -513,6 +513,23 @@ post /api/start "{\"name\":\"Brand-New\",\"row\":0,\"project\":\"$GRW\",\"values
 has "a taken name gets a number" "$T/j" '"branch": "feature/Brand-New-2"'
 get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
 has "and the Start panel warns about the other workflow in the repo" "$T/j" '"others": ["brand-new"]'
+git -C "$GR" branch other-work
+has "the Start panel lists the repo's branches" "$T/j" '"branches": ['
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "including one that already exists" "$T/j" '"other-work"'
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"other-work\"}" >"$T/j"
+has "an existing branch can be chosen for the feature" "$T/j" '"branch": "other-work"'
+has "and the request found for the old one is forgotten" "$T/j" '"state": ""'
+git -C "$GR" switch -q main
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "the next Start switches to the chosen branch" "$T/j" "Switched to other-work"
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"feature/Brand-New\"}" >"$T/j"
+has "and it can be changed back" "$T/j" '"branch": "feature/Brand-New"'
+git -C "$GR" switch -q feature/Brand-New-2
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"no-such-branch\"}" "$U/api/branch")" = 400 ] &&
+	ok "a branch the repo doesn't have is refused" || bad "a branch the repo doesn't have is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Nope\",\"project\":\"$GRW\",\"branch\":\"main\"}" "$U/api/branch")" = 404 ] &&
+	ok "no such feature" || bad "choosing a branch: no such feature"
 mkdir -p "$T/plain"
 PLW=$(cd "$T/plain" && { pwd -W 2>/dev/null || pwd; })
 post /api/new-feature '{"name":"Plain One"}' >/dev/null
