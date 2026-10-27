@@ -989,6 +989,64 @@ function activityRow(ev, rows) {
   return el("li", { class: "act" }, ev.text || "");
 }
 
+// A question just answered, in a session panel: its card shrinks into the small box and
+// flies down to the top of "Previously answered", where it pops in and the boxes
+// already there are pushed down with a bounce. The card's own place closes up under a
+// spacer meanwhile. The motion is not gated on prefers-reduced-motion (see style.css).
+const FLY_MS = 550, BOUNCE = "cubic-bezier(.34,1.56,.64,1)";
+
+function settleAnswered(card, ask, ans, boxes, history) {
+  const box = answeredBox(ask, ans), old = [...boxes.children];
+  if (!card.isConnected || document.hidden) { card.remove(); boxes.prepend(box); history.hidden = false; return; }
+  const from = card.getBoundingClientRect(), tops = old.map(b => b.getBoundingClientRect().top);
+  const spacer = el("div", { class: "abox-spacer" });
+  spacer.style.height = from.height + "px";
+  const cardLayer = card.cloneNode(true), boxLayer = box.cloneNode(true);
+  cardLayer.classList.remove("nudge");
+  card.replaceWith(spacer);
+  box.style.visibility = "hidden";
+  boxes.prepend(box);
+  history.hidden = false;
+  old.forEach((b, i) => {
+    const d = tops[i] - b.getBoundingClientRect().top;
+    if (d) b.animate([{ transform: `translateY(${d}px)` }, { transform: "none" }], { duration: 450, easing: BOUNCE });
+  });
+  spacer.animate([{ height: from.height + "px" }, { height: "0px" }], { duration: 350, easing: "ease-out", fill: "forwards" });
+  // the flying layer: the question card fades into the box as it shrinks
+  boxLayer.style.cssText = "position:absolute;left:0;top:0;width:100%;margin:0;visibility:visible";
+  cardLayer.style.cssText = "position:absolute;left:0;top:0;width:100%;margin:0";
+  const ghost = el("div", { class: "abox-ghost" }, cardLayer, boxLayer);
+  document.body.append(ghost);
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    ghost.remove(); spacer.remove();
+    box.style.visibility = "";
+    box.animate([{ transform: "scale(1.05)" }, { transform: "none" }], { duration: 300, easing: BOUNCE });
+  };
+  const t0 = performance.now();
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const frame = now => {
+    if (finished) return;
+    const t = Math.min(1, (now - t0) / FLY_MS), p = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const to = box.getBoundingClientRect(); // measured each frame: the layout above is closing up
+    const below = to.top > innerHeight - 8, top = Math.min(to.top, innerHeight - to.height - 8);
+    const gs = ghost.style;
+    gs.left = lerp(from.left, to.left, p) + "px";
+    gs.top = lerp(from.top, top, p) + "px";
+    gs.width = lerp(from.width, to.width, p) + "px";
+    gs.height = lerp(from.height, to.height, p) + "px";
+    cardLayer.style.opacity = String(Math.max(0, 1 - p / .6));
+    boxLayer.style.opacity = String(Math.min(1, Math.max(0, (p - .3) / .5)));
+    gs.opacity = below ? String(Math.min(1, Math.max(0, (1 - p) / .3))) : "1";
+    if (t < 1) requestAnimationFrame(frame); else finish();
+  };
+  frame(t0);
+  requestAnimationFrame(frame);
+  setTimeout(finish, FLY_MS + 150);
+}
+
 function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   const tag = s.tag;
   const events = () => sessionEvents.get(tag) || [];
@@ -1009,11 +1067,20 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   };
   say.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 
+  const boxes = el("div", { class: "abox-list" });
+  const history = el("div", { class: "live-answered", hidden: true }, el("h5", {}, "Previously answered"), boxes);
   const add = ev => {
     if (ev.type === "ask") {
       if (shownAsks.has(ev.id)) return;
       shownAsks.add(ev.id);
-      questions.prepend(questionCard(ev)); // newest on top, older ones further down
+      if (answers.has(ev.id)) { // answered before this panel was drawn: straight into the history
+        boxes.prepend(answeredBox(ev, answers.get(ev.id)));
+        history.hidden = false;
+        return;
+      }
+      const card = askCard(ev);
+      card._answered = (ask, ans) => settleAnswered(card, ask, ans, boxes, history);
+      questions.prepend(card); // newest on top, older ones further down
       return;
     }
     if (ev.type !== "activity" && ev.type !== "say") return;
@@ -1033,8 +1100,9 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
     agents, doing, questions,
+    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
-    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent));
+    history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();
   if (quiet) return panel; // an ended session's record: nothing more will come

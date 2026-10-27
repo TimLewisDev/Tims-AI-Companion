@@ -448,11 +448,28 @@ function answeredCard(a, ev) {
   return node;
 }
 
+// An answered question as a small box in a session panel's "Previously answered"
+// section: the question's headline for a title, the question and its answer when opened.
+function answeredBox(a, ev) {
+  const more = a.questions.length > 1 ? ` (+${a.questions.length - 1})` : "";
+  const head = el("button", { type: "button", class: "abox-head", "aria-expanded": "false" },
+    el("span", { class: "chev", "aria-hidden": "true" }, "▸"),
+    el("span", { class: "abox-title" }, questionHeadline(a.questions[0] && a.questions[0].question) + more));
+  const body = el("div", { class: "abox-body" },
+    ev.declined ? el("p", { class: "dim" }, "Asked in the terminal instead.") :
+      a.questions.map(q => el("div", { class: "q" }, questionNode(q.question), el("div", { class: "answer" }, ev.answers[q.question] || "—"))));
+  linkIds(body, a.feature); // ids.js
+  const node = el("div", { class: "card ask done abox" }, head, body);
+  head.addEventListener("click", () => head.setAttribute("aria-expanded", String(node.classList.toggle("open"))));
+  return node;
+}
+
 function answered(ev) {
   answers.set(ev.id, ev);
   const a = asks.get(ev.id);
   if (!a) return;
-  for (const n of a.nodes) if (n.isConnected) n.replaceWith(answeredCard(a.ev, ev));
+  // a session panel's card settles itself (it flies to its answered section)
+  for (const n of a.nodes) if (n.isConnected) n._answered ? n._answered(a.ev, ev) : n.replaceWith(answeredCard(a.ev, ev));
   asks.delete(ev.id);
 }
 

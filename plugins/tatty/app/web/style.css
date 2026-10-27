@@ -334,6 +334,25 @@ table.units td { padding: 3px 8px; }
 .live-meta { word-break: break-word; }
 .live-questions:empty { display: none; }
 .live-questions .card.ask { border-width: 2px; }
+/* The questions already answered: small boxes titled by the question, opened by a click.
+   An answered question flies here (features.js settleAnswered). Like the status bar,
+   that motion is not gated on prefers-reduced-motion: a default here, not a veto. */
+.live-answered[hidden] { display: none; }
+.live-answered h5 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); font-weight: 600; }
+.abox-list { display: flex; flex-direction: column; gap: 4px; }
+.card.abox { padding: 2px 10px; border-radius: 6px; border-color: var(--line); font-size: 12.5px; }
+.abox-head { display: flex; align-items: baseline; gap: 6px; width: 100%; padding: 3px 0; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; }
+.abox-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.abox .chev { display: inline-block; transition: transform .15s; color: var(--dim); }
+.abox.open .chev { transform: rotate(90deg); }
+.abox.open .abox-title { white-space: normal; }
+.abox-body { display: none; padding: 2px 0 6px; }
+.abox.open .abox-body { display: block; }
+.abox-body .q { margin: 4px 0 8px; }
+.abox-spacer { overflow: hidden; }
+.abox-ghost { position: fixed; z-index: 60; margin: 0; overflow: hidden; pointer-events: none; border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.25); background: var(--panel); }
 ol.activity { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 .act { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .act:last-child { border-bottom: none; }

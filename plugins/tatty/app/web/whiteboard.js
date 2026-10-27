@@ -168,9 +168,12 @@ function makeWhiteboard(o) {
     movePop();
   }
 
-  // A gesture is moving the view. hold: until settle (a pan), else until a pause (the wheel).
+  // A gesture is moving the view (an ease going on stops where it was going).
+  // hold: until settle (a pan), else until a pause (the wheel).
   function moving(hold) {
     gesture = true;
+    clearTimeout(easeTimer);
+    world.classList.remove("easing");
     world.classList.add("moving");
     clearTimeout(still);
     if (!hold) still = setTimeout(settle, WB_SETTLE);
