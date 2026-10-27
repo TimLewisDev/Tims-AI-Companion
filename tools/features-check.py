@@ -637,7 +637,10 @@ def check_stories(p):
     """The User Stories board, with real mouse input: the boards list, a board's
     notes and group panel, panning, zooming, a group in focus (with and without
     reduced motion), a card opened and its edit form, and a note dragged and
-    dragged back. Changes nothing in the stories document."""
+    dragged back. Changes nothing in the stories document. The view is drawn the
+    way whiteboard.js's "drawing" says: a pan leaves the content as it was drawn
+    (contentSame), and once a zoom or an ease settles the camera is back at
+    scale(1) with the content drawn at the zoom shown (crisp, settledAfterEase)."""
     res = {}
     p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
     p.js("location.hash = '#designs'; 1")
@@ -659,10 +662,12 @@ def check_stories(p):
     box = p.js("(() => { const r = document.querySelector('#board').getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()")
     bx, by = box[0] + 30, box[1] + box[3] - 60  # the board's bottom-left, clear of notes and the panel
     t0 = p.js("document.querySelector('#board-world').style.transform")
+    c0 = p.js("document.querySelector('#board .wbcontent').style.transform")
     drag(p, bx + 40, by - 20, bx + 140, by - 70)  # the left button on the background moves nothing
     res["leftDrag"] = {"still": p.js("document.querySelector('#board-world').style.transform") == t0}
     drag(p, bx + 40, by - 20, bx + 140, by - 70, "middle")
-    res["pan"] = {"before": t0, "after": p.js("document.querySelector('#board-world').style.transform")}
+    res["pan"] = {"before": t0, "after": p.js("document.querySelector('#board-world').style.transform"),
+                  "contentSame": p.js("document.querySelector('#board .wbcontent').style.transform") == c0}
     # the middle button over a note moves the view, not the note
     n = p.js("(() => { const n = document.querySelector('#board .scard'); const r = n.getBoundingClientRect(); return [r.left + 40, r.top + 30, n.style.left, n.style.top]; })()")
     t1 = p.js("document.querySelector('#board-world').style.transform")
@@ -671,10 +676,15 @@ def check_stories(p):
                           "noteStill": p.js("[document.querySelector('#board .scard').style.left, document.querySelector('#board .scard').style.top]") == n[2:4]}
     res["contextMenu"] = p.js("(() => { const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true }); document.querySelector('#board .scard').dispatchEvent(e); return e.defaultPrevented ? 'board' : 'browser'; })()")
     p.call("Input.dispatchMouseEvent", type="mouseWheel", x=box[0] + box[2] / 2, y=box[1] + box[3] / 2, deltaX=0, deltaY=-240)
-    time.sleep(0.2)
+    t = time.time()
+    settled = wait(p, "!document.querySelector('#board-world').classList.contains('moving')", tries=20)
     res["wheel"] = {"zoom": p.js("document.querySelector('.zoom-pct').textContent"),
                     "transform": p.js("document.querySelector('#board-world').style.transform"),
-                    "settled": not p.js("document.querySelector('#board-world').classList.contains('moving')")}
+                    "settled": settled, "settledMs": round((time.time() - t) * 1000),
+                    "crisp": p.js("""(() => { const w = document.querySelector('#board-world'), c = document.querySelector('#board .wbcontent');
+                                       const z = parseFloat(c.style.transform.slice(6)) * 100;
+                                       return w.style.transform.endsWith('scale(1)') && Math.round(z) + '%' === document.querySelector('.zoom-pct').textContent; })()"""),
+                    "layer": p.js("getComputedStyle(document.querySelector('#board-world')).willChange")}
     # a group in focus: once as this machine has it (reduced motion: a jump), once with motion
     for media in ("reduce", "no-preference"):
         p.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": media}])
@@ -686,6 +696,9 @@ def check_stories(p):
                                             frame: !document.querySelector('.gframe').hidden,
                                             easing: document.querySelector('#board-world').classList.contains('easing'),
                                             moved: document.querySelector('#board-world').style.transform !== {json.dumps(before)} }})""")
+        if media == "no-preference":  # the ease over, the camera back at scale(1) and the content sharp
+            time.sleep(0.6)
+            res["focus-" + media]["settledAfterEase"] = p.js("""(w => !w.classList.contains('easing') && w.style.transform.endsWith('scale(1)'))(document.querySelector('#board-world'))""")
         p.js("document.querySelector('#group-panel .grow.on .gname') && document.querySelector('#group-panel .grow.on .gname').click(); 1")
     res["unfocus"] = p.js("document.querySelectorAll('#board .scard.hl, #board .scard.dim').length")
     p.js("document.querySelector('#board-fit').click(); 1")

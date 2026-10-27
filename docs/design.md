@@ -741,6 +741,20 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   bad. Removing an item takes its lines and lets go of the comments on it. A
   `whiteboard` event tells other windows, which read the board again (not
   while a text or a comment is being written there).
+- **Drawing:** the world (`#<id>-world`) is the camera and a layer of its own
+  for good; inside it, `.wbcontent` holds everything in the board's own units,
+  drawn at the zoom the view last settled at. A pan moves the camera's picture
+  and draws nothing again; a wheel zoom scales the picture while it goes on (a
+  little soft) and draws the content sharp once, 250 ms after the last turn (an
+  ease at its end, a button or key at once), on whole device pixels. Zooming
+  well out mid-gesture draws it again at the smaller size, so the picture never
+  has to cover far more of the board than it was drawn for; an ease draws it
+  first at the smaller of its two zooms. Making the layer at each gesture's
+  start and dropping it at its end was what made a pan start with a hitch and a
+  slow wheel stutter (every turn drew the whole board twice). The notes are kept
+  cheap to draw (one small shadow, the same small radius on every corner, no clip
+  of their own), tilted as before.
+  `tools/whiteboard-perf.py` measures it (see "Tests").
 - **Where:** Tatty's own, never in a document: `<home>/boards/<key>.json` for a
   folder's (a User Stories board, keyed as before; a feature), with any other
   keys kept as they are (a stories board's colours and exports), and
@@ -816,7 +830,9 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   `features-check.py ... --stories` walks only a User Stories board with real
   mouse input (pan, wheel zoom, a group in focus with and without reduced
   motion, a note dragged and back, a card opened and its edit form); it changes
-  nothing in the stories document.
+  nothing in the stories document. It also reports how the view is drawn: a pan
+  leaves the content as drawn (`contentSame`), and a zoom or an ease settles
+  back to a sharp drawing (`crisp`, `settledAfterEase`, `layer`).
   `features-check.py ... --export` clicks through Export to Tasks on the first
   User Stories board (the panel, two stories exported, their IDs on the notes,
   the backlog, a task's panel, the panel again). It writes task files, so run
@@ -834,6 +850,23 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   one discipline installed. It asks for a milestone through the page's own
   `api()` as well, and reports the card, the confetti, and that the pieces take
   themselves away again.
+- `tools/whiteboard-perf.py` measures the whiteboard's pan and zoom: a User
+  Stories board of 40, 120 or 300 made-up notes (the page's `api()` stood in
+  for, so nothing is written), scripted runs (idle, a middle-button pan, wheel
+  turns 16 to 400 ms apart, zooming out to Fit, a pan straight after a zoom, the
+  eases, and a plain scrolling box of the same notes as the floor), each with a
+  Chrome trace. It reports frames presented and dropped, the gaps between them,
+  a style change's time to the screen, the time from a press to the first moved
+  frame, raster and paint, each thread's time and the GPU it ran on; `--compare`
+  sets two reports side by side, `--inject-css` tries a what-if (e.g. no
+  shadows) without changing the app, and `--observe <s>` traces a person's own
+  pans and zooms. Headless (no GPU, 1920x1080 at a scale of 2), `--headed` (the
+  GPU, a maximised window), or `attach <port>` for the companion. A browser it
+  starts is started afresh for each run: in one Edge, the second or third traced
+  run left it drawing no frames at all (never untraced), so later runs on an
+  attached page may be marked stalled. Wheel turns are sent in the page (a
+  headed Edge drops DevTools' mouseWheel). Its input skips the OS, and
+  "presented" is this machine's, not a Remote Desktop client's.
 - `tools/window-check.py` reports what the shell makes of the companion's
   windows -- the styles that decide the taskbar and Alt-Tab, who holds the
   button, what is on top -- and asserts the lot for one view with

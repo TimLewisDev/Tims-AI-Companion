@@ -16,11 +16,13 @@ options:
   --observe <seconds>    no script: trace while a person pans and zooms the 40-note board
   --out <file.json>      also write the JSON there
   --rdp-counters         sample Windows' RemoteFX Graphics counters during each run (Remote Desktop)
-  --page-wheel           wheel turns as WheelEvents sent in the page (always so headed and attached:
-                         a headed Edge drops DevTools' mouseWheel)
+  --devtools-wheel       headless only: wheel turns through DevTools' mouseWheel (the browser's own input
+                         path) instead of WheelEvents sent in the page; a headed Edge drops them, and a
+                         headless one sometimes never answers
 The browser is started headless with no GPU at 1920x1080 and a device scale of 2
-(this machine's 4K at 200%), or --headed: a real window with the GPU, which has
-to stay visible while it runs. attach is a page already open: Tatty's companion,
+(this machine's 4K at 200%), or --headed: a real window with the GPU, maximised,
+to be left alone while it runs; either is started afresh for each run (see
+Target). attach is a page already open: Tatty's companion,
 started with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>.
 Input sent this way skips the OS (and Remote Desktop's input), and "presented"
 is when this machine showed the frame, not when a remote screen did.
@@ -245,9 +247,10 @@ def board_point(p, on_note=True):
 
 class Input:
     # page_wheel: wheel turns sent in the page, as WheelEvents on what is under the
-    # point. A headed Edge never delivers DevTools' mouseWheel (nor answers it), so
-    # there the board's own handler is all a turn measures.
-    page_wheel = False
+    # point (the board's own handler, then its drawing: what is measured). DevTools'
+    # mouseWheel is never delivered by a headed Edge, and now and then isn't
+    # answered by a headless one either, so it is only used when asked for.
+    page_wheel = True
 
     def __init__(self, p):
         self.p, self.acks = p, []
@@ -279,6 +282,17 @@ class Input:
                           f"{{ deltaY: {d}, clientX: {x}, clientY: {y}, bubbles: true, cancelable: true }})); return 1; }})()")
             else:
                 self.send(type="mouseWheel", x=x, y=y, deltaX=0, deltaY=d)
+
+
+def frames_flowing(p, tries=10):
+    """Whether the page is drawing frames at all: a run in a page that has
+    stopped (see Target) would measure nothing."""
+    for _ in range(tries):
+        n = p.js("new Promise(r => { let n = 0; const f = () => { n++; requestAnimationFrame(f); }; requestAnimationFrame(f); setTimeout(() => r(n), 300); })")
+        if n and n >= 5:
+            return True
+        time.sleep(3)
+    return False
 
 
 def settle(p, extra_ms):
@@ -530,12 +544,85 @@ class RdpCounters:
 
 # ------------------------------------------------------------------ runs
 
-def run_all(p, opts, folder):
+class Target:
+    """Where the runs happen. A browser this script starts is started afresh for
+    each run: in one browser, the second or third trace of runs like these leaves
+    it drawing no frames at all (Edge 156, with every set of categories tried; it
+    never happens untraced), so each run gets the first trace of a browser of its
+    own. An attached page (the companion) can't be, so its later runs may stall:
+    they are marked so."""
+
+    def __init__(self, argv):
+        self.argv, self.proc, self.p, self.browser, self.count = argv, None, None, None, 0
+        self.kind = "attach" if argv[0] == "attach" else "headed" if "--headed" in argv else "headless"
+        self.url = None if self.kind == "attach" else argv[1]
+
+    def open(self, n):
+        """The page, with n made-up notes ready to be drawn."""
+        if self.kind == "attach":
+            if not self.p:
+                self.p, self.browser, _ = connect(int(self.argv[1]), None)
+                if not self.p:
+                    raise RuntimeError("the page's DevTools port never answered")
+                self.p.call("Runtime.enable")
+                self.p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); 1")  # the companion's full panel
+                time.sleep(0.5)
+            self.p.js(FIXTURE + f"({n})")
+            return self.p
+        self.close()
+        self.count += 1
+        port = 9300 + (os.getpid() + self.count) % 500
+        flags = ["--no-first-run", "--no-default-browser-check", f"--user-data-dir={tempfile.mkdtemp()}", f"--remote-debugging-port={port}"]
+        if self.kind == "headed":
+            flags += ["--window-position=0,0", "--window-size=1920,1040", "--disable-backgrounding-occluded-windows",
+                      "--disable-renderer-backgrounding", "--disable-features=CalculateNativeWinOcclusion"]
+        else:
+            flags += ["--headless=new", "--disable-gpu", "--window-size=1920,1080", "--force-device-scale-factor=2"]
+        self.proc = subprocess.Popen([self.argv[0], *flags, "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.p, self.browser, _ = connect(port, self.url)
+        if not self.p:
+            raise RuntimeError("the browser's DevTools port never answered")
+        p = self.p
+        p.call("Runtime.enable")
+        if self.kind == "headless":
+            p.call("Emulation.setDeviceMetricsOverride", width=1920, height=1080, deviceScaleFactor=2, mobile=False)
+        else:  # the window as a person has it: maximised
+            try:
+                win = p.call("Browser.getWindowForTarget")["windowId"]
+                p.call("Browser.setWindowBounds", windowId=win, bounds={"windowState": "maximized"})
+            except RuntimeError as e:
+                print(f"couldn't maximise the window: {e}", file=sys.stderr)
+            time.sleep(1)
+        p.call("Page.navigate", url=self.url)
+        time.sleep(1.5)
+        p.js(FIXTURE + f"({n})")
+        return p
+
+    def close(self):
+        if self.proc:
+            self.proc.terminate()
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = self.p = self.browser = None
+        elif self.p:  # an attached page: as it was
+            self.p.js("""(() => { const r = window.__perfReal; if (r) { api = r.api; setInstalledModes(r.modes); applyMode(r.mode); delete window.__perfReal; }
+                     const s = document.getElementById('perf-inject'); if (s) s.remove(); location.hash = '#home'; return 1; })()""")
+
+
+def run_all(t, opts, folder):
     runs = []
     for n in opts["sizes"]:
         for focus in ([False, True] if opts["focus"] else [False]):
             for scn in opts["scenarios"]:
                 key = f"{scn}{'-f' if focus else ''}-{int(time.time() * 1000) % 100000}"
+                p = t.open(n)
+                if not frames_flowing(p):
+                    res = {"size": n, "scenario": scn, "focus": focus, "stalled": True}
+                    runs.append(res)
+                    print(f"{n:>4} {scn:<17} stalled: the page draws no frames", file=sys.stderr)
+                    continue
                 open_board(p, n, key, opts["inject"], focus)
                 if scn == "wheel-out":  # from 156%: two clicks on +
                     p.js("[...document.querySelectorAll('#board .zoomctl button')].find(x => x.textContent === '+').click(); 1")
@@ -561,6 +648,8 @@ def run_all(p, opts, folder):
                 raf = page.get("raf", [])
                 gaps = [y - x for x, y in zip(raf, raf[1:])]
                 res["rafP50"], res["rafP95"] = pct(gaps, 0.5), pct(gaps, 0.95)
+                if not gaps or (res["rafP50"] or 0) > 100:
+                    res["stalled"] = True  # frames stopped part way (see frames_flowing)
                 loafs = page.get("loafs", [])
                 res["loafs"] = {"n": len(loafs), "maxMs": round(max((x[1] for x in loafs), default=0), 1),
                                 "blockingMs": round(sum(x[2] for x in loafs), 1)}
@@ -573,8 +662,9 @@ def run_all(p, opts, folder):
     return runs
 
 
-def observe(p, seconds, folder):
+def observe(t, seconds, folder):
     """A person's own pans and zooms: how the input arrives, and the frames."""
+    p = t.open(40)
     open_board(p, 40, f"observe-{int(time.time())}", [], False)
     p.js(PROBES)
     p.js("""(() => { const b = document.querySelector('#board'); const O = window.__obs = { moves: [], wheels: [] };
@@ -608,7 +698,9 @@ def row(r):
     f = r.get("frames", {})
     v = r.get("viewToScreen", {})
     st = r.get("stagesP95", {})
-    return (f"{r.get('size', ''):>4} {r['scenario'] + (' F' if r.get('focus') else ''):<17} "
+    if r.get("stalled") and not r.get("frames"):
+        return f"{r.get('size', ''):>4} {r['scenario']:<17} stalled"
+    return (f"{r.get('size', ''):>4} {r['scenario'] + (' F' if r.get('focus') else ''):<17} " + ("STALLED " if r.get("stalled") else "") +
             f"pres {f.get('presented', '-'):>4} drop {f.get('dropped+partial', '-'):>3} "
             f"gap p50/p95/max {f.get('gapP50')}/{f.get('gapP95')}/{f.get('gapMax')}  "
             f"view->screen p50/p95 {v.get('p50')}/{v.get('p95')}  panStart {r.get('panStartMs', '-')}  settle {r.get('settleMs', '-')}  "
@@ -659,60 +751,17 @@ def main(argv):
     if bad:
         print(f"unknown: {', '.join(bad)}", file=sys.stderr)
         return 2
-    proc = None
-    if argv[0] == "attach":
-        port, url, target = int(argv[1]), None, "attach"
-    else:
-        port, url = 9300 + os.getpid() % 500, argv[1]
-        headed = "--headed" in argv
-        target = "headed" if headed else "headless"
-        flags = ["--no-first-run", "--no-default-browser-check", f"--user-data-dir={tempfile.mkdtemp()}",
-                 f"--remote-debugging-port={port}"]
-        if headed:
-            flags += ["--window-position=0,0", "--window-size=1920,1040", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
-                      "--disable-features=CalculateNativeWinOcclusion"]
-        else:
-            flags += ["--headless=new", "--disable-gpu", "--window-size=1920,1080", "--force-device-scale-factor=2"]
-        proc = subprocess.Popen([argv[0], *flags, "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t = Target(argv)
+    Input.page_wheel = t.kind != "headless" or "--devtools-wheel" not in argv
     try:
-        p, browser, target_id = connect(port, url)
-        if not p:
-            print("the browser's DevTools port never answered", file=sys.stderr)
-            return 2
-        p.call("Runtime.enable")
-        if target == "headless":
-            p.call("Emulation.setDeviceMetricsOverride", width=1920, height=1080, deviceScaleFactor=2, mobile=False)
-        elif target == "headed":  # the window as a person has it: maximised
-            try:
-                win = p.call("Browser.getWindowForTarget")["windowId"]
-                p.call("Browser.setWindowBounds", windowId=win, bounds={"windowState": "maximized"})
-            except RuntimeError as e:
-                print(f"couldn't maximise the window: {e}", file=sys.stderr)
-            time.sleep(1)
-        if url:
-            p.call("Page.navigate", url=url)
-            time.sleep(1.5)
-        else:  # the companion: its full panel
-            p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); 1")
-            time.sleep(0.5)
-        groups = p.js(FIXTURE + f"({max(opts['sizes'])})")
-        Input.page_wheel = target != "headless" or "--page-wheel" in argv
-        env = {"target": target, **environment(p, browser), "groups": groups, "wheel": "page" if Input.page_wheel else "devtools"}
-        print(f"{target}: {env.get('browser', '')} dpr {env.get('dpr')} viewport {env.get('viewport')} "
+        p = t.open(max(opts["sizes"]))
+        env = {"target": t.kind, **environment(p, t.browser), "wheel": "page" if Input.page_wheel else "devtools"}
+        print(f"{t.kind}: {env.get('browser', '')} dpr {env.get('dpr')} viewport {env.get('viewport')} "
               f"gl {env.get('gpu', {}).get('glRenderer', '?') if isinstance(env.get('gpu'), dict) else env.get('gpu')}", file=sys.stderr)
         folder = Path(tempfile.mkdtemp(prefix="wb-perf-"))
         print(f"traces: {folder}", file=sys.stderr)
         observe_s = arg("--observe")
-        if observe_s:
-            p.js(FIXTURE + "(40)")
-            runs = observe(p, float(observe_s), folder)
-        else:
-            runs = []
-            for n in opts["sizes"]:
-                p.js(FIXTURE + f"({n})")
-                runs += run_all(p, {**opts, "sizes": [n]}, folder)
-        p.js("""(() => { const r = window.__perfReal; if (r) { api = r.api; setInstalledModes(r.modes); applyMode(r.mode); delete window.__perfReal; }
-                 const s = document.getElementById('perf-inject'); if (s) s.remove(); location.hash = '#home'; return 1; })()""")
+        runs = observe(t, float(observe_s), folder) if observe_s else run_all(t, opts, folder)
         out = {"env": env, "options": opts, "runs": runs,
                "note": "input sent over DevTools skips the OS and Remote Desktop; 'presented' is this machine's, not the remote screen's"}
         text = json.dumps(out, indent=1)
@@ -720,9 +769,11 @@ def main(argv):
         if arg("--out"):
             Path(arg("--out")).write_text(text, encoding="utf-8")
         return 0
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     finally:
-        if proc:
-            proc.terminate()
+        t.close()
 
 
 if __name__ == "__main__":
