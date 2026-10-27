@@ -250,6 +250,16 @@ workflow itself. Those are the toolbox's own skills, run as a person would run
 them. Tatty's launcher (`launch()` in `server.py`) only opens the terminal: it
 names the session, sets `TATTY_SESSION`, and starts `claude` in the project.
 
+A feature on the lite route (`workflow-state.sh` says `lite-focus`, `lite-brief`,
+`debugging`, `debug-done` or `debugged`, or the documents show a Lite Brief or a
+Debug Log) also gets **Resume this small change** at the top of its page: Start
+runs `/tt-workflow-lite "<folder>"`, which re-links the folder in its own file
+(`lite-links.tsv`), reads the same state and asks its one confirmation. The
+"let tt-workflow work out the next step" row is left off such a feature (it is
+the full pipeline's entry). A new, empty feature is offered both entries, the
+lite one with an optional sentence saying what the task is. Tatty does not run
+`lite.sh`; the state still comes from `workflow-state.sh --tsv`.
+
 **Start workflow** on a Jira ticket (below) starts the toolbox's own first step
 for a new folder, the command `workflow-state.sh` names for it
 (`/tt-adversarial-plan <idea, spec or ticket>`), with its placeholder filled the

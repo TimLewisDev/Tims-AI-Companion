@@ -947,9 +947,12 @@ def feature_summary(state, folder, detail=False):
         events = events_of(folder)
         plan = first_doc(docs, "Comprehensive Tech Plan")
         project, project_from = feature_project(folder, docs)
-        out.update({"rows": rows, "workflowStep": workflow_row(folder), "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
+        out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
                     "stages": stages_of(read_doc(folder, plan) if plan else "", events),
-                    "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder)})
+                    "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder),
+                    # tt-workflow is the full pipeline's entry: a small change goes in through tt-workflow-lite
+                    "workflowStep": None if out["route"] in ("lite", "bug") else workflow_row(folder),
+                    "liteStep": lite_step(folder, out["route"], out["phase"], out["text"])})
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
         out["ticketOnly"] = [p.name for p in folder.iterdir()] == [f"{folder.name} - Ticket.md"]
@@ -1336,13 +1339,24 @@ def workflow_row(folder):
             "hint": "", "stage": "Workflow"}
 
 
-def lite_row(folder, hint=""):
+def lite_row(folder, hint="", text="Start a small change on the lite route."):
     """The lite route's entry: tt-workflow-lite links the folder (in its own link
     file, so the full pipeline's link stays) and asks bug or feature if the folder
     holds no tt documents yet. The hint is what the task is, said after the folder."""
     return {"prefix": "", "kind": "alt", "phase": "lite", "skill": "tt-workflow-lite", "verb": "",
-            "arg": folder.as_posix(), "text": "Start a small change on the lite route.",
+            "arg": folder.as_posix(), "text": text,
             "hint": hint, "stage": "Lite"}
+
+
+def lite_step(folder, route, phase, said):
+    """The lite entry the feature page offers: Resume on a small change or a bug
+    fix (said is the state script's own sentence on where it stands), a second way
+    in on a new feature, and none on a full-route feature or a finished one."""
+    if route == "new":
+        return lite_row(folder, text="Or start a small change on the lite route (it asks bug or feature).")
+    if route in ("lite", "bug") and phase != "complete":
+        return lite_row(folder, text="Resume this small change: " + said)
+    return None
 
 
 def session_name(base):
@@ -1430,7 +1444,7 @@ def start_session(state, folder, body):
     if not cmd:
         return 400, {"error": "nothing left to run"}
     values = body.get("values") or {}
-    for ph in PLACEHOLDER.findall(cmd):
+    for ph in ([] if row.get("phase") == "lite" else PLACEHOLDER.findall(cmd)):  # a lite hint is free text
         v = " ".join(str(values.get(ph, "")).split())[:2000]
         if not v:
             return 400, {"error": f"say what goes in <{ph}>"}
