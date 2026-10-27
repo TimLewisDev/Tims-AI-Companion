@@ -292,7 +292,11 @@ folders and Claude Code's own install records; see
   focuses the item when the link is followed.
 - **New feature…** makes the folder. **Start** then runs the workflow's own
   `/tt-workflow "<folder>"`, so the toolbox links and starts the feature.
-  Tatty never changes the workflow's records.
+  Tatty never changes the workflow's records. A new feature is also offered
+  `/tt-workflow-lite "<folder>"` (with an optional sentence on what the task is),
+  and a feature already on the lite route (a bug fix included) shows **Resume
+  this small change** first, which runs the same command; its own next-step rows
+  stay below it and the `/tt-workflow` row is left off.
 - **Start session:**
   - It opens a terminal with `claude -n "<Feature> : <Stage>" "<command>"` in
     the feature's project. The project comes from a choice on the page, a

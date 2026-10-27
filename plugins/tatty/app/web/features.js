@@ -788,6 +788,8 @@ async function cancelWorkflow(name, text, client) {
 function startPanel(f, row, index, close) {
   const cmd = command(row);
   const inputs = placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
+  // A new feature's lite entry may say what the task is (tt-workflow-lite then needn't ask); a resume has no use for it.
+  const said = row.phase === "lite" && f.route === "new" ? el("input", { placeholder: "what is it (optional)", "aria-label": "what is it (optional)" }) : null;
   const preview = el("code", {});
   const name = row.phase === "empty" ? `${f.name} : Start` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
   const result = el("div", { class: "start-result" });
@@ -795,10 +797,12 @@ function startPanel(f, row, index, close) {
   const refresh = () => {
     let c = cmd;
     for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
+    if (said && said.value.trim()) c += " " + said.value.trim();
     preview.textContent = c;
     go.disabled = !f.project || inputs.some(i => !i.input.value.trim());
   };
   for (const { input } of inputs) input.addEventListener("input", refresh);
+  if (said) said.addEventListener("input", refresh);
   const panel = el("div", { class: "start-panel" });
   // The branch the work will be on: Tatty makes one on a feature's first Start, and switches the repo back to it later.
   const branchLine = el("div", { class: "small branch-line" });
@@ -822,6 +826,7 @@ function startPanel(f, row, index, close) {
       projectLine(f, () => { draw(); refresh(); }),
       branchLine,
       inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
+      said ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "what is it (optional)"), said)) : "",
       el("div", { class: "small" }, "running ", preview),
       el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
       el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
@@ -834,7 +839,7 @@ function startPanel(f, row, index, close) {
     tell("allow-foreground");
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
-      const r = await api("/api/start", { name: f.name, row: index, values });
+      const r = await api("/api/start", { name: f.name, row: index, values, ...(said && said.value.trim() ? { hint: said.value.trim() } : {}) });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
@@ -1220,6 +1225,11 @@ function overview(f) {
   if (f.workflowStep) stand.push(el("div", { class: "stand alt" }, el("p", {}, f.workflowStep.text),
     stepActions(f, f.workflowStep, "workflow", openStartFor === f.name)));
   if (openStartFor === f.name) openStartFor = null;
+  // A small change or a bug fix is carried on by tt-workflow-lite (Resume, first); a new feature can go either way.
+  if (f.liteStep) {
+    const lite = el("div", { class: "stand " + (f.route === "new" ? "alt" : "resume") }, el("p", {}, f.liteStep.text), stepActions(f, f.liteStep, "lite"));
+    if (f.route === "new") stand.push(lite); else stand.unshift(lite);
+  }
   if (!f.toolbox) stand.unshift(el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."));
   const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
     bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
