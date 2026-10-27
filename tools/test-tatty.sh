@@ -495,11 +495,34 @@ has "bad counts are made safe" "$T/f" "'input': 0, 'output': 0, 'cacheRead': 2, 
 hasnt "and a negative cost dropped" "$T/f" "costUsd"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"usage","usage":{}}' "$U/api/activity")" = 404 ] &&
 	ok "usage for an unknown session refused" || bad "usage for an unknown session refused"
+# the main loop's turns and the subagents: what the page's status and bar are made of
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"turn\",\"state\":\"start\"}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\"},{\"id\":\"a2\",\"type\":\"Explore\",\"description\":\"find the callers\",\"status\":\"waiting\"},{\"id\":\"a3\",\"type\":\"general-purpose\",\"status\":\"nonsense\"},{\"type\":\"no id\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[s['turn'] for s in d if s['tag'] == '$TAG'][0]")" = "True" ] && ok "a turn is under way" || bad "a turn is under way"
+[ "$(pick "$T/j" "[(a['id'], a['type'], a['status']) for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]]")" = "[('a1', 'Explore', 'running'), ('a2', 'Explore', 'waiting'), ('a3', 'general-purpose', 'running')]" ] &&
+	ok "subagents are kept, one without an id dropped, an odd status made safe" || bad "subagents are kept" "$(pick "$T/j" "[s['agents'] for s in d if s['tag'] == '$TAG'][0]")"
+pick "$T/j" "[a['since'] for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]][0]" >"$T/f"
+SINCE=$(cat "$T/f")
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"turn\",\"state\":\"end\"}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[s['turn'] for s in d if s['tag'] == '$TAG'][0]")" = "False" ] && ok "and the turn ends while a subagent goes on" || bad "and the turn ends while a subagent goes on"
+[ "$(pick "$T/j" "[a['since'] for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]][0]")" = "$SINCE" ] && ok "a subagent keeps the time it was first seen" || bad "a subagent keeps the time it was first seen"
+get /api/events >"$T/j"
+pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] in ('turn', 'agents')])" >"$T/f"
+has "neither is a row in the feed" "$T/f" "0"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"turn","state":"start"}' "$U/api/activity")" = 404 ] &&
+	ok "a turn for an unknown session refused" || bad "a turn for an unknown session refused"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[]}" >/dev/null
 post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":1200,\"output\":340,\"cacheRead\":50000,\"cacheWrite\":800,\"context\":{\"tokens\":52000,\"window\":200000},\"costUsd\":0.42}}" >/dev/null
 post /api/ask "{\"tag\":\"$TAG\",\"questions\":[{\"question\":\"Carry on?\",\"header\":\"Go\",\"options\":[\"Yes\",\"No\"]}]}" >/dev/null
 get /api/events >"$T/j"
 pick "$T/j" "[e['source'] + '|' + e['tag'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
 has "its question, named for the session" "$T/f" "Demo : Build|$TAG"
+# Its alert goes to the question on the session's tab, not just the feature's page
+pick "$T/j" "[e['link'] == '#workflows/$TAG/ask/' + e['id'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
+has "a started session's question links to its card on the tab" "$T/f" "True"
 post /api/say "{\"tag\":\"$TAG\",\"text\":\"use the new folder\"}" >/dev/null
 expect "the main inbox doesn't get it" 5 bash "$W" listen --wait 1
 get "/api/inbox?wait=1&tag=$TAG&client=claude-mod" >"$T/j"

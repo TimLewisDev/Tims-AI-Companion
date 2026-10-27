@@ -174,6 +174,19 @@ the noise.
   and the page sets the route. A question with no page of its own is answered in
   the feed, which is brought to it. Replies from started (tagged) sessions are
   not alerts: they stay in their feature page's session panel.
+  A question from a session Start opened is about its *card*, not the feature:
+  the questions are answered on the session's workflow tab, so its `link` is
+  `#workflows/<tag>/ask/<id>` (`ask_link`), and the tab scrolls to that card and
+  flashes it (`focusAsk`). Clicking the avatar or the banner therefore lands on the
+  question. The same question also comes up as a **toast** at the top of the full
+  panel or a browser page (`toastAsk` in `app.js`; the compact bubble has its
+  banner instead): "Needs you", what is asked, and a **Go** that follows the
+  link. It stays until the question is answered, its tab is opened or it is
+  dismissed, and is not raised for what a reloaded page replays, nor when the
+  person is already on that tab. On the feature page, a live session's button
+  (`.go-btn`) is solid in the accent colour, reads "Go to the question" and
+  rings and wipes while one is open, and is a quiet "Open its tab" otherwise.
+  Like the status bar, that motion is not gated on `prefers-reduced-motion`.
 - **His menu** (`MakeMenu`) is one `ContextMenuStrip` shown in both the places a
   person reaches for it: the tray icon, and a right-click on Tatty himself. Its
   **Preview** submenu (`PreviewMenu`) is the catalogue of his whole repertoire --
@@ -227,6 +240,11 @@ folders and Claude Code's own install records; see
   radio for a browser tab, which has no title bar, and the compact bubble shows
   neither. `renderSwitcher` fills every `.mode-switch` slot, and style.css
   decides which is on screen.
+- **A mode's home page** (`#mode`, `renderModeHome`) is its name under an
+  underline in the mode's colour, with a card for each page the mode owns
+  (`MODE_PAGES`) and one for All modes, at the top of the page. The cards'
+  icons are inline SVG built in `modes.js` (`ICONS`): the page's content
+  security policy allows no inline styles.
 - **Mode-scoped pages:** a nav item with a `data-mode` belongs to that mode and
   is shown only in it (today Features, engineering's). Going to such a page
   switches to its mode (`PAGE_MODE` and `switchMode` in `features.js`), so a
@@ -240,11 +258,6 @@ folders and Claude Code's own install records; see
   so a new mode is one block in the mode layer and a new theme (a light/dark
   toggle of our own, say) one block in the theme layer. The tray app follows:
   the page sends `mode`, and `App.xaml.cs` swaps the `TtAccent` brush Tatty is
-- **A mode's home page** (`#mode`, `renderModeHome`) is its name under an
-  underline in the mode's colour, with a card for each page the mode owns
-  (`MODE_PAGES`) and one for All modes, at the top of the page. The cards'
-  icons are inline SVG built in `modes.js` (`ICONS`): the page's content
-  security policy allows no inline styles.
   drawn with.
 
 ## Features and the workflow
@@ -297,6 +310,27 @@ folders and Claude Code's own install records; see
   process of its own, so any number of workflows can run at once, in different
   features or in one. The live panels and usage widgets are kept per tag
   (`livePanels`, `usageViews`), and `route()` clears them as the page is redrawn.
+  - **What a session is doing** (`sessionStatus` in `features.js`) is a *mode*:
+    starting, thinking, tool, agents, ask, idle, lost or ended. The mod reports
+    the main loop's turns (`turn.start` / `turn.complete`, `kind: "turn"`) and the
+    session's subagents (`$.agent.list()`, every poll and at a subagent's turn
+    start and end, `kind: "agents"`), and the server keeps them on the session
+    (`turn`, `turnSince`, `agents` with a `since` each); neither is a row in the
+    feed. A subagent that is pending, running or waiting makes the mode `agents`
+    even after the main turn has ended: the session is waiting on them, not idle.
+    A session whose mod is older reports neither, and the status falls back to
+    the activity feed alone.
+  - **The status bar** (`.statebar`, `stateBar`/`paintBar`) runs along the top edge
+    of a session's card, inside its border: comets sweep left to right while
+    something is going on. The mode picks the colour and motion: thinking (the
+    accent, one slow comet), a tool (teal, two quick ones), subagents (violet, a
+    comet for each, up to four), waiting for you (amber, breathing), opening
+    (grey), lost (red, dashed, still); nothing when idle or ended. The chip beside
+    the title takes the mode's colour, has dots that move and the time the mode
+    has lasted (a one-second ticker), and the subagents going are listed as chips
+    under the title. The tab's dot follows the mode. The motion is *not* gated on
+    `prefers-reduced-motion` (see "Less motion": that is a default, not a veto,
+    and headless Edge and this author's machine both report "reduce").
   - **The tabs** are `GET /api/sessions` without a `name`: every started session
     that hasn't been closed, oldest first. They are rebuilt from that after a
     reload and kept up to date from `session` events. The server keeps sessions
@@ -738,7 +772,10 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   Given a page opened as the companion (`?mode=companion`), `page-check.py` also
   checks the alert banner: a question's text, its going when answered, a
   milestone's, and that opening one expands to its page. The avatar's click
-  itself (`OpenAlert`) is only checked by hand. It also posts a challenge-style
+  itself (`OpenAlert`) is only checked by hand. Companion or not, it checks the
+  question toast (shown, its Go, gone when answered or followed) and the
+  `#workflows/<tag>/ask/<id>` route; `features-check.py --tabs` has a toast's Go
+  land on its card on the tab. It also posts a challenge-style
   question and reports how it was laid out (`ask_format`).
   `features-check.py` ends with the Jira board, drawn from a sample board in
   the page (columns, a ticket's panel, Esc, the nav item per mode), and the

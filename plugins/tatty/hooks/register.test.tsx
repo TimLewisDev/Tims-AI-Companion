@@ -30,6 +30,7 @@ function engine(on: any, open: boolean, answer: object, seen: string[], tag = ''
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
   })
   on('tool.call', () => ({ result: TERMINAL }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
   on('turn.complete', (_: unknown, e: { answer: string }) => ({ text: e.answer }))
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 52000, window: 200000 }, cost: { usd: 0.42 } } }))
 }
@@ -145,6 +146,47 @@ test('a started session reports its running token total, the context and the cos
     context: { tokens: 52000, window: 200000 }, costUsd: 0.42,
   })
   expect(usage[1]).toEqual(expect.objectContaining({ input: 200, output: 40, cacheRead: 10000, cacheWrite: 600 }))
+})
+
+test('a started session reports when its main turn begins and ends, and its subagents', async ($, on) => {
+  const seen: string[] = []
+  const bodies: any[] = []
+  engine(on, true, {}, seen, 's-1', bodies)
+  let roster = [{ id: 'a1', type: 'Explore', description: 'map the stream code', status: 'running' }]
+  on('agent.list', () => ({ value: roster }))
+  await $.session.start(START)
+
+  await $.turn.start({ text: 'go', turnId: 't1' } as any)
+  await $.turn.start({ text: 'map it', turnId: 't2', agentId: 'a1' } as any) // a subagent's turn
+  await new Promise(r => setTimeout(r, 50))
+  let acts = bodies.filter(b => b.path === '/api/activity')
+  expect(acts.filter(a => a.kind === 'turn')).toEqual([expect.objectContaining({ kind: 'turn', state: 'start' })])
+  const agents = acts.filter(a => a.kind === 'agents')
+  expect(agents.length).toBe(1)
+  expect(agents[0].agents).toEqual(roster)
+
+  // the same roster again says nothing; a change is sent
+  await $.turn.complete(TURN(COUNTS, { agentId: 'a1' }))
+  roster = [{ ...roster[0], status: 'completed' }]
+  await $.turn.complete(TURN(COUNTS, { agentId: 'a1' }))
+  await $.turn.complete(TURN(COUNTS))
+  await new Promise(r => setTimeout(r, 50))
+  acts = bodies.filter(b => b.path === '/api/activity')
+  expect(acts.filter(a => a.kind === 'agents').length).toBe(2)
+  expect(acts.filter(a => a.kind === 'turn').map(a => a.state)).toEqual(['start', 'end'])
+})
+
+test('a session Tatty did not start reports no turns or subagents', async ($, on) => {
+  const seen: string[] = []
+  engine(on, true, {}, seen)
+  on('agent.list', () => ({ value: [] }))
+  await $.session.start(START)
+  await attach($)
+
+  await $.turn.start({ text: 'go', turnId: 't1' } as any)
+  await $.turn.complete(TURN(COUNTS))
+  await new Promise(r => setTimeout(r, 50))
+  expect(seen).not.toContain('/api/activity')
 })
 
 test('a session Tatty did not start reports no usage', async ($, on) => {

@@ -535,12 +535,74 @@ function alertFrom(ev) {
   }
 }
 
+// ------------------------------------------------------- toasts
+//
+// A new question also comes up over the top of the full panel or a browser page,
+// saying what needs the person and with a Go straight to it (the compact bubble has
+// its banner for that, above). It stays until the question is answered, its page is
+// opened, or it is dismissed. Only what is asked from now on: a reload replays the
+// backlog, and a toast for each old question would be noise.
+const toasts = new Map(); // ask id -> { ev, node }, oldest first
+const toastBox = $("#toasts");
+const TOASTS_SHOWN = 3;
+
+function drawToasts() {
+  const all = [...toasts.values()].reverse(); // newest on top
+  toastBox.replaceChildren(...all.slice(0, TOASTS_SHOWN).map(t => t.node),
+    all.length > TOASTS_SHOWN ? el("div", { class: "toasts-more" }, `+${all.length - TOASTS_SHOWN} more`) : "");
+}
+
+function dropToast(id) {
+  if (toasts.delete(id)) drawToasts();
+}
+
+// Take the person to the question: its page (the session's tab, scrolled to the card), or
+// where it is answered in the feed when nothing links it to a page.
+function goToAsk(ev) {
+  dropToast(ev.id);
+  if (ev.link && location.hash !== ev.link) { location.hash = ev.link; return; }
+  if (ev.link) { focusAsk(ev.id); return; } // already there: the hash won't change (features.js)
+  const node = asks.get(ev.id) && asks.get(ev.id).nodes.find(n => n.isConnected);
+  if (node) node.scrollIntoView({ block: "center" });
+}
+
+function toastAsk(ev) {
+  if (ev.ts * 1000 < pageOpened - 5000 || toasts.has(ev.id)) return;
+  const r = typeof parseRoute === "function" ? parseRoute() : {};
+  if (ev.tag && r.page === "home" && r.tag === ev.tag) return; // it is on screen already
+  const go = el("button", { type: "button", class: "go-btn" }, "Go");
+  go.addEventListener("click", () => goToAsk(ev));
+  const sub = [ev.source, ev.feature].filter(Boolean).join(" · ");
+  const x = el("button", { type: "button", class: "dismiss", title: "Dismiss", "aria-label": "Dismiss" }, "×");
+  x.addEventListener("click", () => dropToast(ev.id));
+  const node = el("div", { class: "toast", role: "alert" },
+    el("div", { class: "what" },
+      el("div", { class: "kind" }, "Needs you"),
+      el("div", { class: "title" }, questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer"),
+      sub ? el("div", { class: "sub" }, sub) : ""),
+    go, x);
+  toasts.set(ev.id, { ev, node });
+  drawToasts();
+}
+
+// Its page was opened (by any means): the toast has done its job.
+function toastsSeen() {
+  if (!toasts.size || typeof parseRoute !== "function") return;
+  const r = parseRoute();
+  if (r.page !== "home" || !r.tag) return;
+  for (const [id, t] of [...toasts]) if (t.ev.tag === r.tag) toasts.delete(id);
+  drawToasts();
+}
+window.addEventListener("hashchange", toastsSeen);
+document.addEventListener("tt-expanded", toastsSeen);
+
 function feedEvent(ev) {
   alertFrom(ev);
-  if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); }
+  if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); toastAsk(ev); }
   else if (ev.type === "answered") {
     answered(ev);
     dropAlert(ev.id);
+    dropToast(ev.id);
     if (companion && !alerts.length) tell("alert-cleared"); // nothing is calling any more
   }
   // A milestone belongs to the feature, not to a session, so it is shown

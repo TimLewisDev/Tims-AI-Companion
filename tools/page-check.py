@@ -205,6 +205,34 @@ def main(argv):
         time.sleep(3)
         out["confetti_cleared"] = p.js("document.querySelectorAll('.burst').length") == 0
 
+        # A new question comes up as a toast over the page (app.js toastAsk) with a
+        # Go to it, and goes when answered or when Go is pressed. In the companion
+        # only the full panel shows it (the bubble has its banner), so expand first.
+        # A question with no page of its own has Go bring its card to the person.
+        p.js("if (companion) document.body.classList.add('expanded'); location.hash = ''; 1")
+        p.js("api('/api/ask', { questions: [{ question: 'Shall the toast say so?', options: ['Yes', 'No'] }], source: 'Toast check' })")
+        time.sleep(1)
+        toast = """({ count: document.querySelectorAll('#toasts .toast').length,
+            visible: !!document.querySelector('#toasts .toast') && document.querySelector('#toasts .toast').offsetParent !== null,
+            text: [...document.querySelectorAll('#toasts .toast')].map(t => t.innerText.replace(/\\s+/g, ' ')).pop() || '',
+            go: !!document.querySelector('#toasts .toast .go-btn'),
+            ring: !!document.querySelector('#toasts .toast .go-btn') && getComputedStyle(document.querySelector('#toasts .toast .go-btn')).animationName })"""
+        shown = p.js(toast)
+        p.js("api('/api/reply', { id: [...asks.keys()].pop(), declined: true })")
+        time.sleep(1)
+        gone = p.js("document.querySelectorAll('#toasts .toast').length")
+        p.js("api('/api/ask', { questions: [{ question: 'Shall Go dismiss it?', options: ['Yes', 'No'] }] })")
+        time.sleep(1)
+        p.js("document.querySelector('#toasts .toast .go-btn').click()")
+        time.sleep(0.5)
+        out["toast"] = {**shown, "gone_when_answered": gone == 0, "gone_after_go": p.js("document.querySelectorAll('#toasts .toast').length") == 0}
+        p.js("api('/api/reply', { id: [...asks.keys()].pop(), declined: true })")
+        # a question's link: a started session's tab, at that card
+        p.js("location.hash = '#workflows/s-x/ask/ab12'; 1")
+        out["ask_route"] = p.js("(({ page, tag, ask }) => ({ page, tag, ask }))(parseRoute())")
+        p.js("location.hash = ''; if (companion) document.body.classList.remove('expanded'); 1")
+        time.sleep(0.5)
+
         # The modes: the radio over the discipline plugins installed (the one on
         # screen -- the title bar's in the companion, the header's in a browser
         # tab), the landing page, a mode's home page, and that switching mode
@@ -247,6 +275,21 @@ def main(argv):
             segments: """ + segs + """.map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
             pressed: """ + segs + """.filter(b => b.classList.contains('on')).map(b => { const s = getComputedStyle(b);
                        return { colour: s.color, background: s.backgroundColor, inset: s.boxShadow.includes('inset') }; }) })""")
+        # a mode's home page: its pages as cards, at the top of the page, under a
+        # title underlined in the mode's colour
+        p.js("location.hash = '#mode'; 1")
+        time.sleep(0.6)
+        out["mode_home"] = p.js("""(() => {
+            const page = document.querySelector('#page-mode'), h = page.querySelector('.mode-home-head h2');
+            if (!h) return null;
+            const top = page.getBoundingClientRect(), box = h.getBoundingClientRect();
+            return { mode: currentMode, title: h.textContent,
+                underline: getComputedStyle(h).textDecorationColor,
+                accent: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
+                tiles: [...page.querySelectorAll('.mode-tile')].map(a => a.querySelector('strong').textContent + ' ' + a.getAttribute('href')),
+                icons: page.querySelectorAll('.mode-tile-icon svg path').length,
+                gapAbove: Math.round(box.top - top.top) };
+        })()""")
         p.js("document.querySelector('.tabs button[data-tab=docs]').click()")
         for _ in range(30):
             time.sleep(0.5)
@@ -275,21 +318,6 @@ def main(argv):
                 text: document.querySelector('#alert').innerText.replace(/\\s+/g, ' ') })""")
             p.js("api('/api/reply', { id: [...asks.keys()].pop(), declined: true })")
             time.sleep(1)
-        # a mode's home page: its pages as cards, at the top of the page, under a
-        # title underlined in the mode's colour
-        p.js("location.hash = '#mode'; 1")
-        time.sleep(0.6)
-        out["mode_home"] = p.js("""(() => {
-            const page = document.querySelector('#page-mode'), h = page.querySelector('.mode-home-head h2');
-            if (!h) return null;
-            const top = page.getBoundingClientRect(), box = h.getBoundingClientRect();
-            return { mode: currentMode, title: h.textContent,
-                underline: getComputedStyle(h).textDecorationColor,
-                accent: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
-                tiles: [...page.querySelectorAll('.mode-tile')].map(a => a.querySelector('strong').textContent + ' ' + a.getAttribute('href')),
-                icons: page.querySelectorAll('.mode-tile-icon svg path').length,
-                gapAbove: Math.round(box.top - top.top) };
-        })()""")
             out["alert_question"] = {**asked, "gone": p.js("document.querySelector('#alert').hidden")}
             p.js("api('/api/milestone', { event: 'plan.signed_off', prefix: 'Alerted' })")
             time.sleep(1)

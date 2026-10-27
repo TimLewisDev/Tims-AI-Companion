@@ -33,9 +33,11 @@
   touch-action: none; user-select: none; }
 .board.panning { cursor: grabbing; }
 .board[data-tool="text"], .board[data-tool="comment"], .board[data-tool="line"], .board[data-tool="story"] { cursor: crosshair; }
-.world { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+/* The camera, a layer of its own for good (whiteboard.js, "drawing"), and the
+   board's content in it, drawn at the zoom it last settled at. */
+.world { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; will-change: transform; }
 .world.easing { transition: transform 0.35s ease; }
-.world.moving { will-change: transform; } /* a layer of its own while it pans or zooms (whiteboard.js, moving) */
+.wbcontent { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
 .wblayer { position: absolute; left: 0; top: 0; }
 .wbcard.linefrom, .wbtext.linefrom, .wbcomment.linefrom { outline: 3px solid var(--accent); outline-offset: 3px; }
 

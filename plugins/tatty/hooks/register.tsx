@@ -23,6 +23,7 @@ let polling = false
 let session = ''
 let tag = '' // set when Tatty started this session from a feature page
 let joined = false // this session works with Tatty (tagged, TATTY_JOIN, or /tatty open|attach)
+let lastRoster = '' // the subagent roster last reported (see reportAgents)
 // What a started session has used so far, summed over its turns (the engine
 // answers per turn; the window and cost it has as a whole, see reportUsage).
 const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -103,6 +104,25 @@ async function reportUsage($: EngineInterface, turn: { input_tokens: number; out
       costUsd: now.cost?.usd,
     },
   })
+}
+
+// reportAgents: the session's subagents and where each stands, when that changed.
+// A session whose main turn has ended can still be waiting on background subagents,
+// and only this says so. It reads the engine's roster rather than counting events,
+// so a subagent that was killed, or ended without a word, leaves the list too.
+async function reportAgents($: EngineInterface) {
+  if (!tag || !attached) return
+  try {
+    const agents = (await $.agent.list()).map(a => ({
+      id: a.id, type: a.type, description: String(a.description || '').slice(0, 120), status: a.status,
+    }))
+    const key = JSON.stringify(agents)
+    if (key === lastRoster) return
+    lastRoster = key
+    report($, { kind: 'agents', agents })
+  } catch {
+    /* the status then goes on what it knew */
+  }
 }
 
 // The few words that say what a tool call is about.
@@ -214,8 +234,12 @@ export const register: Register = on => {
       description: 'Open Tatty, or have this session work with it (attach / detach), close it, or put it on the Desktop (install)',
       argumentHint: '[open | attach | detach | close | status | install | uninstall]',
     })
+    lastRoster = ''
     if (joined) await attach($)
-    $.clock.every(POLL_MS, () => void pollInbox($))
+    $.clock.every(POLL_MS, () => {
+      void pollInbox($)
+      void reportAgents($)
+    })
     return started
   })
 
@@ -273,10 +297,25 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // A started session: its own turns begin and end (the main loop's say whether it
+  // is working; a subagent's start or end is a change of the roster, sent at once).
+  on('turn.start', async ($, e, next) => {
+    const started = await next(e)
+    if (tag) {
+      if (!e.agentId) report($, { kind: 'turn', state: 'start' })
+      else void reportAgents($)
+    }
+    return started
+  }).catch(($, e, next) => next(e))
+
   // Mirror the session's answers into Tatty, so it reads like a chat. A started
   // session's go to its feature page instead of the main feed.
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    if (tag) {
+      if (!e.agentId) report($, { kind: 'turn', state: 'end' })
+      else void reportAgents($)
+    }
     await reportUsage($, e.usage).catch(() => undefined) // never fails the turn
     if (joined && attached && !e.agentId && !e.isAborted && e.answer.trim()) {
       if (tag) report($, { kind: 'reply', text: e.answer })

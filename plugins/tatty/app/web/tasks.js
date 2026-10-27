@@ -231,13 +231,16 @@ const { renderTasks, renderTaskBoard } = (() => {
 
   // A task's workflow in a few words (route · stage · session), for its card; the
   // server sends one for each started task that isn't done (t.data.workflows).
-  const SESSION_SHORT = { starting: "opening", running: "running", lost: "not heard from", unseen: "can't see it", ended: "ended" };
+  const MODE_SHORT = { starting: "opening", thinking: "working", tool: "working", ask: "waiting for you", idle: "idle", lost: "not heard from", ended: "ended" };
   function wfWords(w) {
     if (!w || w.missing) return null;
     const s = w.session;
-    const asking = s && sessionStatus(s, sessionEvents.get(s.tag) || [])[0].startsWith("Waiting");
-    return [ROUTES[w.route] || w.route, PHASES[w.phase] || w.stage || w.phase,
-      asking ? "waiting for you" : s ? SESSION_SHORT[s.status] || s.status : "no session"];
+    let word = "no session";
+    if (s) {
+      const [, , mode, , n] = sessionStatus(sessionInfo.get(s.tag) || s, sessionEvents.get(s.tag) || []);
+      word = mode === "agents" ? `${n} subagent${n > 1 ? "s" : ""} working` : MODE_SHORT[mode] || s.status;
+    }
+    return [ROUTES[w.route] || w.route, PHASES[w.phase] || w.stage || w.phase, word];
   }
   function wfLine(id) {
     const words = wfWords(((t.data || {}).workflows || {})[id]);

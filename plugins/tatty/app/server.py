@@ -820,6 +820,15 @@ def feature_link(feature):
     return "#feature/" + urllib.parse.quote(feature, safe="") if feature else ""
 
 
+def ask_link(state, tag, feature, qid):
+    """Where a question's alert points: the question itself, on its session's tab, when
+    Start opened the session (the tab is what holds its questions); else its feature's page."""
+    s = state.sessions.get(tag) if tag else None
+    if s and s.get("feature") and not s.get("closed"):
+        return "#workflows/" + urllib.parse.quote(tag, safe="") + "/ask/" + urllib.parse.quote(qid, safe="")
+    return feature_link(feature)
+
+
 def ledger_rows(at):
     """The whole rows past byte `at`, and where to read from next time. A row
     still being written is left behind for the next look, so a half-written line
@@ -1811,6 +1820,26 @@ def session_feature(state, tag, session=""):
 
 
 # ---------------------------------------------------------------- questions
+
+
+AGENT_STATUSES = ("pending", "running", "waiting", "idle", "completed", "failed", "killed")
+
+
+def clean_agents(agents, before=()):
+    """A session's subagents as the mod reports them, made safe to keep and show:
+    id, type, description and status, and `since`: when this was first told of the
+    agent (from `before`, the list it replaces, else now)."""
+    first = {a.get("id"): a.get("since") for a in before if isinstance(a, dict)}
+    now = time.time()
+    out = []
+    for a in (agents if isinstance(agents, list) else [])[:24]:
+        if not isinstance(a, dict) or not a.get("id"):
+            continue
+        aid = str(a["id"])[:80]
+        status = str(a.get("status", ""))
+        out.append({"id": aid, "type": str(a.get("type", ""))[:60], "description": " ".join(str(a.get("description", "")).split())[:120],
+                    "status": status if status in AGENT_STATUSES else "running", "since": first.get(aid) or now})
+    return out
 
 
 def clean_usage(body):
@@ -4702,8 +4731,22 @@ class Handler(BaseHTTPRequestHandler):
                     st.sessions[tag]["usage"] = clean_usage(b.get("usage"))
                 st.session_event(tag)
                 return self.send(200, {"ok": True})
+            if what in ("turn", "agents"):
+                # Not rows in the feed either: whether the main loop is in a turn, and the
+                # session's subagents. They are what the page's status and bar are made of.
+                if tag not in st.sessions:
+                    return self.send(404, {"error": "no such session"})
+                with st.cond:
+                    s = st.sessions[tag]
+                    if what == "turn":
+                        s["turn"] = b.get("state") == "start"
+                        s["turnSince"] = time.time()
+                    else:
+                        s["agents"] = clean_agents(b.get("agents"), s.get("agents") or [])
+                st.session_event(tag)
+                return self.send(200, {"ok": True})
             if what not in ("tool", "tool-done", "prompt", "reply", "note"):
-                return self.send(400, {"error": "kind: tool, tool-done, prompt, reply, note or usage"})
+                return self.send(400, {"error": "kind: tool, tool-done, prompt, reply, note, turn, agents or usage"})
             text = str(b.get("text", ""))[:6000 if what == "reply" else 400]
             ev = st.emit("activity", tag=tag, kind=what, tool=str(b.get("tool", ""))[:60], text=text,
                          id=str(b.get("id", ""))[:80], ok=b.get("ok") is not False,
@@ -4723,7 +4766,7 @@ class Handler(BaseHTTPRequestHandler):
             if tag in st.sessions:
                 source = st.sessions[tag]["name"]
             feature = session_feature(st, tag, session)
-            st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=feature, link=feature_link(feature))
+            st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=feature, link=ask_link(st, tag, feature, qid))
             return self.send(200, {"id": qid})
         if path == "/api/reply":
             qid = str(b.get("id", ""))

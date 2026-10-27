@@ -92,7 +92,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && sidePanelN
 window.addEventListener("hashchange", closeSidePanel);
 
 // ------------------------------------------------------------- routing
-// #modes · #mode · #home · #workflows/<session tag> · #chats/<chat id> (chat.js)
+// #modes · #mode · #home · #workflows/<session tag>[/ask/<question id>] · #chats/<chat id> (chat.js)
 // · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard
 // · #toolbox · #settings · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
@@ -104,7 +104,7 @@ function parseRoute() {
     const doc = parts[2] === "doc" ? parts[3] : null;
     return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard" };
   }
-  if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1] };
+  if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
   if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
   if (parts[0] === "whiteboards") return { page: "whiteboards" };
@@ -357,10 +357,10 @@ function drawTabs() {
     el("a", { class: "wtab features" + (tabsActive ? "" : " on"), href: "#home" }, "Features"),
     ...[...tabList.values()].map(s => {
       const info = sessionInfo.get(s.tag) || s;
-      const [text, cls] = sessionStatus(info, sessionEvents.get(s.tag) || []);
+      const [text, cls, mode] = sessionStatus(info, sessionEvents.get(s.tag) || []);
       return el("span", { class: "wtab" + (s.tag === tabsActive ? " on" : ""), "data-tag": s.tag, ...closeOnMiddle(() => closeTab(s.tag)) },
         el("a", { href: "#workflows/" + encodeURIComponent(s.tag), title: `${info.feature}: ${text}` },
-          el("span", { class: "wdot " + cls }), info.name),
+          el("span", { class: "wdot " + cls + " m-" + mode }), info.name),
         el("button", { type: "button", class: "x", title: LIVE.has(info.status) ? "Stop this workflow and close the tab" : "Close the tab",
           "aria-label": "Close " + info.name, onclick: () => closeTab(s.tag) }, "×"));
     }),
@@ -432,6 +432,24 @@ async function renderWorkflowTab(tag) {
   markRail();
   clearInterval(homeTimer);
   homeTimer = setInterval(refreshRail, 20000);
+  const r = parseRoute();
+  if (r.tag === tag && r.ask) focusAsk(r.ask);
+}
+
+// Bring a question's card into view on its workflow tab and flash it, so the eye
+// lands on what was asked. (Also called by the toast's Go when the route is already
+// that tab, since the hash then doesn't change.) An answered question has no card
+// to find: the tab simply stays as it is.
+function focusAsk(id) {
+  // (The same question is also in the feed; the tab's card is the one to land on.)
+  const a = asks.get(id), live = a && a.nodes.filter(n => n.isConnected);
+  const node = live && (live.find(n => n.closest(".live-questions")) || live[0]);
+  if (!node) return;
+  node.scrollIntoView({ block: "center" });
+  node.classList.remove("nudge");
+  void node.offsetWidth; // so a second Go restarts the flash
+  node.classList.add("nudge");
+  setTimeout(() => node.classList.remove("nudge"), 2600);
 }
 
 function featureCard(f) {
@@ -810,6 +828,7 @@ const sessionEvents = new Map(); // tag -> [activity / ask / say events]
 const sessionInfo = new Map();   // tag -> the latest "session" event
 const LIVE = new Set(["starting", "running", "lost", "unseen"]);
 const livePanels = new Map();    // tag -> the panel on screen: { tag, update(ev) }
+const statusViews = new Map();   // tag -> a status shown elsewhere (the feature page's line): { update() }
 const usageViews = new Map();    // tag -> the usage widget on screen: { tag, update(usage) }
 
 document.addEventListener("tt-event", e => {
@@ -829,6 +848,8 @@ document.addEventListener("tt-event", e => {
   }
   const panel = ev.closed ? null : livePanels.get(ev.tag); // (a closed tab is going: nothing to redraw)
   if (panel) panel.update(ev);
+  const line = ev.closed ? null : statusViews.get(ev.tag);
+  if (line) line.update();
   if (ev.type !== "session") return;
   // The tabs: a closed one goes (here or in another window), a new one comes, a dot changes.
   if (ev.closed) {
@@ -850,20 +871,94 @@ let redrawSoon = null;
 
 const TOOL_ICONS = { Read: "📄", Edit: "✏️", Write: "📝", Bash: "⌨️", Grep: "🔎", Glob: "🗂️", Agent: "🤖", Skill: "🧩", WebFetch: "🌐", AskUserQuestion: "❓", TodoWrite: "☑️" };
 
+// What a started session is doing, as [words, chip colour, mode, since (ms), how many]:
+// the mode (starting, thinking, tool, agents, ask, idle, lost, ended) picks the bar's
+// colour and motion (see .statebar in style.css). A mod that reports turns and
+// subagents (s.turn, s.agents) is exact: the main loop may have ended its turn and
+// still be waiting on subagents it started in the background, which is not idle.
+// An older mod reports neither, and the activity feed is all there is to go on.
+const AGENT_ACTIVE = new Set(["pending", "running", "waiting"]);
+const activeAgents = s => (s.agents || []).filter(a => AGENT_ACTIVE.has(a.status));
+
 function sessionStatus(s, events) {
-  const openAsk = events.some(ev => ev.type === "ask" && !answers.has(ev.id));
-  if (s.status === "ended") return ["Ended", "done"];
-  if (s.status === "unseen") return ["Can't see this session (Tatty's plugin isn't loaded in it)", "bad"];
-  if (s.status === "lost") return ["Not heard from for a while", "bad"];
-  if (s.status === "starting") return ["Opening the session…", "now"];
-  if (openAsk) return ["Waiting for your answer", "bad"];
+  const asks = events.filter(ev => ev.type === "ask" && !answers.has(ev.id));
+  if (s.status === "ended") return ["Ended", "done", "ended", 0, 1];
+  if (s.status === "unseen") return ["Can't see this session (Tatty's plugin isn't loaded in it)", "bad", "lost", 0, 1];
+  if (s.status === "lost") return ["Not heard from for a while", "bad", "lost", 0, 1];
+  if (s.status === "starting") return ["Opening the session", "now", "starting", (s.started || 0) * 1000, 1];
+  if (asks.length) return ["Waiting for your answer", "bad", "ask", (asks[0].ts || 0) * 1000, 1];
   const acts = events.filter(ev => ev.type === "activity");
   const last = acts[acts.length - 1];
   const done = new Set(acts.filter(a => a.kind === "tool-done").map(a => a.id));
   const running = [...acts].reverse().find(a => a.kind === "tool" && !done.has(a.id));
-  if (running) return [`Working: ${running.tool}${running.text ? " · " + running.text : ""}`, "now"];
-  if (!last || last.kind === "reply") return ["Idle: waiting for you", "todo"];
-  return ["Working…", "now"];
+  const agents = activeAgents(s);
+  const toolWords = running && `Working: ${running.tool}${running.text ? " · " + running.text : ""}`;
+  if (agents.length) {
+    const since = Math.min(...agents.map(a => a.since || Date.now() / 1000)) * 1000;
+    const words = agents.length === 1
+      ? `Subagent working: ${agents[0].type || "agent"}${agents[0].description ? " · " + agents[0].description : ""}`
+      : `${agents.length} subagents working`;
+    return [words, "now", "agents", since, agents.length];
+  }
+  if (running) return [toolWords, "now", "tool", (running.ts || 0) * 1000, 1];
+  if (s.turn !== undefined) {
+    return s.turn ? ["Thinking", "now", "thinking", (s.turnSince || 0) * 1000, 1] : ["Idle: waiting for you", "todo", "idle", 0, 1];
+  }
+  if (!last || last.kind === "reply") return ["Idle: waiting for you", "todo", "idle", 0, 1];
+  return ["Working", "now", "thinking", (last.ts || 0) * 1000, 1];
+}
+
+// ---- showing the status: the chip's words with moving dots and the time in it, and the
+// bar along the card's top edge. Both are repainted only when what they say changes,
+// so their animations aren't restarted by every event.
+
+const MOVING = new Set(["starting", "thinking", "tool", "agents"]);
+
+function elapsed(since) {
+  const sec = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
+  return `${Math.floor(sec / 3600)}h ${String(Math.floor(sec / 60) % 60).padStart(2, "0")}m`;
+}
+
+const timeNode = since => since ? el("span", { class: "st-time", "data-since": String(since) }, elapsed(since)) : "";
+
+setInterval(() => {
+  if (document.hidden) return;
+  for (const n of document.querySelectorAll(".st-time[data-since]")) n.textContent = elapsed(+n.dataset.since);
+}, 1000);
+
+// The bar: a track along the top of a card with up to four comets that sweep left to right.
+const stateBar = () => el("div", { class: "statebar", "data-mode": "idle", "data-n": "1", "aria-hidden": "true" }, el("i"), el("i"), el("i"), el("i"));
+
+function paintBar(bar, st) {
+  if (!bar) return;
+  bar.dataset.mode = st[2];
+  bar.dataset.n = String(Math.min(4, Math.max(1, st[4] || 1)));
+}
+
+function paintStatus(chip, bar, st) {
+  paintBar(bar, st);
+  const [text, cls, mode, since] = st;
+  const key = [text, cls, mode].join("|");
+  if (chip._key === key) return;
+  chip._key = key;
+  chip.className = "chip " + cls + " m-" + mode;
+  chip.replaceChildren(el("span", { class: "st-label" }, text),
+    MOVING.has(mode) ? el("span", { class: "st-dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")) : "",
+    mode === "ended" || mode === "lost" ? "" : timeNode(since));
+}
+
+// The subagents that are going, one chip each with the time it has been at it.
+function paintAgents(box, s) {
+  const list = activeAgents(s);
+  const key = list.map(a => [a.id, a.status, a.description].join("|")).join("\n");
+  if (box._key === key) return;
+  box._key = key;
+  box.replaceChildren(...list.map(a => el("span", { class: "agent-chip", title: `${a.type}: ${a.description}` },
+    el("i", { class: "spin", "aria-hidden": "true" }), el("strong", {}, a.type || "agent"), a.description ? " · " + a.description : "", " ",
+    timeNode((a.since || 0) * 1000))));
+  box.hidden = !list.length;
 }
 
 function activityRow(ev, rows) {
@@ -898,6 +993,8 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   const tag = s.tag;
   const events = () => sessionEvents.get(tag) || [];
   const status = el("span", { class: "chip" });
+  const bar = stateBar();
+  const agents = el("div", { class: "live-agents", hidden: true });
   const doing = el("div", { class: "dim small live-meta" });
   const questions = el("div", { class: "live-questions" });
   const list = el("ol", { class: "activity" });
@@ -925,18 +1022,17 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   };
   const refresh = () => {
     const info = sessionInfo.get(tag) || s;
-    const [text, cls] = sessionStatus(info, events());
-    status.textContent = text;
-    status.className = "chip " + cls;
+    paintStatus(status, bar, sessionStatus(info, events()));
+    paintAgents(agents, info);
     doing.textContent = `started ${ago(info.started)} · in ${info.project} · ${info.command}`;
     list.scrollTop = list.scrollHeight;
   };
   for (const ev of events()) add(ev);
   const ended = () => (sessionInfo.get(tag) || s).status === "ended";
-  const panel = el("section", { class: "card live" },
+  const panel = el("section", { class: "card live" }, bar,
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
-    doing, questions,
+    agents, doing, questions,
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
     ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent));
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
@@ -1011,10 +1107,23 @@ function overview(f) {
   // here says so and goes there. (More than one may be going: they are separate sessions.)
   const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
   const going = sessions.filter(s => LIVE.has(s.status));
+  statusViews.clear();
   const tabs = going.map(s => {
-    const [text, cls] = sessionStatus(s, sessionEvents.get(s.tag) || []);
-    return el("section", { class: "card live-link" }, el("span", { class: "pulse" }), el("strong", {}, s.name), chip(text, cls),
-      el("a", { class: "right", href: "#workflows/" + encodeURIComponent(s.tag) }, "Open its tab"));
+    const status = el("span", { class: "chip" });
+    const bar = stateBar();
+    // The way to its tab: straight to the question when one waits, with the button
+    // calling for it; else just the tab.
+    const go = el("a", { class: "go-btn right" });
+    const paint = () => {
+      paintStatus(status, bar, sessionStatus(sessionInfo.get(s.tag) || s, sessionEvents.get(s.tag) || []));
+      const open = (sessionEvents.get(s.tag) || []).filter(ev => ev.type === "ask" && !answers.has(ev.id)).pop();
+      go.href = "#workflows/" + encodeURIComponent(s.tag) + (open ? "/ask/" + encodeURIComponent(open.id) : "");
+      go.textContent = open ? "Go to the question" : "Open its tab";
+      go.classList.toggle("waiting", !!open);
+    };
+    paint();
+    statusViews.set(s.tag, { update: paint }); // it keeps up as the session reports
+    return el("section", { class: "card live-link" }, bar, el("span", { class: "pulse" }), el("strong", {}, s.name), status, go);
   });
   const process = tabs.length ? el("div", {}, tabs, where) : where;
   const live = going[0];

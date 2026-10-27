@@ -355,6 +355,69 @@ ol.activity { list-style: none; margin: 0; padding: 0; max-height: 420px; overfl
 .chip.live { color: var(--ok); border-color: var(--ok); font-weight: 600; }
 .card.live-link { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* The status bar along a session's card: a track on the card's top edge, inside its
+   border and following its corners, with comets that sweep left to right while something
+   is going on. Colour and motion say what: the model thinking (the accent, one slow
+   comet), a tool running (teal, two quick ones), subagents (violet, a comet for each, up
+   to four, staggered: the work fanned out), waiting for you (amber, breathing), opening
+   (grey) and lost (red, dashed, still). Idle and ended show nothing. The motion is not
+   gated on prefers-reduced-motion: that is a default here, not a veto (see the notes on
+   animations in design.md). */
+.card.live, .card.live-link { position: relative; }
+.statebar { position: absolute; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; border-radius: 6px 6px 0 0;
+  pointer-events: none; z-index: 1; --c: var(--accent); transition: background-color .4s; }
+.statebar:not([data-mode="idle"]):not([data-mode="ended"]) { background-color: color-mix(in srgb, var(--c) 16%, transparent); }
+.statebar i { position: absolute; top: 0; bottom: 0; left: 0; width: 34%; display: none; border-radius: 0 3px 3px 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--c) 65%, transparent) 70%, var(--c));
+  box-shadow: 0 0 8px 0 var(--c); transform: translateX(-100%);
+  animation: sb-sweep var(--t, 2.2s) var(--ease, ease-in-out) infinite; animation-delay: var(--d, 0s); }
+@keyframes sb-sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@keyframes sb-breathe { 50% { opacity: .45; } }
+.statebar[data-mode="thinking"] { --c: var(--accent); }
+.statebar[data-mode="thinking"] i:nth-child(1) { display: block; }
+.statebar[data-mode="tool"] { --c: #14a39a; }
+.statebar[data-mode="tool"] i:nth-child(-n+2) { display: block; width: 18%; --t: .95s; --ease: linear; }
+.statebar[data-mode="tool"] i:nth-child(2) { --d: -.475s; }
+.statebar[data-mode="agents"] { --c: #8b5cf6; }
+.statebar[data-mode="agents"] i { display: block; width: 26%; --t: 2.8s; }
+.statebar[data-mode="agents"] i:nth-child(2) { --d: -.7s; }
+.statebar[data-mode="agents"] i:nth-child(3) { --d: -1.4s; }
+.statebar[data-mode="agents"] i:nth-child(4) { --d: -2.1s; }
+.statebar[data-mode="agents"][data-n="1"] i:nth-child(n+2), .statebar[data-mode="agents"][data-n="2"] i:nth-child(n+3),
+.statebar[data-mode="agents"][data-n="3"] i:nth-child(n+4) { display: none; }
+.statebar[data-mode="ask"] { --c: var(--warn); animation: sb-breathe 1.8s ease-in-out infinite; }
+.statebar[data-mode="ask"] i:nth-child(1) { display: block; width: 55%; --t: 3.4s; }
+.statebar[data-mode="starting"] { --c: var(--dim); }
+.statebar[data-mode="starting"] i:nth-child(1) { display: block; --t: 2.6s; --ease: linear; }
+.statebar[data-mode="lost"] { background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--bad) 60%, transparent) 0 9px, transparent 9px 16px); }
+
+/* the chip: its colour follows the mode, its dots move and its time counts */
+.chip.m-tool { color: #14a39a; border-color: #14a39a; }
+.chip.m-agents { color: #8b5cf6; border-color: #8b5cf6; }
+.chip.m-ask { color: var(--warn); border-color: var(--warn); }
+.live-head .chip, .live-link .chip { display: inline-flex; align-items: baseline; max-width: 100%; min-width: 0; }
+.st-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-dots, .st-time { flex: none; }
+.st-dots { display: inline-flex; gap: 2px; margin-left: 4px; align-self: center; }
+.st-dots i { width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: .25; animation: st-dot 1.2s infinite; }
+.st-dots i:nth-child(2) { animation-delay: .2s; }
+.st-dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes st-dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+.st-time { margin-left: 6px; opacity: .75; font-variant-numeric: tabular-nums; }
+.live-agents { display: flex; flex-wrap: wrap; gap: 6px; }
+.live-agents[hidden] { display: none; }
+.agent-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 12px; padding: 2px 9px; border-radius: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, #8b5cf6 55%, transparent); background: color-mix(in srgb, #8b5cf6 9%, transparent); }
+.agent-chip .spin { flex: none; width: 9px; height: 9px; border-radius: 50%; border: 2px solid color-mix(in srgb, #8b5cf6 30%, transparent);
+  border-top-color: #8b5cf6; animation: st-spin .9s linear infinite; }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+.wdot.m-thinking, .wdot.m-tool, .wdot.m-agents, .wdot.m-starting { animation: st-blink 1.4s ease-in-out infinite; }
+.wdot.m-tool { background: #14a39a; }
+.wdot.m-agents { background: #8b5cf6; }
+.wdot.m-ask { background: var(--warn); }
+@keyframes st-blink { 50% { opacity: .35; } }
+
 /* the Features page's tabs: the list of features, then a tab for each workflow session */
 .wtabs { display: flex; align-items: flex-end; gap: 2px; padding: 8px 20px 0; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
 .wtab { display: inline-flex; align-items: center; max-width: 280px; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; color: var(--ink); white-space: nowrap; }
@@ -399,6 +462,19 @@ a.doclink.missing { color: var(--bad); text-decoration: underline dotted; cursor
 .toolbox-missing { margin: 16px 20px 0; border-color: var(--warn); }
 .new-feature { margin: 8px 20px 0; display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
 .new-feature .row { padding: 0; }
+
+/* A short form in a panel from the right (openSidePanel, features.js) */
+.sshade { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.25); }
+.spanel { position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(460px, calc(100vw - 24px)); overflow: auto;
+  display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; background: var(--panel); box-sizing: border-box;
+  border-left: 2px solid var(--accent); box-shadow: -4px 0 18px rgba(0,0,0,.15); outline: none; }
+.spanel-head { display: flex; align-items: center; gap: 8px; }
+.spanel-head strong { font-size: 16px; }
+.spanel-head .spacer { flex: 1; }
+.spanel .new-feature { margin: 0; max-width: none; padding: 0; border: 0; background: none; }
+.spanel .new-feature > strong { display: none; } /* the panel's head says it */
+.spanel .home-note { margin: 0; }
+.spanel code { overflow-wrap: anywhere; }
 
 /* ---- document modes (features.js) and the Challenges cards (views.js) */
 .fmain .doc-body > .md { max-width: 860px; }
@@ -463,19 +539,6 @@ details.tk > summary:hover { background: var(--bg); }
 details.tk > summary h3 { font-size: 14px; flex: 1; min-width: 12em; }
 .tk-plain { flex-basis: 100%; padding-left: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.tk[open] .tk-plain { display: none; }
-/* A short form in a panel from the right (openSidePanel, features.js) */
-.sshade { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.25); }
-.spanel { position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(460px, calc(100vw - 24px)); overflow: auto;
-  display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; background: var(--panel); box-sizing: border-box;
-  border-left: 2px solid var(--accent); box-shadow: -4px 0 18px rgba(0,0,0,.15); outline: none; }
-.spanel-head { display: flex; align-items: center; gap: 8px; }
-.spanel-head strong { font-size: 16px; }
-.spanel-head .spacer { flex: 1; }
-.spanel .new-feature { margin: 0; max-width: none; padding: 0; border: 0; background: none; }
-.spanel .new-feature > strong { display: none; } /* the panel's head says it */
-.spanel .home-note { margin: 0; }
-.spanel code { overflow-wrap: anywhere; }
-
 .tk-body { padding: 4px 8px 10px 1.4em; }
 .tk-body > :first-child { margin-top: 0; }
 .tk-card h3, .wu-card h3 { font-size: 13.5px; }
@@ -545,6 +608,42 @@ body.asking::after {
 .jname input { width: 100%; }
 .settings-page .field-row { display: grid; grid-template-columns: 120px 1fr; gap: 2px 10px; align-items: center; margin: 8px 0; }
 .settings-page .field-row > .dim { grid-column: 2; }
+
+/* The way to a session's tab, and the toast's Go: solid accent so it stands out in any
+   theme. While a question waits it also calls -- a ring that breathes out and a light
+   wipe across it. Like the status bar, that motion is not gated on prefers-reduced-motion
+   (a default here, not a veto): the colour and the label say it with everything still. */
+.go-btn { position: relative; overflow: hidden; display: inline-block; padding: 4px 12px; border-radius: 6px;
+  background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); font-weight: 600;
+  text-decoration: none; cursor: pointer; white-space: nowrap; }
+.go-btn:hover, .go-btn:focus-visible { filter: brightness(1.1); }
+.go-btn.waiting, .toast .go-btn { animation: go-ring 1.8s ease-out infinite; }
+.go-btn.waiting::after, .toast .go-btn::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,.55), transparent);
+  transform: translateX(-130%) skewX(-20deg); animation: go-wipe 2.5s ease-in-out infinite; pointer-events: none; }
+@keyframes go-ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes go-wipe { 0% { transform: translateX(-130%) skewX(-20deg); } 55%, 100% { transform: translateX(330%) skewX(-20deg); } }
+
+/* The card a "go" lands on */
+.card.nudge { animation: nudge 2.6s ease-out; }
+@keyframes nudge { 0%, 40% { box-shadow: 0 0 0 4px var(--accent); } 100% { box-shadow: 0 0 0 4px transparent; } }
+
+/* A question raised over the page, with a way straight to it (app.js toastAsk). */
+#toasts { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50; width: min(520px, calc(100% - 24px));
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--panel);
+  border: 2px solid var(--accent); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.25); animation: toast-in .25s ease-out; }
+.toast .what { flex: 1; min-width: 0; }
+.toast .kind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+.toast .title, .toast .sub { overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.toast .title { font-weight: 600; -webkit-line-clamp: 2; line-clamp: 2; }
+.toast .sub { font-size: 12px; opacity: .75; -webkit-line-clamp: 1; line-clamp: 1; }
+.toast .dismiss { padding: 0 6px; font-size: 14px; }
+.toasts-more { pointer-events: auto; align-self: center; font-size: 12px; padding: 1px 10px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--line); }
+body.companion:not(.expanded) #toasts { display: none; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
 
 /* Less motion asked for: the cards say it all without anything flying about. */
 @media (prefers-reduced-motion: reduce) {

@@ -67,9 +67,12 @@ function makeWhiteboard(o) {
   const layer = svg("svg", { class: "wblines", width: "0", height: "0" });
   layer.append(defs, linesG);
   const frameBox = el("div", { class: "gframe", hidden: true });
-  const cardsBox = el("div", { class: "wblayer" });
+  const cardsBox = el("div", { class: "wblayer wbcards" });
   const itemsBox = el("div", { class: "wblayer" });
-  const world = el("div", { class: "world", id: o.id ? o.id + "-world" : null }, layer, frameBox, cardsBox, itemsBox);
+  // The world is the camera (where the view is) and its content what is on the
+  // board, in the board's own units (see "drawing").
+  const content = el("div", { class: "wbcontent" }, layer, frameBox, cardsBox, itemsBox);
+  const world = el("div", { class: "world", id: o.id ? o.id + "-world" : null }, content);
 
   const tools = [...WB_TOOLS, ...(o.tools || [])];
   const toolBtns = new Map();
@@ -144,35 +147,85 @@ function makeWhiteboard(o) {
 
   // ----------------------------------------------------------- drawing
 
-  let queued = 0, still = null, rect = null;
-  // While the view moves, the world is a layer of its own: a pan moves its
-  // picture instead of drawing every card again, and a zoom draws them sharp
-  // once it stops. hold: until stopMoving (a pan), else until a pause (the wheel).
+  // The world is a layer of its own for good (whiteboard.css), so the board's
+  // cards are drawn into it once and the view moves the picture: a pan never draws
+  // them again, nor does a zoom while it goes on (the picture is scaled, soft). The
+  // content is drawn at `drawn`, the zoom it was last drawn sharp at, and the
+  // world carries the rest of the zoom; when a zoom settles (a pause in the wheel,
+  // an ease's end, a button) the content is drawn once at the new zoom. Making and
+  // dropping the layer per move cost two full drawings each time, felt as a hitch.
+  const WB_SETTLE = 250; // ms of no wheel before the content is drawn sharp
+  const WB_SHRUNK = 0.6; // zoomed out past this share of `drawn` mid-gesture: draw again,
+  // or the picture has to fill far more of the board at the larger size
+  let queued = 0, still = null, easeTimer = null, rect = null, gesture = false;
+  let drawn = view.z, drawnAt = 0;
+
+  function draw() {
+    world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z / drawn})`;
+    if (drawnAt !== drawn) { content.style.transform = `scale(${drawn})`; drawnAt = drawn; }
+    const pct = Math.round(view.z * 100) + "%";
+    if (zoomPct.textContent !== pct) zoomPct.textContent = pct; // a pan leaves it as it is: nothing to draw again
+    movePop();
+  }
+
+  // A gesture is moving the view. hold: until settle (a pan), else until a pause (the wheel).
   function moving(hold) {
+    gesture = true;
     world.classList.add("moving");
     clearTimeout(still);
-    if (!hold) still = setTimeout(stopMoving, 150);
+    if (!hold) still = setTimeout(settle, WB_SETTLE);
   }
-  function stopMoving() {
+
+  // The view has stopped: on whole device pixels (a picture between them is
+  // soft), the content sharp at the zoom it is at.
+  function settle() {
     clearTimeout(still);
-    world.classList.remove("moving");
+    clearTimeout(easeTimer);
+    if (queued) { cancelAnimationFrame(queued); queued = 0; }
+    gesture = false;
     rect = null;
+    world.classList.remove("moving", "easing");
+    const d = window.devicePixelRatio || 1;
+    view.x = Math.round(view.x * d) / d;
+    view.y = Math.round(view.y * d) / d;
+    drawn = view.z;
+    draw();
   }
 
   // The view on the next frame: however many moves come before it, it's drawn once.
   function queueView() {
-    if (!queued) queued = requestAnimationFrame(() => { queued = 0; applyView(false); });
+    if (!queued) queued = requestAnimationFrame(() => {
+      queued = 0;
+      if (gesture && view.z < drawn * WB_SHRUNK) drawn = view.z;
+      draw();
+    });
   }
-  function flushView() { if (queued) applyView(false); }
+  function flushView() { if (queued) { cancelAnimationFrame(queued); queued = 0; draw(); } }
 
-  function applyView(ease) {
+  // The view now (not mid-gesture: sharp at once). ease, with the view it eases
+  // from: the content is drawn first at the smaller of the two zooms, so the
+  // picture that moves has all of the board it will show, then sharp at the end.
+  function applyView(ease, from) {
     if (queued) { cancelAnimationFrame(queued); queued = 0; }
-    world.classList.toggle("easing", !!ease && !calm());
-    world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
-    const pct = Math.round(view.z * 100) + "%";
-    if (zoomPct.textContent !== pct) zoomPct.textContent = pct; // a pan leaves it as it is: nothing to draw again
-    if (ease) setTimeout(() => world.classList.remove("easing"), 400);
-    movePop();
+    clearTimeout(easeTimer);
+    if (ease && from && !calm()) {
+      const low = Math.min(from.z, view.z);
+      if (low !== drawn) { // (an ease still going on is taken over from where it is, unless this)
+        world.classList.remove("easing");
+        drawn = low;
+        world.style.transform = `translate(${from.x}px, ${from.y}px) scale(${from.z / drawn})`;
+        content.style.transform = `scale(${drawn})`;
+        drawnAt = drawn;
+        getComputedStyle(world).transform; // the ease starts from this picture, not the one before
+      }
+      world.classList.add("easing");
+      draw();
+      easeTimer = setTimeout(settle, 400);
+      return;
+    }
+    world.classList.remove("easing");
+    if (!gesture) drawn = view.z;
+    draw();
   }
 
   function positionCard(id) {
@@ -589,7 +642,7 @@ function makeWhiteboard(o) {
     board.classList.remove("panning");
     if (d.pan) {
       flushView();
-      stopMoving();
+      settle();
       if (d.moved) saveView();
       return;
     }
@@ -685,13 +738,14 @@ function makeWhiteboard(o) {
     const all = ids || [...cards.keys(), ...Object.keys(data.items)];
     const boxes = all.map(boxOf).filter(Boolean);
     if (!boxes.length) return;
+    const from = { ...view };
     const minX = Math.min(...boxes.map(b => b.x)), minY = Math.min(...boxes.map(b => b.y));
     const maxX = Math.max(...boxes.map(b => b.x + b.w)), maxY = Math.max(...boxes.map(b => b.y + b.h));
     const r = board.getBoundingClientRect(), pad = 48, right = o.corner ? Math.min(260, r.width * 0.3) : 0;
     const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
     const z = clampZ(Math.min(1.4, (r.width - right - pad * 2) / w, (r.height - pad * 2) / h));
     view = { z, x: pad + ((r.width - right - pad * 2) - w * z) / 2 - minX * z, y: pad + ((r.height - pad * 2) - h * z) / 2 - minY * z };
-    applyView(ease);
+    applyView(ease, from);
     saveView();
   }
 

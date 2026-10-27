@@ -253,6 +253,22 @@ def check_tabs(p):
     wait(p, "!!document.querySelector('#page-home .wtabs .wtab[data-tag]')")
     tabs = """[...document.querySelectorAll('#page-home .wtabs .wtab')].map(t => t.innerText.trim() + (t.classList.contains('on') ? ' *' : '') + ' ' + [...t.querySelectorAll('.wdot')].map(d => d.className.replace('wdot ', '')).join(''))"""
     res["onList"] = p.js(tabs)
+    # A question from that session: a toast with Go, which lands on the question's
+    # card on its tab (scrolled to, flashed) and takes the toast away.
+    p.js("""(() => {
+      if (companion) document.body.classList.add('expanded');
+      onEvent({ type: 'ask', id: 'zz9', tag: 's-t1', feature: 'Demo', source: 'Demo : Workflow', ts: Date.now() / 1000,
+                link: '#workflows/s-t1/ask/zz9', questions: [{ question: 'Which way?', options: ['Left', 'Right'] }] });
+      return 1; })()""")
+    res["toast"] = {"text": p.js("(document.querySelector('#toasts .toast') || {innerText: ''}).innerText.replace(/\\s+/g, ' ')")}
+    p.js("document.querySelector('#toasts .toast .go-btn').click(); 1")
+    wait(p, "!!document.querySelector('#page-home .live-questions .card.nudge')")
+    res["goLands"] = {"hash": p.js("location.hash"), "toasts": p.js("document.querySelectorAll('#toasts .toast').length"),
+                      "card": p.js("document.querySelector('#page-home .live-questions .card.nudge').innerText.replace(/\\s+/g, ' ').slice(0, 60)"),
+                      "inView": p.js("(r => r.bottom > 0 && r.top < innerHeight)(document.querySelector('#page-home .live-questions .card.nudge').getBoundingClientRect())")}
+    p.js("onEvent({ type: 'answered', id: 'zz9', tag: 's-t1', declined: true }); 1")
+    p.js("location.hash = '#home'; 1")
+    wait(p, "!!document.querySelector('#page-home .wtab[data-tag]')")
     p.js("location.hash = '#workflows/s-t1'; 1")
     wait(p, "!!document.querySelector('#page-home .live-head')")
     res["onTab"] = {"tabs": p.js(tabs), "panel": p.js("document.querySelector('#page-home .live-head h4').textContent"),
@@ -603,6 +619,7 @@ def check_stories(p):
     p.js("location.hash = '#designs'; 1")
     wait(p, "document.querySelectorAll('#page-designs .board-card, #page-designs .empty-state').length > 0")
     res["list"] = p.js("[...document.querySelectorAll('#page-designs .board-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())")
+    res["newPanel"] = check_new_panel(p, "designs", "#new-board", "#new-board-form")
     if not res["list"]:
         return {**res, "board": "no board to open"}
     p.js("document.querySelector('#page-designs .board-card').click(); 1")
@@ -619,7 +636,6 @@ def check_stories(p):
     bx, by = box[0] + 30, box[1] + box[3] - 60  # the board's bottom-left, clear of notes and the panel
     t0 = p.js("document.querySelector('#board-world').style.transform")
     drag(p, bx + 40, by - 20, bx + 140, by - 70)  # the left button on the background moves nothing
-    res["newPanel"] = check_new_panel(p, "designs", "#new-board", "#new-board-form")
     res["leftDrag"] = {"still": p.js("document.querySelector('#board-world').style.transform") == t0}
     drag(p, bx + 40, by - 20, bx + 140, by - 70, "middle")
     res["pan"] = {"before": t0, "after": p.js("document.querySelector('#board-world').style.transform")}
@@ -860,22 +876,6 @@ def whiteboard_steps(p, res):
     return res
 
 
-def check_tasks(p):
-    """The production mode's task boards, with real mouse input: the boards list,
-    a board's columns, a card dragged to another column and back, a reorder in a
-    column and back, a backlog card dragged onto the board and back, Alt+arrows,
-    the task panel (Write/Preview, Cancel, Esc), the backlog list and the
-    Completed page under both motion settings. Every move is undone and the done
-    column is never used, so each task's file ends as it began (board.json's
-    order may not: Alt+left puts a card at the end of its column)."""
-    res = {}
-    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
-    was = p.js("({ modes: installedModes, mode: currentMode })")
-    p.js("setInstalledModes(['engineering', 'production']); applyMode('engineering'); 1")
-    res["navInEngineering"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
-    p.js("location.hash = '#tasks'; 1")
-    wait(p, "currentMode === 'production' && document.querySelectorAll('#page-tasks .task-board-card, #page-tasks .empty-state').length > 0")
-    res["navInProduction"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
 def check_new_panel(p, page, button, form):
     """The list page's "create new": no form on the page, the cards first, and the
     form in a panel from the right that Esc, x and the dimmed page each close."""
@@ -896,7 +896,24 @@ def check_new_panel(p, page, button, form):
     return res
 
 
+def check_tasks(p):
+    """The production mode's task boards, with real mouse input: the boards list,
+    a board's columns, a card dragged to another column and back, a reorder in a
+    column and back, a backlog card dragged onto the board and back, Alt+arrows,
+    the task panel (Write/Preview, Cancel, Esc), the backlog list and the
+    Completed page under both motion settings. Every move is undone and the done
+    column is never used, so each task's file ends as it began (board.json's
+    order may not: Alt+left puts a card at the end of its column)."""
+    res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    was = p.js("({ modes: installedModes, mode: currentMode })")
+    p.js("setInstalledModes(['engineering', 'production']); applyMode('engineering'); 1")
+    res["navInEngineering"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
+    p.js("location.hash = '#tasks'; 1")
+    wait(p, "currentMode === 'production' && document.querySelectorAll('#page-tasks .task-board-card, #page-tasks .empty-state').length > 0")
+    res["navInProduction"] = p.js("!document.querySelector('.pnav a[data-page=tasks]').classList.contains('hidden')")
     res["list"] = p.js("[...document.querySelectorAll('#page-tasks .task-board-card')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())")
+    res["newPanel"] = check_new_panel(p, "tasks", "#new-task-board", "#new-task-board-form")
     if not res["list"]:
         return {**res, "board": "no board to open"}
     name = p.js("document.querySelector('#page-tasks .task-board-card').dataset.board")
@@ -913,7 +930,6 @@ def check_new_panel(p, page, button, form):
     first, second = p.js("[...document.querySelectorAll('#tasks-board .tcol[data-col^=c]')].slice(0, 2).map(c => c.dataset.col)")
     tid = p.js(f"document.querySelector('.tcol[data-col={first}] .tcard').dataset.id")
     a, b = centre(f".tcol[data-col={first}] .tcard[data-id='{tid}']"), centre(f".tcol[data-col={second}] .tcards")
-    res["newPanel"] = check_new_panel(p, "tasks", "#new-task-board", "#new-task-board-form")
     drag(p, a[0], a[1], b[0], b[1])
     settle()
     res["dragAcross"] = {"id": tid, "status": status(tid), "inSecond": p.js(f"!!document.querySelector('.tcol[data-col={second}] .tcard[data-id=\"{tid}\"]')"),
