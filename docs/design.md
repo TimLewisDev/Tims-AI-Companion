@@ -407,6 +407,27 @@ folders and Claude Code's own install records; see
   (`#chats/<id>`, with the documents pane beside it as a workflow tab has) or in
   the pane's own strip, which is why `splitRoute` (a workflow's tab or a chat's)
   is what the split asks for, not a workflow tag.
+- **Code Diff:** a feature's rail has a Code Diff item (`#feature/<name>/code-diff`,
+  `diff.js` and `diff.css`) that shows the code the implementation agent changes
+  as it changes it: how far the build is (the Overview's bar and counts, and
+  whether any task is In Progress), then a card for each task that has changed
+  code, with the task's own words (its plain-English line and goal from the Lite
+  Brief or Task Breakdown, and the summary of its result file) and every changed
+  file as a side-by-side before and after, removed lines in red on the left and
+  added lines in green on the right. The mod's hook reports only a subagent's
+  Edit and Write calls (the main session's own edits are not shown), each with
+  the patch the engine gives, to `POST /api/change`. The server keeps them in
+  `<home>/diffs/<key>.json` (keyed as a feature's whiteboard is, the oldest
+  dropped past 2 MiB), each under the task that is In Progress in the Task Status
+  at that moment, or under none when no task, or more than one, is. A file inside
+  the feature's own folder, such as a result file the coder writes, is not a
+  change to show. `GET /api/diffs?name=` gives the page the changes, each task's
+  state and words, and the progress; the page redraws on the `diff` event and
+  every five seconds while it is on screen, because the Task Status changes on
+  disk without an event. **More info** on a task runs a small model (`claude -p`
+  on `haiku`, as the side chat's model summary does) only when asked, and keeps
+  its short explanation of the task's changes beside them, or a note that it
+  couldn't.
 - **Tokens used:** `usageWidget(usage, { compact })` in `usage.js` draws what a
   session has used (input, output, cache read and write, the context window's
   fill, the cost) as a card, or as one line with `compact`; it returns
@@ -788,7 +809,12 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   (only reading, no command, the conversation named then resumed), the side
   chat's context in front of its first message only, both summaries, one turn
   at a time and Stop, closing, and a workflow beside a chat hearing nothing of
-  it. And the desktop app's boot, which starts no Claude session.
+  it. And the code changes: a reported edit kept under the task In Progress, one
+  inside the feature's folder skipped, an unknown tool or feature refused, the
+  task's words from its card and result file, the progress and whether it is
+  running, and More info (the explanation stored, a task not on the board
+  refused, the error text kept when the model can't answer). And the desktop
+  app's boot, which starts no Claude session.
 - `claude plugin test plugins/tatty` covers the mod, including the joining
   rule.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
@@ -827,6 +853,11 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   meanwhile, the "+" in the pane and in the workflow strip, a reload, and tabs
   closed. Run its server with a stand-in claude (`TATTY_CLAUDE`) on a throwaway
   home, or each message is a real turn.
+  `features-check.py ... --diff` puts a task In Progress in the Demo feature's
+  Task Status (and puts it back), starts a session without opening a terminal
+  that reports one edit, and reports the Code Diff page: its rail item, the red
+  and green cells, the progress bar and the task's chip. It writes to the
+  feature, so a throwaway root and home only.
   `features-check.py ... --stories` walks only a User Stories board with real
   mouse input (pan, wheel zoom, a group in focus with and without reduced
   motion, a note dragged and back, a card opened and its edit form); it changes

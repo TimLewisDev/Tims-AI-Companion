@@ -93,7 +93,7 @@ window.addEventListener("hashchange", closeSidePanel);
 
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #workflows/<session tag>[/ask/<question id>] · #chats/<chat id> (chat.js)
-// · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard
+// · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/code-diff (diff.js)
 // · #toolbox · #settings · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
@@ -102,7 +102,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff" };
   }
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
@@ -129,6 +129,7 @@ function parseRoute() {
 const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
   (doc ? "/doc/" + encodeURIComponent(doc) + (at ? "/at/" + encodeURIComponent(at) : "") : "");
 const featureBoardHref = name => "#feature/" + encodeURIComponent(name) + "/whiteboard";
+const featureDiffHref = name => "#feature/" + encodeURIComponent(name) + "/code-diff";
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
@@ -160,7 +161,7 @@ async function route() {
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.diff);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -564,7 +565,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board) {
+async function renderFeature(name, doc, at, board, diff) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -583,9 +584,14 @@ async function renderFeature(name, doc, at, board) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board), f.name), main));
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { diff }), f.name), main));
   if (board) await featureBoard(f, main);
-  else if (doc) {
+  else if (diff) {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderCodeDiff === "function") renderCodeDiff(main, f);
+    else main.replaceChildren(el("p", { class: "pad st missing" },
+      "The Code Diff section didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  } else if (doc) {
     if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
   } else main.append(overview(f));
 }
@@ -609,8 +615,9 @@ function featureNav(f, current, board, opts = {}) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current && !board && !opts.side),
+    item("Overview", featureHref(f.name), !current && !board && !opts.side && !opts.diff),
     item("Whiteboard", featureBoardHref(f.name), !!board),
+    item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
