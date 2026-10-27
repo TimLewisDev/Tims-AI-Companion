@@ -33,19 +33,17 @@ const { renderDesigns, renderBoard } = (() => {
   async function renderDesigns(box) {
     listBox = box;
     b = null;
+    closeSidePanel();
     box.replaceChildren(el("p", { class: "dim pad" }, "Looking for boards…"));
     let d;
     try { d = await api("/api/designs"); } catch (e) { box.replaceChildren(el("p", { class: "st missing pad" }, String(e.message || e))); return; }
-    const msg = el("p", { class: "home-note small" });
     const head = el("div", { class: "home-head" },
       el("div", {}, el("h2", {}, "User Stories"),
         el("div", { class: "dim small root-line" }, "Boards in ", copyable(d.folder))),
       el("div", { class: "actions" },
         el("button", { type: "button", class: "primary", id: "new-board", disabled: !d.isSet || !d.plugin,
-          onclick: () => form.hidden = !form.hidden }, "New from a design document…"),
+          onclick: () => openSidePanel("New board", msg => newBoardForm(d, msg)) }, "New from a design document…"),
         el("button", { type: "button", onclick: () => renderDesigns(box) }, "Refresh")));
-    const form = newBoardForm(d, msg);
-    form.hidden = true;
     const warn = !d.isSet
       ? el("div", { class: "card toolbox-missing" }, el("strong", {}, "Choose Tatty's root folder first. "),
         "Boards live in its design folder. ", el("button", { type: "button", onclick: () => pickRoot(d) }, "Choose…"))
@@ -58,9 +56,11 @@ const { renderDesigns, renderBoard } = (() => {
       el("div", {}, chip(`${x.stories} stor${x.stories === 1 ? "y" : "ies"}`, x.stories ? "done" : "todo"),
         x.proposed ? chip(`${x.proposed} proposed`, "now") : "", x.groups ? el("span", { class: "dim small" }, ` · ${x.groups} group${x.groups === 1 ? "" : "s"}`) : ""),
       el("div", { class: "fcard-foot dim small" }, x.doc || "no stories document", ` · updated ${ago(x.updated)}`)));
-    box.replaceChildren(warn, head, msg, form, cards.length ? el("div", { class: "fgrid" }, cards)
+    box.replaceChildren(warn, head, cards.length ? el("div", { class: "fgrid" }, cards)
       : el("div", { class: "card empty-state" }, el("p", {}, "No boards yet. ", el("strong", {}, "New from a design document…"),
-        " copies a design document into a board of its own and has Tatty write its user stories.")));
+        " copies a design document into a board of its own and has Tatty write its user stories."),
+        d.isSet && d.plugin ? el("button", { type: "button", class: "primary", onclick: () => openSidePanel("New board", msg => newBoardForm(d, msg)) },
+          "New from a design document…") : ""));
   }
 
   function newBoardForm(d, msg) {

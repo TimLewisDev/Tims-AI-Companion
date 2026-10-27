@@ -33,21 +33,17 @@ const { renderTasks, renderTaskBoard } = (() => {
     listBox = box;
     t = null;
     removePanel();
+    closeSidePanel();
     box.replaceChildren(el("p", { class: "dim pad" }, "Looking for boards…"));
     let d;
     try { d = await api("/api/tasks"); } catch (e) { box.replaceChildren(el("p", { class: "st missing pad" }, String(e.message || e))); return; }
     if (listBox !== box) return;
-    const msg = el("p", { class: "home-note small" });
-    const form = newBoardForm(d, msg);
-    form.hidden = d.boards.length > 0;
+    const newBoard = () => openSidePanel("New board", msg => newBoardForm(d, msg));
     const head = el("div", { class: "home-head" },
       el("div", {}, el("h2", {}, "Tasks"),
         el("div", { class: "dim small root-line" }, "Boards in ", copyable(d.folder))),
       el("div", { class: "actions" },
-        el("button", { type: "button", class: "primary", id: "new-task-board", disabled: !d.isSet, onclick: () => {
-          form.hidden = !form.hidden;
-          if (!form.hidden) form.querySelector("input").focus();
-        } }, "New board…"),
+        el("button", { type: "button", class: "primary", id: "new-task-board", disabled: !d.isSet, onclick: newBoard }, "New board…"),
         el("button", { type: "button", onclick: () => renderTasks(box) }, "Refresh")));
     const warn = !d.isSet ? el("div", { class: "card toolbox-missing" }, el("strong", {}, "Choose Tatty's root folder first. "),
       "Task boards live in its tasks folder. ", el("button", { type: "button", onclick: () => pickRoot(d) }, "Choose…")) : "";
@@ -57,9 +53,10 @@ const { renderTasks, renderTaskBoard } = (() => {
         chip(`${x.completed} completed`, x.completed ? "done" : "todo")),
       el("div", { class: "fcard-foot dim small" }, x.columns.join(" → "), ` · updated ${ago(x.updated)}`,
         x.problems ? el("span", { class: "st missing" }, ` · ${x.problems} file${x.problems === 1 ? "" : "s"} to look at`) : "")));
-    box.replaceChildren(warn, head, msg, d.isSet ? form : "", cards.length ? el("div", { class: "fgrid" }, cards)
+    box.replaceChildren(warn, head, cards.length ? el("div", { class: "fgrid" }, cards)
       : el("div", { class: "card empty-state" }, el("p", {}, "No task boards yet. ", el("strong", {}, "New board…"),
-        " makes one for a project: a backlog, a board with the columns you choose, and a page of everything you've completed.")));
+        " makes one for a project: a backlog, a board with the columns you choose, and a page of everything you've completed."),
+        d.isSet ? el("button", { type: "button", class: "primary", onclick: newBoard }, "New board…") : ""));
   }
 
   function newBoardForm(d, msg) {

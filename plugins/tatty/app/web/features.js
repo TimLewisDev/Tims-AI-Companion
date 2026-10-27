@@ -67,6 +67,30 @@ function copyable(text) {
     el("button", { type: "button", title: "Copy", onclick: e => { e.preventDefault(); e.stopPropagation(); navigator.clipboard.writeText(text); } }, "Copy"));
 }
 
+// A panel from the right edge over a dimmed page, for a short form ("New board"). build(msg)
+// returns the form's node, msg being the line under it for errors. One at a time; it goes
+// with Esc, ×, a click on the dimmed page, or a change of page. Not the Jira or task panel's
+// classes: jira.js and tasks.js each remove their own.
+let sidePanelNodes = [];
+function closeSidePanel() {
+  for (const n of sidePanelNodes) n.remove();
+  sidePanelNodes = [];
+}
+function openSidePanel(title, build) {
+  closeSidePanel();
+  const msg = el("p", { class: "home-note small" });
+  const body = build(msg);
+  const panel = el("aside", { class: "spanel", role: "dialog", "aria-label": title, tabindex: "-1" },
+    el("div", { class: "spanel-head" }, el("strong", {}, title), el("span", { class: "spacer" }),
+      el("button", { type: "button", title: "Close (Esc)", "aria-label": "Close", onclick: closeSidePanel }, "×")),
+    body, msg);
+  document.body.append(el("div", { class: "sshade", onclick: closeSidePanel }), panel);
+  sidePanelNodes = [panel.previousSibling, panel];
+  (panel.querySelector("input, textarea, select") || panel).focus();
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && sidePanelNodes.length) { e.stopPropagation(); closeSidePanel(); } }, true);
+window.addEventListener("hashchange", closeSidePanel);
+
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #workflows/<session tag> · #chats/<chat id> (chat.js)
 // · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard
