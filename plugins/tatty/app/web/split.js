@@ -66,13 +66,13 @@ function drawPaneTabs() {
     if (t.kind === "chat") {
       const c = chatList.get(t.chat);
       if (c && c.title) t.title = c.title;
-      return el("span", { class: "wtab chat" + (t.key === paneActive ? " on" : ""), "data-key": t.key },
+      return el("span", { class: "wtab chat" + (t.key === paneActive ? " on" : ""), "data-key": t.key, ...closeOnMiddle(() => closePaneTab(t.key)) },
         el("a", { href: "#", title: c ? `${c.kind === "side" ? "Side chat" : "Chat"} in ${c.project}` : "Chat",
           onclick: e => { e.preventDefault(); activatePaneTab(t.key); } }, el("span", { class: "chat-mark", "aria-hidden": "true" }, "💬"), t.title),
         el("button", { type: "button", class: "x", title: "Close this chat", "aria-label": "Close " + t.title, onclick: () => closePaneTab(t.key) }, "×"));
     }
     const same = paneTabs.some(o => o !== t && o.title === t.title);
-    return el("span", { class: "wtab" + (t.key === paneActive ? " on" : ""), "data-key": t.key },
+    return el("span", { class: "wtab" + (t.key === paneActive ? " on" : ""), "data-key": t.key, ...closeOnMiddle(() => closePaneTab(t.key)) },
       el("a", { href: "#", title: `${t.feature} › ${t.file}`, onclick: e => { e.preventDefault(); activatePaneTab(t.key); } }, same ? `${t.feature} · ${t.title}` : t.title),
       el("button", { type: "button", class: "x", title: "Close this document", "aria-label": "Close " + t.title, onclick: () => closePaneTab(t.key) }, "×"));
   }), el("button", { type: "button", class: "wtab-add", title: "New chat in the side panel", "aria-label": "New chat in the side panel",

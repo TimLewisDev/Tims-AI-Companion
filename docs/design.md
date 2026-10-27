@@ -240,6 +240,11 @@ folders and Claude Code's own install records; see
   so a new mode is one block in the mode layer and a new theme (a light/dark
   toggle of our own, say) one block in the theme layer. The tray app follows:
   the page sends `mode`, and `App.xaml.cs` swaps the `TtAccent` brush Tatty is
+- **A mode's home page** (`#mode`, `renderModeHome`) is its name under an
+  underline in the mode's colour, with a card for each page the mode owns
+  (`MODE_PAGES`) and one for All modes, at the top of the page. The cards'
+  icons are inline SVG built in `modes.js` (`ICONS`): the page's content
+  security policy allows no inline styles.
   drawn with.
 
 ## Features and the workflow

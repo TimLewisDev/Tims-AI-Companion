@@ -275,6 +275,21 @@ def main(argv):
                 text: document.querySelector('#alert').innerText.replace(/\\s+/g, ' ') })""")
             p.js("api('/api/reply', { id: [...asks.keys()].pop(), declined: true })")
             time.sleep(1)
+        # a mode's home page: its pages as cards, at the top of the page, under a
+        # title underlined in the mode's colour
+        p.js("location.hash = '#mode'; 1")
+        time.sleep(0.6)
+        out["mode_home"] = p.js("""(() => {
+            const page = document.querySelector('#page-mode'), h = page.querySelector('.mode-home-head h2');
+            if (!h) return null;
+            const top = page.getBoundingClientRect(), box = h.getBoundingClientRect();
+            return { mode: currentMode, title: h.textContent,
+                underline: getComputedStyle(h).textDecorationColor,
+                accent: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
+                tiles: [...page.querySelectorAll('.mode-tile')].map(a => a.querySelector('strong').textContent + ' ' + a.getAttribute('href')),
+                icons: page.querySelectorAll('.mode-tile-icon svg path').length,
+                gapAbove: Math.round(box.top - top.top) };
+        })()""")
             out["alert_question"] = {**asked, "gone": p.js("document.querySelector('#alert').hidden")}
             p.js("api('/api/milestone', { event: 'plan.signed_off', prefix: 'Alerted' })")
             time.sleep(1)

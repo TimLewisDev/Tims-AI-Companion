@@ -33,6 +33,13 @@ const el = (tag, props = {}, ...kids) => {
   return n;
 };
 
+// Props for a tab: a middle click closes it, as in a browser, instead of opening
+// the tab's link in a new window (and not starting the autoscroll).
+const closeOnMiddle = close => ({
+  onmousedown: e => { if (e.button === 1) e.preventDefault(); },
+  onauxclick: e => { if (e.button === 1) { e.preventDefault(); close(); } },
+});
+
 async function api(path, body) {
   const r = await fetch(path, {
     method: body === undefined ? "GET" : "POST",

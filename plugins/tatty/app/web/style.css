@@ -173,13 +173,23 @@ body.companion:not(.expanded) .mode-switch { display: none; }
 .mode-card.off .mode-dot { background: var(--dim); }
 .mode-add { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; margin-top: auto; }
 .mode-add button { padding: 1px 14px; }
-/* the home page has one short thing to say: in the middle of the page */
-#page-mode.on { align-items: center; justify-content: center; }
-.mode-home { max-width: 640px; text-align: center; }
+/* a mode's home page: centred across the page, at the top, the title underlined
+   in the mode's colour and a card for each page the mode owns */
+#page-mode.on { align-items: center; }
+.mode-home { width: 100%; max-width: 720px; padding-top: 32px; text-align: center; }
 .mode-home-head { display: flex; align-items: center; justify-content: center; gap: 8px; }
-.mode-home-head h2 { margin: 0; font-size: 19px; }
-.mode-home-links { display: flex; justify-content: center; gap: 16px; margin-top: 16px; }
-.mode-home-links a { color: var(--accent); }
+.mode-home-head h2 { margin: 0; font-size: 19px; text-decoration: underline; text-decoration-color: var(--accent);
+  text-decoration-thickness: 3px; text-underline-offset: 6px; }
+.mode-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 220px)); justify-content: center; gap: 14px;
+  margin-top: 28px; }
+.mode-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 14px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; color: var(--ink); text-decoration: none; }
+.mode-tile:hover, .mode-tile:focus-visible { border-color: var(--accent); box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+.mode-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mode-tile-icon { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 10px;
+  background: var(--accent-soft); color: var(--accent); }
+.mode-tile-icon svg { width: 24px; height: 24px; }
+.mode-tile strong { font-size: 15px; }
 
 .page { display: none; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
 .page.on { display: flex; flex-direction: column; }

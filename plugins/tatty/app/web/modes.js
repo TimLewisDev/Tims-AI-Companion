@@ -126,20 +126,61 @@ function modeCard(id, box) {
     el("div", { class: "mode-add" }, add, msg));
 }
 
-// #mode: the mode's own home page. A placeholder for now.
+// The pages each mode owns, as cards on its home page. The labels are the nav's
+// (index.html), so a card is named for the page it opens.
+const MODE_PAGES = {
+  engineering: [
+    { href: "#home", label: "Features", icon: "features", blurb: "Your features, where each stands, and their documents." },
+  ],
+  design: [
+    { href: "#designs", label: "User Stories", icon: "stories", blurb: "Your user story boards of sticky notes." },
+  ],
+  production: [
+    { href: "#jira", label: "Jira", icon: "jira", blurb: "Your open-sprint tickets on a board." },
+    { href: "#tasks", label: "Tasks", icon: "tasks", blurb: "Task boards of Tatty's own." },
+  ],
+};
+// in every mode: the modes page is also where another discipline is added
+const ALL_MODES_PAGE = { href: "#modes", label: "All modes", icon: "modes", blurb: "Switch discipline, or add another." };
+
+// Line icons on a 24 grid, drawn in the text colour (so the accent, on a card).
+// Built with createElementNS and attributes, not a style attribute: the page's
+// content security policy has no inline styles.
+const ICONS = {
+  features: ["M12 3 3 8l9 5 9-5-9-5Z", "M3 12.5l9 5 9-5", "M3 17l9 5 9-5"],
+  stories: ["M5 4h14v10l-6 6H5Z", "M13 20v-6h6", "M8 9h8", "M8 13h4"],
+  jira: ["M4 4h4.5v16H4Z", "M9.75 4h4.5v10h-4.5Z", "M15.5 4H20v13h-4.5Z"],
+  tasks: ["M4 4h16v16H4Z", "M8 12.5l2.5 2.5L16 9"],
+  modes: ["M4 4h6.5v6.5H4Z", "M13.5 4H20v6.5h-6.5Z", "M4 13.5h6.5V20H4Z", "M13.5 13.5H20V20h-6.5Z"],
+};
+
+function icon(name) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  for (const [k, v] of Object.entries({
+    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.8",
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true",
+  })) svg.setAttribute(k, v);
+  for (const d of ICONS[name] || []) {
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+// #mode: the mode's own home page: its name, and a card for each page it owns.
 function renderModeHome(box) {
   const info = MODE_INFO[currentMode];
+  const pages = [...(MODE_PAGES[currentMode] || []), ALL_MODES_PAGE];
   box.replaceChildren(el("div", { class: "mode-home pad" },
     el("div", { class: "mode-home-head" }, modeDot(currentMode), el("h2", {}, info.label)),
-    el("p", {}, info.blurb),
-    el("p", { class: "dim" }, `This is the ${info.label} home page. There is nothing on it yet.`),
-    el("div", { class: "mode-home-links" },
-      currentMode === "engineering" ? el("a", { href: "#home" }, "Your features →") : "",
-      currentMode === "design" ? el("a", { href: "#designs" }, "Your user story boards →") : "",
-      currentMode === "production" ? el("a", { href: "#jira" }, "Your Jira board →") : "",
-      currentMode === "production" ? el("a", { href: "#tasks" }, "Your task boards →") : "",
-      // always: the modes page is also where another discipline is added
-      el("a", { href: "#modes" }, "All modes"))));
+    el("p", { class: "dim" }, info.blurb),
+    el("div", { class: "mode-tiles" }, pages.map(p =>
+      el("a", { class: "mode-tile", href: p.href },
+        el("span", { class: "mode-tile-icon" }, icon(p.icon)),
+        el("strong", {}, p.label),
+        el("span", { class: "small dim" }, p.blurb))))));
 }
 
 // The remembered mode's colour is on before the first paint; the server's answer

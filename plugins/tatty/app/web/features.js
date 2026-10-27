@@ -334,14 +334,14 @@ function drawTabs() {
     ...[...tabList.values()].map(s => {
       const info = sessionInfo.get(s.tag) || s;
       const [text, cls] = sessionStatus(info, sessionEvents.get(s.tag) || []);
-      return el("span", { class: "wtab" + (s.tag === tabsActive ? " on" : ""), "data-tag": s.tag },
+      return el("span", { class: "wtab" + (s.tag === tabsActive ? " on" : ""), "data-tag": s.tag, ...closeOnMiddle(() => closeTab(s.tag)) },
         el("a", { href: "#workflows/" + encodeURIComponent(s.tag), title: `${info.feature}: ${text}` },
           el("span", { class: "wdot " + cls }), info.name),
         el("button", { type: "button", class: "x", title: LIVE.has(info.status) ? "Stop this workflow and close the tab" : "Close the tab",
           "aria-label": "Close " + info.name, onclick: () => closeTab(s.tag) }, "×"));
     }),
     ...[...chatList.values()].filter(c => !paneTabs.some(t => t.key === "chat/" + c.id) || tabsActive === "chat:" + c.id).map(c =>
-      el("span", { class: "wtab chat" + (tabsActive === "chat:" + c.id ? " on" : ""), "data-chat": c.id },
+      el("span", { class: "wtab chat" + (tabsActive === "chat:" + c.id ? " on" : ""), "data-chat": c.id, ...closeOnMiddle(() => closeChatTab(c.id)) },
         el("a", { href: "#chats/" + encodeURIComponent(c.id), title: `${c.kind === "side" ? "Side chat" : "Chat"} in ${c.project}` },
           el("span", { class: "chat-mark", "aria-hidden": "true" }, "💬"), c.title || "Chat"),
         el("button", { type: "button", class: "x", title: "Close this chat", "aria-label": "Close " + (c.title || "the chat"),
