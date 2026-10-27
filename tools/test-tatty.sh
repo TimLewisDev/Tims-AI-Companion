@@ -671,6 +671,55 @@ hasnt "started without the panel, the placeholder still isn't sent" "$T/j" "[bra
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$T\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't a repo is refused" || bad "a folder that isn't a repo is refused"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$T/nowhere\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't there is refused" || bad "a folder that isn't there is refused"
 
+echo "# committing what the workflow left"
+[ "$(code "$U/static/commit.js")" = 200 ] && ok "commit.js served" || bad "commit.js served"
+[ "$(code "$U/static/commit.css")" = 200 ] && ok "commit.css served" || bad "commit.css served"
+CR="$T/commitrepo"
+mkdir -p "$CR" && git -C "$CR" init -q -b main && git -C "$CR" config user.email t@example.com && git -C "$CR" config user.name Tester
+for n in 1 2 3; do printf "$n" >"$CR/f$n.txt"; git -C "$CR" add -A; git -C "$CR" commit -q -m "feat: change $n [KEY-$n]"; done
+git -C "$CR" switch -q -c feature/Commit-Demo
+CRW=$(cd "$CR" && { pwd -W 2>/dev/null || pwd; })
+mkdir -p "$FX/features/Commit Demo/.tt/Commit Demo - Task Status/results"
+printf '# Result: T01 — Add the widget\n\n## Files Modified\n- change `src/widget.txt`: x\n- create `docs/`: y\n\n## Summary\nok\n' >"$FX/features/Commit Demo/.tt/Commit Demo - Task Status/results/T01.md"
+$PY -c "import json,os,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)) if os.path.exists(p) else {}; d['commit demo']={'repo':sys.argv[2],'branch':'feature/Commit-Demo','base':'main','created':1,'merge':{}}; json.dump(d,open(p,'w'))" "$TATTY_HOME" "$CRW"
+mkdir -p "$CR/src" "$CR/docs"; printf w >"$CR/src/widget.txt"; printf d >"$CR/docs/a.md"; printf o >"$CR/other.txt"; printf s >"$CR/.env"; rm -f "$CR/f3.txt"
+cpost() { curl -s -o "$T/fc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/commit"; }
+get "/api/commit?name=Commit%20Demo" >"$T/j"
+[ "$(pick "$T/j" "sorted(f['path'] for f in d['files'] if f['workflow'])")" = "['docs/a.md', 'src/widget.txt']" ] && ok "the workflow's own files are the ones its results name (a folder too)" || bad "the workflow's own files" "$(head -c 500 "$T/j")"
+[ "$(pick "$T/j" "sorted(f['path'] for f in d['files'] if not f['workflow'])")" = "['.env', 'f3.txt', 'other.txt']" ] && ok "the rest are listed apart" || bad "the rest are listed apart"
+[ "$(pick "$T/j" "[f['path'] for f in d['files'] if f['secret']]")" = "['.env']" ] && ok "a file that looks like a secret is marked" || bad "a file that looks like a secret is marked"
+[ "$(pick "$T/j" "[f['state'] for f in d['files'] if f['path'] == 'f3.txt']")" = "['deleted']" ] && ok "a deletion is a change too" || bad "a deletion is a change too"
+has "the branch is the feature's" "$T/j" '"branch": "feature/Commit-Demo"'
+has "the message follows the repo's style" "$T/j" '"message": "feat: '
+has "and lists the workflow's tasks" "$T/j" '- Add the widget'
+[ "$(code -H "X-TT-Token: $K" "$U/api/commit?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(cpost '{"name":"Commit Demo","files":["src/widget.txt"],"message":"  "}')" = 400 ] && ok "a commit needs a message" || bad "a commit needs a message"
+[ "$(cpost '{"name":"Commit Demo","files":[],"message":"m"}')" = 400 ] && ok "and something to commit" || bad "and something to commit"
+[ "$(cpost '{"name":"Commit Demo","files":["not/there.txt"],"message":"m"}')" = 409 ] && ok "a file that isn't changed is refused" || bad "a file that isn't changed is refused"
+git -C "$CR" switch -q main
+[ "$(cpost '{"name":"Commit Demo","all":true,"message":"m"}')" = 409 ] && ok "not on the feature's branch: refused" || bad "not on the feature's branch: refused" "$(cat "$T/fc")"
+git -C "$CR" switch -q feature/Commit-Demo
+git -C "$CR" add f1.txt 2>/dev/null; printf 'staged by me' >"$CR/f1.txt"; git -C "$CR" add f1.txt
+[ "$(cpost '{"name":"Commit Demo","files":["src/widget.txt","docs/a.md"],"message":"feat: add the widget\n\n- Add the widget"}')" = 200 ] && ok "the chosen files are committed" || bad "the chosen files are committed" "$(cat "$T/fc")"
+has "and the commit is named" "$T/fc" '"files": 2'
+[ "$(git -C "$CR" log -1 --format=%s)" = "feat: add the widget" ] && ok "with the message as written" || bad "with the message as written"
+[ "$(git -C "$CR" show --name-only --format= HEAD | sort | tr '\n' ' ')" = "docs/a.md src/widget.txt " ] && ok "only those files" || bad "only those files" "$(git -C "$CR" show --name-only --format= HEAD)"
+git -C "$CR" log -1 --format=%B >"$T/msg"; hasnt "and no trailer is added" "$T/msg" "Co-Authored"
+git -C "$CR" status --porcelain >"$T/st"
+has "what wasn't chosen stays uncommitted" "$T/st" "?? other.txt"
+has "and what I had staged stays staged" "$T/st" "M  f1.txt"
+printf '#!/bin/sh\necho "lint says no" >&2\nexit 1\n' >"$CR/.git/hooks/pre-commit"; chmod +x "$CR/.git/hooks/pre-commit"
+git -C "$CR" status --porcelain >"$T/st1"
+[ "$(cpost '{"name":"Commit Demo","files":["other.txt"],"message":"x"}')" = 422 ] && ok "a hook that refuses is reported" || bad "a hook that refuses is reported" "$(cat "$T/fc")"
+has "with what it said" "$T/fc" "lint says no"
+git -C "$CR" status --porcelain >"$T/st2"; cmp -s "$T/st1" "$T/st2" && ok "and the index is as it was" || bad "and the index is as it was"
+rm -f "$CR/.git/hooks/pre-commit"
+[ "$(cpost '{"name":"Commit Demo","all":true,"message":"chore: the rest"}')" = 200 ] && ok "Commit everything" || bad "Commit everything" "$(cat "$T/fc")"
+git -C "$CR" status --porcelain >"$T/st"
+[ "$(cat "$T/st" | tr -d '\r' | tr '\n' ' ')" = "?? .env " ] && ok "all but the file that looks like a secret" || bad "all but the file that looks like a secret" "$(cat "$T/st")"
+get "/api/commit?name=Commit%20Demo" >"$T/j"
+[ "$(pick "$T/j" "[f['path'] for f in d['files']]")" = "['.env']" ] && ok "the page then lists only that" || bad "the page then lists only that"
+
 echo "# a started session, live"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
 TAG=$(pick "$T/j" "d['tag']")

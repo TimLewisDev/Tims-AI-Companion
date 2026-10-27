@@ -746,6 +746,29 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   Cancelling after a failed launch works the same, so the task can be started
   again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
   are left alone; it asks again when its folder is missing.
+- **Commit** (commit.js; server.py "committing what the workflow left"). Once a
+  build is complete, a review only sees commits, so the step before it is to commit
+  what the workflow changed, as a page and not a manual step. A card at the top of
+  "Where it stands" says when the feature's branch has uncommitted files (a quiet
+  background look: `git status` can be slow in a big repo) and links to
+  `#feature/<name>/commit`, which also puts a note under the review row. The page
+  (`GET /api/commit?name=`) lists the repo's changed files, one per file
+  (`status_files`: `-uall --no-renames`), in two groups: the ones the workflow's own
+  task results name (`workflow_results`: the "Files Modified" lists of
+  `<feature>/.tt/**/results/*.md`, a folder entry covering what is under it), ticked,
+  and the rest, not ticked ("Not named in the workflow's task results"); with none
+  named, everything is ticked. A name that looks like a secret (`.env`, keys,
+  `*secret*`) is marked and left out of **Commit everything**. The message is suggested
+  from the feature's name and the repo's last 30 commits (`suggest_commit_message`: a
+  `feat:` prefix and a trailing `[KEY]` only if the repo uses them; the workflow's tasks as
+  the body), and is edited freely: nothing of Tatty's is added to it (no trailer).
+  **Commit selected** and **Commit everything** (`POST /api/commit {files | all, message}`,
+  `feature_commit`) stage (`git add -A`) and commit by pathspec, so only those files are
+  committed and whatever else the person staged stays staged; they refuse when the repo is
+  not on the feature's branch, when files are in conflict, or when the list changed since
+  it was shown. The repo's hooks run (never `--no-verify`); if one refuses, its words are
+  shown and what Tatty staged is unstaged again. Committing outside the workflow's own files
+  asks first. It never pushes (the Merge step does).
 - **Review the branch** (review.js; server.py `review_info`, `review_request`).
   Once a build is complete the toolbox offers `/tt-branch-review [branch]`. That
   skill reviews the repo its session starts in, so a feature whose sessions run in

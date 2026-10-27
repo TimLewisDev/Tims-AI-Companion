@@ -120,6 +120,7 @@ install from a local checkout, and how to work on Tatty itself.
 | see your features | Tatty's **Full panel** → **Features** |
 | start a new feature | **Features** → **New feature…** |
 | run a feature's next step | its page → **Start…** → **Start session** |
+| commit what a finished workflow changed | its page → **Choose what to commit…** (or **Commit** in the left rail) → **Commit selected** or **Commit everything** |
 | review a feature's branch, even in another repo | its page, once the build is complete → **Or: review the branch** → **Start…** → **Change…** to pick the repo → **Start session** |
 | put a feature away, or delete it | its page → **Archive** (**▾** → **Delete…** to remove it for good); **Features** → **Archived** to restore |
 | see your Jira sprint | the production mode → **Jira** → **Refresh** |

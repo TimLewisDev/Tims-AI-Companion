@@ -110,7 +110,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", commit: parts[2] === "commit" };
   }
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
@@ -168,7 +168,7 @@ async function route() {
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -572,7 +572,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board) {
+async function renderFeature(name, doc, at, board, commit) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -591,8 +591,9 @@ async function renderFeature(name, doc, at, board) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board), f.name), main));
-  if (board) await featureBoard(f, main);
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit }), f.name), main));
+  if (commit) await commitPage(f, main); // commit.js
+  else if (board) await featureBoard(f, main);
   else if (doc) {
     if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
   } else main.append(overview(f));
@@ -617,8 +618,9 @@ function featureNav(f, current, board, opts = {}) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current && !board && !opts.side),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.side),
     item("Whiteboard", featureBoardHref(f.name), !!board),
+    f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -1294,7 +1296,7 @@ function overview(f) {
       el("span", {}, (e.qualifier ? e.qualifier + " " : "") + (EVENTS[e.event] || e.event)),
       e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : "";
   const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
-  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"),
+  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), commitCard(f), // commit.js
     stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
   // Each session Start opened that is still going has a tab on the Features page: one line

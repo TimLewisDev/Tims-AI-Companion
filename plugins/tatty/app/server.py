@@ -44,6 +44,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -64,7 +65,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
-          "review.js": "text/javascript",
+          "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -1311,7 +1312,8 @@ def features_list(state):
 # branch of its own, made here (the toolbox's skills never create one), and after
 # the build there is a Merging step: a session that walks the person through
 # commit, push and opening a pull/merge request, each git write asked first.
-# Tatty itself only ever runs `git switch`; it never stages, commits or pushes.
+# Tatty itself runs `git switch`, and stages and commits only on the Commit page's buttons
+# (see "committing what the workflow left"); it never pushes.
 # <tatty home>/branches.json: feature name (lower case) -> {repo, branch, base,
 # created, merge: {state "" | opened | merged, url, number, host, checked, note}}.
 # Nothing here is the workflow's record: it reads the toolbox's phase and no more.
@@ -1434,6 +1436,175 @@ def branch_info(state, folder, project, workdir="", pick=""):
                            and r.get("branch") != (out["branch"] or out["create"])
                            and (r.get("merge") or {}).get("state") != "merged")
     return out
+
+
+# ---------------------------------------------------------------- committing what the workflow left
+# Once a build is complete, the next step before a review is to commit what the workflow changed
+# (a review only reads commits). Tatty shows the repo's uncommitted files on the feature's branch,
+# says which of them the workflow's own task results list as modified (the "Files Modified" of
+# <feature>/.tt/*/results/*.md), suggests a message from the feature and the style of the repo's
+# recent commits, and on a click stages and commits what was chosen. It never pushes (the Merge
+# step does), never skips the repo's hooks, and adds no trailer of its own to the message.
+
+COMMIT_LOCK = threading.Lock()
+COMMIT_CAP = 3000  # files listed at most
+SECRET_NAME = re.compile(r"(^|/)(\.env(\..*)?|id_(rsa|dsa|ecdsa|ed25519)[^/]*|[^/]*\.(pem|pfx|p12|key|keystore|jks)|credentials(\.json)?|[^/]*secrets?[^/]*)$", re.I)
+LARGE_FILE = 10 * 1024 * 1024
+CONVENTIONAL = ("feat", "fix", "refactor", "docs", "chore", "test", "perf", "style", "build", "ci", "revert")
+
+
+def git_run(repo, args, stdin=None, timeout=120):
+    """(exit code, stdout, stderr) of a git command in repo, as text; stdin is bytes or None."""
+    kw = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=timeout, creationflags=NO_WINDOW, **kw)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, "", str(e)
+    return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+
+
+def status_files(repo):
+    """The repo's uncommitted files, from git (one entry per file, renames as a delete and a new file):
+    ([{path, state, staged, secret, bytes}], conflicts, truncated). state: new, modified, deleted."""
+    code, out, err = git_run(repo, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames"], timeout=180)
+    if code != 0:
+        return [], [], False
+    files, conflicts = [], []
+    entries = [e for e in out.split("\0") if len(e) > 3]
+    for e in entries[:COMMIT_CAP]:
+        xy, path = e[:2], e[3:]
+        if "U" in xy or xy in ("AA", "DD"):
+            conflicts.append(path)
+            continue
+        state = "new" if xy == "??" or "A" in xy else "deleted" if "D" in xy else "modified"
+        size = 0
+        if state != "deleted":
+            try:
+                size = (Path(repo) / path).stat().st_size
+            except OSError:
+                pass
+        files.append({"path": path, "state": state, "staged": xy[0] not in " ?", "bytes": size,
+                      "secret": bool(SECRET_NAME.search(path)), "large": size > LARGE_FILE})
+    return sorted(files, key=lambda f: f["path"].lower()), conflicts, len(entries) > COMMIT_CAP
+
+
+def workflow_results(folder):
+    """What the workflow's task results say it did: ({paths it modified}, [task titles]), from
+    <feature>/.tt/**/results/*.md (the "Files Modified" list and the heading)."""
+    paths, titles = set(), []
+    tt = folder / ".tt"
+    for f in sorted(tt.rglob("results/*.md")) if tt.is_dir() else []:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        head = re.match(r"#\s*Result:\s*[A-Za-z0-9._-]+\s*[—–-]\s*(.+)", text)
+        if head:
+            titles.append(head.group(1).strip())
+        part = ""
+        for line in text.replace("\r", "").split("\n"):
+            if line.startswith("## "):
+                part = line[3:].strip()
+            elif part == "Files Modified" and line.startswith("- "):
+                for p in re.findall(r"`([^`]+)`", line.split(": ", 1)[0]):
+                    paths.add(re.sub(r"^\./", "", p.strip().replace("\\", "/")))
+    return paths, titles
+
+
+def in_workflow(path, mentioned, repo):
+    """Whether a changed file is one the workflow's results name (or lies under a folder they name)."""
+    root = Path(repo).as_posix().rstrip("/").lower() + "/"
+    for m in mentioned:
+        m = m[len(root):] if m.lower().startswith(root) else m
+        if path.lower() == m.lower() or (m.endswith("/") and path.lower().startswith(m.lower())):
+            return True
+    return False
+
+
+def suggest_commit_message(folder, repo, branch, titles):
+    """A message from the feature's name and the style of the repo's recent commits (a conventional
+    `feat:` prefix and a trailing [KEY] only where they use them), with the workflow's tasks as the body."""
+    name = re.sub(r"^[A-Za-z]+-\d+\s*[-–:]\s*", "", folder.name).strip() or folder.name
+    code, out, _ = git_run(repo, ["log", "-30", "--format=%s"])
+    subjects = [s for s in out.splitlines() if s.strip()] if code == 0 else []
+    n = max(len(subjects), 1)
+    typed = sum(1 for s in subjects if re.match(r"^(" + "|".join(CONVENTIONAL) + r")(\([^)]+\))?!?: ", s)) * 5 >= n * 2
+    keyed = sum(1 for s in subjects if re.search(r"\[[A-Z][A-Z0-9]*-\d+\]$", s)) * 5 >= n * 2
+    subject = (f"feat: {name[:1].lower()}{name[1:]}" if typed else name)
+    key = re.search(r"[A-Z][A-Z0-9]*-\d+", branch or "") or re.search(r"[A-Z][A-Z0-9]*-\d+", folder.name)
+    if keyed and key:
+        subject += f" [{key.group(0)}]"
+    message = subject[:100]
+    if titles:
+        message += "\n\n" + "\n".join(f"- {t}" for t in titles[:12])
+    return message
+
+
+def commit_info(folder):
+    """What the Commit page shows for a feature: its repo and branch, and the uncommitted files, each
+    marked as the workflow's own or not. {repo: ""} when the feature has no repository to look in."""
+    rec = branch_record(folder.name)
+    project = feature_project(folder, docs_of(folder))[0] or ""
+    recorded = rec.get("repo", "") if os.path.isdir(rec.get("repo", "")) else ""
+    repo = repo_of(recorded or project)
+    if not repo:
+        return {"repo": "", "note": "No repository is known for this feature yet: choose its project on the feature's page."}
+    files, conflicts, truncated = status_files(repo)
+    mentioned, titles = workflow_results(folder)
+    for f in files:
+        f["workflow"] = in_workflow(f["path"], mentioned, repo)
+    branch, here = rec.get("branch", ""), current_branch(repo)
+    return {"repo": repo, "branch": branch, "current": here, "files": files, "conflicts": conflicts,
+            "truncated": truncated, "mentioned": len(mentioned),
+            "message": suggest_commit_message(folder, repo, branch or here, titles)}
+
+
+def feature_commit(state, folder, body):
+    """Stage and commit the files chosen (or all but the secret-looking), with the message given:
+    only those files are committed, whatever else is staged. (http code, answer)"""
+    info = commit_info(folder)
+    if not info["repo"]:
+        return 400, {"error": info["note"]}
+    if info["conflicts"]:
+        return 409, {"error": "The repo has files in conflict (" + ", ".join(info["conflicts"][:3]) + "): resolve them first."}
+    if info["branch"] and info["current"] != info["branch"]:
+        return 409, {"error": f"The repo is on {info['current'] or 'a detached HEAD'}, not the feature's branch {info['branch']}: switch it first, so the commit lands on the right branch."}
+    message = str(body.get("message") or "").replace("\r\n", "\n").strip()
+    if not message:
+        return 400, {"error": "Write a commit message."}
+    known = {f["path"]: f for f in info["files"]}
+    if body.get("all"):
+        chosen = [p for p, f in known.items() if not f["secret"]]
+    else:
+        chosen = [p for p in body.get("files") or [] if isinstance(p, str)]
+        if any(p not in known for p in chosen):
+            return 409, {"error": "The files changed since you looked: reload the page."}
+    if not chosen:
+        return 400, {"error": "Nothing is chosen to commit."}
+    repo = info["repo"]
+    spec = ("\0".join(chosen) + "\0").encode("utf-8")
+    fd, tmp = tempfile.mkstemp(prefix="tatty-commit-", suffix=".txt", dir=str(home()) if home().is_dir() else None)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(message + "\n")
+        with COMMIT_LOCK:
+            code, _, err = git_run(repo, ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=spec)
+            if code != 0:
+                return 500, {"error": f"git add failed: {err.strip()[-600:]}"}
+            code, out, err = git_run(repo, ["commit", "-F", tmp, "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=spec, timeout=600)
+            if code != 0:
+                fresh = ("\0".join(p for p in chosen if not known[p]["staged"]) + "\0").encode("utf-8")
+                if fresh != b"\0":  # put the index back as it was: what we staged for this, nothing else
+                    git_run(repo, ["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=fresh)
+                said = "\n".join([ln for ln in (err + "\n" + out).splitlines() if ln.strip()][-14:])
+                return 422, {"error": "git refused the commit (a hook, or your git identity?):\n" + said}
+            _, sha, _ = git_run(repo, ["rev-parse", "--short", "HEAD"])
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo}
 
 
 REVIEW_SKILL = "tt-branch-review"
@@ -5759,6 +5930,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(404, {"error": "no such feature"})
             project = q.get("project", [""])[0].strip() or feature_project(folder, docs_of(folder))[0]
             return self.send(200, branch_info(st, folder, project, q.get("workdir", [""])[0].strip(), q.get("repo", [""])[0].strip()))
+        if path == "/api/commit":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            return self.send(200, commit_info(folder))
         if path == "/api/review":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -6013,6 +6189,12 @@ class Handler(BaseHTTPRequestHandler):
                 code, answer = 409, {"error": str(e)}
             except OSError as e:
                 code, answer = 500, {"error": f"couldn't cancel: {e}"}
+            return self.send(code, answer)
+        if path == "/api/commit":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = feature_commit(st, folder, b if isinstance(b, dict) else {})
             return self.send(code, answer)
         if path in ("/api/feature/archive", "/api/feature/restore", "/api/feature/delete"):
             name = str(b.get("name", ""))

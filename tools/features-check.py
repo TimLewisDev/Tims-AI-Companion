@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -21,6 +21,7 @@ throwaway home whose server has a stand-in claude (TATTY_CLAUDE), or every messa
 keys on the split button, its menu, the Delete panel and the Archived section. It deletes a folder, so only ever on a
 throwaway root;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
+--commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -1033,6 +1034,65 @@ def check_review(p):
     return res
 
 
+def check_commit(p):
+    """The Commit page and its card (commit.js), drawn with the page's api() and confirm() stood in for:
+    the workflow's files ticked and the rest apart, a secret-looking file left out of "everything", the
+    suggested message, the counts on the buttons, what each button sends, and the wrong-branch hold.
+    Nothing is committed."""
+    res = {}
+    p.js("""window.__real = { api: window.api, confirm: window.confirm }; window.__sent = []; window.__asked = [];
+            window.__info = { repo: 'C:/work/repo', branch: 'feature/x', current: 'feature/x', conflicts: [], truncated: false, mentioned: 2,
+              message: 'feat: do the thing [ABC-1]\\n\\n- Add the widget',
+              files: [
+                { path: 'docs/a.md', state: 'new', staged: false, bytes: 1, secret: false, large: false, workflow: true },
+                { path: 'src/widget.py', state: 'modified', staged: false, bytes: 1, secret: false, large: false, workflow: true },
+                { path: '.env', state: 'new', staged: false, bytes: 1, secret: true, large: false, workflow: false },
+                { path: 'old.txt', state: 'deleted', staged: true, bytes: 0, secret: false, large: false, workflow: false },
+                { path: 'other.txt', state: 'new', staged: false, bytes: 1, secret: false, large: false, workflow: false }] };
+            window.api = async (path, body) => {
+              if (path.startsWith('/api/commit?')) return window.__info;
+              if (path === '/api/commit') { window.__sent.push(body); return { ok: true, commit: 'abc1234', subject: 'feat: do the thing', files: 3, repo: 'C:/work/repo' }; }
+              return window.__real.api(path, body);
+            };
+            window.confirm = m => { window.__asked.push(m); return true; };
+            window.__f = { name: 'Demo', phase: 'complete', merge: { branch: 'feature/x' } };
+            document.querySelector('#commit-host') && document.querySelector('#commit-host').remove();
+            (() => { const h = document.createElement('div'); h.id = 'commit-host'; document.body.append(h);
+              const st = document.createElement('div'); st.className = 'stand alt'; st.textContent = 'Or: review the branch:';
+              h.append(st, commitCard(window.__f)); })();
+            1""")
+    wait(p, "!!document.querySelector('#commit-card')")
+    res["card"] = p.js("""({ text: document.querySelector('#commit-card').innerText.replace(/\\s+/g, ' ').trim(),
+                            href: document.querySelector('#commit-open').getAttribute('href'),
+                            reviewNote: !!document.querySelector('.review-needs-commit') })""")
+    p.js("""(() => { const m = document.createElement('div'); m.id = 'commit-main'; document.body.append(m); commitPage(window.__f, m); })(); 1""")
+    wait(p, "!!document.querySelector('#commit-message')")
+    res["page"] = p.js("""({ sections: [...document.querySelectorAll('.commit-section h4')].map(h => h.textContent),
+                            ticked: [...document.querySelectorAll('.crow input')].filter(i => i.checked).map(i => i.closest('.crow').dataset.path),
+                            secret: document.querySelector('.crow[data-path=".env"]').innerText.replace(/\\s+/g, ' ').trim(),
+                            staged: document.querySelector('.crow[data-path="old.txt"]').innerText.replace(/\\s+/g, ' ').trim(),
+                            message: document.querySelector('#commit-message').value,
+                            selected: document.querySelector('#commit-selected').textContent, all: document.querySelector('#commit-all').textContent })""")
+    p.js("(() => { const i = document.querySelector('.crow[data-path=\"docs/a.md\"] input'); i.checked = false; i.dispatchEvent(new Event('change', { bubbles: true })); })()")
+    res["afterUntick"] = p.js("document.querySelector('#commit-selected').textContent")
+    p.js("document.querySelector('#commit-selected').click(); 1")
+    wait(p, "!!document.querySelector('#commit-done')")
+    res["selectedSent"] = p.js("({ body: window.__sent[0], asked: window.__asked.length, done: document.querySelector('#commit-done').innerText.replace(/\\s+/g, ' ').trim() })")
+    p.js("document.querySelector('#commit-more').click(); 1")
+    wait(p, "!!document.querySelector('#commit-all')")
+    p.js("document.querySelector('#commit-all').click(); 1")
+    wait(p, "window.__sent.length > 1")
+    res["allSent"] = p.js("({ body: window.__sent[1], asked: window.__asked })")
+    p.js("window.__info.current = 'main'; document.querySelector('#commit-more') && document.querySelector('#commit-more').click(); commitPage(window.__f, document.querySelector('#commit-main')); 1")
+    wait(p, "!!document.querySelector('#commit-wrong-branch')")
+    res["wrongBranch"] = p.js("({ warn: document.querySelector('#commit-wrong-branch').innerText, selected: document.querySelector('#commit-selected').disabled, all: document.querySelector('#commit-all').disabled })")
+    p.js("window.__info.files = []; window.__info.current = 'feature/x'; commitPage(window.__f, document.querySelector('#commit-main')); 1")
+    wait(p, "!!document.querySelector('#commit-clean')")
+    res["clean"] = p.js("document.querySelector('#commit-clean').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("window.api = window.__real.api; window.confirm = window.__real.confirm; document.querySelector('#commit-host').remove(); document.querySelector('#commit-main').remove(); 1")
+    return res
+
+
 def check_new_panel(p, page, button, form):
     """The list page's "create new": no form on the page, the cards first, and the
     form in a panel from the right that Esc, x and the dimmed page each close."""
@@ -1257,10 +1317,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")

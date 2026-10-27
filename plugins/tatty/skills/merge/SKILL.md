@@ -64,7 +64,8 @@ Tatty, then work from the current directory and ask what branch they mean.
    each. Do not decide for them.
 3. **Commit.** Show the files to be staged and propose a commit message in the
    repository's own style (read the last commits). On a yes, stage those files
-   and commit. If the work is already committed, say so and move on.
+   and commit. If the work is already committed, say so and move on. (Tatty's Commit page on the
+   feature does this with a button; when it was used there is nothing left to commit.)
 4. **Push.** Propose `git push -u origin <Branch>`. On a yes, run it and show the
    result. If the push is rejected, explain why and offer options; do not force.
 5. **Open the request.** By `Host`: GitLab with `glab mr create`, GitHub with

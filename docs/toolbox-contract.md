@@ -442,6 +442,10 @@ are therefore Tatty's own, outside the workflow's records:
   - its WebView2 data;
   - the full panel's last size and position.
 - `<root>/tasks/`: the task boards (see "Tasks").
+- The feature's repository: on a person's click on the Commit page, `git add` and
+  `git commit` of the files chosen (never a push, never `--no-verify`, no trailer added); Tatty
+  reads the workflow's task results (`.tt/**/results/*.md`, "Files Modified") to say which
+  changed files are the workflow's own.
 - `<root>/archive/<name>/`: the features a person archived, as they were (a
   link stays a link). Tatty lists them and Restore moves one back; it doesn't
   read their documents.
