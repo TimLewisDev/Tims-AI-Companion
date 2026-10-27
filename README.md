@@ -12,7 +12,10 @@ visually:
   Tatty opens straight into it. The ones you haven't got are greyed on the modes
   page with **Add**, which installs them for you.
 - **Features:** every feature you're working on, where it stands in the
-  workflow (exploring, planning, building, done), and its progress.
+  workflow (exploring, planning, building, merging, done), and its progress.
+  Each workflow Tatty starts works on a branch of its own, so two don't trample
+  each other; after the build, **Merge** walks you through committing, pushing
+  and opening the pull / merge request, and watches for it.
 - **A feature's page:**
   - its documents, readable in place, with `[[wikilinks]]` that open the
     heading or item they name; View lays each kind out for reading (the
@@ -59,7 +62,9 @@ visually:
 - **Your Jira sprint, in the production mode:** your tickets in the open sprints
   on a board, a column per status. Open one to read it, and **Start workflow**
   makes it a feature: a folder with the ticket written into it, a Claude session
-  that starts planning from it, and the ticket moved to In Progress in Jira.
+  that starts planning from it, and the ticket moved to In Progress in Jira (and
+  to In Review once its request is open; a **Move to** row in the ticket's panel
+  takes it on to QA Ready or Done).
   Tatty reads Jira through the Atlassian MCP server you signed in to in Claude
   Code (`/mcp`). That spends tokens, so it keeps what it fetched and only
   fetches again when you press **Refresh**.

@@ -27,6 +27,8 @@ printf '#!/usr/bin/env bash\necho "$*" >>"%s/picker.log"\nout=""; while [ $# -gt
 export TATTY_PICKER="$T/picker.sh"
 # Start reports the session it would open instead of opening it.
 export TATTY_DRYRUN=1
+# The host's command-line tools for the merge step: glab answers with what $T/glab-answer holds, gh isn't there.
+export TATTY_GLAB="$T/glab.sh" TATTY_GH="$T/none-such"
 # The updates run the claude command: a stand-in logs what it is asked and, for
 # `plugin update`, raises the version in the install record. The server's own
 # look at start-up is put off, so only the checks the tests ask for happen.
@@ -406,7 +408,11 @@ for n in "a/b" "" ".." "what?"; do
 done
 
 echo "# starting the next step"
-HERE=$(cd "$root" && { pwd -W 2>/dev/null || pwd; })
+# a throwaway git repository, not the one these tests run from: a first Start makes a branch in it
+GITID="-c user.name=t -c user.email=t@example.com"
+mkdir -p "$T/proj/plugins/tatty" && git -C "$T/proj" init -q -b main && : >"$T/proj/plugins/tatty/x" &&
+	git -C "$T/proj" add -A && git -C "$T/proj" $GITID commit -q -m first
+HERE=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; })
 get "/api/feature?name=Demo" >"$T/j"
 has "no project known yet" "$T/j" '"project": null'
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","row":0}' "$U/api/start")" = 400 ] &&
@@ -449,6 +455,119 @@ has "a project can be chosen" "$T/j" '"projectFrom": "chosen"'
 	ok "no such step" || bad "no such step"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","row":0}' "$U/api/start")" = 404 ] &&
 	ok "no such feature" || bad "start: no such feature"
+
+echo "# branches and merging"
+GR="$T/gitrepo"
+mkdir -p "$GR" && git -C "$GR" init -q -b main && : >"$GR/a" && git -C "$GR" add -A && git -C "$GR" $GITID commit -q -m first
+GRW=$(cd "$GR" && { pwd -W 2>/dev/null || pwd; })
+here_branch() { git -C "$GR" branch --show-current; }
+post /api/new-feature '{"name":"Brand New"}' >/dev/null
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "a first Start would make a branch" "$T/j" '"create": "feature/Brand-New"'
+has "from the branch the repo is on" "$T/j" '"current": "main"'
+[ "$(here_branch)" = main ] && ok "looking changes nothing" || bad "looking changes nothing"
+printf 'x' >>"$GR/a"
+post /api/start "{\"name\":\"Brand New\",\"row\":0,\"project\":\"$GRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "the Start makes the branch" "$T/j" '"branch": "feature/Brand-New"'
+has "from the branch the repo was on" "$T/j" '"base": "main"'
+has "says a changed file came with it" "$T/j" "1 changed file(s) already in the tree came with it"
+[ "$(here_branch)" = feature/Brand-New ] && ok "the repo is on it" || bad "the repo is on it" "$(here_branch)"
+git -C "$GR" checkout -q -- a
+git -C "$GR" switch -q main
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "a later Start switches back to it" "$T/j" "Switched to feature/Brand-New"
+[ "$(here_branch)" = feature/Brand-New ] && ok "the repo is on it again" || bad "the repo is on it again" "$(here_branch)"
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "and when it is there already, stays" "$T/j" '"branchNote": "On feature/Brand-New."'
+get "/api/feature?name=Brand%20New" >"$T/j"
+has "the feature page knows its branch" "$T/j" '"branch": "feature/Brand-New"'
+git -C "$GR" switch -q main
+post /api/new-feature '{"name":"Brand-New"}' >/dev/null
+post /api/start "{\"name\":\"Brand-New\",\"row\":0,\"project\":\"$GRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "a taken name gets a number" "$T/j" '"branch": "feature/Brand-New-2"'
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "and the Start panel warns about the other workflow in the repo" "$T/j" '"others": ["brand-new"]'
+mkdir -p "$T/plain"
+PLW=$(cd "$T/plain" && { pwd -W 2>/dev/null || pwd; })
+post /api/new-feature '{"name":"Plain One"}' >/dev/null
+post /api/start "{\"name\":\"Plain One\",\"row\":0,\"project\":\"$PLW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "outside a git repository there is no branch, and no failure" "$T/j" '"ok": true'
+has "and it says so" "$T/j" "Not in a git repository"
+post /api/start '{"name":"Draft","row":"workflow"}' >"$T/j"
+has "a feature already under way adopts the branch the repo is on" "$T/j" '"branchNote": "Working on'
+git -C "$GR" switch -q feature/Brand-New
+printf 'x' >>"$GR/a"
+git -C "$GR" $GITID commit -q -am other-work
+git -C "$GR" switch -q main
+printf 'conflict' >"$GR/a"
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "a switch git refuses is an error, and nothing starts" "$T/j" "Couldn't switch"
+git -C "$GR" checkout -q -- a
+git -C "$GR" switch -q main
+post /api/settings '{"branchPrefix":"work/"}' >"$T/j"
+has "the prefix is a setting" "$T/j" '"branchPrefix": "work/"'
+post /api/settings '{"branchPrefix":"bad prefix"}' >"$T/j"
+has "a bad prefix goes back to the default" "$T/j" '"branchPrefix": "feature/"'
+post /api/new-feature '{"name":"Zed"}' >/dev/null
+post /api/settings '{"branchPrefix":"work/"}' >/dev/null
+git -C "$GR" switch -q main
+post /api/start "{\"name\":\"Zed\",\"row\":0,\"project\":\"$GRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "new branches take the prefix" "$T/j" '"branch": "work/Zed"'
+post /api/settings '{"branchPrefix":"feature/"}' >/dev/null
+
+echo "# the merge step"
+# A finished build: the Demo feature's documents with the status Complete, as the toolbox writes it.
+SH="$FX/features/Shipped"
+mkdir -p "$SH"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+	sed 's/Demo/Shipped/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$SH/Shipped - $f.md"
+done
+git -C "$GR" switch -q main
+post /api/project "{\"name\":\"Shipped\",\"path\":\"$GRW\"}" >/dev/null
+get "/api/feature?name=Shipped" >"$T/j"
+has "the toolbox says the build is complete" "$T/j" '"phase": "complete"'
+has "Tatty adds the merge step after it" "$T/j" '"skill": "tatty:merge"'
+has "named for the stage" "$T/j" '"stage": "Merge"'
+IDX=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r['phase'] == 'merge'][0]")
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"check"}' "$U/api/merge")" = 409 ] && ok "no branch yet: nothing to check" || bad "no branch yet: nothing to check"
+git -C "$GR" switch -q feature/Brand-New
+post /api/start "{\"name\":\"Shipped\",\"row\":$IDX}" >"$T/j"
+has "the merge session starts" "$T/j" '"name": "Shipped : Merge"'
+has "with the merge skill" "$T/j" "Prompt: /tatty:merge"
+has "the context after it" "$T/j" "Context from Tatty:"
+has "naming the branch" "$T/j" "Branch: feature/Brand-New"
+hasnt "no placeholder to fill" "$T/j" "say what goes in"
+# glab stands in for the host: it answers with what $T/glab-answer holds
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/glab.log"\ncat "%s/glab-answer"\n' "$T" "$T" >"$T/glab.sh"
+echo '[]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "no request found: nothing recorded" "$T/j" '"state": ""'
+has "it asked glab for the branch" "$T/glab.log" "mr list --source-branch feature/Brand-New"
+echo '[{"web_url":"https://git.example/mr/7","iid":7,"state":"opened"}]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check"}' >"$T/j"
+has "a look within 30 s is not repeated" "$T/j" '"state": ""'
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "an open request is found" "$T/j" '"state": "opened"'
+has "with its link" "$T/j" '"url": "https://git.example/mr/7"'
+get /api/events >"$T/ev"
+has "and the page is told" "$T/ev" '"event": "merge.opened"'
+get "/api/features" >"$T/j"
+has "the feature is in review" "$T/j" '"state": "opened"'
+echo '[{"web_url":"https://git.example/mr/7","iid":7,"state":"merged"}]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "a merged request is found" "$T/j" '"state": "merged"'
+get /api/events >"$T/ev"
+has "and celebrated" "$T/ev" '"event": "merge.merged"'
+get "/api/feature?name=Shipped" >"$T/j"
+hasnt "merged: no merge step left" "$T/j" '"skill": "tatty:merge"'
+echo '[{"web_url":"https://git.example/mr/7","iid":7,"state":"opened"}]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "never back from merged" "$T/j" '"state": "merged"'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"opened","url":"javascript:1"}' "$U/api/merge")" = 400 ] && ok "a request's link is http(s)" || bad "a request's link is http(s)"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"nope"}' "$U/api/merge")" = 400 ] && ok "an unknown action refused" || bad "an unknown action refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","action":"check"}' "$U/api/merge")" = 404 ] && ok "no such feature" || bad "no such feature"
+[ -f "$root/plugins/tatty/skills/merge/SKILL.md" ] && ok "the merge skill is in the plugin" || bad "the merge skill is in the plugin"
+head -n 2 "$root/plugins/tatty/skills/merge/SKILL.md" | tail -n 1 | grep -q '^name: merge' && ok "named merge" || bad "named merge"
 
 echo "# a started session, live"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
@@ -793,7 +912,7 @@ EOJ
 cat >"$T/jira-issue.out" <<'EOJ'
 {"is_error":false,"usage":{"input_tokens":5},"structured_output":{"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open",
  "description":"### Steps\n\n1. Open it\n\n![](blob:https://media.example/abc)","labels":["ui"],
- "transitions":[{"id":"7","name":"Start work","to":"In Progress"},{"id":"3","name":"Closed","to":"Closed"}]}}
+ "transitions":[{"id":"7","name":"Start work","to":"In Progress"},{"id":"5","name":"Send to review","to":"In Review"},{"id":"3","name":"Closed","to":"Closed"}]}}
 EOJ
 echo '{"is_error":false,"usage":{},"structured_output":{"ok":true}}' >"$T/jira-move.out"
 printf '{"mcpServers":{"atlassian":{"type":"http","url":"https://mcp.example/v1/mcp"},"other":{"type":"http","url":"https://x"}}}' >"$CLAUDE_CONFIG_DIR/.claude.json"
@@ -853,7 +972,7 @@ has "the move run may move" "$T/jira-move.args" "mcp__atlassian__transitionJiraI
 hasnt "and do nothing else" "$T/jira-move.args" "mcp__atlassian__getJiraIssue"
 [ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "In Progress/inprogress" ] && ok "the board shows it moved" || bad "the board shows it moved" "$(pick "$T/jb" "d['issues'][0]")"
 [ "$(pick "$T/jb" "d['started'].get('ABC-1')")" = "ABC-1 - Fix the thing" ] && ok "the board knows its feature" || bad "the board knows its feature"
-[ "$(pick "$T/jb" "d['project']")" = "$(cd "$root" && { pwd -W 2>/dev/null || pwd; })" ] && ok "the project is remembered for the next" || bad "the project is remembered for the next" "$(pick "$T/jb" "d['project']")"
+[ "$(pick "$T/jb" "d['project']")" = "$HERE" ] && ok "the project is remembered for the next" || bad "the project is remembered for the next" "$(pick "$T/jb" "d['project']")"
 get "/api/feature?name=$($PY -c 'import urllib.parse; print(urllib.parse.quote("ABC-1 - Fix the thing"))')" >"$T/j"
 has "it is one of the features, its ticket first" "$T/j" '"doc": "Ticket"'
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" "$U/api/jira/start")" = 409 ] && ok "not started twice into the same folder" || bad "not started twice into the same folder"
@@ -863,6 +982,25 @@ post /api/jira/move '{"key":"ABC-2"}' >/dev/null; jira_wait
 get /api/events >"$T/ev"
 has "and the page is told so" "$T/ev" "ABC-2 is already In Review"
 [ "$(code "$U/static/jira.js")" = 200 ] && ok "jira.js served" || bad "jira.js served"
+# a request opened for ABC-1's feature sends the ticket to In Review, whatever the board had said
+rm -f "$T/jira-move.args"
+post /api/merge '{"name":"ABC-1 - Fix the thing","action":"opened","url":"https://git.example/mr/3"}' >"$T/j"
+has "an opened request is recorded" "$T/j" '"state": "opened"'
+jira_wait
+has "the ticket goes to In Review (by the transition's id)" "$T/jira-move.args" "transition id 5"
+has "naming the status" "$T/jira-move.args" "the move to In Review"
+[ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "In Review/inprogress" ] && ok "the board shows it in review" || bad "the board shows it in review" "$(pick "$T/jb" "d['issues'][0]")"
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-1","to":"In Review"}' >/dev/null; jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "a ticket already there isn't moved again" || bad "a ticket already there isn't moved again"
+post /api/jira/move '{"key":"ABC-1","to":"Closed"}' >/dev/null; jira_wait
+has "a status picked from the ticket's moves" "$T/jira-move.args" "transition id 3"
+[ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "Closed/done" ] && ok "and the board shows it, done" || bad "and the board shows it, done" "$(pick "$T/jb" "d['issues'][0]")"
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-1","to":"Nowhere"}' >/dev/null; jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "a status Jira doesn't offer isn't asked for" || bad "a status Jira doesn't offer isn't asked for"
+get /api/events >"$T/ev"
+has "and the page is told" "$T/ev" "Jira offers ABC-1 no move to Nowhere"
 
 echo "# task boards"
 [ "$(code "$U/static/tasks.js")" = 200 ] && ok "tasks.js served" || bad "tasks.js served"
@@ -1057,6 +1195,24 @@ if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/elsewhere/Linked/items" && cp 
 else
 	echo "skip  a board through a junction: no mklink here"
 fi
+echo "# merging: the task board"
+[ "$(tk new-board '{"name":"Rev"}')" = 200 ] && ok "a board with the default columns" || bad "a board with the default columns" "$(cat "$T/tk")"
+get "/api/tasks/board?name=Rev" >"$T/j"
+[ "$(pick "$T/j" "','.join(c['name'] for c in d['columns'])")" = "To Do,In Progress,In Review,QA Ready,Done" ] && ok "they include In Review and QA Ready" || bad "they include In Review and QA Ready" "$(pick "$T/j" "d['columns']")"
+[ "$(tk create '{"name":"Rev","title":"Ship it"}')" = 200 ] && ok "a task" || bad "a task"
+[ "$(tk start "{\"name\":\"Rev\",\"id\":\"T-0001\",\"project\":\"$GRW\"}")" = 200 ] && ok "its workflow starts" || bad "its workflow starts" "$(cat "$T/tk")"
+has "moved to In Progress" "$T/tk" '"moved": "In Progress"'
+RF=$(ls "$FX/tasks/Rev/items/T-0001"*.md | head -1)
+post /api/merge '{"name":"T-0001 - Ship it","action":"opened","url":"https://git.example/mr/9"}' >"$T/j"
+has "an opened request is recorded" "$T/j" '"state": "opened"'
+has "its task is in review" "$RF" "- **Status:** In Review"
+get "/api/tasks/board?name=Rev" >"$T/j"
+QA=$(pick "$T/j" "[c['id'] for c in d['columns'] if c['name'] == 'QA Ready'][0]")
+post /api/tasks/move "{\"name\":\"Rev\",\"id\":\"T-0001\",\"to\":\"$QA\"}" >/dev/null
+post /api/merge '{"name":"T-0001 - Ship it","action":"merged"}' >"$T/j"
+has "merged" "$T/j" '"state": "merged"'
+has "a card you moved on stays where you put it" "$RF" "- **Status:** QA Ready"
+
 echo "# user stories"
 if [ ! -f "$TATTY_TOOLBOX/plugins/design/skills/tt-user-stories/scripts/stories.sh" ] && [ ! -f "$TATTY_TOOLBOX/../design/skills/tt-user-stories/scripts/stories.sh" ]; then
 	echo "skip  the User Stories board: the toolbox has no design plugin with tt-user-stories"

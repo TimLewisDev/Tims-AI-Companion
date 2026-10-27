@@ -301,8 +301,51 @@ folders and Claude Code's own install records; see
     Windows Terminal tab doesn't inherit environment variables.
   - From a checkout it also passes `--plugin-dir`, so the new session loads the
     mod.
+  - Before it opens, the work is put on a branch of its own (`ensure_branch`,
+    "Branches and merging", below).
   - The page then opens that session's tab (see Workflow tabs, below). The
     feature page keeps "Where it stands" and adds a line pointing to the tab.
+- **Branches and merging:** two workflows in one repository must not trample
+  each other's files, and finished work mustn't sit uncommitted and forgotten.
+  Neither is the toolbox's business (its skills never create a branch or commit),
+  so both are Tatty's, and the toolbox is unchanged.
+  - **A branch per workflow.** `start_session` calls `ensure_branch` before it
+    launches. The first Start of a feature that has no documents yet (New
+    feature, a Jira ticket, a task, a lite start) makes the branch with `git
+    switch -c` from the branch the repo is on (`<branchPrefix><feature name>`,
+    prefix `feature/` by default, a setting; `-2`, `-3` when the name is taken)
+    and records it in `<tatty home>/branches.json`. A later Start switches the
+    repo back to it; a feature already under way with no record adopts the
+    branch the repo is on, and is never moved. The repo is the work folder's
+    when a task has one, else the project's; outside a git repository nothing is
+    done. Tatty only ever runs `git switch`: it never stages, commits or pushes,
+    and a switch git refuses (changes in the way) stops the Start with git's
+    words. The branch is switched in place, not in a worktree, so two workflows
+    in one checkout share its working tree: the Start panel (`GET
+    /api/branch`) names the branch it will make or use and warns when another
+    workflow has a branch in the same repo.
+  - **The Merge step.** The toolbox's last phase is `complete` (built and
+    validated). Tatty adds one more step after it, Merge, on all three routes
+    (the tracker reads Explore, Plan, Breakdown, Build, Merge, Done), and the
+    feature is Done only when its request is merged. `workflow_rows` appends the
+    Tatty row `/tatty:merge` while the branch isn't merged; the Start panel
+    opens a session that runs the plugin's `merge` skill, which looks the change
+    over, then commits, pushes and opens the pull / merge request, asking before
+    each git write and using the project's own commit and request skills and
+    rules when it has them. The facts the skill needs (feature, folder,
+    repository, branch, base, host, existing request) follow the command as plain
+    lines.
+  - **Seeing the request.** The record keeps `merge: {state, url, number, host,
+    checked, note}`, `state` being empty, `opened` or `merged` and never going
+    back. `merge_check` asks the host's own tool, `glab mr list --source-branch`
+    or `gh pr list --head` (no tokens, no model; at most every 30 s unless the
+    button is pressed), when the page opens at the Merge step and on **Check
+    now**; **I opened the request** and **Mark merged** say it by hand
+    (`POST /api/merge`). When the request is first seen open, the card the
+    feature was started from moves to In Review: a Tasks card to the board's
+    In Review column (forward only, nothing if the board has none), a Jira
+    ticket by its transition to In Review. Moving it on to QA Ready or Done is
+    the person's. `merge.opened` and `merge.merged` are milestones.
 - **Workflow tabs:** the Features page (`#home`) has a strip of tabs along the
   top (`workflowTabs` in `features.js`): Features, the list of features, then one
   tab for each session Start opened (`#workflows/<tag>`), each showing that
@@ -510,10 +553,13 @@ toolbox contract's "Jira" section; how it is built:
   `--bare` would be smaller still, but it drops the MCP servers.
 - **The board** is a column per status, ordered by the status's category (to
   do, under way, done) and then by Jira's rank. The MCP server can't read a
-  board's own column setup, so statuses are the columns.
+  board's own column setup, so statuses are the columns: In Review, QA Ready
+  and the rest appear as tickets reach them.
 - **A ticket** opens in a panel at the right. Its detail is loaded on its own
   (description in markdown, sub-tasks, links, and the transitions it offers),
-  and kept.
+  and kept. The panel's **Move to** row offers each status those transitions
+  go to (`POST /api/jira/move` with `to`); a status Jira doesn't offer is never
+  asked for.
 - **Start workflow** (`POST /api/jira/start`, `jira_start`):
   1. makes `<KEY> - <summary>` with `new_feature`;
   2. writes the ticket into it as `<name> - Ticket.md`;
@@ -533,7 +579,9 @@ server.py's "tasks" section) is a tracker of Tatty's own, for a project that
 doesn't use Jira, Trello or the like. The toolbox has no part in it.
 
 - **On disk:** `<root>/tasks/<board>/`, a folder per board:
-  - `board.json`: the columns (an id and a name each, left to right), the order
+  - `board.json`: the columns (an id and a name each, left to right; a new
+    board has To Do, In Progress, In Review, QA Ready and Done, and a request
+    seen open moves the started card to the one called In Review), the order
     of the cards in the backlog and each column, the next ID, the options
     (`autoCompleteDays`, `startColumn`, `project`, `celebrate`, `priorities`) and
     the feature each started task became. Unknown keys are kept.
@@ -770,7 +818,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  599 checks against a real toolbox (the User Stories board's with a stand-in
+  713 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,

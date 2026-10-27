@@ -62,6 +62,7 @@ function drawSettings() {
       el("p", { class: "dim small" }, when),
       el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null)),
     chatSettings(s),
+    branchSettings(s),
     jiraSettings(s)));
 }
 
@@ -87,6 +88,21 @@ function chatSettings(s) {
     radio("model", "A small model writes the summary", "Two or three sentences on what the piece is about. Costs a little, and takes a few seconds."),
     el("label", { class: "field-row" }, el("strong", {}, "Model"), model,
       el("span", { class: "dim small" }, "The model chats answer with. Blank: Claude Code's own choice.")));
+}
+
+// Branches (see "branches and merging" in the server): every workflow Tatty starts works on a branch of its
+// own, named from this prefix and the feature's name. Saved when the box is left.
+function branchSettings(s) {
+  const input = el("input", { id: "set-branchPrefix", value: s.branchPrefix, "aria-label": "Branch prefix" });
+  input.addEventListener("change", async () => {
+    try { settingsNow = await api("/api/settings", { branchPrefix: input.value.trim() }); input.value = settingsNow.branchPrefix; }
+    catch (e) { alert(String(e)); }
+  });
+  return el("section", { id: "branch-settings" },
+    el("h3", {}, "Branches"),
+    el("p", { class: "dim small" }, "A workflow started from Tatty works on a new branch of its own, made when it first starts, so two workflows don't trample each other. Tatty only switches branches: committing, pushing and opening the request are yours (the Merge step helps)."),
+    el("label", { class: "field-row" }, el("strong", {}, "Branch prefix"), input,
+      el("span", { class: "dim small" }, "Letters, digits, - and _, each part ending in /: feature/ gives feature/ABC-12-fix-the-thing.")));
 }
 
 // The Jira board's reading (jira.js): which tickets, through which MCP server
