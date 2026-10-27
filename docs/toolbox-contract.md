@@ -259,6 +259,16 @@ session no flag is added. The same two fields are accepted by Start workflow on
 a Jira ticket and on a task (full and lite). The choice is kept per feature
 (`session-models.json`) so the feature's chats answer on the same model.
 
+A feature on the lite route (`workflow-state.sh` says `lite-focus`, `lite-brief`,
+`debugging`, `debug-done` or `debugged`, or the documents show a Lite Brief or a
+Debug Log) also gets **Resume this small change** at the top of its page: Start
+runs `/tt-workflow-lite "<folder>"`, which re-links the folder in its own file
+(`lite-links.tsv`), reads the same state and asks its one confirmation. The
+"let tt-workflow work out the next step" row is left off such a feature (it is
+the full pipeline's entry). A new, empty feature is offered both entries, the
+lite one with an optional sentence saying what the task is. Tatty does not run
+`lite.sh`; the state still comes from `workflow-state.sh --tsv`.
+
 **Start workflow** on a Jira ticket (below) starts the toolbox's own first step
 for a new folder, the command `workflow-state.sh` names for it
 (`/tt-adversarial-plan <idea, spec or ticket>`), with its placeholder filled the
@@ -303,12 +313,15 @@ toolbox has no part in it. What it does, and the limits it keeps:
   kept. The answer is checked against a schema and cleaned again by the server
   (a ticket without a proper key is dropped; a picture becomes a note, since
   its link opens only in a signed-in browser).
-- **One change in Jira.** On **Start workflow** Tatty moves the ticket to
-  **In Progress**, and only after the session has opened: by the transition
-  whose target (or name) is In Progress, found in the ticket's transitions,
-  never a fixed id, with no other fields. A ticket already under way is left
-  alone. If no terminal could be opened, the page offers **Move to In
-  Progress** by hand.
+- **Changes in Jira.** Only transitions, never other fields, each by the
+  transition whose target (or name) is the status, found in the ticket's
+  transitions (looked up again in Jira if the kept list lacks it), never a fixed
+  id: **In Progress** on **Start workflow**, only after the session has opened
+  (a ticket already under way is left alone; if no terminal could be opened the
+  page offers **Move to In Progress** by hand); **In Review** once the feature's
+  pull / merge request is seen open (see "Branches and merging" in the design
+  notes); and any status the person picks in the ticket panel's **Move to** row.
+  A ticket already in the status is left alone.
 - **One document written.** Start workflow makes `<root>/features/<KEY> -
   <summary>` (refused if it exists and isn't empty) and writes `<name> -
   Ticket.md` in it: the ticket's fields, its description, sub-tasks and links.
@@ -373,11 +386,31 @@ The Start panels offer the connected, runnable models, starting from the
 four aliases (sonnet, opus, haiku, fable) and nothing else; one without
 `model-config.sh list --tsv` shows no step table.
 
+## Branches and merging
+
+Neither the toolbox's skills nor its scripts create a branch, commit, push or
+open a request (they are told not to), and its last phase is `complete`. Both
+are therefore Tatty's own, outside the workflow's records:
+
+- Before a session starts, Tatty runs `git switch -c` (the first Start of a
+  feature with no documents) or `git switch` (a later one) in the feature's
+  repository. It reads the branch back through the toolbox's usual means (the
+  session's repository), so nothing in the toolbox changes. It never stages,
+  commits or pushes.
+- After `complete`, Tatty shows a Merge step and, on Start, opens a session that
+  runs its own skill `/tatty:merge` (in this plugin). That session does the
+  git writes a step at a time, after asking, as the person's own Claude session.
+- Tatty finds the request with `glab` or `gh` when they are installed and signed
+  in, read-only; otherwise the person says it by hand.
+
 ## What Tatty keeps of its own
 
 - `${TATTY_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tatty}/`:
   - `root`: Tatty's root folder, whose `features` folder Tatty lists;
   - `projects.tsv`: the projects chosen per feature;
+  - `branches.json`: per feature, the git branch Tatty made for its workflow
+    (repository, branch, the branch it was made from) and the state of its
+    pull / merge request (see below);
   - `settings.json`: what the Settings page sets;
   - `session-models.json`: the model and effort each feature's workflow was
     started on, for its chats;

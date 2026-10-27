@@ -1158,7 +1158,10 @@ def main(argv):
                                   notes: document.querySelectorAll('.fnav-notes .fnav-item').length,
                                   units: [...document.querySelectorAll('table.units tr')].map(tr => tr.innerText.replace(/\\s+/g, ' ').trim()),
                                   timeline: [...document.querySelectorAll('.timeline li')].map(li => li.innerText.replace(/\\s+/g, ' ').trim()),
-                                  stand: (document.querySelector('.stand') || {}).innerText || '' })""")
+                                  stand: (document.querySelector('.stand') || {}).innerText || '',
+                                  steps: [...document.querySelectorAll('#page-feature .stand')].map(x => x.innerText.split('\\n')[0]),
+                                  merge: ((document.querySelector('.merge-card') || {}).innerText || '').replace(/\\s+/g, ' ').trim(),
+                                  mergeButtons: [...document.querySelectorAll('.merge-card button')].map(b => b.textContent) })""")
         # open the first document from the left rail
         p.js("document.querySelector('.fnav > .fnav-item[href*=\"/doc/\"]').click(); 1")
         wait(p, "!!document.querySelector('.fmain .doc-head')")
