@@ -1382,16 +1382,48 @@ def local_branches(repo):
     return [b for b in out.splitlines() if b.strip()][:300] if code == 0 else []
 
 
-def branch_info(state, folder, project, workdir=""):
-    """What a Start would do about the branch, for the Start panel; changes nothing."""
-    repo = repo_of(project, workdir)
+def branch_repo(feature, project, workdir=""):
+    """The repo the feature's branch is in: the one the person chose for it when it
+    isn't the project's (pinned), else the work folder's or the project's."""
+    rec = branch_record(feature)
+    if rec.get("pinned") and os.path.isdir(str(rec.get("repo", ""))):
+        return Path(rec["repo"]).as_posix()
+    return repo_of(project, workdir)
+
+
+def known_repos(folder, *first):
+    """Git repositories to pick from: those named first, the feature's own, every other
+    feature's, and the projects chosen for features. Existing ones only, each once."""
+    cands = [*first, branch_record(folder.name).get("repo", ""),
+             *[r.get("repo", "") for r in branch_records().values() if isinstance(r, dict)], *chosen_projects().values()]
+    seen, out = set(), []
+    for c in cands:
+        c = str(c or "")
+        if not c or c.lower() in seen:
+            continue
+        seen.add(c.lower())
+        r = repo_of(c)
+        if r and r.lower() not in {o.lower() for o in out}:
+            out.append(r)
+        if len(out) >= 20:
+            break
+    return out
+
+
+def branch_info(state, folder, project, workdir="", pick=""):
+    """What a Start would do about the branch, for the Start panel; changes nothing.
+    pick: a repo the person is looking at instead of the feature's own."""
+    repo = repo_of(pick) if pick else branch_repo(folder.name, project, workdir)
     rec = branch_record(folder.name)
+    if pick and not repo:
+        return {"repo": "", "note": f"{pick} isn't in a git repository."}
     if not repo:
         return {"repo": "", "note": "Not in a git repository: no branch will be made." if project else ""}
     here = current_branch(repo)
     rows = workflow_rows(state, folder)
     fresh = bool(rows) and rows[0].get("phase") == "empty"
-    out = {"repo": repo, "current": here, "branch": "", "base": "", "create": "", "others": [], "branches": local_branches(repo)}
+    out = {"repo": repo, "current": here, "branch": "", "base": "", "create": "", "others": [], "branches": local_branches(repo),
+           "repos": known_repos(folder, repo, project)}
     if rec.get("branch") and same_folder(rec.get("repo", ""), repo):
         out.update(branch=rec["branch"], base=rec.get("base", ""))
     elif fresh:
@@ -1408,7 +1440,7 @@ def ensure_branch(folder, project, workdir, fresh):
     the first Start of an unstarted feature makes the branch from where the repo
     is; a later Start switches back to it; a feature already under way with no
     record adopts the branch the repo is on. Not a git repo: nothing to do."""
-    repo = repo_of(project, workdir)
+    repo = branch_repo(folder.name, project, workdir)
     if not repo:
         return True, {"note": "Not in a git repository: no branch was made."}
     feature = folder.name
@@ -1442,11 +1474,12 @@ def ensure_branch(folder, project, workdir, fresh):
         return True, {"repo": repo, "branch": here, "base": "", "note": f"Working on {here}."}
 
 
-def set_branch(folder, project, branch):
-    """(http code, answer): the person says which existing branch of the repo is this
+def set_branch(folder, project, branch, home_project=""):
+    """(http code, answer): the person says which existing branch, of which repo, is this
     feature's, in place of the one Tatty made or adopted. Only the record changes
     (the next Start switches the repo to it); a request found for the old branch is
-    forgotten, since it was not this branch's."""
+    forgotten, since it was not this branch's. A repo other than the project's is
+    pinned, so a Start keeps using it."""
     repo = repo_of(project)
     if not repo:
         return 400, {"error": "That isn't in a git repository."}
@@ -1457,9 +1490,10 @@ def set_branch(folder, project, branch):
     with BRANCH_LOCK:
         rec = branch_record(feature)
         same = same_folder(rec.get("repo", ""), repo)
-        if not (same and rec.get("branch") == branch):
+        pinned = not same_folder(repo, repo_of(home_project))
+        if not (same and rec.get("branch") == branch and bool(rec.get("pinned")) == pinned):
             save_branch(feature, {"repo": repo, "branch": branch, "base": rec.get("base", "") if same and rec.get("base") != branch else "",
-                                  "created": rec.get("created") or time.time(), "merge": {}})
+                                  "created": rec.get("created") or time.time(), "merge": {}, **({"pinned": True} if pinned else {})})
     return 200, merge_view(feature)
 
 
@@ -1840,6 +1874,9 @@ def start_session(state, folder, body):
     ok_branch, branch = ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty")
     if not ok_branch:
         return 400, {"error": branch["error"]}
+    # A branch in a repo other than the project's: the session is given that repo too.
+    on = branch.get("repo", "")
+    add = on if on and not workdir and not same_folder(on, project) and not Path(on).as_posix().lower().startswith(Path(project).as_posix().rstrip("/").lower() + "/") else ""
     if row.get("phase") == "merge":  # its context names the branch, which may have just been recorded
         row = merge_row(folder)
         cmd = command(row)
@@ -1851,7 +1888,7 @@ def start_session(state, folder, body):
     # The new session carries a tag naming it (TATTY_SESSION): Tatty's mod there
     # joins this window and reports what it does, for this feature's page.
     tag = "s-" + secrets.token_hex(4)
-    ok, said = launch(state, project, name, cmd, tag, workdir, flags)
+    ok, said = launch(state, project, name, cmd, tag, workdir or add, flags)
     answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag,
               "model": model, "effort": effort,
               "branch": branch.get("branch", ""), "base": branch.get("base", ""), "branchNote": branch.get("note", "")}
@@ -5665,7 +5702,7 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             project = q.get("project", [""])[0].strip() or feature_project(folder, docs_of(folder))[0]
-            return self.send(200, branch_info(st, folder, project, q.get("workdir", [""])[0].strip()))
+            return self.send(200, branch_info(st, folder, project, q.get("workdir", [""])[0].strip(), q.get("repo", [""])[0].strip()))
         if path == "/api/jira":
             return self.send(200, jira_view(st))
         if path == "/api/jira/issue":
@@ -5976,7 +6013,7 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             project = str(b.get("project") or "").strip() or feature_project(folder, docs_of(folder))[0]
-            code, answer = set_branch(folder, project, b.get("branch"))
+            code, answer = set_branch(folder, project, b.get("branch"), feature_project(folder, docs_of(folder))[0])
             return self.send(code, answer)
         if path == "/api/merge":
             folder = feature_dir(str(b.get("name", "")))

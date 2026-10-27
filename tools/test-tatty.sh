@@ -525,6 +525,27 @@ post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW
 has "the next Start switches to the chosen branch" "$T/j" "Switched to other-work"
 post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"feature/Brand-New\"}" >"$T/j"
 has "and it can be changed back" "$T/j" '"branch": "feature/Brand-New"'
+GR2="$T/gitrepo2"
+mkdir -p "$GR2" && git -C "$GR2" init -q -b main && : >"$GR2/b" && git -C "$GR2" add -A && git -C "$GR2" $GITID commit -q -m first && git -C "$GR2" branch elsewhere
+GR2W=$(cd "$GR2" && { pwd -W 2>/dev/null || pwd; })
+get "/api/branch?name=Brand%20New&project=$GRW&repo=$GR2W" >"$T/j"
+has "another repository's branches can be looked at" "$T/j" '"elsewhere"'
+has "which is that repository" "$T/j" "gitrepo2"
+get "/api/branch?name=Brand%20New&project=$GRW&repo=$T/plain" >"$T/j"
+has "a folder that isn't a repository says so" "$T/j" "isn't in a git repository"
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GR2W\",\"branch\":\"elsewhere\"}" >"$T/j"
+has "a branch in another repository can be chosen" "$T/j" "gitrepo2"
+has "and it is recorded as pinned" "$TATTY_HOME/branches.json" '"pinned": true'
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "the feature's repository is the one chosen, not the project's" "$T/j" '"branch": "elsewhere"'
+has "and it is among the repositories to pick from" "$T/j" "gitrepo2"
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "a Start switches that repository" "$T/j" "Switched to elsewhere"
+has "and gives the session the repository" "$T/j" "--add-dir"
+[ "$(git -C "$GR2" branch --show-current)" = elsewhere ] && ok "the other repository is on it" || bad "the other repository is on it"
+git -C "$GR" switch -q feature/Brand-New-2
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"feature/Brand-New\"}" >"$T/j"
+hasnt "choosing the project's own repository again unpins it" "$TATTY_HOME/branches.json" '"pinned": true'
 git -C "$GR" switch -q feature/Brand-New-2
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"no-such-branch\"}" "$U/api/branch")" = 400 ] &&
 	ok "a branch the repo doesn't have is refused" || bad "a branch the repo doesn't have is refused"

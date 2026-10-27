@@ -785,23 +785,46 @@ async function cancelWorkflow(name, text, client) {
   } catch (e) { alert(e.message || e); return null; }
 }
 
-// A dropdown of the repo's local branches, to say which one this feature's work is on. Tatty otherwise makes a
-// branch from the feature's name, or takes the one the repo is on, the first time it starts a step, and
-// switches the repo back to it at every later Start. b is what /api/branch answered.
-function branchSelect(f, b, project, done) {
-  const have = b.branch || "";
-  const sel = el("select", { class: "branch-select", "aria-label": "branch", title: "Which branch is this feature's work on?" });
-  if (!have && b.create) sel.append(el("option", { value: "" }, "New branch " + b.create));
-  const all = b.branches || [];
-  for (const n of have && !all.includes(have) ? [have, ...all] : all) sel.append(el("option", { value: n }, n + (n === b.current ? " (checked out)" : "")));
-  sel.value = have || (b.create ? "" : b.current || "");
-  sel.addEventListener("change", async () => {
-    if (!sel.value) return;
-    sel.disabled = true;
-    try { await api("/api/branch", { name: f.name, project, branch: sel.value }); featureCache.delete(f.name); await done(); }
-    catch (e) { alert(e.message || e); sel.disabled = false; }
-  });
-  return sel;
+// Which repository, and which of its local branches, this feature's work is on. Tatty otherwise makes a
+// branch from the feature's name, or takes the one the project's repo is on, the first time it starts a
+// step, and switches that repo back to it at every later Start. b is what /api/branch answered; project is
+// the feature's own project. Picking another repository lists its branches; picking a branch records both.
+function branchPicker(f, b0, project, done) {
+  const box = el("div", { class: "branch-picker" });
+  const draw = (b, switched) => {
+    const have = b.branch || "";
+    const repos = el("select", { class: "repo-select", "aria-label": "repository", title: "Which repository is the branch in?" });
+    const known = b.repos || [];
+    for (const r of known.includes(b.repo) ? known : [b.repo, ...known]) repos.append(el("option", { value: r }, r));
+    repos.append(el("option", { value: "::pick" }, "Choose a folder…"));
+    repos.value = b.repo;
+    repos.addEventListener("change", async () => {
+      repos.disabled = true;
+      const back = () => { repos.value = b.repo; repos.disabled = false; };
+      try {
+        const to = repos.value === "::pick" ? await pickFolder("Choose the repository", b.repo) : repos.value;
+        if (!to) return back();
+        const nb = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project) + "&repo=" + encodeURIComponent(to));
+        if (!nb.repo) { alert(nb.note || "That isn't a git repository."); return back(); }
+        draw(nb, true);
+      } catch (e) { alert(e.message || e); back(); }
+    });
+    const sel = el("select", { class: "branch-select", "aria-label": "branch", title: "Which branch is this feature's work on?" });
+    if (!have && b.create) sel.append(el("option", { value: "" }, "New branch " + b.create));
+    else if (!have && switched) sel.append(el("option", { value: "" }, "Choose a branch…"));
+    const all = b.branches || [];
+    for (const n of have && !all.includes(have) ? [have, ...all] : all) sel.append(el("option", { value: n }, n + (n === b.current ? " (checked out)" : "")));
+    sel.value = have || (b.create || switched ? "" : b.current || "");
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      sel.disabled = true;
+      try { await api("/api/branch", { name: f.name, project: b.repo, branch: sel.value }); featureCache.delete(f.name); await done(); }
+      catch (e) { alert(e.message || e); sel.disabled = false; }
+    });
+    box.replaceChildren(el("div", {}, "Repository ", repos), el("div", {}, "Branch ", sel));
+  };
+  draw(b0, false);
+  return box;
 }
 
 function startPanel(f, row, index, close) {
@@ -837,7 +860,7 @@ function startPanel(f, row, index, close) {
         b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
           : b.create ? ["A new branch ", code(b.create), " is made from ", code(b.current || "the detached HEAD")]
             : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
-        el("div", {}, "Use branch ", branchSelect(f, b, f.project, showBranch)),
+        branchPicker(f, b, f.project, showBranch),
         b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "");
     } catch { /* the server says so at Start */ }
   };
@@ -1219,7 +1242,7 @@ function mergeCard(f) {
   const chooser = el("div", { class: "small" });
   const project = f.project || m.repo;
   if (project) api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project)).then(b => {
-    if (b.repo) chooser.replaceChildren(m.branch ? "Wrong branch? " : "Which branch is the work on? ", branchSelect(f, b, project, () => route()));
+    if (b.repo) chooser.replaceChildren(el("div", { class: "dim" }, m.branch ? "Wrong repository or branch?" : "Which branch is the work on?"), branchPicker(f, b, project, () => route()));
   }).catch(() => {});
   const act = async (action, extra = {}) => {
     try { await api("/api/merge", { name: f.name, action, ...extra }); featureCache.delete(f.name); route(); }
