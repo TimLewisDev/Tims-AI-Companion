@@ -1133,8 +1133,8 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
     agents, doing, questions,
-    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
+    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();

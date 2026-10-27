@@ -353,8 +353,8 @@ folders and Claude Code's own install records; see
   process of its own, so any number of workflows can run at once, in different
   features or in one. The live panels and usage widgets are kept per tag
   (`livePanels`, `usageViews`), and `route()` clears them as the page is redrawn.
-  - **The panel's order** is the question waiting for an answer, the box to
-    message the session, the activity log, then **Previously answered**: the
+  - **The panel's order** is the question waiting for an answer, the activity
+    log, the box to message the session, then **Previously answered**: the
     questions answered, as small boxes titled by the question's headline, newest
     first, each opened and closed by a click (`answeredBox` in `app.js`). The
     section shows once there is a first answer. When a question is answered the
