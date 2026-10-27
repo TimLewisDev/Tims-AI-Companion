@@ -821,7 +821,7 @@ function branchPicker(f, b0, project, done) {
       try { await api("/api/branch", { name: f.name, project: b.repo, branch: sel.value }); featureCache.delete(f.name); await done(); }
       catch (e) { alert(e.message || e); sel.disabled = false; }
     });
-    box.replaceChildren(el("div", {}, "Repository ", repos), el("div", {}, "Branch ", sel));
+    box.replaceChildren(el("span", { class: "pick-label" }, "Repository"), repos, el("span", { class: "pick-label" }, "Branch"), sel);
   };
   draw(b0, false);
   return box;
