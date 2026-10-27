@@ -795,12 +795,14 @@ function startPanel(f, row, index, close) {
   const result = el("div", { class: "start-result" });
   const picker = modelPicker("start-" + index);
   const go = el("button", { type: "button", class: "primary" }, "Start session");
+  // The review step asks which repo and branch (review.js) instead of using the project line.
+  const review = row.skill === "tt-branch-review" ? reviewStart(f, () => refresh()) : null;
   const refresh = () => {
-    let c = cmd;
+    let c = review ? review.cmd() : cmd;
     for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
     if (said && said.value.trim()) c += " " + said.value.trim();
     preview.textContent = c;
-    go.disabled = !f.project || inputs.some(i => !i.input.value.trim());
+    go.disabled = (review ? !review.ready() : !f.project) || inputs.some(i => !i.input.value.trim());
   };
   for (const { input } of inputs) input.addEventListener("input", refresh);
   if (said) said.addEventListener("input", refresh);
@@ -824,8 +826,7 @@ function startPanel(f, row, index, close) {
   const draw = () => {
     panel.replaceChildren(
       el("div", { class: "start-title" }, "Start a new Claude session"),
-      projectLine(f, () => { draw(); refresh(); }),
-      branchLine,
+      ...(review ? [review.node] : [projectLine(f, () => { draw(); refresh(); }), branchLine]),
       inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
       said ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "what is it (optional)"), said)) : "",
       el("div", { class: "small" }, "running ", preview),
@@ -833,7 +834,7 @@ function startPanel(f, row, index, close) {
       picker.node,
       el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
       result);
-    showBranch();
+    if (!review) showBranch();
   };
   go.addEventListener("click", async () => {
     go.disabled = true;
@@ -841,7 +842,7 @@ function startPanel(f, row, index, close) {
     tell("allow-foreground");
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
-      const r = await api("/api/start", { name: f.name, row: index, values, ...picker.fields(), ...(said && said.value.trim() ? { hint: said.value.trim() } : {}) });
+      const r = await api("/api/start", { name: f.name, row: index, values, ...picker.fields(), ...(review ? review.fields() : {}), ...(said && said.value.trim() ? { hint: said.value.trim() } : {}) });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,

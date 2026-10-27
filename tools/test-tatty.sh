@@ -595,6 +595,41 @@ has "never back from merged" "$T/j" '"state": "merged"'
 [ -f "$root/plugins/tatty/skills/merge/SKILL.md" ] && ok "the merge skill is in the plugin" || bad "the merge skill is in the plugin"
 head -n 2 "$root/plugins/tatty/skills/merge/SKILL.md" | tail -n 1 | grep -q '^name: merge' && ok "named merge" || bad "named merge"
 
+echo "# reviewing a branch, in the repo it is in"
+[ "$(code "$U/static/review.js")" = 200 ] && ok "review.js served" || bad "review.js served"
+get "/api/feature?name=Shipped" >"$T/j"
+has "the toolbox offers the review once the build is complete" "$T/j" '"skill": "tt-branch-review"'
+RV=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r.get('skill') == 'tt-branch-review'][0]")
+OR="$T/otherrepo"
+mkdir -p "$OR" && git -C "$OR" init -q -b main && : >"$OR/b" && git -C "$OR" add -A && git -C "$OR" $GITID commit -q -m first && git -C "$OR" branch feature/other
+ORW=$(cd "$OR" && { pwd -W 2>/dev/null || pwd; })
+get "/api/review?name=Shipped" >"$T/j"
+has "the feature's own branch is offered" "$T/j" '"branch": "feature/Brand-New"'
+get "/api/review?name=Shipped&repo=$ORW" >"$T/j"
+has "another repo offers the branch it is on" "$T/j" '"branch": "main"'
+get "/api/review?name=Shipped&repo=$T" >"$T/j"
+has "a folder that isn't a repo is said not to be" "$T/j" "isn't in a git repository"
+[ "$(code -H "X-TT-Token: $K" "$U/api/review?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
+cp "$TATTY_HOME/branches.json" "$T/branches.before"
+post /api/start "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"feature/other\",\"against\":\"main\"}}" >"$T/j"
+has "the review starts with the branch and the base" "$T/j" "Prompt: /tt-branch-review feature/other against main"
+has "in the other repo" "$T/j" "otherrepo"
+hasnt "the toolbox's placeholder is never sent" "$T/j" "[branch]"
+get "/api/feature?name=Shipped" >"$T/j"
+has "the feature keeps its own project" "$T/j" "gitrepo"
+hasnt "which is not changed" "$TATTY_HOME/projects.tsv" "otherrepo"
+cmp -s "$TATTY_HOME/branches.json" "$T/branches.before" && ok "and its branch record" || bad "and its branch record"
+[ "$(git -C "$OR" branch --show-current)" = main ] && ok "a review switches nothing" || bad "a review switches nothing"
+post /api/start "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\"}}" >"$T/j"
+has "no branch: the one checked out" "$T/j" "Prompt: /tt-branch-review"
+hasnt "and no placeholder" "$T/j" "[branch]"
+hasnt "nor a base" "$T/j" "against"
+post /api/start "{\"name\":\"Shipped\",\"row\":$RV}" >"$T/j"
+hasnt "started without the panel, the placeholder still isn't sent" "$T/j" "[branch]"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"a b\"}}" "$U/api/start")" = 400 ] && ok "a branch with a space is refused" || bad "a branch with a space is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$T\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't a repo is refused" || bad "a folder that isn't a repo is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$T/nowhere\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't there is refused" || bad "a folder that isn't there is refused"
+
 echo "# a started session, live"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
 TAG=$(pick "$T/j" "d['tag']")

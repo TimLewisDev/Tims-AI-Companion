@@ -730,6 +730,19 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   Cancelling after a failed launch works the same, so the task can be started
   again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
   are left alone; it asks again when its folder is missing.
+- **Review the branch** (review.js; server.py `review_info`, `review_request`).
+  Once a build is complete the toolbox offers `/tt-branch-review [branch]`. That
+  skill reviews the repo its session starts in, so a feature whose sessions run in
+  one repo (its project) but whose work is in another would be reviewed in the wrong
+  one. The review row's Start panel therefore asks which repo and branch instead of
+  showing the project line: `GET /api/review?name=&repo=` offers the repo the
+  feature's branch was made in (`branches.json`), else its project's, and the
+  feature's branch if that repo has it, else the one checked out; **Change…** picks
+  another repo. `POST /api/start {review: {repo, branch, against}}` starts the session
+  in that repo, for that session only: the feature's project choice and branch
+  record are untouched, and no branch is made or switched (a review only reads).
+  The toolbox's `[branch]` hint is never sent as text: the command is built from
+  the fields (`/tt-branch-review [branch] [against <base>]`).
 - **Archive and Delete** (archive.js; server.py "archiving and deleting a
   feature"). The feature page's header has a split button: **Archive**, with
   **Delete…** behind its caret (the menu is split.js's `showMenu`).

@@ -64,6 +64,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
+          "review.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -1397,6 +1398,52 @@ def branch_info(state, folder, project, workdir=""):
     return out
 
 
+REVIEW_SKILL = "tt-branch-review"
+REF_NAME = re.compile(r"^[A-Za-z0-9._/@#+~^-]{1,200}$")  # a branch or ref: no spaces, quotes or shell characters
+
+
+def review_info(folder, repo=""):
+    """What a branch review of this feature would use, for the Start panel; changes nothing.
+    The review looks at the repo its session starts in, which need not be the feature's project
+    (a Tatty feature's session may run in another repo): the repo given, else the one the feature's
+    branch was made in, else its project's. The branch is the feature's own when the repo has it,
+    else the one checked out."""
+    rec = branch_record(folder.name)
+    project = feature_project(folder, docs_of(folder))[0] or ""
+    recorded = rec.get("repo", "") if os.path.isdir(rec.get("repo", "")) else ""
+    default = repo_of(recorded or project)
+    where = repo_of(repo) if repo else default
+    out = {"repo": where, "default": default, "project": project, "current": "", "branch": ""}
+    if not where:
+        out["note"] = "That folder isn't in a git repository." if repo else "No repository is known for this feature yet: choose one."
+        return out
+    here = current_branch(where)
+    mine = rec.get("branch", "") if same_folder(rec.get("repo", ""), where) else ""
+    out.update(current=here, branch=mine if mine and branch_exists(where, mine) else here)
+    return out
+
+
+def review_request(body):
+    """(the command, the repo the session starts in or "", an error) for the review step's Start. The
+    branch and the base are optional (the skill then takes the checked-out branch and finds the
+    base itself); the repo is where the session runs, since the skill reviews the repo it is in."""
+    r = body.get("review") if isinstance(body.get("review"), dict) else {}
+    branch, against = (str(r.get(k) or "").strip() for k in ("branch", "against"))
+    for v in (branch, against):
+        if v and not REF_NAME.match(v):
+            return "", "", f"Not a branch name: {v}"
+    cmd = " ".join(["/" + REVIEW_SKILL] + ([branch] if branch else []) + (["against", against] if against else []))
+    repo = str(r.get("repo") or "").strip()
+    if repo:
+        if not os.path.isdir(repo):
+            return "", "", f"no such folder: {repo}"
+        top = repo_of(repo)
+        if not top:
+            return "", "", f"{repo} isn't in a git repository."
+        repo = top
+    return cmd, repo, ""
+
+
 def ensure_branch(folder, project, workdir, fresh):
     """Put the repo on the feature's branch before a session starts in it. (ok, info):
     the first Start of an unstarted feature makes the branch from where the repo
@@ -1781,6 +1828,12 @@ def start_session(state, folder, body):
     cmd = command(row)
     if not cmd:
         return 400, {"error": "nothing left to run"}
+    review_repo = ""
+    review = row.get("skill") == REVIEW_SKILL
+    if review:  # the toolbox's "[branch]" is filled from the Start panel (never sent as it is)
+        cmd, review_repo, why = review_request(body)
+        if why:
+            return 400, {"error": why}
     values = body.get("values") or {}
     for ph in ([] if row.get("phase") == "lite" else PLACEHOLDER.findall(cmd)):  # a lite hint is free text
         v = " ".join(str(values.get(ph, "")).split())[:2000]
@@ -1788,7 +1841,9 @@ def start_session(state, folder, body):
             return 400, {"error": f"say what goes in <{ph}>"}
         cmd = cmd.replace(f"<{ph}>", v, 1)
     project = str(body.get("project") or "").strip()
-    if project:
+    if review_repo:  # this session only: the feature's own project choice stays as it is
+        project = review_repo
+    elif project:
         if not os.path.isdir(project):
             return 400, {"error": f"no such folder: {project}"}
         choose_project(folder, project)
@@ -1810,7 +1865,8 @@ def start_session(state, folder, body):
     if flags is None:
         return 400, {"error": why}
     # The work goes on a branch of the feature's own (see "branches and merging"), made on its first Start.
-    ok_branch, branch = ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty")
+    # A review only reads: it never makes or switches a branch, nor records one for the feature.
+    ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty")
     if not ok_branch:
         return 400, {"error": branch["error"]}
     if row.get("phase") == "merge":  # its context names the branch, which may have just been recorded
@@ -5639,6 +5695,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(404, {"error": "no such feature"})
             project = q.get("project", [""])[0].strip() or feature_project(folder, docs_of(folder))[0]
             return self.send(200, branch_info(st, folder, project, q.get("workdir", [""])[0].strip()))
+        if path == "/api/review":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            return self.send(200, review_info(folder, q.get("repo", [""])[0].strip()))
         if path == "/api/jira":
             return self.send(200, jira_view(st))
         if path == "/api/jira/issue":

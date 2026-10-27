@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -20,6 +20,7 @@ throwaway home whose server has a stand-in claude (TATTY_CLAUDE), or every messa
 --archive only Archive, Restore and Delete on a feature it makes itself ("Walk archive"): real mouse and
 keys on the split button, its menu, the Delete panel and the Archived section. It deletes a folder, so only ever on a
 throwaway root;
+--review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -993,6 +994,45 @@ def check_archive(p):
     return res
 
 
+def check_review(p):
+    """The review step's Start panel (review.js), drawn with the page's api() stood in for: it asks which
+    repo and branch rather than showing the project line, the command has no "[branch]" in it, Start is held
+    until there is a repo, and what Start sends carries the repo, branch and base. Nothing is started."""
+    res = {}
+    p.js("""window.__real = { api: window.api }; window.__sent = [];
+            window.api = async (path, body) => {
+              if (path.startsWith('/api/review')) return path.includes('repo=') && path.includes('nowhere')
+                ? { repo: '', note: "That folder isn't in a git repository.", project: 'C:/work/proj' }
+                : { repo: 'C:/work/other', default: 'C:/work/other', project: 'C:/work/proj', current: 'main', branch: 'feature/x' };
+              if (path === '/api/start') { window.__sent.push(body); return { ok: false, said: 'stand-in' }; }
+              return window.__real.api(path, body);
+            };
+            window.__f = { name: 'Demo', project: 'C:/work/proj', projectFrom: 'chosen' };
+            window.__row = { skill: 'tt-branch-review', phase: 'complete', kind: 'alt', hint: '[branch]', stage: 'Review', prefix: 'Demo', text: 'review the branch:' };
+            document.querySelector('.start-panel') && document.querySelector('.start-panel').remove();
+            document.body.append(startPanel(window.__f, window.__row, 0, () => {})); 1""")
+    wait(p, "(document.querySelector('#review-branch') || {}).value === 'feature/x'")
+    res["panel"] = p.js("""({ text: document.querySelector('.start-panel').innerText.replace(/\\s+/g, ' ').trim(),
+                             projectLine: !!document.querySelector('.start-panel .project-line:not(#review-repo)'),
+                             preview: document.querySelector('.start-panel code:last-of-type') && [...document.querySelectorAll('.start-panel code')].pop().textContent,
+                             startDisabled: [...document.querySelectorAll('.start-panel button.primary')].pop().disabled })""")
+    p.js("(() => { const i = document.querySelector('#review-against'); i.value = 'main'; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["withBase"] = p.js("[...document.querySelectorAll('.start-panel code')].pop().textContent")
+    p.js("(() => { const i = document.querySelector('#review-branch'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["noBranch"] = p.js("[...document.querySelectorAll('.start-panel code')].pop().textContent")
+    p.js("(() => { const i = document.querySelector('#review-branch'); i.value = 'feature/x'; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    p.js("[...document.querySelectorAll('.start-panel button.primary')].pop().click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["sent"] = p.js("window.__sent[0]")
+    # a folder that isn't a repo holds Start back
+    p.js("""window.pickFolder = async () => 'C:/nowhere'; document.querySelector('#review-change').click(); 1""")
+    wait(p, "document.querySelector('#review-repo').innerText.includes(\"isn't in a git repository\")")
+    res["notARepo"] = p.js("""({ line: document.querySelector('#review-repo').innerText.replace(/\\s+/g, ' ').trim(),
+                               startDisabled: [...document.querySelectorAll('.start-panel button.primary')].pop().disabled })""")
+    p.js("window.api = window.__real.api; document.querySelector('.start-panel').remove(); 1")
+    return res
+
+
 def check_new_panel(p, page, button, form):
     """The list page's "create new": no form on the page, the cards first, and the
     form in a panel from the right that Esc, x and the dimmed page each close."""
@@ -1217,10 +1257,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
