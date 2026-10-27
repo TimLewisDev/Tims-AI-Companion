@@ -321,8 +321,12 @@ has no part in it:
 - **One document written for the toolbox.** **Start workflow** makes
   `<root>/features/<ID> - <title>` (refused if it exists and isn't empty) and
   writes `<name> - Ticket.md` in it: the task's fields, its description and its
-  other sections. The workflow plans from it; Tatty never touches it again.
-  The task's own file then names the feature (`- **Feature:**`).
+  other sections. The workflow plans from it; Tatty never touches it again,
+  except that **Cancel workflow** moves a feature folder holding nothing but
+  this ticket to `<root>/features/.deleted` (a folder with any other file is
+  left alone). The task's own file names the feature (`- **Feature:**`) until
+  then. Cancel also ends the sessions Tatty started for the feature, through
+  the process id in Claude's own `sessions/<pid>.json` registry.
 
 ## Chats
 

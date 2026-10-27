@@ -988,6 +988,36 @@ has "named as lite" "$T/tk" "Name: T-0007 - Some idea : Lite"
 has "with the work folder added" "$T/tk" "--add-dir $FX"
 has "and the task moves on" "$T/tk" '"moved": "Doing"'
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 409 ] && ok "lite isn't started twice either" || bad "lite isn't started twice either"
+# what the board says of a started task's workflow
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "(d['workflows']['T-0005']['route'], d['workflows']['T-0007']['route'])")" = "('full', 'lite')" ] && ok "a card knows the route: full, or lite before its documents say" || bad "a card knows the route" "$(pick "$T/j" "d['workflows']")"
+[ "$(pick "$T/j" "d['workflows']['T-0007']['session']['status']")" = "starting" ] && ok "and its session" || bad "and its session" "$(pick "$T/j" "d['workflows']['T-0007']")"
+has "and where it stands" "$T/j" '"phase": "empty"'
+[ "$(pick "$T/j" "d['begun']['T-0007']['from']")" = "backlog" ] && ok "the board remembers where the task came from" || bad "the board remembers where the task came from" "$(pick "$T/j" "d['begun']")"
+get "/api/feature?name=T-0007%20-%20Some%20idea" >"$T/j"
+[ "$(pick "$T/j" "(d['task'], d['ticketOnly'])")" = "({'board': 'Game', 'id': 'T-0007'}, True)" ] && ok "a feature knows its task, and that it holds only the ticket" || bad "a feature knows its task" "$(pick "$T/j" "(d['task'], d['ticketOnly'])")"
+# cancel: sessions ended, the start undone, a ticket-only folder moved out of the way
+wcancel() { curl -s -o "$T/wc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/workflow/cancel"; }
+[ "$(wcancel '{"name":"No such feature"}')" = 404 ] && ok "cancelling a feature there isn't is a 404" || bad "cancelling a feature there isn't is a 404"
+[ "$(wcancel '{"name":"T-0007 - Some idea"}')" = 200 ] && ok "a workflow is cancelled" || bad "a workflow is cancelled" "$(cat "$T/wc")"
+has "its session ended" "$T/wc" '"stopped": 1'
+has "the task went back" "$T/wc" '"movedTo": "Backlog"'
+has "its ticket-only folder was removed" "$T/wc" '"folder": "removed"'
+[ ! -e "$FX/features/T-0007 - Some idea" ] && ls "$FX/features/.deleted/T-0007 - Some idea/"*Ticket.md >/dev/null 2>&1 && ok "into features/.deleted, not gone" || bad "into features/.deleted, not gone" "$(ls -a "$FX/features" "$FX/features/.deleted")"
+hasnt "the task names no feature" "$(taskfile T-0007)" "T-0007 - Some idea"
+has "and is in the backlog again" "$(taskfile T-0007)" "- **Status:** Backlog"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "('T-0007' in d['started'], 'T-0007' in d['begun'], 'T-0007' in d['workflows'])")" = "(False, False, False)" ] && ok "the board forgets the start" || bad "the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
+get /api/sessions >"$T/j"
+hasnt "and no tab is left for it" "$T/j" "T-0007 - Some idea"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 200 ] && ok "the task can be started again" || bad "the task can be started again" "$(cat "$T/tk")"
+# a folder with documents in it stays
+F5=$(ls -d "$FX/features/T-0005"* | head -1)
+printf '# Notes\n' >"$F5/Notes.md"
+[ "$(wcancel '{"name":"T-0005 - Renamed five"}')" = 200 ] && ok "a workflow with documents is cancelled too" || bad "a workflow with documents is cancelled too" "$(cat "$T/wc")"
+has "its folder was kept" "$T/wc" '"folder": "kept"'
+[ -f "$F5/Notes.md" ] && ok "with its documents" || bad "with its documents"
+hasnt "but the task is no longer linked to it" "$(taskfile T-0005)" "- **Feature:** T-0005"
 # a board.json that won't read is never written over
 cp "$GB/board.json" "$T/board.json"; printf '{ nope' >"$GB/board.json"
 [ "$(tk create '{"name":"Game","title":"x"}')" = 409 ] && ok "a broken board.json refuses changes" || bad "a broken board.json refuses changes"

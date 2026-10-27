@@ -705,6 +705,29 @@ function projectLine(f, onChange) {
       f.project ? "Change…" : "Choose project…"));
 }
 
+// Cancelling a workflow (the server's workflow_cancel): its sessions are ended and,
+// if it was started from a task, that Start is undone. What the person is told first
+// says what will happen to the task and the folder.
+function cancelWorkflowText(name, task, ticketOnly, running) {
+  return [`Cancel the workflow ${name}?`,
+    running ? "Its Claude session is ended, and anything it is in the middle of is lost." : "",
+    task ? `${task.id} goes back to where it was, and can be started again.` : "",
+    task ? (ticketOnly ? "The feature folder holds only the ticket, so it is moved to features/.deleted." : "The feature folder has documents in it, so it stays.") : ""]
+    .filter(Boolean).join("\n\n");
+}
+
+// The answer (see workflow_cancel), or null when it was declined or failed.
+async function cancelWorkflow(name, text, client) {
+  if (!confirm(text)) return null;
+  try {
+    const r = await api("/api/workflow/cancel", { name, client });
+    featureCache.delete(name);
+    if (r.said) alert(r.said);
+    loadTabsSoon();
+    return r;
+  } catch (e) { alert(e.message || e); return null; }
+}
+
 function startPanel(f, row, index, close) {
   const cmd = command(row);
   const inputs = placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
@@ -988,7 +1011,12 @@ function overview(f) {
       el("h2", {}, f.name), chip(ROUTES[f.route] || f.route, "route"),
       chip(PHASES[f.phase] || f.phase || "—", f.phase === "complete" ? "done" : "now"),
       el("span", { class: "dim small" }, "updated " + ago(f.updated)),
-      el("button", { type: "button", class: "right", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh")),
+      f.task || going.length ? el("button", { type: "button", class: "right", id: "feature-cancel",
+        title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
+          const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
+          if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
+        } }, "Cancel workflow") : "",
+      el("button", { type: "button", class: f.task || going.length ? "" : "right", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh")),
     el("div", { class: "dim small" }, copyable(f.folder)),
     tracker(f),
     process, ended,

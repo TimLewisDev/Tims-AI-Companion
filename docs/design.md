@@ -578,6 +578,27 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   folder as the only repo to read, build and verify against, and as the
   `**Repo:**` of every document. This depends on the model following it; it is
   not enforced.
+- **A started task shows its workflow.** board.json keeps `begun` beside
+  `started`: `{ID: {from, to, mode}}` (the list the task came from, the one
+  Start moved it to, `full` or `lite`). The board view sends `workflows`, one
+  per started task that isn't done or completed (`task_workflows`): the route
+  (the toolbox's, or `mode` while the folder holds only the ticket), the
+  stage (`feature_summary`) and the newest session Start opened for it. The
+  card says `route · stage · session`; the panel's workflow block says it too,
+  links the feature and the session's tab, and is filled again whenever the
+  board is read, which a session, milestone, ask or answer event causes.
+- **Cancel workflow** (`POST /api/workflow/cancel {name}`, `workflow_cancel`),
+  on the task's panel and on the feature page's header. It ends the sessions
+  Start opened for the feature. If a task started the feature
+  (`task_for_feature`) it undoes that Start (`task_unstart`): the task's
+  Feature link and the board's `started`/`begun` go, and the task returns to
+  the list it came from, but only if it is still in the one Start moved it to.
+  A feature folder holding nothing but the Ticket is moved to
+  `features/.deleted` (never deleted); one with any other file stays, with the
+  task unlinked. A feature no task started only has its sessions ended.
+  Cancelling after a failed launch works the same, so the task can be started
+  again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
+  are left alone; it asks again when its folder is missing.
 
 ## User Stories (the design mode)
 

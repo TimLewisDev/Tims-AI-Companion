@@ -933,6 +933,9 @@ def feature_summary(state, folder, detail=False):
         out.update({"rows": rows, "workflowStep": workflow_row(folder), "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
                     "stages": stages_of(read_doc(folder, plan) if plan else "", events),
                     "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder)})
+        found = task_for_feature(folder.name)
+        out["task"] = {"board": found[0].name, "id": found[1]} if found else None
+        out["ticketOnly"] = [p.name for p in folder.iterdir()] == [f"{folder.name} - Ticket.md"]
     return out
 
 
@@ -3172,6 +3175,10 @@ def task_board_fill(raw):
     b["options"] = o
     started = b.get("started") if isinstance(b.get("started"), dict) else {}
     b["started"] = {str(k).upper(): v for k, v in started.items() if isinstance(v, str)}
+    # how each started task began: the list it came from, the one Start moved it to, full or lite
+    begun = b.get("begun") if isinstance(b.get("begun"), dict) else {}
+    b["begun"] = {str(k).upper(): {kk: vv for kk, vv in v.items() if kk in ("from", "to", "mode") and isinstance(vv, str)}
+                  for k, v in begun.items() if isinstance(v, dict)}
     return b
 
 
@@ -3331,11 +3338,42 @@ def task_read(folder):
     return b, by, problems
 
 
-def task_board_view(folder):
+def task_workflow(state, name, begun):
+    """Where a task's workflow stands, for its card and panel: the route (full or
+    lite, from what Start began until the documents say), the toolbox's stage for
+    the feature, and the newest session Start opened for it."""
+    folder = feature_dir(name)
+    if not folder:
+        return {"feature": name, "missing": True}
+    s = feature_summary(state, folder)
+    route = s["route"] if s["route"] != "new" else (begun.get("mode") or "new")
+    sess = sessions_of(state, folder)
+    now = next((x for x in sess if x["status"] != "ended"), sess[0] if sess else None)
+    return {"feature": name, "route": route, "phase": s["phase"], "stage": s["stage"], "text": s["text"],
+            "ticketOnly": [p.name for p in folder.iterdir()] == [f"{folder.name} - Ticket.md"],
+            "session": {"tag": now["tag"], "name": now["name"], "status": now["status"]} if now else None}
+
+
+def task_workflows(state, b, by):
+    """task_workflow for each task whose workflow is still of interest: started,
+    and neither in the done column nor completed."""
+    from concurrent.futures import ThreadPoolExecutor
+    done = task_done_column(b)
+    live = [(tid, b["started"][tid]) for tid, t in by.items()
+            if b["started"].get(tid) and task_place(b, t["status"]) not in ("completed", done)]
+    if not live:
+        return {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        found = list(pool.map(lambda x: task_workflow(state, x[1], b["begun"].get(x[0], {})), live))
+    return {tid: w for (tid, _), w in zip(live, found)}
+
+
+def task_board_view(folder, state=None):
     b, by, problems = task_read(folder)
     lists = task_lists(b, by)
     stats = task_stats(lists["completed"])
     return {"name": folder.name, "folder": folder.as_posix(), "prefix": b["prefix"],
+            "workflows": task_workflows(state, b, by) if state else {}, "begun": b["begun"],
             "columns": [{"id": c["id"], "name": c["name"], "tasks": lists[c["id"]]} for c in b["columns"]],
             "done": task_done_column(b), "unsorted": lists["unsorted"],
             "backlog": {"total": len(lists["backlog"]), "items": lists["backlog"][:TASK_PAGE]},
@@ -3699,7 +3737,7 @@ def task_columns(state, folder, body, client):
             return 400, {"error": "op: add, rename, move, remove or options"}
         task_board_save(folder, b)
     task_said(state, folder, client, moved)
-    return 200, task_board_view(folder)
+    return 200, task_board_view(folder, state)
 
 
 def task_clear(state, folder, body, client):
@@ -3722,7 +3760,7 @@ def task_clear(state, folder, body, client):
         task_celebrate(state, b, folder, before, before + n, f"{n} task{'s' if n != 1 else ''} completed",
                        f"{cleared[0]['id']}: {cleared[0]['title']}" if n == 1 else f"{before + n} completed so far", "mid")
         task_said(state, folder, client, [t["id"] for t in cleared])
-    return 200, {"cleared": len(cleared), **task_board_view(folder)}
+    return 200, {"cleared": len(cleared), **task_board_view(folder, state)}
 
 
 def task_auto_complete(state, folder):
@@ -3819,6 +3857,7 @@ def task_start(state, folder, body, client):
         note = work_folder_note(project, workdir) if workdir else ""
         doc.write_text(task_ticket_md(folder.name, detail, note), encoding="utf-8")
         b["started"][tid] = made["name"]
+        b["begun"][tid] = {"from": task_place(b, t["status"]), "mode": "lite" if lite else "full"}
         b["options"]["project"] = Path(project).as_posix()
         b["options"]["workdir"] = Path(workdir).as_posix() if workdir else ""
         task_rewrite(folder, t, {"Feature": made["name"]})
@@ -3847,10 +3886,99 @@ def task_start(state, folder, body, client):
             was = task_place(b, t["status"]) if t else ""
             # only ever forward: from the backlog, or a column before the start column
             if t and start and (was in ("backlog", "unsorted") or (was in cols and cols.index(was) < cols.index(start))):
+                if tid in b["begun"]:
+                    b["begun"][tid]["to"] = start  # (task_move_locked saves the board)
                 task_move_locked(state, folder, b, by, t, start, None)
                 answer["moved"] = next(c["name"] for c in b["columns"] if c["id"] == start)
     task_said(state, folder, client, [tid])
     return code, answer
+
+
+def task_for_feature(name):
+    """(the board's folder, the task's ID) of the task a feature was started from, else None."""
+    base = tasks_root()
+    for d in sorted(base.iterdir()) if base.is_dir() else []:
+        folder = tasks_dir(d.name) if d.is_dir() and not d.name.startswith(".") else None
+        if not folder:
+            continue
+        try:
+            b = task_board(folder)
+        except OSError:
+            continue
+        tid = next((k for k, v in b["started"].items() if v == name), None)
+        if tid:
+            return folder, tid
+    return None
+
+
+def task_unstart(state, folder, tid, client):
+    """Undo Start on a task (a workflow cancelled): its Feature link and the board's
+    record of the start go, and the task goes back to the list it came from, but
+    only if it is still in the one Start moved it to (a task you have moved since
+    stays where you put it). Returns the name of the list it is in now, or ""."""
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        by, _ = task_ids(task_index(folder))
+        t = by.get(tid)
+        begun = b["begun"].pop(tid, {})
+        b["started"].pop(tid, None)
+        back = ""
+        if t:
+            t = task_rewrite(folder, t, {"Feature": ""})
+            by[tid] = t
+            lists = ["backlog"] + [c["id"] for c in b["columns"]]
+            if begun.get("to") and task_place(b, t["status"]) == begun["to"]:
+                back = begun["from"] if begun.get("from") in lists else "backlog"
+                task_move_locked(state, folder, b, by, t, back, None)
+        if not back:
+            task_board_save(folder, b)
+    task_said(state, folder, client, [tid])
+    return {"backlog": "Backlog"}.get(back) or next((c["name"] for c in b["columns"] if c["id"] == back), "")
+
+
+def workflow_cancel(state, name, client=""):
+    """Cancel a feature's workflow: end the sessions Start opened for it; if it was
+    started from a task, undo that Start (see task_unstart); and if the folder
+    holds nothing but the Ticket Tatty wrote, move it to features/.deleted (never
+    deleted). Anything more in the folder is the person's planning: it stays.
+    (http code, answer)"""
+    folder = feature_dir(name)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    with state.cond:
+        tags = [s["tag"] for s in state.sessions.values() if s.get("feature") and is_folder(s["folder"], folder) and not s.get("closed")]
+    stopped, said = [], []
+    for tag in tags:
+        code, r = stop_session(state, tag)
+        if code == 200:
+            stopped.append(tag)
+            if r.get("said"):
+                said.append(r["said"])
+    answer = {"ok": True, "feature": folder.name, "stopped": len(stopped), "said": " ".join(said), "task": None,
+              "movedTo": "", "folder": "kept"}
+    found = task_for_feature(folder.name)
+    if not found:
+        return 200, answer  # not started from a task: only its sessions are ended
+    tfolder, tid = found
+    answer["task"] = {"board": tfolder.name, "id": tid}
+    answer["movedTo"] = task_unstart(state, tfolder, tid, client)
+    left = [p.name for p in folder.iterdir()]
+    if left == [f"{folder.name} - Ticket.md"]:
+        trash = folder.parent / ".deleted"
+        try:
+            trash.mkdir(exist_ok=True)
+            dest, n = trash / folder.name, 1
+            while dest.exists():
+                n += 1
+                dest = trash / f"{folder.name} ({n})"
+            os.replace(folder, dest)
+            answer["folder"] = "removed"
+        except OSError as e:
+            answer["folder"] = "kept"
+            answer["said"] = (answer["said"] + f" Couldn't move the folder away: {e}").strip()
+    else:
+        answer["kept"] = len(left)
+    return 200, answer
 
 
 def tasks_get(st, path, q):
@@ -3861,7 +3989,7 @@ def tasks_get(st, path, q):
     if not folder:
         return 404, {"error": "no such board"}
     if path == "/api/tasks/board":
-        return 200, task_board_view(folder)
+        return 200, task_board_view(folder, st)
     if path == "/api/tasks/list":
         which = one("in", "backlog")
         if which not in ("backlog", "completed"):
@@ -4693,6 +4821,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/session/stop":
             code, answer = stop_session(st, tag)
+            return self.send(code, answer)
+        if path == "/api/workflow/cancel":
+            try:
+                code, answer = workflow_cancel(st, str(b.get("name", "")), str(b.get("client", ""))[:40])
+            except BoardBroken as e:
+                code, answer = 409, {"error": str(e)}
+            except OSError as e:
+                code, answer = 500, {"error": f"couldn't cancel: {e}"}
             return self.send(code, answer)
         if path == "/api/chat/new":
             code, answer = chat_new(st, b if isinstance(b, dict) else {})

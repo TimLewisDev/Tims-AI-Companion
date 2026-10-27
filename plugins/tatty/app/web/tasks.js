@@ -232,13 +232,28 @@ const { renderTasks, renderTaskBoard } = (() => {
       head, list, more, foot);
   }
 
+  // A task's workflow in a few words (route · stage · session), for its card; the
+  // server sends one for each started task that isn't done (t.data.workflows).
+  const SESSION_SHORT = { starting: "opening", running: "running", lost: "not heard from", unseen: "can't see it", ended: "ended" };
+  function wfWords(w) {
+    if (!w || w.missing) return null;
+    const s = w.session;
+    const asking = s && sessionStatus(s, sessionEvents.get(s.tag) || [])[0].startsWith("Waiting");
+    return [ROUTES[w.route] || w.route, PHASES[w.phase] || w.stage || w.phase,
+      asking ? "waiting for you" : s ? SESSION_SHORT[s.status] || s.status : "no session"];
+  }
+  function wfLine(id) {
+    const words = wfWords(((t.data || {}).workflows || {})[id]);
+    return words ? words.join(" · ") : "";
+  }
+
   function card(x) {
     const started = x.feature || (t.data.started || {})[x.id];
     return el("div", { class: "tcard", tabindex: "0", role: "listitem", "data-id": x.id, "aria-label": `${x.id}: ${x.title}` },
       el("div", { class: "tcard-top" }, el("span", { class: "jkey" }, x.id), x.priority ? chip(x.priority, prioClass(x.priority)) : ""),
       el("div", { class: "tsum" }, x.title),
       x.labels.length ? el("div", { class: "tlabels" }, x.labels.map(l => el("span", { class: "tlabel" }, l))) : "",
-      started ? el("div", { class: "small jstarted" }, "Feature: " + started) : "",
+      started ? el("div", { class: "small jstarted" }, wfLine(x.id) || "Feature: " + started) : "",
       x.problems.length ? el("div", { class: "small st missing" }, x.problems[0]) : "");
   }
 
@@ -703,6 +718,7 @@ const { renderTasks, renderTaskBoard } = (() => {
         }
       } else if (focusId) say(`${focusId} moved to ${listName((t.moved || {}).to)}`);
     }
+    if (t.open && t.open.wfFill) t.open.wfFill();
     if (t.open && t.open.id !== "new") panelChanged();
   }
 
@@ -938,16 +954,46 @@ const { renderTasks, renderTaskBoard } = (() => {
       el("button", { type: "button", onclick: () => { o.banner.hidden = true; } }, "Keep editing"));
   }
 
+  // The workflow started from this task: which route it is on, where it stands, its
+  // session, a way to its feature and its tab, and Cancel. The box is filled again
+  // whenever the board is read (the status of its session moves without the task's
+  // file changing).
+  function workflowSection(d, feature) {
+    const box = el("div", { class: "start-panel", id: "task-workflow" });
+    if (t.open) t.open.wfBox = box;
+    const fill = () => {
+      const w = ((t.data || {}).workflows || {})[d.id];
+      const words = wfWords(w);
+      const s = w && w.session;
+      const cancel = el("button", { type: "button", id: "task-cancel-workflow", onclick: async () => {
+        cancel.disabled = true;
+        const r = await cancelWorkflow(feature, cancelWorkflowText(feature, { id: d.id },
+          w ? w.ticketOnly : false, !!s && s.status !== "ended"), client);
+        if (!r) { cancel.disabled = false; return; }
+        await refresh();
+        const moved = r.movedTo ? `${d.id} is back in ${r.movedTo}. ` : "";
+        stripSay(`Workflow cancelled. ${moved}${r.folder === "removed" ? "The empty feature folder was moved to features/.deleted." : "The feature folder was kept."}`);
+      } }, "Cancel workflow");
+      box.replaceChildren(
+        el("div", { class: "start-title" }, "A workflow was started from this task"),
+        words ? el("div", { id: "task-workflow-state" }, chip(words[0], "route"), " ", chip(words[1], "now"), " ",
+          s ? el("a", { href: "#workflows/" + encodeURIComponent(s.tag), onclick: () => closePanel(true), title: s.name }, words[2])
+            : el("span", { class: "dim" }, words[2]))
+          : el("div", { class: "dim small" }, w && w.missing ? "Its feature folder is gone." : "Where it stands shows once the board has been read."),
+        el("div", { class: "start-actions" },
+          el("a", { href: featureHref(feature), onclick: () => closePanel(true) }, feature + " →"), " ", cancel));
+    };
+    fill();
+    if (t.open) t.open.wfFill = fill;
+    return box;
+  }
+
   // Start workflow, as on a Jira ticket: the feature's name and project, then the
   // server makes the folder, writes the task in as its Ticket, starts the
   // session and moves the task to the board's start column.
   function startSection(d) {
     const started = d.feature || (t.data.started || {})[d.id];
-    if (started) {
-      return el("div", { class: "start-panel" },
-        el("div", { class: "start-title" }, "A workflow was started from this task"),
-        el("a", { href: featureHref(started), onclick: () => closePanel(true) }, started + " →"));
-    }
+    if (started) return workflowSection(d, started);
     const clean = s => s.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").replace(/^[ .]+|[ .]+$/g, "");
     const name = el("input", { id: "task-feature", value: clean(d.title) ? `${d.id} - ${clean(d.title)}`.slice(0, 70).replace(/[ .-]+$/, "") : d.id,
       "aria-label": "Feature name" });
@@ -1023,6 +1069,15 @@ const { renderTasks, renderTaskBoard } = (() => {
     }
     if (!t || !ev.name || ev.name !== t.name || !t.box.classList.contains("on")) return;
     refreshSoon();
+  });
+
+  // A started task's session opening, asking, being answered or ending changes
+  // what its card says; the board is read again for it (only while some task has
+  // a workflow going).
+  const WORKFLOW_EVENTS = new Set(["session", "milestone", "ask", "answered"]);
+  document.addEventListener("tt-event", e => {
+    if (!WORKFLOW_EVENTS.has(e.detail.type) || !t || !t.box.classList.contains("on")) return;
+    if (Object.keys((t.data || {}).workflows || {}).length) refreshSoon();
   });
 
   document.addEventListener("keydown", e => {
