@@ -205,7 +205,7 @@ namespace TtCompanion
                 // day's work would arrive mid-party.
                 if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; finished = null; anything = false; }
                 if (anything) tatty.Poke();
-                if (question || attention || finished != null) alertWaiting = true;
+                if (question || finished != null) alertWaiting = true;
                 tatty.HasBadge = openAsks.Count > 0;
                 if (question || finished != null) PopUp(activate: false);
                 if (finished != null) Celebrate(finished == "big");

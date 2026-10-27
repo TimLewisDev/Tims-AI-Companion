@@ -64,8 +64,15 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
 - **`app/launcher` and `assets/`:** Tatty as a desktop program (Windows).
   - `Tatty.exe` is a thin WinExe, built by `/tatty install` into
     `%LOCALAPPDATA%\Tatty\launcher`, that the Desktop and Start menu shortcuts run. It
-    finds the plugin (`boot.json`, else Claude Code's `installed_plugins.json`) and
-    runs `tatty.sh boot` hidden, so a plugin update never breaks the shortcut. The
+    finds the plugin and runs `tatty.sh boot` hidden, so a plugin update never
+    breaks the shortcut. The plugin is the one Claude Code has installed
+    (`installed_plugins.json`) unless `boot.json`, which every boot rewrites, names
+    a folder outside Claude Code's plugin cache (a checkout run on purpose). A
+    cache folder is never taken from `boot.json`: an update leaves the old
+    version's folder in the cache, so a pin to it would be rewritten by every
+    boot from it and Tatty would stay on that version for good. The choice is
+    `ChoosePlugin`. The exe is rebuilt by `/tatty install`, which does it when the
+    sources are newer than the exe. The
     shortcuts carry the AppUserModelID the tray app names itself with
     (`TimsAICompanion.Tatty`), so a taskbar pin and the running window are one button.
   - `server.py boot` starts the server and shows the tray app (or rings the

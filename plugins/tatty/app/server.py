@@ -5192,7 +5192,9 @@ def wake_companion():
 
 def write_boot_json(bash):
     """Tell the launcher where this plugin and bash are. The launcher runs from a
-    stable place; the plugin moves with every update, so each boot says where it is now."""
+    stable place; the plugin moves with every update. (A copy in Claude Code's plugin
+    cache is only a fallback: the launcher runs the installed version before it, since
+    an update leaves the old folder there. A checkout is what this keeps for it.)"""
     APP.mkdir(parents=True, exist_ok=True)
     tmp = BOOT_JSON.with_suffix(".tmp")
     tmp.write_text(json.dumps({"bash": bash, "pluginRoot": PLUGIN.as_posix()}, indent=2), encoding="utf-8")

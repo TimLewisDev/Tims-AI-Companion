@@ -18,10 +18,15 @@ namespace TattyLauncher
     //   Tatty.exe --remove-shortcuts
     //
     // It is deliberately thin. Everything that changes with a release lives in the
-    // plugin, which is found at run time -- from boot.json, which every boot keeps
-    // up to date, and failing that from Claude Code's record of what is installed --
-    // so a plugin update never leaves the shortcut pointing at nothing, and this
-    // exe never has to be rebuilt for one.
+    // plugin, which is found at run time -- from Claude Code's record of what is
+    // installed, and from boot.json (which every boot keeps up to date) for a plugin
+    // run from somewhere else, such as a checkout -- so a plugin update never leaves
+    // the shortcut pointing at nothing, and this exe never has to be rebuilt for one.
+    //
+    // A copy in Claude Code's plugin cache is never trusted over the record: an
+    // update leaves the old version's folder there, so a boot.json that named it
+    // would be rewritten by every boot from it, and Tatty would stay on that
+    // version for good.
     internal static class Program
     {
         // The name the tray app gives itself (Native.NameThisApp in the companion).
@@ -55,7 +60,7 @@ namespace TattyLauncher
             }
             catch (Exception) { }
 
-            if (!HasScript(plugin)) plugin = InstalledPlugin();
+            plugin = ChoosePlugin(plugin);
             if (!HasScript(plugin))
                 return Fail("Tatty can't find its plugin. Install it in Claude Code, then run /tatty install.");
             if (bash == null || !File.Exists(bash)) bash = FindBash();
@@ -85,18 +90,43 @@ namespace TattyLauncher
             return 0;
         }
 
+        // The plugin to run, given the one boot.json names: what Claude Code has
+        // installed when that one is gone or is a copy in its plugin cache (an old
+        // version's folder stays there after an update), else boot.json's own, which
+        // is how a checkout run on purpose stays what it is.
+        private static string? ChoosePlugin(string? pinned) =>
+            !HasScript(pinned) || InPluginCache(pinned) ? InstalledPlugin() ?? pinned : pinned;
+
         private static bool HasScript(string? plugin) =>
             !string.IsNullOrEmpty(plugin) && File.Exists(Path.Combine(plugin, "scripts", "tatty.sh"));
+
+        private static string ClaudeConfigDir()
+        {
+            var config = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            return string.IsNullOrEmpty(config)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+                : config;
+        }
+
+        // True for a folder inside Claude Code's plugin cache, where every installed
+        // version of a plugin has a folder of its own and the old ones stay.
+        private static bool InPluginCache(string? plugin)
+        {
+            if (string.IsNullOrEmpty(plugin)) return false;
+            try
+            {
+                var cache = Path.GetFullPath(Path.Combine(ClaudeConfigDir(), "plugins", "cache")).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+                return Path.GetFullPath(plugin).StartsWith(cache, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception) { return false; }
+        }
 
         // Claude Code's record of what it has installed: the newest entry for tatty.
         private static string? InstalledPlugin()
         {
             try
             {
-                var config = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-                if (string.IsNullOrEmpty(config))
-                    config = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
-                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(config, "plugins", "installed_plugins.json")));
+                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(ClaudeConfigDir(), "plugins", "installed_plugins.json")));
                 string? found = null;
                 foreach (var plugin in doc.RootElement.GetProperty("plugins").EnumerateObject())
                 {

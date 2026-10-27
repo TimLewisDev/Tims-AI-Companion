@@ -75,9 +75,11 @@ conversation of its own, with no terminal, that can read the project but not
 change it. The server starts in Tatty's root folder, else your home folder;
 `tatty.sh boot --project <dir>` chooses another.
 
-The launcher finds the plugin each time (`%LOCALAPPDATA%\Tatty\boot.json`, kept up
-to date by every start, else Claude Code's record of what is installed), so
-updating the plugin doesn't break the shortcut. `/tatty uninstall` removes the
+The launcher finds the plugin each time, so updating the plugin doesn't break the
+shortcut: it runs the version Claude Code has installed, or, for a checkout you
+run on purpose, the folder `%LOCALAPPDATA%\Tatty\boot.json` names (every start
+keeps it up to date). A launcher built before this was a rule keeps starting the
+version it last ran, so run `/tatty install` once after updating to rebuild it. `/tatty uninstall` removes the
 shortcuts, the launcher and `boot.json`.
 
 ## Updating
