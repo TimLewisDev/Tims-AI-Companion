@@ -17,10 +17,11 @@ function commitCard(f) {
     slot.replaceChildren(el("div", { class: "stand primary commit-card", id: "commit-card" },
       el("p", {}, el("strong", {}, `${n} changed file${n === 1 ? "" : "s"} on `), el("code", {}, info.branch || info.current || "the repo"),
         " aren't committed. ", mine ? `${mine} of them ${mine === 1 ? "is" : "are"} the workflow's own.` : "",
-        " Commit them before a review: it only reads commits."),
+        info.afterReview ? " They are the changes the review's suggestions led to: commit them to finish the review."
+          : " Commit them before a review: it only reads commits."),
       el("a", { class: "go-btn", id: "commit-open", href: featureCommitHref(f.name) }, "Choose what to commit…")));
-    for (const s of document.querySelectorAll(".stand.alt")) {
-      if (/^Or: review the branch/i.test(s.innerText.trim()) && !s.querySelector(".review-needs-commit"))
+    for (const s of document.querySelectorAll(".stand.primary")) {
+      if (!info.afterReview && /^Review the branch/i.test(s.innerText.trim()) && !s.querySelector(".review-needs-commit"))
         s.append(el("p", { class: "small st missing review-needs-commit" }, "Commit first: a review only reads what is committed."));
     }
   }).catch(() => {});
@@ -48,7 +49,7 @@ async function commitPage(f, main) {
   if (!info.files.length) {
     featureCache.delete(f.name);
     put(head, where, ...warn, el("div", { class: "card", id: "commit-clean" }, el("strong", {}, "Nothing to commit: "), "the branch is clean.",
-      el("p", { class: "small" }, "Next: ", el("a", { href: featureHref(f.name) }, "review the branch"), " from the feature's page.")));
+      el("p", { class: "small" }, "Next: ", el("a", { href: featureHref(f.name) }, "the feature's page"), " offers the next step.")));
     return;
   }
   const hasWf = info.files.some(x => x.workflow);
@@ -92,9 +93,9 @@ async function commitPage(f, main) {
       const r = await api("/api/commit", { name: f.name, message: message.value, ...body });
       featureCache.delete(f.name);
       put(el("h2", {}, "Committed"), el("div", { class: "card", id: "commit-done" },
-        el("p", {}, el("code", {}, r.commit), " ", r.subject), el("p", { class: "small dim" }, `${r.files} file${r.files === 1 ? "" : "s"} on ${info.current}. Nothing was pushed.`),
+        el("p", {}, el("code", {}, r.commit), " ", r.subject), el("p", { class: "small dim" }, `${r.files} file${r.files === 1 ? "" : "s"} on ${info.current}. Nothing was pushed.` + (r.reviewDone ? " The review is done." : "")),
         el("div", { class: "start-actions" },
-          el("a", { class: "go-btn", id: "commit-next", href: featureHref(f.name) }, "Back to the feature: review it"),
+          el("a", { class: "go-btn", id: "commit-next", href: featureHref(f.name) }, r.reviewDone ? "Back to the feature: on to the request" : "Back to the feature: review it"),
           el("button", { type: "button", id: "commit-more", onclick: () => commitPage(f, main) }, "Commit more files"))));
     } catch (e) {
       result.replaceChildren(el("pre", { class: "st missing commit-error" }, String(e.message || e)));
@@ -104,6 +105,7 @@ async function commitPage(f, main) {
   selectedBtn.addEventListener("click", () => go({ files: [...chosen] }, chosen.size, [...chosen].filter(p => hasWf && !info.files.find(x => x.path === p).workflow).length));
   allBtn.addEventListener("click", () => go({ all: true }, everything.length, hasWf ? everything.filter(x => !x.workflow).length : 0));
   put(head, where, ...warn,
+    info.afterReview ? el("p", { class: "small" }, "These are the changes the review's suggestions led to. Committing them finishes the review.") : "",
     el("p", { class: "small dim" }, hasWf ? "The workflow's own files are ticked: they are the ones its task results list as modified. The rest are changes in the repo it doesn't mention, so check them before including them."
       : "The workflow's results name no file that changed here, so everything is ticked."),
     hasWf ? section("Changed by this workflow", info.files.filter(x => x.workflow)) : "",

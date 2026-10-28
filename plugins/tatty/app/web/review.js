@@ -1,10 +1,11 @@
-// The review step's Start panel. The toolbox offers "review the branch" (tt-branch-review) once a build
-// is complete, as /tt-branch-review [branch]. The skill reviews the repo its session starts in, which is
-// not always the feature's project (a feature's sessions may run in one repo while its work is in
-// another), so this panel asks which repo and branch, fills them in from what Tatty knows of the
-// feature, and starts the session in that repo for this one session only (the server's review_request).
+// The Review step's Start panel (the first session: /tatty:review, which runs the toolbox's tt-branch-review).
+// A review reads the repo its session starts in, which is not always the feature's project (a feature's
+// sessions may run in one repo while its work is in another), so this panel asks which repo and branch,
+// fills them in from what Tatty knows of the feature, and starts the session in that repo for this one
+// session only (the server's review_session). It also says when the repo has uncommitted files: a review
+// only reads commits.
 
-function reviewStart(f, onChange) {
+function reviewStart(f, onChange, command = "/tt-branch-review") {
   const enc = encodeURIComponent;
   const branch = el("input", { placeholder: "blank: the branch that is checked out", "aria-label": "branch to review", id: "review-branch" });
   const against = el("input", { placeholder: "blank: the repo's default branch", "aria-label": "compare with", id: "review-against" });
@@ -16,6 +17,12 @@ function reviewStart(f, onChange) {
     el("div", { class: "small dim" }, "The review reads the repo the session starts in, so choose the repo the branch is in. ",
       "It is chosen for this session only: the feature keeps its own project."));
   let info = { repo: "" };
+  const dirty = el("div", { class: "small st missing", id: "review-dirty" });
+  node.append(dirty);
+  api("/api/commit?name=" + enc(f.name)).then(c => {
+    if (c.repo && c.files.length) dirty.replaceChildren(`${c.files.length} uncommitted file${c.files.length === 1 ? "" : "s"} in the feature's repo: a review only reads commits. `,
+      el("a", { href: featureCommitHref(f.name) }, "Commit them first"), ".");
+  }).catch(() => {});
 
   const draw = () => {
     const same = info.repo && info.project && info.repo.replace(/\/+$/, "").toLowerCase() === info.project.replace(/\/+$/, "").toLowerCase();
@@ -48,7 +55,7 @@ function reviewStart(f, onChange) {
   return {
     node,
     ready: () => !!info.repo,
-    cmd: () => ["/tt-branch-review", branch.value.trim(), against.value.trim() ? "against " + against.value.trim() : ""].filter(Boolean).join(" "),
+    cmd: () => [command, branch.value.trim(), against.value.trim() ? "against " + against.value.trim() : ""].filter(Boolean).join(" "),
     fields: () => ({ review: { repo: info.repo, branch: branch.value.trim(), against: against.value.trim() } }),
   };
 }

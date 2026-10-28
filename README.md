@@ -12,10 +12,12 @@ visually:
   Tatty opens straight into it. The ones you haven't got are greyed on the modes
   page with **Add**, which installs them for you.
 - **Features:** every feature you're working on, where it stands in the
-  workflow (exploring, planning, building, merging, done), and its progress.
+  workflow (exploring, planning, building, reviewing, done), and its progress.
   Each workflow Tatty starts works on a branch of its own, so two don't trample
-  each other; after the build, **Merge** walks you through committing, pushing
-  and opening the pull / merge request, and watches for it.
+  each other; after the build, **Review** takes the branch through a review, puts
+  each of its suggestions to you as a question with options, has the changes you
+  chose made, helps you commit them, and then walks you through pushing and
+  opening the pull / merge request, and watches for it.
 - **A feature's page:**
   - its documents, readable in place, with `[[wikilinks]]` that open the
     heading or item they name; View lays each kind out for reading (the
@@ -121,7 +123,8 @@ install from a local checkout, and how to work on Tatty itself.
 | start a new feature | **Features** → **New feature…** |
 | run a feature's next step | its page → **Start…** → **Start session** |
 | commit what a finished workflow changed | its page → **Choose what to commit…** (or **Commit** in the left rail) → **Commit selected** or **Commit everything** |
-| review a feature's branch, even in another repo | its page, once the build is complete → **Or: review the branch** → **Start…** → **Change…** to pick the repo → **Start session** |
+| review a feature's branch, even in another repo | its page, once the build is complete → **Review the branch** → **Start…** → **Change…** to pick the repo → **Start session** |
+| decide what to do about the review's findings | its page → **Decide on the suggestions…** (or **Review suggestions** in the left rail): one question at a time; the last answer starts the changes |
 | put a feature away, or delete it | its page → **Archive** (**▾** → **Delete…** to remove it for good); **Features** → **Archived** to restore |
 | see your Jira sprint | the production mode → **Jira** → **Refresh** |
 | start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |

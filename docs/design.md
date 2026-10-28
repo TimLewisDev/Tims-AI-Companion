@@ -367,17 +367,50 @@ folders and Claude Code's own install records; see
     in one checkout share its working tree: the Start panel (`GET
     /api/branch`) names the branch it will make or use and warns when another
     workflow has a branch in the same repo.
-  - **The Merge step.** The toolbox's last phase is `complete` (built and
-    validated). Tatty adds one more step after it, Merge, on all three routes
-    (the tracker reads Explore, Plan, Breakdown, Build, Merge, Done), and the
-    feature is Done only when its request is merged. `workflow_rows` appends the
-    Tatty row `/tatty:merge` while the branch isn't merged; the Start panel
-    opens a session that runs the plugin's `merge` skill, which looks the change
-    over, then commits, pushes and opens the pull / merge request, asking before
-    each git write and using the project's own commit and request skills and
-    rules when it has them. The facts the skill needs (feature, folder,
-    repository, branch, base, host, existing request) follow the command as plain
-    lines.
+  - **The Review step.** The toolbox's last phase is `complete` (built and
+    validated). Tatty adds one more step after it, Review, on all three routes
+    (the tracker reads Explore, Plan, Breakdown, Build, Review, Done), and the
+    feature is Done only when its request is merged. The step has phases, shown
+    as chips under it: **Review, Decide, Apply, Commit, Merge**. They are read from
+    the Review Suggestions document (below); `review_rows` (called by
+    `workflow_rows`) turns the phase into the Tatty row, until the request is merged,
+    and replaces the toolbox's own "review the branch" row. A request that is open
+    already skips the review.
+    - **Review** (`/tatty:review`, plugin skill `review`): the Start panel (review.js)
+      chooses the repo, branch and base; the session runs the toolbox's
+      `tt-branch-review`, reads its `Review.md` and writes the Review Suggestions
+      document, each finding with two to four options, only through `suggestions.sh`.
+    - **Decide** (the Review page, review-page.js, `#feature/<name>/review`): the
+      suggestions one at a time, each with its options, "something else" (the person's own
+      words) and a note; every answer is saved into the document at once
+      (`POST /api/review/decide`), so it can be left and resumed. The last answer
+      starts the next session from the server (`review_apply_start`).
+    - **Apply** (`/tatty:apply-review`, plugin skill `apply-review`): makes only the
+      chosen changes on the reviewed branch (the smallest coherent diff, no review IDs
+      in code, a check at the end), records `Applied`, `Skipped` or `Blocked` against
+      each suggestion and ends with `suggestions.sh finish`. It never stages or commits,
+      and asks in the session when a decision is unclear.
+    - **Commit** (the Commit page, below): offers the review's changes with a message
+      "address review suggestions"; a successful commit marks the review Done
+      (`reviewDone`), or **Mark the review done** does if they were committed another way.
+    - **Merge** (`/tatty:merge`, plugin skill `merge`): looks the change over, then commits
+      (if anything is left), pushes and opens the pull / merge request, asking before
+      each git write and using the project's own commit and request skills and rules when
+      it has them. The facts the skill needs (feature, folder, repository, branch, base,
+      host, existing request) follow the command as plain lines.
+  - **The Review Suggestions document** (`<Feature> - Review Suggestions.md` in the
+    feature's folder; `reviewdoc.py`, run as `scripts/suggestions.sh`). It is Tatty-owned
+    and script-written (no skill or page edits it by hand, so its layout never varies;
+    `check` reports a hand-edit that breaks it, and the step then shows a warning). Header:
+    Repository, Branch, Base, Reviewed (head), Report (the toolbox's `Review.md`), Status
+    (`Open` → `Decided` → `Applied` → `Done`) and "Decided n of N". Then a table and a
+    section per suggestion `RS01…` (ids never reused): Severity, Dimension, Where, Finding,
+    Options (`A — title: detail`, one marked recommended, "Leave as is" always last),
+    Decision (`A`, `Other: <words>` or `—`), Note, Result. The document is the one record
+    of where the step is (`Doc.phase()`), so a restart loses nothing; writes take a lock
+    directory and replace the file whole (CRLF and a BOM are kept). `init --replace` keeps
+    the old document in the feature's `.tt/Review Suggestions history/`. No findings: `done`
+    straight away.
   - **Seeing the request.** The record keeps `merge: {state, url, number, host,
     checked, note}`, `state` being empty, `opened` or `merged` and never going
     back. `merge_check` asks the host's own tool, `glab mr list --source-branch`
@@ -769,9 +802,9 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   it was shown. The repo's hooks run (never `--no-verify`); if one refuses, its words are
   shown and what Tatty staged is unstaged again. Committing outside the workflow's own files
   asks first. It never pushes (the Merge step does).
-- **Review the branch** (review.js; server.py `review_info`, `review_request`).
-  Once a build is complete the toolbox offers `/tt-branch-review [branch]`. That
-  skill reviews the repo its session starts in, so a feature whose sessions run in
+- **Review the branch** (review.js; server.py `review_info`, `review_session`).
+  Once a build is complete the Review step starts `/tatty:review`, which runs the toolbox's
+  `/tt-branch-review [branch]`. That skill reviews the repo its session starts in, so a feature whose sessions run in
   one repo (its project) but whose work is in another would be reviewed in the wrong
   one. The review row's Start panel therefore asks which repo and branch instead of
   showing the project line: `GET /api/review?name=&repo=` offers the repo the
@@ -780,8 +813,9 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   another repo. `POST /api/start {review: {repo, branch, against}}` starts the session
   in that repo, for that session only: the feature's project choice and branch
   record are untouched, and no branch is made or switched (a review only reads).
-  The toolbox's `[branch]` hint is never sent as text: the command is built from
-  the fields (`/tt-branch-review [branch] [against <base>]`).
+  The toolbox's `[branch]` hint is never sent as text: the command is `/tatty:review`
+  followed by the facts as lines (repository, branch, base, the document and the script),
+  and the skill passes the branch and base on to `tt-branch-review`.
 - **Archive and Delete** (archive.js; server.py "archiving and deleting a
   feature"). The feature page's header has a split button: **Archive**, with
   **Delete…** behind its caret (the menu is split.js's `showMenu`).

@@ -593,7 +593,12 @@ git -C "$GR" switch -q main
 post /api/project "{\"name\":\"Shipped\",\"path\":\"$GRW\"}" >/dev/null
 get "/api/feature?name=Shipped" >"$T/j"
 has "the toolbox says the build is complete" "$T/j" '"phase": "complete"'
-has "Tatty adds the merge step after it" "$T/j" '"skill": "tatty:merge"'
+has "Tatty adds the Review step after it" "$T/j" '"skill": "tatty:review"'
+hasnt "in place of the toolbox's own review row" "$T/j" '"skill": "tt-branch-review"'
+bash "$root/plugins/tatty/scripts/suggestions.sh" init "$SH/Shipped - Review Suggestions.md" --branch feature/Brand-New --base main --head 1 >/dev/null
+bash "$root/plugins/tatty/scripts/suggestions.sh" done "$SH/Shipped - Review Suggestions.md" >/dev/null
+get "/api/feature?name=Shipped" >"$T/j"
+has "a finished review leads to the merge phase" "$T/j" '"skill": "tatty:merge"'
 has "named for the stage" "$T/j" '"stage": "Merge"'
 IDX=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r['phase'] == 'merge'][0]")
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"check"}' "$U/api/merge")" = 409 ] && ok "no branch yet: nothing to check" || bad "no branch yet: nothing to check"
@@ -638,38 +643,47 @@ head -n 2 "$root/plugins/tatty/skills/merge/SKILL.md" | tail -n 1 | grep -q '^na
 
 echo "# reviewing a branch, in the repo it is in"
 [ "$(code "$U/static/review.js")" = 200 ] && ok "review.js served" || bad "review.js served"
-get "/api/feature?name=Shipped" >"$T/j"
-has "the toolbox offers the review once the build is complete" "$T/j" '"skill": "tt-branch-review"'
-RV=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r.get('skill') == 'tt-branch-review'][0]")
+RVD="$FX/features/Reviewing"; mkdir -p "$RVD"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+	sed 's/Demo/Reviewing/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$RVD/Reviewing - $f.md"
+done
+post /api/project "{\"name\":\"Reviewing\",\"path\":\"$GRW\"}" >/dev/null
+get "/api/feature?name=Reviewing" >"$T/j"
+has "Tatty's Review step is offered once the build is complete" "$T/j" '"skill": "tatty:review"'
+RV=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r.get('skill') == 'tatty:review'][0]")
 OR="$T/otherrepo"
 mkdir -p "$OR" && git -C "$OR" init -q -b main && : >"$OR/b" && git -C "$OR" add -A && git -C "$OR" $GITID commit -q -m first && git -C "$OR" branch feature/other
 ORW=$(cd "$OR" && { pwd -W 2>/dev/null || pwd; })
-get "/api/review?name=Shipped" >"$T/j"
+get "/api/review?name=Reviewing" >"$T/j"
 has "the feature's own branch is offered" "$T/j" '"branch": "feature/Brand-New"'
-get "/api/review?name=Shipped&repo=$ORW" >"$T/j"
+get "/api/review?name=Reviewing&repo=$ORW" >"$T/j"
 has "another repo offers the branch it is on" "$T/j" '"branch": "main"'
-get "/api/review?name=Shipped&repo=$T" >"$T/j"
+get "/api/review?name=Reviewing&repo=$T" >"$T/j"
 has "a folder that isn't a repo is said not to be" "$T/j" "isn't in a git repository"
 [ "$(code -H "X-TT-Token: $K" "$U/api/review?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
 cp "$TATTY_HOME/branches.json" "$T/branches.before"
-post /api/start "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"feature/other\",\"against\":\"main\"}}" >"$T/j"
-has "the review starts with the branch and the base" "$T/j" "Prompt: /tt-branch-review feature/other against main"
+post /api/start "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"feature/other\",\"against\":\"main\"}}" >"$T/j"
+has "the review session starts" "$T/j" "Prompt: /tatty:review"
+has "with the branch" "$T/j" "Branch: feature/other"
+has "and the base" "$T/j" "Against: main"
+has "and the document it writes" "$T/j" "Document: "
+has "and the script that writes it" "$T/j" "suggestions.sh"
 has "in the other repo" "$T/j" "otherrepo"
 hasnt "the toolbox's placeholder is never sent" "$T/j" "[branch]"
-get "/api/feature?name=Shipped" >"$T/j"
+get "/api/feature?name=Reviewing" >"$T/j"
 has "the feature keeps its own project" "$T/j" "gitrepo"
 hasnt "which is not changed" "$TATTY_HOME/projects.tsv" "otherrepo"
 cmp -s "$TATTY_HOME/branches.json" "$T/branches.before" && ok "and its branch record" || bad "and its branch record"
 [ "$(git -C "$OR" branch --show-current)" = main ] && ok "a review switches nothing" || bad "a review switches nothing"
-post /api/start "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\"}}" >"$T/j"
-has "no branch: the one checked out" "$T/j" "Prompt: /tt-branch-review"
+post /api/start "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\"}}" >"$T/j"
+has "no branch: the one checked out" "$T/j" "Branch: (the branch that is checked out)"
 hasnt "and no placeholder" "$T/j" "[branch]"
-hasnt "nor a base" "$T/j" "against"
-post /api/start "{\"name\":\"Shipped\",\"row\":$RV}" >"$T/j"
+hasnt "nor a base" "$T/j" "Against:"
+post /api/start "{\"name\":\"Reviewing\",\"row\":$RV}" >"$T/j"
 hasnt "started without the panel, the placeholder still isn't sent" "$T/j" "[branch]"
-[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"a b\"}}" "$U/api/start")" = 400 ] && ok "a branch with a space is refused" || bad "a branch with a space is refused"
-[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$T\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't a repo is refused" || bad "a folder that isn't a repo is refused"
-[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Shipped\",\"row\":$RV,\"review\":{\"repo\":\"$T/nowhere\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't there is refused" || bad "a folder that isn't there is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"a b\"}}" "$U/api/start")" = 400 ] && ok "a branch with a space is refused" || bad "a branch with a space is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$T\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't a repo is refused" || bad "a folder that isn't a repo is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$T/nowhere\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't there is refused" || bad "a folder that isn't there is refused"
 
 echo "# committing what the workflow left"
 [ "$(code "$U/static/commit.js")" = 200 ] && ok "commit.js served" || bad "commit.js served"
@@ -719,6 +733,148 @@ git -C "$CR" status --porcelain >"$T/st"
 [ "$(cat "$T/st" | tr -d '\r' | tr '\n' ' ')" = "?? .env " ] && ok "all but the file that looks like a secret" || bad "all but the file that looks like a secret" "$(cat "$T/st")"
 get "/api/commit?name=Commit%20Demo" >"$T/j"
 [ "$(pick "$T/j" "[f['path'] for f in d['files']]")" = "['.env']" ] && ok "the page then lists only that" || bad "the page then lists only that"
+
+echo "# the Review step: suggestions, decisions, the changes, the commit"
+[ "$(code "$U/static/review-page.js")" = 200 ] && ok "review-page.js served" || bad "review-page.js served"
+[ "$(code "$U/static/review-page.css")" = 200 ] && ok "review-page.css served" || bad "review-page.css served"
+SUG="$root/plugins/tatty/scripts/suggestions.sh"
+RD="$T/rdoc"; mkdir -p "$RD"; D1="$RD/Solo - Review Suggestions.md"
+bash "$SUG" >/dev/null 2>&1; [ $? = 2 ] && ok "suggestions.sh with no command is a usage error" || bad "suggestions.sh with no command is a usage error"
+expect "init a document" 0 bash "$SUG" init "$D1" --repo "$CRW" --branch feature/x --base main --head abc1234 --report "$RD/Review.md"
+expect "init again is refused" 1 bash "$SUG" init "$D1" --branch feature/x
+expect "a name that isn't <Feature> - Review Suggestions" 1 bash "$SUG" init "$RD/notes.md" --branch b
+expect "a document that isn't there" 2 bash "$SUG" status "$RD/Nope - Review Suggestions.md"
+bash "$SUG" add "$D1" >"$T/out" 2>&1 <<'EOF'
+summary: Null check missing in Load
+severity: major
+dimension: correctness
+where: src/load.py:42
+finding: Load() dereferences the result of find() without checking it.
+  A missing file crashes the whole import.
+option: A | Guard the result | Return early with a clear error when find() gives None | recommended
+option: B | Raise a typed error | Let callers decide: raise LoadError(path)
+---
+summary: Magic number in the retry loop
+severity: nit
+where: src/net.py:7
+finding: 3 is used for the retry count.
+option: A | Name the constant | RETRIES = 3 at the top of the module | recommended
+EOF
+has "suggestions are added with the next ids" "$T/out" "added RS01 RS02"
+bash "$SUG" add "$D1" >"$T/out" 2>&1 <<'EOF'
+summary: A third
+option: A | Do it | now
+EOF
+has "ids are never reused" "$T/out" "added RS03"
+has "'Leave as is' is always an option" "$D1" "**C** — Leave as is"
+expect "a suggestion needs options" 1 bash -c "printf 'summary: x\n' | bash '$SUG' add '$D1'"
+expect "an unknown severity is refused" 1 bash -c "printf 'summary: x\nseverity: huge\noption: A | a | b\n' | bash '$SUG' add '$D1'"
+bash "$SUG" status "$D1" >"$T/out"
+has "the status counts" "$T/out" "total=3"
+has "and says the phase" "$T/out" "phase=decide"
+expect "an option that isn't there" 1 bash "$SUG" decide "$D1" RS01 Z
+expect "'other' needs words" 1 bash "$SUG" decide "$D1" RS01 other
+expect "no such suggestion" 1 bash "$SUG" decide "$D1" RS09 A
+expect "no result before everything is decided" 1 bash "$SUG" result "$D1" RS01 applied
+expect "the document is in its layout" 0 bash "$SUG" check "$D1"
+printf 'not a review document' >"$RD/Bad - Review Suggestions.md"
+expect "a document that isn't in the layout is reported" 1 bash "$SUG" check "$RD/Bad - Review Suggestions.md"
+# CRLF and a BOM are kept
+D2="$RD/Crlf - Review Suggestions.md"
+bash "$SUG" init "$D2" --branch b --base main --head 1 >/dev/null
+printf 'summary: Crlf one\noption: A | Do | it\n' | bash "$SUG" add "$D2" >/dev/null
+$PY -c "import sys; p=sys.argv[1]; b=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n'); open(p,'wb').write(b'\xef\xbb\xbf'+b)" "$D2"
+bash "$SUG" decide "$D2" RS01 A >/dev/null
+[ "$($PY -c "import sys; b=open(sys.argv[1],'rb').read(); print(b.startswith(b'\xef\xbb\xbf'), b.count(b'\n') == b.count(b'\r\n'))" "$D2")" = "True True" ] && ok "a BOM and CRLF are kept" || bad "a BOM and CRLF are kept"
+# nothing to change: done straight away
+D3="$RD/None - Review Suggestions.md"
+bash "$SUG" init "$D3" --branch b --base main --head 1 >/dev/null
+expect "no findings: done" 0 bash "$SUG" done "$D3"
+bash "$SUG" status "$D3" >"$T/out"; has "and the next phase is the merge" "$T/out" "phase=merge"
+# a replaced document is kept
+expect "start again with --replace" 0 bash "$SUG" init "$D3" --branch b --base main --head 2 --replace
+ls "$RD/.tt/Review Suggestions history/"*"None - Review Suggestions.md" >/dev/null 2>&1 && ok "and the old one is kept" || bad "and the old one is kept"
+
+# the Review step on a feature whose build is complete: Commit Demo (its branch is in $CR)
+CD="$FX/features/Commit Demo"; DOC="$CD/Commit Demo - Review Suggestions.md"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+	sed 's/Demo/Commit Demo/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$CD/Commit Demo - $f.md"
+done
+rpost() { curl -s -o "$T/rv" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/review/$1"; }
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "after the build: the Review step" "$T/j" '"skill": "tatty:review"'
+has "named for the step" "$T/j" '"stage": "Review"'
+hasnt "the toolbox's own review row is hidden" "$T/j" '"skill": "tt-branch-review"'
+hasnt "and there is no merge row yet" "$T/j" '"skill": "tatty:merge"'
+has "the page is told where the step stands" "$T/j" '"review": {"phase": "review"}'
+[ "$(rpost done '{"name":"Commit Demo"}')" = 409 ] && ok "a review that isn't applied can't be marked done" || bad "a review that isn't applied can't be marked done"
+[ "$(code -H "X-TT-Token: $K" "$U/api/review/suggestions?name=Commit%20Demo")" = 404 ] && ok "no suggestions yet: a 404" || bad "no suggestions yet: a 404"
+bash "$SUG" init "$DOC" --repo "$CRW" --branch feature/Commit-Demo --base main --head abc1234 --report "$RD/Review.md" >/dev/null
+bash "$SUG" add "$DOC" >/dev/null <<'EOF'
+summary: Guard the widget
+severity: major
+where: src/widget.txt:1
+finding: The widget is not checked.
+option: A | Guard it | Add the check | recommended
+option: B | Leave it | Not needed
+---
+summary: Rename the helper
+severity: nit
+where: docs/a.md:1
+finding: The helper's name is vague.
+option: A | Rename | Use a clearer name | recommended
+EOF
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "suggestions to decide: a link to the page" "$T/j" '"link": "#feature/Commit%20Demo/review"'
+has "the step says how many" "$T/j" "2 suggestions for you to decide on (0 decided)"
+has "the feature carries the step's state" "$T/j" '"phase": "decide"'
+get "/api/review/suggestions?name=Commit%20Demo" >"$T/j"
+[ "$(pick "$T/j" "(d['counts']['total'], [o['key'] for o in d['items'][0]['options']])")" = "(2, ['A', 'B'])" ] && ok "the page gets the suggestions with their options" || bad "the page gets the suggestions with their options" "$(head -c 300 "$T/j")"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"Z"}')" = 409 ] && ok "an option that isn't there is refused" || bad "an option that isn't there is refused"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"other"}')" = 409 ] && ok "'other' needs words" || bad "'other' needs words"
+[ "$(rpost decide '{"name":"Nope","id":"RS01","choice":"A"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"A","note":"yes"}')" = 200 ] && ok "a decision is recorded" || bad "a decision is recorded" "$(cat "$T/rv")"
+has "not the last: no session yet" "$T/rv" '"started": null'
+has "and it is in the document" "$DOC" "- **Decision:** A"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS02","choice":"other","note":"leave it, the docs go next week"}')" = 200 ] && ok "the last decision" || bad "the last decision" "$(cat "$T/rv")"
+has "starts the session that makes the changes" "$T/rv" '"name": "Commit Demo : Apply review"'
+has "with the apply skill" "$T/rv" "Prompt: /tatty:apply-review"
+has "and the document it works from" "$T/rv" "Document: "
+has "in the reviewed repo" "$T/rv" "commitrepo"
+[ "$(rpost apply '{"name":"Commit Demo"}')" = 409 ] && ok "it isn't started twice" || bad "it isn't started twice"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"B"}')" = 200 ] && ok "a decision can still be changed before the changes are made" || bad "a decision can still be changed before the changes are made"
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "the step waits for the changes" "$T/j" '"phase": "apply"'
+has "its row is the apply skill" "$T/j" '"skill": "tatty:apply-review"'
+bash "$SUG" result "$DOC" RS01 applied "guarded the widget" >/dev/null
+bash "$SUG" result "$DOC" RS02 skipped "left, by choice" >/dev/null
+bash "$SUG" finish "$DOC" >/dev/null
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "then the commit: a link to the Commit page" "$T/j" '"link": "#feature/Commit%20Demo/commit"'
+has "with what became of the suggestions" "$T/j" "1 applied, 1 skipped, 0 blocked"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"A"}')" = 409 ] && ok "a decision can't change once the changes are made" || bad "a decision can't change once the changes are made"
+printf 'applied' >"$CR/applied.txt"
+get "/api/commit?name=Commit%20Demo" >"$T/j"
+has "the commit is named for the review" "$T/j" "ddress review suggestions"
+has "and says so" "$T/j" '"afterReview": true'
+has "listing what was applied" "$T/j" "Guard the widget"
+[ "$(cpost '{"name":"Commit Demo","files":["applied.txt"],"message":"fix: address review suggestions"}')" = 200 ] && ok "committed" || bad "committed" "$(cat "$T/fc")"
+has "which finishes the review" "$T/fc" '"reviewDone": true'
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "the merge phase follows" "$T/j" '"skill": "tatty:merge"'
+has "the review is done" "$T/j" '"status": "Done"'
+hasnt "no review row is left" "$T/j" '"skill": "tatty:review"'
+for s in review apply-review; do
+	head -n 2 "$root/plugins/tatty/skills/$s/SKILL.md" | tail -n 1 | grep -q "^name: $s" && ok "the $s skill is in the plugin" || bad "the $s skill is in the plugin"
+done
+# a document that isn't in its layout stops the step with a warning
+BF="$FX/features/Broken"; mkdir -p "$BF"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do sed 's/Demo/Broken/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$BF/Broken - $f.md"; done
+printf 'not a review document' >"$BF/Broken - Review Suggestions.md"
+get "/api/feature?name=Broken" >"$T/j"
+has "a broken document is a warning row" "$T/j" '"phase": "review-broken"'
+has "and the page is told" "$T/j" '"phase": "broken"'
+rm -rf "$BF"
 
 echo "# a started session, live"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"

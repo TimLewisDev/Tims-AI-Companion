@@ -140,7 +140,7 @@ function branchSettings(s) {
   });
   return el("section", { id: "branch-settings" },
     el("h3", {}, "Branches"),
-    el("p", { class: "dim small" }, "A workflow started from Tatty works on a new branch of its own, made when it first starts, so two workflows don't trample each other. Tatty only switches branches: committing, pushing and opening the request are yours (the Merge step helps)."),
+    el("p", { class: "dim small" }, "A workflow started from Tatty works on a new branch of its own, made when it first starts, so two workflows don't trample each other. Tatty switches branches, and commits only when you press Commit on a feature's page: pushing and opening the request are yours (the Review step's merge phase helps)."),
     el("label", { class: "field-row" }, el("strong", {}, "Branch prefix"), input,
       el("span", { class: "dim small" }, "Letters, digits, - and _, each part ending in /: feature/ gives feature/ABC-12-fix-the-thing.")));
 }

@@ -55,6 +55,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a checkout)
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import reviewdoc  # noqa: E402  the Review Suggestions document
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "models.js": "text/javascript",
@@ -66,6 +69,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
+          "review-page.js": "text/javascript", "review-page.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -989,9 +993,10 @@ def workflow_rows(state, folder):
     except (OSError, subprocess.TimeoutExpired):
         return []
     rows = [dict(zip(STATE_COLS, line.split("\t"))) for line in p.stdout.splitlines() if line.strip()]
-    # The toolbox's last phase is "complete". Tatty adds the step after it, until the request is merged.
+    # The toolbox's last phase is "complete". Tatty adds the Review step after it (its own review row replaces
+    # the toolbox's), until the request is merged.
     if any(r.get("phase") == "complete" for r in rows) and merge_view(folder.name)["state"] != "merged":
-        rows.append(merge_row(folder))
+        rows = [r for r in rows if r.get("skill") != REVIEW_SKILL] + review_rows(folder)
     return rows
 
 
@@ -1273,7 +1278,7 @@ def feature_summary(state, folder, detail=False):
            "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
-           "tasks": tasks, "merge": merge_view(folder.name),
+           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder),
            "live": next(({"name": x["name"], "status": x["status"], "tag": x["tag"]} for x in sessions_of(state, folder)
                          if x["status"] in ("starting", "running", "lost")), None)}
     if detail:
@@ -1310,8 +1315,8 @@ def features_list(state):
 # Two workflows in one repository must not trample each other's files, and finished
 # work mustn't sit uncommitted and forgotten. So a workflow Tatty starts runs on a
 # branch of its own, made here (the toolbox's skills never create one), and after
-# the build there is a Merging step: a session that walks the person through
-# commit, push and opening a pull/merge request, each git write asked first.
+# the build there is a Review step (see "the Review step"), whose last phase is a session that walks the
+# person through commit, push and opening a pull/merge request, each git write asked first.
 # Tatty itself runs `git switch`, and stages and commits only on the Commit page's buttons
 # (see "committing what the workflow left"); it never pushes.
 # <tatty home>/branches.json: feature name (lower case) -> {repo, branch, base,
@@ -1521,16 +1526,20 @@ def in_workflow(path, mentioned, repo):
     return False
 
 
-def suggest_commit_message(folder, repo, branch, titles):
+def suggest_commit_message(folder, repo, branch, titles, applied=None):
     """A message from the feature's name and the style of the repo's recent commits (a conventional
-    `feat:` prefix and a trailing [KEY] only where they use them), with the workflow's tasks as the body."""
+    `feat:` prefix and a trailing [KEY] only where they use them), with the workflow's tasks as the body.
+    After a review's changes were made (applied: their summaries) it says that instead."""
     name = re.sub(r"^[A-Za-z]+-\d+\s*[-–:]\s*", "", folder.name).strip() or folder.name
+    kind = "feat"
+    if applied is not None:
+        name, kind, titles = "address review suggestions", "fix", applied
     code, out, _ = git_run(repo, ["log", "-30", "--format=%s"])
     subjects = [s for s in out.splitlines() if s.strip()] if code == 0 else []
     n = max(len(subjects), 1)
     typed = sum(1 for s in subjects if re.match(r"^(" + "|".join(CONVENTIONAL) + r")(\([^)]+\))?!?: ", s)) * 5 >= n * 2
     keyed = sum(1 for s in subjects if re.search(r"\[[A-Z][A-Z0-9]*-\d+\]$", s)) * 5 >= n * 2
-    subject = (f"feat: {name[:1].lower()}{name[1:]}" if typed else name)
+    subject = (f"{kind}: {name[:1].lower()}{name[1:]}" if typed else name[:1].upper() + name[1:] if applied is not None else name)
     key = re.search(r"[A-Z][A-Z0-9]*-\d+", branch or "") or re.search(r"[A-Z][A-Z0-9]*-\d+", folder.name)
     if keyed and key:
         subject += f" [{key.group(0)}]"
@@ -1554,9 +1563,11 @@ def commit_info(folder):
     for f in files:
         f["workflow"] = in_workflow(f["path"], mentioned, repo)
     branch, here = rec.get("branch", ""), current_branch(repo)
+    doc, _ = review_load(folder)  # the changes a review's suggestions led to get their own message
+    applied = [i["summary"] for i in doc.items if i["result"].startswith("Applied")] if doc and doc.status == "Applied" else None
     return {"repo": repo, "branch": branch, "current": here, "files": files, "conflicts": conflicts,
-            "truncated": truncated, "mentioned": len(mentioned),
-            "message": suggest_commit_message(folder, repo, branch or here, titles)}
+            "truncated": truncated, "mentioned": len(mentioned), "afterReview": applied is not None,
+            "message": suggest_commit_message(folder, repo, branch or here, titles, applied)}
 
 
 def feature_commit(state, folder, body):
@@ -1604,7 +1615,11 @@ def feature_commit(state, folder, body):
             os.unlink(tmp)
         except OSError:
             pass
-    return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo}
+    review, _ = review_load(folder)
+    reviewed = bool(review and review.status == "Applied")
+    if reviewed:  # the changes the review led to are committed: the review is done
+        review_done(folder)
+    return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo, "reviewDone": reviewed}
 
 
 REVIEW_SKILL = "tt-branch-review"
@@ -1651,6 +1666,162 @@ def review_request(body):
             return "", "", f"{repo} isn't in a git repository."
         repo = top
     return cmd, repo, ""
+
+
+# ---------------------------------------------------------------- the Review step
+# After a build is complete the last step is Review: the branch is reviewed (the session that does it writes
+# <feature>/<feature> - Review Suggestions.md with options for each finding, through suggestions.sh), the person
+# decides each suggestion one at a time on the Review page, an implementation session applies the decisions, the
+# changes are committed (the Commit page), and then the merge phase (push, open the request) follows.
+# The document is the one record: its Status and decisions say where the step is (reviewdoc.py), so a restart
+# loses nothing and there is no second state to drift.
+
+REVIEW_DOC = " - Review Suggestions.md"
+SKILL_REVIEW, SKILL_APPLY = "tatty:review", "tatty:apply-review"
+
+
+def review_doc_path(folder):
+    return folder / f"{folder.name}{REVIEW_DOC}"
+
+
+def review_load(folder):
+    """(the document or None, why it can't be read or None)."""
+    try:
+        return reviewdoc.load(review_doc_path(folder)), None
+    except reviewdoc.DocError as e:
+        return None, str(e)
+
+
+def review_view(folder):
+    """Where the Review step stands, for the feature's page and tracker: {phase, status, total, decided, ...}.
+    phase: review (not started), decide, apply, commit, merge (done), or broken (the document isn't in its layout)."""
+    doc, bad = review_load(folder)
+    if bad:
+        return {"phase": "broken", "problem": bad}
+    if not doc:
+        return {"phase": "review"}
+    return {"phase": doc.phase(), "status": doc.status, "doc": review_doc_path(folder).name, **doc.counts()}
+
+
+def review_context(folder, repo, branch, against="", doc=None):
+    """The lines a Review session is given after its command: the facts, never the findings."""
+    return "\n".join(["Context from Tatty:", f"Feature: {folder.name}", f"Folder: {folder.as_posix()}", f"Repository: {repo}",
+                      f"Branch: {branch or '(the branch that is checked out)'}", *([f"Against: {against}"] if against else []),
+                      f"Document: {review_doc_path(folder).as_posix()}", f"Script: {(PLUGIN / 'scripts' / 'suggestions.sh').as_posix()}",
+                      *([f"Reviewed head: {doc.head['Reviewed']}"] if doc and doc.head["Reviewed"] else [])])
+
+
+def review_session(folder, body):
+    """(the command, the repo the session starts in, an error) for the Review step's first Start: the repo, branch
+    and base come from the Start panel (review.js), as for the toolbox's own review."""
+    r = body.get("review") if isinstance(body.get("review"), dict) else {}
+    branch, against = (str(r.get(k) or "").strip() for k in ("branch", "against"))
+    for v in (branch, against):
+        if v and not REF_NAME.match(v):
+            return "", "", f"Not a branch name: {v}"
+    repo = str(r.get("repo") or "").strip()
+    if repo:
+        if not os.path.isdir(repo):
+            return "", "", f"no such folder: {repo}"
+        repo = repo_of(repo)
+        if not repo:
+            return "", "", "That folder isn't in a git repository."
+    else:
+        repo = review_info(folder)["repo"]
+    if not repo:
+        return "", "", "Choose the repo to review."
+    return f"/{SKILL_REVIEW} \n" + review_context(folder, repo, branch, against), repo, ""
+
+
+def apply_session(folder):
+    """(the command, the repo, an error) for the session that applies the decisions."""
+    doc, bad = review_load(folder)
+    if bad or not doc or doc.status != "Decided":
+        return "", "", "There is nothing waiting to be applied: every suggestion must be decided first."
+    repo = doc.head["Repository"] or review_info(folder)["repo"]
+    if not repo or not os.path.isdir(repo):
+        return "", "", "The repo the review was made in isn't there."
+    return f"/{SKILL_APPLY} \n" + review_context(folder, repo, doc.head["Branch"], doc=doc), repo, ""
+
+
+def review_rows(folder):
+    """The Tatty rows after the toolbox's `complete`: the step the Review document says is next, until the request is merged."""
+    v = merge_view(folder.name)
+    if v["state"] == "merged":
+        return []
+    if v["state"] == "opened":  # a request is open already: past the review
+        return [merge_row(folder)]
+    href = "#feature/" + urllib.parse.quote(folder.name)
+    base = {"prefix": "", "kind": "primary", "verb": "", "arg": "", "hint": "", "stage": "Review"}
+    doc, bad = review_load(folder)
+    if bad:
+        return [{**base, "kind": "warn", "phase": "review-broken", "skill": "-", "text": f"The Review Suggestions document isn't in its layout, so Tatty can't go on with the review: {bad}"}]
+    phase = doc.phase() if doc else "review"
+    if phase == "review":
+        info = review_info(folder)
+        return [{**base, "phase": "review", "skill": SKILL_REVIEW,
+                 "text": "Review the branch: it is reviewed, you decide what to change, the changes are made and committed, then it goes into a request.",
+                 "hint": "\n" + review_context(folder, info["repo"], info["branch"])}]
+    c = doc.counts()
+    if phase == "decide":
+        return [{**base, "phase": "decide", "skill": "-", "link": href + "/review",
+                 "text": f"The review found {c['total']} suggestion{'s' if c['total'] != 1 else ''} for you to decide on ({c['decided']} decided)."}]
+    if phase == "apply":
+        repo = doc.head["Repository"] or review_info(folder)["repo"]
+        return [{**base, "phase": "apply", "stage": "Apply review", "skill": SKILL_APPLY,
+                 "text": "Every suggestion is decided. Make the changes you chose.",
+                 "hint": "\n" + review_context(folder, repo, doc.head["Branch"], doc=doc)}]
+    if phase == "commit":
+        return [{**base, "phase": "commit", "skill": "-", "link": href + "/commit",
+                 "text": f"The changes are made ({c['applied']} applied, {c['skipped']} skipped, {c['blocked']} blocked). Commit them, then it can go into a request."}]
+    return [merge_row(folder)]
+
+
+def review_apply_start(state, folder):
+    """Start the session that applies the decisions, unless one is going. (http code, answer)"""
+    if any(s["status"] in ("starting", "running", "lost") and s["name"].split(" : ")[-1].startswith("Apply review") for s in sessions_of(state, folder)):
+        return 409, {"error": "The changes are being made already: see its tab."}
+    rows = workflow_rows(state, folder)
+    idx = next((i for i, r in enumerate(rows) if r.get("phase") == "apply"), None)
+    if idx is None:
+        return 409, {"error": "There is nothing waiting to be applied: every suggestion must be decided first."}
+    return start_session(state, folder, {"row": idx})
+
+
+def review_suggestions(state, folder):
+    """The Review page's data: the document as data and where it stands. (http code, answer)"""
+    doc, bad = review_load(folder)
+    if bad:
+        return 409, {"error": bad}
+    if not doc:
+        return 404, {"error": "The review hasn't written its suggestions yet."}
+    return 200, {"doc": review_doc_path(folder).name, "status": doc.status, "phase": doc.phase(), "head": doc.head, "counts": doc.counts(),
+                 "items": [dict(i, chosen=(doc.chosen(i) or {}).get("title", "")) for i in doc.items]}
+
+
+def review_decide(state, folder, body):
+    """Record one decision; with the last one, start the session that applies them. (http code, answer)"""
+    try:
+        item = reviewdoc.change(review_doc_path(folder), lambda d: d.decide(str(body.get("id", "")), str(body.get("choice", "")), str(body.get("note", ""))))
+    except reviewdoc.DocError as e:
+        return (404 if "no such document" in str(e) else 409), {"error": str(e)}
+    doc, _ = review_load(folder)
+    answer = {"ok": True, "id": item["id"], "decision": item["decision"], "status": doc.status, "counts": doc.counts(), "started": None}
+    if doc.status == "Decided":
+        code, started = review_apply_start(state, folder)
+        answer["started"] = started if code == 200 else None
+        if code != 200:
+            answer["startError"] = started.get("error", "")
+    return 200, answer
+
+
+def review_done(folder):
+    """The review is done (the changes are committed, or were made another way). (http code, answer)"""
+    try:
+        reviewdoc.change(review_doc_path(folder), lambda d: d.done())
+    except reviewdoc.DocError as e:
+        return 409, {"error": str(e)}
+    return 200, {"ok": True}
 
 
 def ensure_branch(folder, project, workdir, fresh):
@@ -2060,12 +2231,17 @@ def start_session(state, folder, body):
     cmd = command(row)
     if not cmd:
         return 400, {"error": "nothing left to run"}
-    review_repo = ""
-    review = row.get("skill") == REVIEW_SKILL
-    if review:  # the toolbox's "[branch]" is filled from the Start panel (never sent as it is)
+    review_repo, why = "", ""
+    skill = row.get("skill")
+    review = skill in (REVIEW_SKILL, SKILL_REVIEW, SKILL_APPLY)  # these only read, or edit the reviewed branch as it is
+    if skill == REVIEW_SKILL:  # the toolbox's "[branch]" is filled from the Start panel (never sent as it is)
         cmd, review_repo, why = review_request(body)
-        if why:
-            return 400, {"error": why}
+    elif skill == SKILL_REVIEW:
+        cmd, review_repo, why = review_session(folder, body)
+    elif skill == SKILL_APPLY:
+        cmd, review_repo, why = apply_session(folder)
+    if why:
+        return 400, {"error": why}
     values = body.get("values") or {}
     for ph in ([] if row.get("phase") == "lite" else PLACEHOLDER.findall(cmd)):  # a lite hint is free text
         v = " ".join(str(values.get(ph, "")).split())[:2000]
@@ -5935,6 +6111,12 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             return self.send(200, commit_info(folder))
+        if path == "/api/review/suggestions":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = review_suggestions(st, folder)
+            return self.send(code, answer)
         if path == "/api/review":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -6189,6 +6371,17 @@ class Handler(BaseHTTPRequestHandler):
                 code, answer = 409, {"error": str(e)}
             except OSError as e:
                 code, answer = 500, {"error": f"couldn't cancel: {e}"}
+            return self.send(code, answer)
+        if path in ("/api/review/decide", "/api/review/apply", "/api/review/done"):
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            if path == "/api/review/decide":
+                code, answer = review_decide(st, folder, b if isinstance(b, dict) else {})
+            elif path == "/api/review/apply":
+                code, answer = review_apply_start(st, folder)
+            else:
+                code, answer = review_done(folder)
             return self.send(code, answer)
         if path == "/api/commit":
             folder = feature_dir(str(b.get("name", "")))

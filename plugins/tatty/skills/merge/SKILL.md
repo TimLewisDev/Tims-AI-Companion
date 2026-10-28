@@ -4,7 +4,8 @@ description: >
   Walk the person through getting a finished workflow's work into a pull / merge
   request: look at what changed on the branch, commit it, push it and open the
   request, asking before every git write. Tatty starts this from a feature's
-  Merge step, after the build is complete, and writes the facts (feature,
+  Review step, once the review is done (the branch reviewed, its suggestions
+  decided and the changes committed), and writes the facts (feature,
   repository, branch, base, host) after the command. Works in any repository
   and on GitHub or GitLab; it uses the project's own commit and request skills
   and rules when it has them. Never force-pushes and never merges the request
@@ -16,7 +17,7 @@ metadata:
 
 # merge
 
-The build of a feature is done and validated. The person wants its work in a
+The build of a feature is done and validated, and its branch has been reviewed. The person wants its work in a
 pull / merge request, and not lost or half-committed. You guide them there, one
 step at a time. They run the workflow; you are the helper at its last step.
 
@@ -32,7 +33,7 @@ After the command, Tatty writes lines under `Context from Tatty:`:
 - `Host`: `gitlab`, `github`, or empty when unknown.
 - `Request`: the link to an existing request from the branch, if there is one.
 
-If there is no context, say this is started from a feature's Merge step in
+If there is no context, say this is started from a feature's Review step in
 Tatty, then work from the current directory and ask what branch they mean.
 
 ## Rules
@@ -64,8 +65,8 @@ Tatty, then work from the current directory and ask what branch they mean.
    each. Do not decide for them.
 3. **Commit.** Show the files to be staged and propose a commit message in the
    repository's own style (read the last commits). On a yes, stage those files
-   and commit. If the work is already committed, say so and move on. (Tatty's Commit page on the
-   feature does this with a button; when it was used there is nothing left to commit.)
+   and commit. If the work is already committed, say so and move on. (The Review step's
+   changes are committed from Tatty's Commit page, so by now there is usually nothing left.)
 4. **Push.** Propose `git push -u origin <Branch>`. On a yes, run it and show the
    result. If the push is rejected, explain why and offer options; do not force.
 5. **Open the request.** By `Host`: GitLab with `glab mr create`, GitHub with

@@ -26,12 +26,13 @@ const PHASES = {
 };
 const ROUTES = { full: "Feature", lite: "Small change", bug: "Bug", new: "New" };
 
-// The toolbox's last phase is "complete" (built and validated); Tatty's Merging step follows it.
+// The toolbox's last phase is "complete" (built and validated); Tatty's Review step follows it.
 function phaseDone(f) { return f.phase === "complete" && (f.merge || {}).state === "merged"; }
 function phaseWord(f) {
   if (f.phase !== "complete") return PHASES[f.phase] || f.phase || "—";
   const state = (f.merge || {}).state;
-  return state === "merged" ? "Merged" : state === "opened" ? "In review" : "Ready to merge";
+  const rv = (f.review || {}).phase;
+  return state === "merged" ? "Merged" : state === "opened" ? "In review" : { review: "Ready to review", decide: "Deciding", apply: "Applying review", commit: "To commit" }[rv] || "Ready to merge";
 }
 const EVENTS = {
   "explore.focus_confirmed": "Exploration focus confirmed", "explore.documented": "Familiarisation written",
@@ -110,7 +111,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", commit: parts[2] === "commit" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", commit: parts[2] === "commit", suggestions: parts[2] === "review" };
   }
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
@@ -168,7 +169,7 @@ async function route() {
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -572,7 +573,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, commit) {
+async function renderFeature(name, doc, at, board, commit, suggestions) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -591,8 +592,9 @@ async function renderFeature(name, doc, at, board, commit) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit }), f.name), main));
-  if (commit) await commitPage(f, main); // commit.js
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit, suggestions }), f.name), main));
+  if (suggestions) await reviewPage(f, main); // review-page.js
+  else if (commit) await commitPage(f, main); // commit.js
   else if (board) await featureBoard(f, main);
   else if (doc) {
     if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
@@ -618,9 +620,10 @@ function featureNav(f, current, board, opts = {}) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.side),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
+    f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -711,16 +714,32 @@ function pipeline(f) {
   const done = phaseDone(f); // the build is done at "complete"; the work is done once it is merged
   if (f.route === "lite") {
     const at = { "lite-focus": 0, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
-    return { steps: ["Explore", "Lite Brief", "Build", "Merge", "Done"], at, done };
+    return { steps: ["Explore", "Lite Brief", "Build", "Review", "Done"], at, done };
   }
   if (f.route === "bug") {
     const kinds = new Set(f.docList.map(d => d.doc));
     const at = p === "debugging" ? 0 : p === "debug-done" ? 1 : p === "complete" ? 3 : kinds.has("Lite Brief") ? 2 : p === "debugged" ? 2 : 1;
-    return { steps: ["Debug", "Write-up", "Fix", "Merge", "Done"], at, done };
+    return { steps: ["Debug", "Write-up", "Fix", "Review", "Done"], at, done };
   }
   const at = { empty: 0, exploring: 0, explored: 1, planning: 1, "signed-off": 2, "breakdown-draft": 2, "breakdown-orphan": 2,
     "breakdown-written": 3, building: 3, complete: 4 }[p] ?? 0;
-  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Merge", "Done"], at, done };
+  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Review", "Done"], at, done };
+}
+
+// The Review step's phases, as chips under it: the review, deciding on its suggestions, making the changes,
+// committing them, then the request (the merge phase). Where it stands comes from the Review Suggestions
+// document (f.review) and the request's state (f.merge).
+function reviewChips(f) {
+  const m = f.merge || {}, r = f.review || {};
+  const order = ["review", "decide", "apply", "commit", "merge"];
+  const merged = m.state === "merged";
+  const cur = m.state === "opened" ? 4 : Math.max(0, order.indexOf(r.phase));
+  const labels = ["Review", "Decide", "Apply", "Commit", merged ? "Merged" : m.state === "opened" ? "Request open" : "Merge"];
+  return el("div", { class: "substeps" }, labels.map((word, n) => {
+    const cls = "chip " + (merged || n < cur ? "done" : n === cur ? "now" : "todo");
+    if (n === 4 && m.url) return el("a", { class: cls, href: m.url, target: "_blank", rel: "noopener", title: m.url }, word);
+    return el("span", { class: cls, title: n === 1 && r.total ? `${r.decided} of ${r.total} decided` : n === 4 && m.branch ? m.branch : "" }, word);
+  }));
 }
 
 function tracker(f) {
@@ -730,13 +749,8 @@ function tracker(f) {
     const sub = s === "Plan" && f.stages.length ? el("div", { class: "substeps" },
       f.stages.map(st => el("span", { class: "chip " + statusClass(st.status), title: `${st.stage}: ${st.status}` + (st.ts ? ` (${new Date(st.ts).toLocaleDateString()})` : "") }, st.stage))) : "";
     const units = s === "Build" && f.tasks.total ? el("div", { class: "substeps" }, bar(f.tasks.done, f.tasks.total)) : "";
-    const m = f.merge || {};
-    const merge = s === "Merge" && m.branch ? el("div", { class: "substeps" },
-      m.url ? el("a", { class: "chip " + (m.state === "merged" ? "done" : "now"), href: m.url, target: "_blank", rel: "noopener", title: m.url },
-        m.state === "merged" ? "merged" : "request open")
-        : el("span", { class: "chip " + (m.state === "merged" ? "done" : m.state ? "now" : "todo"), title: m.branch },
-          m.state === "merged" ? "merged" : m.state ? "request open" : "no request yet")) : "";
-    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units, merge);
+    const reviewing = s === "Review" && f.phase === "complete" ? reviewChips(f) : "";
+    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units, reviewing);
   }));
 }
 
@@ -840,7 +854,7 @@ function startPanel(f, row, index, close) {
   const picker = modelPicker("start-" + index);
   const go = el("button", { type: "button", class: "primary" }, "Start session");
   // The review step asks which repo and branch (review.js) instead of using the project line.
-  const review = row.skill === "tt-branch-review" ? reviewStart(f, () => refresh()) : null;
+  const review = row.skill === "tt-branch-review" || row.skill === "tatty:review" ? reviewStart(f, () => refresh(), row.skill === "tatty:review" ? "/tatty:review" : "/tt-branch-review") : null;
   const refresh = () => {
     let c = review ? review.cmd() : cmd;
     for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
@@ -1221,6 +1235,13 @@ setInterval(async () => {
 
 // A step's command with Copy, Ask and Start…
 function stepActions(f, row, index, openNow) {
+  if (row.link) {  // a step done on a page of Tatty's own, not in a session
+    const label = row.phase === "decide" ? "Decide on the suggestions…" : "Choose what to commit…";
+    return el("div", { class: "start-actions" }, el("a", { class: "go-btn", id: "step-" + row.phase, href: row.link }, label),
+      row.phase === "commit" ? el("button", { type: "button", id: "step-review-done", title: "If the changes were committed another way", onclick: async () => {
+        try { await api("/api/review/done", { name: f.name }); featureCache.delete(f.name); route(); } catch (e) { alert(e.message || e); }
+      } }, "Mark the review done") : "");
+  }
   const cmd = command(row);
   if (!cmd) return "";
   const slot = el("div");
@@ -1235,7 +1256,7 @@ function stepActions(f, row, index, openNow) {
 }
 
 // The feature's branch (Tatty makes one when a workflow starts) and, once the build is done, its pull / merge
-// request: the Merge step's Start (in Where it stands) walks through opening it; these buttons tell Tatty
+// request: the Review step's merge phase (in Where it stands) walks through opening it; these buttons tell Tatty
 // what happened when it can't see for itself (it looks with glab / gh when asked, and once when the page opens).
 function mergeCard(f) {
   const m = f.merge || {};

@@ -181,7 +181,7 @@ In **Edit** a person changes the document's markdown and saves it
   version;
 - written whole and atomically, keeping the file's own line ends.
 
-Tatty never edits a document on its own.
+Tatty never edits a document on its own, except the Review Suggestions document, which is Tatty's own (written by `suggestions.sh`, never by hand).
 
 ## User Stories (the design mode)
 

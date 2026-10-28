@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -22,6 +22,7 @@ keys on the split button, its menu, the Delete panel and the Archived section. I
 throwaway root;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
+--suggestions only the Review step on the page: the tracker's chips, the link rows and the Review page (the page's api() stood in for: nothing is written);
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -1058,7 +1059,7 @@ def check_commit(p):
             window.__f = { name: 'Demo', phase: 'complete', merge: { branch: 'feature/x' } };
             document.querySelector('#commit-host') && document.querySelector('#commit-host').remove();
             (() => { const h = document.createElement('div'); h.id = 'commit-host'; document.body.append(h);
-              const st = document.createElement('div'); st.className = 'stand alt'; st.textContent = 'Or: review the branch:';
+              const st = document.createElement('div'); st.className = 'stand primary'; st.textContent = 'Review the branch: it is reviewed, you decide what to change.';
               h.append(st, commitCard(window.__f)); })();
             1""")
     wait(p, "!!document.querySelector('#commit-card')")
@@ -1090,6 +1091,78 @@ def check_commit(p):
     wait(p, "!!document.querySelector('#commit-clean')")
     res["clean"] = p.js("document.querySelector('#commit-clean').innerText.replace(/\\s+/g, ' ').trim()")
     p.js("window.api = window.__real.api; window.confirm = window.__real.confirm; document.querySelector('#commit-host').remove(); document.querySelector('#commit-main').remove(); 1")
+    return res
+
+
+def check_suggestions(p):
+    """The Review step on the page, drawn with the page's api() stood in for: the tracker's phase chips, the
+    rows that are a link and not a session, and the Review page taking three suggestions one at a time (the
+    options, 'something else' needing words, what each answer sends, the label on the last one, and the page
+    going to the session the last answer starts). Nothing is written."""
+    res = {}
+    p.js("""window.__real = { api: window.api }; window.__sent = [];
+            window.__sug = { doc: 'Demo - Review Suggestions.md', status: 'Open', phase: 'decide', head: { Branch: 'feature/x', Base: 'main', Reviewed: 'abcdef1234567' },
+              counts: { total: 3, decided: 0, applied: 0, skipped: 0, blocked: 0 },
+              items: [
+                { id: 'RS01', summary: 'Null check missing', severity: 'major', dimension: 'correctness', where: 'a.py:1', finding: 'It crashes.', decision: '—', note: '—', result: '—', chosen: '',
+                  options: [{ key: 'A', title: 'Guard it', detail: 'Return early', recommended: true }, { key: 'B', title: 'Raise', detail: 'Typed error', recommended: false }, { key: 'C', title: 'Leave as is', detail: '', recommended: false }] },
+                { id: 'RS02', summary: 'Magic number', severity: 'nit', dimension: '', where: 'b.py:2', finding: 'Three.', decision: '—', note: '—', result: '—', chosen: '',
+                  options: [{ key: 'A', title: 'Name it', detail: '', recommended: true }, { key: 'B', title: 'Leave as is', detail: '', recommended: false }] },
+                { id: 'RS03', summary: 'Long function', severity: 'minor', dimension: 'style', where: 'c.py:3', finding: 'Too long.', decision: '—', note: '—', result: '—', chosen: '',
+                  options: [{ key: 'A', title: 'Split it', detail: '', recommended: true }, { key: 'B', title: 'Leave as is', detail: '', recommended: false }] }] };
+            window.api = async (path, body) => {
+              if (path.startsWith('/api/review/suggestions')) return window.__sug;
+              if (path === '/api/review/decide') {
+                window.__sent.push(body);
+                const it = window.__sug.items.find(x => x.id === body.id); const left = window.__sug.items.filter(x => x.decision === '—' && x !== it).length;
+                it.decision = body.choice === 'other' ? 'Other: ' + body.note : body.choice;
+                return { ok: true, id: it.id, decision: it.decision, status: left ? 'Open' : 'Decided', counts: {}, started: left ? null : { tag: 's-test1234', name: 'Demo : Apply review', command: '/tatty:apply-review', project: 'C:/r' } };
+              }
+              return window.__real.api(path, body);
+            };
+            1""")
+    # the tracker and the rows
+    res["tracker"] = p.js("""(() => {
+        const t = tracker({ phase: 'complete', route: 'full', docList: [], stages: [], tasks: { done: 1, total: 1 }, merge: { branch: 'feature/x', state: '' }, review: { phase: 'decide', total: 3, decided: 1 } });
+        return { labels: [...t.querySelectorAll('.label')].map(x => x.textContent), chips: [...t.querySelectorAll('.substeps .chip')].map(c => c.textContent + ':' + c.className.replace('chip ', '')),
+                 title: t.querySelectorAll('.substeps .chip')[1].title };
+      })()""")
+    res["opened"] = p.js("""[...tracker({ phase: 'complete', route: 'full', docList: [], stages: [], tasks: { done: 1, total: 1 }, merge: { branch: 'b', state: 'opened', url: 'https://x/mr/1' }, review: { phase: 'merge' } }).querySelectorAll('.substeps .chip')].map(c => c.textContent + ':' + c.className.replace('chip ', ''))""")
+    res["rows"] = p.js("""(() => {
+        const f = { name: 'Demo' };
+        const a = stepActions(f, { phase: 'decide', link: '#feature/Demo/review', skill: '-' }, 0);
+        const b = stepActions(f, { phase: 'commit', link: '#feature/Demo/commit', skill: '-' }, 1);
+        return { decide: a.innerText.trim(), decideHref: a.querySelector('a').getAttribute('href'), commit: b.innerText.trim().replace(/\\s+/g, ' '), commitHref: b.querySelector('a').getAttribute('href') };
+      })()""")
+    res["words"] = p.js("""['review', 'decide', 'apply', 'commit', 'merge'].map(x => phaseWord({ phase: 'complete', merge: {}, review: { phase: x } }))""")
+    # the page
+    p.js("""(() => { const m = document.createElement('div'); m.id = 'rv-main'; document.body.append(m); reviewPage({ name: 'Demo' }, m); })(); 1""")
+    wait(p, "!!document.querySelector('#rv-item')")
+    res["first"] = p.js("""({ id: document.querySelector('#rv-item').dataset.id, h3: document.querySelector('#rv-item h3').textContent,
+                             opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()),
+                             go: document.querySelector('#rv-go').textContent, disabled: document.querySelector('#rv-go').disabled,
+                             count: document.querySelector('.rv-progress').innerText.replace(/\\s+/g, ' ').trim(), dots: document.querySelectorAll('.rv-dot').length })""")
+    p.js("document.querySelector('.rv-opt[data-key=\"B\"] input').click(); 1")
+    res["afterPick"] = p.js("({ disabled: document.querySelector('#rv-go').disabled, picked: document.querySelector('.rv-opt.picked').dataset.key })")
+    p.js("document.querySelector('#rv-note').value = 'because'; document.querySelector('#rv-go').click(); 1")
+    wait(p, "document.querySelector('#rv-item') && document.querySelector('#rv-item').dataset.id === 'RS02'")
+    res["sent1"] = p.js("window.__sent[0]")
+    p.js("document.querySelector('.rv-opt[data-key=\"other\"] input').click(); 1")
+    res["otherNeedsWords"] = p.js("document.querySelector('#rv-go').disabled")
+    p.js("(() => { const t = document.querySelector('#rv-other'); t.value = 'leave it, next sprint'; t.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["otherWithWords"] = p.js("document.querySelector('#rv-go').disabled")
+    p.js("document.querySelector('#rv-go').click(); 1")
+    wait(p, "document.querySelector('#rv-item') && document.querySelector('#rv-item').dataset.id === 'RS03'")
+    res["sent2"] = p.js("window.__sent[1]")
+    res["lastLabel"] = p.js("document.querySelector('#rv-go').textContent")
+    p.js("document.querySelector('.rv-opt[data-key=\"A\"] input').click(); document.querySelector('#rv-go').click(); 1")
+    wait(p, "location.hash.startsWith('#workflows/')")
+    res["startedGoesToTab"] = p.js("decodeURIComponent(location.hash)")
+    # the page after the changes were made
+    p.js("window.__sug.status = 'Applied'; window.__sug.phase = 'commit'; window.__sug.items.forEach(i => { i.result = 'Applied: done'; i.chosen = 'x'; }); document.querySelector('#rv-main').remove(); (() => { const m = document.createElement('div'); m.id = 'rv-main'; document.body.append(m); reviewPage({ name: 'Demo' }, m); })(); 1")
+    wait(p, "!!document.querySelector('#rv-commit')")
+    res["applied"] = p.js("({ commitHref: document.querySelector('#rv-commit').getAttribute('href'), done: !!document.querySelector('#rv-done'), rows: document.querySelectorAll('.rv-row').length })")
+    p.js("window.api = window.__real.api; document.querySelector('#rv-main').remove(); location.hash = '#home'; 1")
     return res
 
 
@@ -1317,10 +1390,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
