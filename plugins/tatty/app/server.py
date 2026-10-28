@@ -70,6 +70,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css",
+          "diff.js": "text/javascript", "diff.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -233,6 +234,8 @@ class State:
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
         self.chat_lock = threading.Lock()  # one change to a chat's file at a time
+        self.diff_lock = threading.Lock()  # one change to a feature's file of code changes at a time
+        self.diff_runs = set()  # (feature folder, task id) pairs whose explanation is being written (see "code changes")
         self.last_activity = time.time()
 
     def touch(self):
@@ -5556,6 +5559,295 @@ def watch_tasks(state):
         wait = min(10.0, wait * 2) if time.time() - began > 0.2 else 2.0
 
 
+# ---------------------------------------------------------------- code changes
+# The file edits a subagent makes while a feature is built, as the hook reports
+# them (POST /api/change): each kept, with the task being worked on, in
+# <home>/diffs/<key>.json beside a short explanation per task written by a small
+# model when asked. Tatty only reads the feature's own documents.
+
+DIFF_CAP = 2 << 20  # bytes of JSON kept per feature; the oldest changes go first
+DIFF_MORE_CAP = 1500  # characters of a task's explanation
+DIFF_PROMPT_CAP = 12000  # characters of changes sent to the model
+DIFF_LINES = 2000
+DIFF_LINE_CHARS = 1000
+DIFF_MORE_SYSTEM = ("You explain, in four to six plain sentences, the code changes of one task to an engineer who is "
+                    "reviewing them: what the changes add and why, using the task's description. No code blocks and "
+                    "no preamble. Answer with the explanation only.")
+CARD_HEAD = re.compile(r"^###\s+(T\d+[A-Za-z]*)\s*[—–-]\s*(.+?)\s*$")
+
+
+def diffs_path(folder):
+    """A feature's code changes file in <home>/diffs, keyed as its whiteboard is."""
+    key = hashlib.sha1(folder.resolve().as_posix().lower().encode("utf-8")).hexdigest()[:16]
+    return home() / "diffs" / f"{key}.json"
+
+
+def read_diffs(folder):
+    return {"seq": 0, "changes": [], "more": {}, **read_json(diffs_path(folder), {})}
+
+
+def diff_size(c):
+    """About what a change takes in the file, which write_json indents: its own
+    indented size plus the four spaces more that its place in the file adds to each line."""
+    s = json.dumps(c, indent=2)
+    return len(s) + 4 * (s.count("\n") + 1) + 2
+
+
+def change_diffs(state, folder, change):
+    """Read a feature's code changes, change(d) them, trim the oldest while they
+    are over DIFF_CAP and write them back, one change at a time: the result."""
+    with state.diff_lock:
+        d = read_diffs(folder)
+        change(d)
+        # measured as the file is written, once; each oldest change dropped takes its own size off
+        over = len(json.dumps(d, indent=2)) - DIFF_CAP
+        while over > 0 and d["changes"]:
+            over -= diff_size(d["changes"].pop(0))
+        write_json(diffs_path(folder), d)
+        return d
+
+
+def status_rows(text):
+    """The rows of the task board in a status document's text, without the dropped ones:
+    [{id, title, executor, status}]."""
+    return [{"id": r.get("ID", ""), "title": r.get("Task", ""), "executor": r.get("Executor", ""),
+             "status": r.get("Status", "")}
+            for r in md_table(text, "# Task Board")
+            if r.get("ID") and r.get("Status") != "Dropped"]
+
+
+def build_task_rows(folder):
+    """The task board of the feature's status document; none when it has no such document."""
+    status = first_doc(docs_of(folder), "Task Status")
+    return status_rows(read_doc(folder, status)) if status else []
+
+
+def current_task(rows):
+    """The id of the one task in progress, else "" (none, or more than one)."""
+    going = [r["id"] for r in rows if r["status"] == "In Progress"]
+    return going[0] if len(going) == 1 else ""
+
+
+def task_cards(folder, docs=None):
+    """The words of each task from the feature's brief or its list of tasks:
+    {id: {title, plain, goal}}. A card runs from its `### <id> - <title>` heading to
+    the next heading of level two or three, fenced code left out. `docs` is docs_of(folder),
+    when the caller has it."""
+    docs = docs if docs is not None else docs_of(folder)
+    name = first_doc(docs, "Lite Brief") or first_doc(docs, "Task Breakdown")
+    if not name:
+        return {}
+    cards, current, fenced = {}, None, False
+    for line in read_doc(folder, name).replace("\r", "").split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if line.startswith(("## ", "### ")):
+            m = CARD_HEAD.match(line)
+            current = {"title": m.group(2), "lines": []} if m else None
+            if m:
+                cards[m.group(1)] = current
+            continue
+        if current is not None:
+            current["lines"].append(line)
+    out = {}
+    for tid, c in cards.items():
+        plain, goal, lines = "", "", c["lines"]
+        for i, line in enumerate(lines):
+            if "**In plain English:**" in line and not plain:
+                words = [line.split("**In plain English:**", 1)[1].strip()]
+                for nxt in lines[i + 1:]:
+                    if not nxt.strip():
+                        break
+                    words.append(nxt.strip())
+                plain = " ".join(w for w in words if w)
+            elif line.startswith("**Goal:**") and not goal:
+                goal = line[len("**Goal:**"):].strip()
+        out[tid] = {"title": c["title"], "plain": plain, "goal": goal}
+    return out
+
+
+def result_files(folder):
+    """The coder's result files in the feature's .tt folder, found in one walk:
+    {task id: path}. Where a task has more than one (it was run again), the newest."""
+    tt = folder / ".tt"
+    found = {}
+    for p in tt.rglob("results/*.md") if tt.is_dir() else []:
+        try:
+            when = p.stat().st_mtime
+        except OSError:
+            continue
+        if p.stem not in found or when > found[p.stem][0]:
+            found[p.stem] = (when, p)
+    return {tid: p for tid, (_, p) in found.items()}
+
+
+def task_result(folder, tid, files=None):
+    """What the coder wrote for a task in the feature's .tt results folder:
+    {summary, files}; {} when there is no such file. `files` is result_files(folder),
+    when the caller has it."""
+    path = (files if files is not None else result_files(folder)).get(tid)
+    if not path:
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    summary, files, part = [], [], ""
+    for line in text.replace("\r", "").split("\n"):
+        if line.startswith("## "):
+            part = line[3:].strip()
+        elif part == "Summary":
+            summary.append(line)
+        elif part == "Files Modified" and line.startswith("- "):
+            files.append(line[2:].strip())
+    return {"summary": "\n".join(summary).strip()[:1500], "files": files[:20]}
+
+
+def clean_hunks(hunks):
+    """A reported change's patch hunks, made safe to keep: at most DIFF_LINES lines
+    in all, each a string of at most DIFF_LINE_CHARS characters starting with a
+    space, - or + (any other is dropped), the four numbers whole; hunks left empty go."""
+    def whole(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    out, left = [], DIFF_LINES
+    for h in hunks if isinstance(hunks, list) else []:
+        if not isinstance(h, dict):
+            continue
+        lines = []
+        for raw in h.get("lines") if isinstance(h.get("lines"), list) else []:
+            if left <= 0:
+                break
+            if isinstance(raw, str) and raw[:1] in (" ", "-", "+"):
+                lines.append(raw[:DIFF_LINE_CHARS])
+                left -= 1
+        if lines:
+            out.append({"oldStart": whole(h.get("oldStart")), "oldLines": whole(h.get("oldLines")),
+                        "newStart": whole(h.get("newStart")), "newLines": whole(h.get("newLines")), "lines": lines})
+    return out
+
+
+def record_change(state, tag, session, b):
+    """Keep a file edit the hook reported: (http code, answer). It belongs to the
+    task in progress on the feature the session is working on; the feature's own
+    documents (the coder's result files, say) are not changes to show."""
+    b = b if isinstance(b, dict) else {}
+    tool = str(b.get("tool", ""))
+    if tool not in ("Edit", "Write"):
+        return 400, {"error": "tool: Edit or Write"}
+    folder = feature_dir(session_feature(state, tag, session))
+    if not folder:
+        return 200, {"ok": False, "skipped": "no feature"}
+    file = str(b.get("file", ""))[:500]
+    where = file.replace("\\", "/").lower()
+    if any(where.startswith(k + "/") for k in folder_keys(folder)):
+        return 200, {"ok": False, "skipped": "feature folder"}
+    hunks = clean_hunks(b.get("hunks"))
+    if not hunks:
+        return 200, {"ok": False, "skipped": "no lines"}
+    task = current_task(build_task_rows(folder))
+    made = {}
+
+    def add(d):
+        made["id"] = d["seq"] + 1
+        d["seq"] = made["id"]
+        d["changes"].append({"id": made["id"], "ts": time.time(), "task": task, "agent": str(b.get("agent", ""))[:80],
+                             "tool": tool, "file": file, "type": "create" if b.get("type") == "create" else "update",
+                             "hunks": hunks, "truncated": bool(b.get("truncated"))})
+    change_diffs(state, folder, add)
+    state.emit("diff", name=folder.name, task=task)
+    return 200, {"ok": True, "id": made["id"]}
+
+
+def diffs_view(state, folder):
+    """What the Code Diff section shows for a feature: its changes, the
+    explanations written, each task's words and state, and how far the build is."""
+    docs = docs_of(folder)
+    status = first_doc(docs, "Task Status")
+    text = read_doc(folder, status) if status else ""
+    rows = status_rows(text)
+    cards = task_cards(folder, docs)
+    results = result_files(folder)
+    units, tasks = progress_of(text) if status else ([], {"done": 0, "total": 0})
+    key = folder.as_posix()
+    with state.diff_lock:
+        # read while no change is being written: on Windows a file being replaced can't be open
+        d = read_diffs(folder)
+        busy = sorted(t for f, t in state.diff_runs if f == key)
+    return {"changes": d["changes"], "more": d["more"],
+            "tasks": [{**r, "plain": cards.get(r["id"], {}).get("plain", ""), "goal": cards.get(r["id"], {}).get("goal", ""),
+                       "summary": "", "files": [], **task_result(folder, r["id"], results)}
+                      for r in rows],
+            "progress": {"tasks": tasks, "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)}},
+            "running": any(r["status"] == "In Progress" for r in rows), "busy": busy}
+
+
+def diff_more(state, b):
+    """Start writing a task's explanation of its changes: (http code, answer)."""
+    folder = feature_dir(str(b.get("name", "")))
+    if not folder:
+        return 404, {"error": "no such feature"}
+    task = str(b.get("task", ""))
+    if task not in {r["id"] for r in build_task_rows(folder)}:
+        return 400, {"error": "no such task on the task board"}
+    pair = (folder.as_posix(), task)
+    with state.diff_lock:
+        if pair in state.diff_runs:
+            return 409, {"error": "already writing one"}
+        state.diff_runs.add(pair)
+    threading.Thread(target=model_more_info, args=(state, folder, task), daemon=True).start()
+    state.emit("diff", name=folder.name, task=task)
+    return 200, {"ok": True}
+
+
+def model_more_info(state, folder, task):
+    """Have a small model explain a task's changes (see DIFF_MORE_SYSTEM). Runs on a
+    thread of its own; the answer, or the note that it couldn't, is kept with the
+    changes, and the task is no longer busy."""
+    text = ""
+    try:
+        card = task_cards(folder).get(task, {})
+        title = card.get("title") or next((r["title"] for r in build_task_rows(folder) if r["id"] == task), "")
+        parts = [f"Task: {title}", f"In plain words: {card.get('plain', '')}", f"Goal: {card.get('goal', '')}",
+                 f"Result: {task_result(folder, task).get('summary', '')}"]
+        for c in read_diffs(folder)["changes"]:
+            if c.get("task") == task:
+                parts.append(f"File: {c['file']}")
+                parts += [line for h in c["hunks"] for line in h["lines"]]
+        prompt = "\n".join(parts)[:DIFF_PROMPT_CAP]
+        claude = claude_path()
+        if claude:
+            argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+            argv += ["-p", prompt, "--system-prompt", DIFF_MORE_SYSTEM, "--model", "haiku",
+                     "--output-format", "json", "--tools", "", "--setting-sources", "user", "--disable-slash-commands",
+                     "--no-session-persistence", "--strict-mcp-config"]
+            env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+            project = feature_project(folder, docs_of(folder))[0]
+            try:
+                p = quiet_run(state, argv, cwd=project if project and os.path.isdir(project) else str(folder),
+                              timeout=SUMMARY_TIMEOUT, env=env)
+                out = json.loads(p.stdout)
+                if isinstance(out, dict) and not out.get("is_error"):
+                    text = " ".join(str(out.get("result") or "").split())[:DIFF_MORE_CAP]
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass
+
+        def keep(d):
+            d["more"][task] = {"text": text, "ts": time.time(),
+                               "error": "" if text else "The model couldn't write one."}
+        change_diffs(state, folder, keep)
+    finally:
+        with state.diff_lock:
+            state.diff_runs.discard((folder.as_posix(), task))
+        state.emit("diff", name=folder.name, task=task)
+
+
 # ---------------------------------------------------------------- chats
 # A chat is a Claude conversation of its own with no terminal: a main chat (the
 # "+" on either side of a workflow's split) or a side chat about a piece of a
@@ -6100,6 +6392,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, {"error": "not a document of this feature"})
             return self.send(200, {"file": file, "path": p.as_posix(), "updated": p.stat().st_mtime,
                                    "text": p.read_text(encoding="utf-8", errors="replace")})
+        if path == "/api/diffs":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            return self.send(200, diffs_view(st, folder))
         if path == "/api/branch":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -6237,6 +6534,12 @@ class Handler(BaseHTTPRequestHandler):
             if tag in st.sessions and what in ("tool", "prompt"):
                 st.sessions[tag]["doing"] = (str(b.get("tool", "")) + " " + text).strip()[:200]
             return self.send(200, {"seq": ev["seq"]})
+        if path == "/api/change":
+            code, answer = record_change(st, tag, session, b)
+            return self.send(code, answer)
+        if path == "/api/diff-more":
+            code, answer = diff_more(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
         if path == "/api/ask":
             try:
                 qs = clean_questions(b)

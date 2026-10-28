@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -23,6 +23,9 @@ throwaway root;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --suggestions only the Review step on the page: the tracker's chips, the link rows and the Review page (the page's api() stood in for: nothing is written);
+--diff only the Code Diff section: it puts T03 In Progress in the Demo feature's Task Status (and puts it back), starts a
+session (no terminal opens) that reports one edit, and reports the rail item, the red and green cells, the progress bar
+and the task's chip; a throwaway root and home only;
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -1313,6 +1316,46 @@ def check_tasks(p):
     return res
 
 
+def check_diff(p):
+    """The Code Diff section of the Demo feature: its Task Status gets T03 In Progress (put
+    back afterwards), a session is started (no terminal opens) and reports one edit, and the
+    page's section is read: the rail item, the red and green cells, the progress bar and the
+    task's chip. It writes to Demo's Task Status, so a throwaway root and home only."""
+    p.js("window.__r = null; api('/api/root').then(r => { window.__r = r; }); 1")
+    wait(p, "!!window.__r")
+    status = Path(p.js("window.__r.features")) / "Demo" / "Demo - Task Status.md"
+    if not status.is_file():
+        return {"error": "no Demo - Task Status.md in " + str(status.parent)}
+    original = status.read_bytes()
+    res = {}
+    try:
+        rows = original.decode("utf-8").split("\n")
+        status.write_bytes("\n".join(r.replace("| Implemented |", "| In Progress |") if r.startswith("| T03 ") else r
+                                     for r in rows).encode("utf-8"))
+        p.js("""window.__t = null; window.__err = '';
+                api('/api/start', { name: 'Demo', row: 'workflow', project: window.__r.root }).then(a =>
+                  api('/api/hello', { session: 'sess-diff', tag: a.tag }).then(() =>
+                    api('/api/change', { tag: a.tag, tool: 'Edit', agent: 'a1', file: 'src/greet.sh', type: 'update',
+                      hunks: [{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-echo hi', '+echo hello'] }] }))
+                  .then(() => { window.__t = a.tag; }))
+                .catch(e => { window.__err = String(e.message || e); window.__t = ''; }); 1""")
+        wait(p, "window.__t !== null")
+        res["started"] = p.js("window.__err || window.__t")
+        p.js("location.hash = '#feature/Demo/code-diff'; 1")
+        wait(p, "document.querySelectorAll('.diff-page td.code.del').length > 0")
+        res["section"] = p.js("""({ hash: decodeURIComponent(location.hash),
+              rail: (document.querySelector('.fnav > .fnav-item.on span') || {}).textContent || '',
+              railItems: [...document.querySelectorAll('.fnav > .fnav-item span:first-child')].map(s => s.textContent),
+              del: document.querySelectorAll('td.code.del').length, add: document.querySelectorAll('td.code.add').length,
+              progress: (document.querySelector('.diff-page .bar em') || {}).textContent || '',
+              line: (document.querySelector('.diff-page .diff-line') || {}).textContent || '',
+              chips: [...document.querySelectorAll('.diff-task-head')].map(h => ((h.querySelector('code') || {}).textContent || '') + ': ' + ((h.querySelector('.chip') || {}).textContent || '')) })""")
+        p.js("location.hash = '#home'; api('/api/bye', { tag: window.__t }); 1")
+    finally:
+        status.write_bytes(original)
+    return res
+
+
 def check_settings(p):
     """The Settings page's model sections and the Start panel's picker, against the
     toolbox the server was started with: the LLM connections table, the workflow
@@ -1390,10 +1433,10 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions"):
+        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")

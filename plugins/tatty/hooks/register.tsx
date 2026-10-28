@@ -80,9 +80,9 @@ async function detach($: EngineInterface) {
 
 // report: what a started session is doing, for its feature page. Never waits
 // the session on the window, and never fails it.
-function report($: EngineInterface, body: Record<string, unknown>) {
+function report($: EngineInterface, body: Record<string, unknown>, path = '/api/activity') {
   if (!tag || !attached) return
-  void api($, attached, '/api/activity', body).catch(() => undefined)
+  void api($, attached, path, body).catch(() => undefined)
 }
 
 // reportUsage: add a turn's token counts to the session's total, and tell the
@@ -129,6 +129,72 @@ async function reportAgents($: EngineInterface) {
 function about(e: any): string {
   const v = e.description || e.file_path || e.notebook_path || e.pattern || e.url || e.skill || e.query || e.command || e.prompt || ''
   return String(v).replace(/\s+/g, ' ').slice(0, 300)
+}
+
+// The most a reported change may carry. The server refuses a body over 1 MiB and
+// a refused post is lost without a trace, so the lines are cut well below that.
+// The total is counted in bytes of the JSON the post carries, not in characters:
+// CJK text is 3 bytes a character and quotes, backslashes and tabs are doubled.
+const CHANGE_LINES = 2000
+const CHANGE_LINE_CHARS = 1000
+const CHANGE_TOTAL_BYTES = 400000
+
+// What a line takes in the JSON body: its UTF-8 bytes, with the escapes, quotes and comma.
+function jsonBytes(s: string): number {
+  let n = 4
+  for (const ch of s) {
+    const c = ch.codePointAt(0) as number
+    if (c >= 0xd800 && c <= 0xdfff) n += 6 // a lone surrogate is written as \udXXX
+    else if (c < 0x20) n += 6
+    else if (c === 0x22 || c === 0x5c) n += 2
+    else n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4
+  }
+  return n
+}
+
+// reportChange: a file edit a subagent made, as the engine's patch hunks, for the
+// feature page. Only a finished edit counts: a denied or failed one, or one held
+// for approval, left the file as it was.
+function reportChange($: EngineInterface, e: any, done: any) {
+  if ('deny' in done || done.isError) return
+  const r = done.result
+  if (!r || r.staged) return
+  const type = e.tool === 'Write' && r.type === 'create' ? 'create' : 'update'
+  let hunks: { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: string[] }[] =
+    Array.isArray(r.structuredPatch) ? r.structuredPatch : []
+  // a new file has no patch to show, so its whole content is the addition
+  if (e.tool === 'Write' && type === 'create' && !hunks.length && typeof e.content === 'string') {
+    // a file that ends with a newline has no line after it; an empty file has no lines at all
+    const parts: string[] = e.content.split('\n')
+    if (parts[parts.length - 1] === '') parts.pop()
+    if (parts.length) {
+      const lines = parts.map(l => '+' + l)
+      hunks = [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: lines.length, lines }]
+    }
+  }
+  let left = CHANGE_LINES
+  let bytes = 0
+  let truncated = false
+  const kept: typeof hunks = []
+  for (const h of hunks) {
+    const lines: string[] = []
+    for (const raw of Array.isArray(h.lines) ? h.lines : []) {
+      if (left <= 0 || bytes >= CHANGE_TOTAL_BYTES) {
+        truncated = true
+        break
+      }
+      const line = String(raw)
+      const cut = line.length > CHANGE_LINE_CHARS ? line.slice(0, CHANGE_LINE_CHARS) : line
+      if (cut !== line) truncated = true
+      lines.push(cut)
+      left--
+      bytes += jsonBytes(cut)
+    }
+    if (lines.length) kept.push({ ...h, lines })
+    if (truncated && (left <= 0 || bytes >= CHANGE_TOTAL_BYTES)) break
+  }
+  if (!kept.length) return
+  report($, { tool: String(e.tool), file: String(e.file_path), type, hunks: kept, truncated, agent: String(e.agentId) }, '/api/change')
 }
 
 // findBash: the bash that runs tatty.sh. $.process.run has no shell and only the
@@ -283,7 +349,18 @@ export const register: Register = on => {
 
   // A started session: each tool call, as it starts and as it finishes.
   on('tool.call', async ($, e, next) => {
-    if (!tag || e.agentId) return next(e)
+    if (!tag) return next(e)
+    if (e.agentId) {
+      // a subagent's own tools stay off the tool rows; only the files it changes are reported
+      if (e.tool !== 'Edit' && e.tool !== 'Write') return next(e)
+      const changed = await next(e)
+      try {
+        reportChange($, e, changed)
+      } catch {
+        /* reporting never fails the tool that already ran */
+      }
+      return changed
+    }
     const id = e.tool_use_id || `${e.tool}-${Date.now()}`
     report($, { kind: 'tool', tool: String(e.tool), text: about(e), id })
     const done = await next(e)

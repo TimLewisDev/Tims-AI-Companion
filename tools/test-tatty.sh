@@ -55,6 +55,11 @@ if [ "${1:-}" = -p ]; then case "$*" in *"You summarise"*)
 	exit 0 ;; esac; fi
 echo "$*" >>"$(dirname "$0")/claude.log"
 [ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
+# the explanation a small model writes of one task's code changes (after the failing case above, so it can fail)
+if [ "${1:-}" = -p ]; then case "$*" in *"who is reviewing them"*)
+	[ -f "$(dirname "$0")/claude-diff-slow" ] && sleep 3
+	echo '{"type":"result","is_error":false,"result":"An addendum by the model.","total_cost_usd":0.001}'
+	exit 0 ;; esac; fi
 # A headless run for the Jira board: which job it is shows in the one MCP tool
 # it may use; it keeps its arguments (one a line) and answers with the canned
 # jira-<job>.out (jira-fail: Jira refuses; jira-slow: it takes a while).
@@ -940,6 +945,113 @@ pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] in ('tur
 has "neither is a row in the feed" "$T/f" "0"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"turn","state":"start"}' "$U/api/activity")" = 404 ] &&
 	ok "a turn for an unknown session refused" || bad "a turn for an unknown session refused"
+
+# code diff: the file edits a subagent makes, kept under the task in progress. The
+# copies of Demo's documents in $FX are changed here and put back at the end.
+DEMOD="$FX/features/Demo"
+# diff_wait <text>: /api/diffs has the text within ten seconds
+diff_wait() {
+	local i=0
+	while [ $i -lt 20 ]; do
+		get "/api/diffs?name=Demo" >"$T/dj"
+		grep -qF -- "$1" "$T/dj" && return 0
+		sleep 0.5
+		i=$((i + 1))
+	done
+	return 1
+}
+# change_body <file> <old line> <new line>: what the mod reports for an Edit
+change_body() { printf '{"tag":"%s","tool":"Edit","agent":"a9","file":"%s","type":"update","hunks":[{"oldStart":3,"oldLines":1,"newStart":3,"newLines":1,"lines":["-%s","+%s"]}]}' "$TAG" "$1" "$2" "$3"; }
+# the T03 card gets the two lines the fixture's other card has, and its row goes In Progress
+$PY -c "import sys; p = sys.argv[1]; lines = open(p, 'rb').read().replace(b'\r\n', b'\n').split(b'\n'); i = [n for n, l in enumerate(lines) if l.startswith(b'### T03 ')][0]
+lines[i + 1:i + 1] = [b'', b'**In plain English:** Adds the greeting for the tool to print.', b'', b'**Goal:** A greet.sh that prints hello.']
+open(p, 'wb').write(b'\n'.join(lines))" "$DEMOD/Demo - Task Breakdown.md"
+sed -i -E 's/^(\| T03 .*)\| Implemented \|/\1| In Progress |/' "$DEMOD/Demo - Task Status.md"
+post /api/change "$(change_body "$FX/src/greet.sh" "echo hi" "echo hello")" >"$T/j"
+has "code diff: change is answered with its id" "$T/j" '"ok": true'
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(c['type'], c['task'], c['file'].endswith('/src/greet.sh'), [l for h in c['hunks'] for l in h['lines']]) for c in d['changes']]")" = "[('update', 'T03', True, ['-echo hi', '+echo hello'])]" ] &&
+	ok "code diff: change is kept under the task In Progress" || bad "code diff: change is kept under the task In Progress" "$(head -c 400 "$T/j")"
+post /api/change "$(change_body "$DEMOD/inside-the-feature.md" "a" "b")" >"$T/j"
+has "code diff: change inside the feature folder is skipped" "$T/j" '"skipped": "feature folder"'
+get "/api/diffs?name=Demo" >"$T/j"
+hasnt "code diff: change inside the feature folder is not kept" "$T/j" "inside-the-feature.md"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"tag\":\"$TAG\",\"tool\":\"Bash\",\"file\":\"$FX/src/greet.sh\",\"hunks\":[]}" "$U/api/change")" = 400 ] &&
+	ok "code diff: change by an unknown tool refused" || bad "code diff: change by an unknown tool refused"
+[ "$(code -H "X-TT-Token: $K" "$U/api/diffs?name=Nope")" = 404 ] &&
+	ok "code diff: change list of an unknown feature is 404" || bad "code diff: change list of an unknown feature is 404"
+
+# its words come from the task's card, and from the result file the coder wrote
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(t['plain'], t['goal']) for t in d['tasks'] if t['id'] == 'T03']")" = "[('Adds the greeting for the tool to print.', 'A greet.sh that prints hello.')]" ] &&
+	ok "code diff: words come from the task's card" || bad "code diff: words come from the task's card" "$(pick "$T/j" "d['tasks']")"
+mkdir -p "$DEMOD/.tt/Demo - Task Status/results"
+printf '# T03\n\n## Summary\nThe greeting prints hello.\n\n## Files Modified\n- src/greet.sh\n' >"$DEMOD/.tt/Demo - Task Status/results/T03.md"
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[t['summary'] for t in d['tasks'] if t['id'] == 'T03']")" = "['The greeting prints hello.']" ] &&
+	ok "code diff: words include the result summary" || bad "code diff: words include the result summary" "$(pick "$T/j" "d['tasks']")"
+[ "$(pick "$T/j" "(d['progress']['tasks']['done'], d['progress']['tasks']['total'], d['progress']['units']['done'], d['progress']['units']['total'], d['running'])")" = "(2, 4, 1, 2, True)" ] &&
+	ok "code diff: progress counts and running" || bad "code diff: progress counts and running" "$(pick "$T/j" "(d['progress'], d['running'])")"
+
+# more info: a small model explains the task's changes (the stand-in answers; its
+# calls are taken out of claude.log again, which a later check reads)
+cp "$T/claude.log" "$T/claude.log.before" 2>/dev/null || : >"$T/claude.log.before"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T03"}' "$U/api/diff-more")" = 200 ] &&
+	ok "code diff: more info is started" || bad "code diff: more info is started"
+diff_wait "An addendum by the model." && ok "code diff: more info is stored" || bad "code diff: more info is stored" "$(head -c 400 "$T/dj")"
+diff_wait '"busy": []' || bad "code diff: the first more info run finished"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T99"}' "$U/api/diff-more")" = 400 ] &&
+	ok "code diff: more info for a task not on the board is refused" || bad "code diff: more info for a task not on the board is refused"
+touch "$T/claude-fail"
+post /api/diff-more '{"name":"Demo","task":"T03"}' >/dev/null
+diff_wait "The model couldn't write one." && ok "code diff: more info keeps the error text" || bad "code diff: more info keeps the error text" "$(head -c 400 "$T/dj")"
+diff_wait '"busy": []' || bad "code diff: the failing more info run finished"
+rm -f "$T/claude-fail"
+cp "$T/claude.log.before" "$T/claude.log"
+
+# a second ask for a task that is still being written is told so (the stand-in is made slow)
+touch "$T/claude-diff-slow"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T03"}' "$U/api/diff-more")" = 200 ] &&
+	ok "code diff: a slow more info is started" || bad "code diff: a slow more info is started"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T03"}' "$U/api/diff-more")" = 409 ] &&
+	ok "code diff: a second ask while one is being written is refused" || bad "code diff: a second ask while one is being written is refused"
+diff_wait '"busy": []' || bad "code diff: the slow more info run finished"
+rm -f "$T/claude-diff-slow"
+cp "$T/claude.log.before" "$T/claude.log"
+
+# what the hook reports is made safe to keep: whole numbers, lines that start with a space, - or +, at most 1000 characters
+$PY -c "import json, sys; print(json.dumps({'tag': sys.argv[1], 'tool': 'Edit', 'agent': 'a9', 'file': sys.argv[2], 'type': 'update', 'hunks': [
+  {'oldStart': 'x', 'oldLines': 1, 'newStart': 3, 'newLines': 1, 'lines': ['-keep', 'xdropped', 7, '+kept', '+' + 'y' * 1500]},
+  {'oldStart': 1, 'oldLines': 1, 'newStart': 1, 'newLines': 1, 'lines': ['xonly']}, 'not a hunk']}))" "$TAG" "$FX/src/odd.sh" >"$T/odd.json"
+curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/odd.json" "$U/api/change" >"$T/j"
+has "code diff: an odd change is answered" "$T/j" '"ok": true'
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(len(c['hunks']), c['hunks'][0]['oldStart'], [l[:6] for l in c['hunks'][0]['lines']], max(len(l) for l in c['hunks'][0]['lines'])) for c in d['changes'] if c['file'].endswith('/src/odd.sh')]")" = "[(1, 0, ['-keep', '+kept', '+yyyyy'], 1000)]" ] &&
+	ok "code diff: odd hunks are cleaned before they are kept" || bad "code diff: odd hunks are cleaned before they are kept" "$(head -c 400 "$T/j")"
+$PY -c "import json, sys; print(json.dumps({'tag': sys.argv[1], 'tool': 'Edit', 'agent': 'a9', 'file': sys.argv[2], 'type': 'update', 'hunks': [
+  {'oldStart': 1, 'oldLines': 0, 'newStart': 1, 'newLines': 1, 'lines': ['x only']}]}))" "$TAG" "$FX/src/nothing.sh" >"$T/odd.json"
+curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/odd.json" "$U/api/change" >"$T/j"
+has "code diff: a change left with no line is skipped" "$T/j" '"skipped": "no lines"'
+
+# a feature keeps about 2 MiB of changes: when three of 0.9 MiB come, the oldest goes
+for n in 1 2 3; do
+	$PY -c "import json, sys; print(json.dumps({'tag': sys.argv[1], 'tool': 'Write', 'agent': 'a9', 'file': sys.argv[2], 'type': 'create', 'hunks': [
+  {'oldStart': 0, 'oldLines': 0, 'newStart': 1, 'newLines': 900, 'lines': ['+' + 'z' * 998] * 900}]}))" "$TAG" "$FX/src/big$n.sh" >"$T/big.json"
+	curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/big.json" "$U/api/change" >"$T/j"
+done
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[c['file'].rsplit('/', 1)[1] for c in d['changes'] if '/big' in c['file']]")" = "['big2.sh', 'big3.sh']" ] &&
+	ok "code diff: over its cap the oldest changes go first" || bad "code diff: over its cap the oldest changes go first" "$(pick "$T/j" "[c['file'] for c in d['changes']]")"
+
+# with no task in progress a change belongs to none
+sed -i -E 's/^(\| T03 .*)\| In Progress \|/\1| Implemented |/' "$DEMOD/Demo - Task Status.md"
+post /api/change "$(change_body "$FX/src/other.sh" "x=1" "x=2")" >/dev/null
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "(d['changes'][-1]['file'].endswith('/src/other.sh'), d['changes'][-1]['task'] == '', d['running'])")" = "(True, True, False)" ] &&
+	ok "code diff: change with no task In Progress belongs to none" || bad "code diff: change with no task In Progress belongs to none" "$(head -c 400 "$T/j")"
+cp "$root/tools/fixtures/tatty-root/features/Demo/Demo - Task Status.md" "$root/tools/fixtures/tatty-root/features/Demo/Demo - Task Breakdown.md" "$DEMOD/"
+rm -rf "$DEMOD/.tt/Demo - Task Status/results"
+
 post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[]}" >/dev/null
 post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":1200,\"output\":340,\"cacheRead\":50000,\"cacheWrite\":800,\"context\":{\"tokens\":52000,\"window\":200000},\"costUsd\":0.42}}" >/dev/null
 post /api/ask "{\"tag\":\"$TAG\",\"questions\":[{\"question\":\"Carry on?\",\"header\":\"Go\",\"options\":[\"Yes\",\"No\"]}]}" >/dev/null

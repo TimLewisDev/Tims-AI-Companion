@@ -10,7 +10,7 @@ const TERMINAL = { questions: QUESTIONS, answers: { 'Go ahead?': 'from the termi
 // session's TATTY_SESSION (a session Tatty started from a feature page); `join`
 // its TATTY_JOIN (Tatty's own session, started by the Desktop app);
 // `bodies` collects what was POSTed.
-function engine(on: any, open: boolean, answer: object, seen: string[], tag = '', bodies: any[] = [], join = false) {
+function engine(on: any, open: boolean, answer: object, seen: string[], tag = '', bodies: any[] = [], join = false, toolResult: object = { result: TERMINAL }) {
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
   on('command.register', () => ({ value: { command: 'tatty' } }))
@@ -29,7 +29,7 @@ function engine(on: any, open: boolean, answer: object, seen: string[], tag = ''
             : { ok: true }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
   })
-  on('tool.call', () => ({ result: TERMINAL }))
+  on('tool.call', () => toolResult)
   on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
   on('turn.complete', (_: unknown, e: { answer: string }) => ({ text: e.answer }))
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 52000, window: 200000 }, cost: { usd: 0.42 } } }))
@@ -128,6 +128,153 @@ test('a session Tatty started joins by itself and reports its tool calls, tagged
   expect(acts[0].text).toBe('List the files')
   expect(acts.every(a => a.tag === 's-1')).toBe(true)
   expect(bodies.find(b => b.path === '/api/hello')?.tag).toBe('s-1')
+})
+
+// hunk: a patch hunk of `n` added lines, each `width` characters wide
+const hunk = (n: number, width = 5) => ({
+  oldStart: 1, oldLines: 0, newStart: 1, newLines: n, lines: Array.from({ length: n }, () => '+' + 'x'.repeat(width - 1)),
+})
+
+async function waitFor(done: () => boolean, ms = 2000) {
+  const end = Date.now() + ms
+  while (!done() && Date.now() < end) await new Promise(r => setTimeout(r, 5))
+}
+
+// changes: what a started session posts for `call` when the tool answers `result` (or,
+// as `raw`, the whole answer, for a denied or failed call). Reports are sent without
+// waiting on Tatty and in order, so a tagged session then makes one more call and waits
+// for its report: once that has landed, so has any report `call` made, or none was made.
+// That call's reports are left out of `bodies`. `seen` is every path requested, its own
+// activity included.
+async function changes($: any, on: any, tag: string, result: object, call: object, raw?: object) {
+  const seen: string[] = []
+  const bodies: any[] = []
+  engine(on, true, {}, seen, tag, bodies, false, raw ?? { result })
+  await $.session.start(START)
+  await $.tool.call(call as any)
+  if (tag) {
+    await $.tool.call({ tool: 'Bash', command: 'true', tool_use_id: 'sentinel' } as any)
+    await waitFor(() => bodies.some(b => b.id === 'sentinel' && b.kind === 'tool-done'))
+  } else {
+    await new Promise(r => setTimeout(r, 0)) // nothing is ever posted: there is nothing to wait for
+  }
+  const mine = bodies.filter(b => b.id !== 'sentinel')
+  return { seen, bodies: mine, posts: mine.filter(b => b.path === '/api/change') }
+}
+
+const EDIT = { tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b' }
+
+test("a subagent's edit is reported with the engine's hunks, and is not a tool row", async ($, on) => {
+  const h = { oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-a', '+b'] }
+  const { bodies, posts } = await changes($, on, 's-1', { structuredPatch: [h] }, { ...EDIT, agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0]).toEqual(expect.objectContaining({ tool: 'Edit', file: '/w/a.ts', type: 'update', hunks: [h], agent: 'a1', tag: 's-1' }))
+  expect(posts[0].truncated).toBe(false)
+  expect(bodies.filter(b => b.path === '/api/activity')).toEqual([])
+})
+
+test("a subagent's new file is reported as one added hunk", async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { type: 'create', structuredPatch: [] },
+    { tool: 'Write', file_path: '/w/new.ts', content: 'a\nb', agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0].type).toBe('create')
+  expect(posts[0].hunks).toEqual([{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+a', '+b'] }])
+})
+
+test("a new file that ends with a newline has no empty added line after it", async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { type: 'create', structuredPatch: [] },
+    { tool: 'Write', file_path: '/w/new.ts', content: 'a\nb\n', agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0].hunks).toEqual([{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+a', '+b'] }])
+})
+
+test('an empty new file reports nothing, there being nothing to show', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { type: 'create', structuredPatch: [] },
+    { tool: 'Write', file_path: '/w/empty.ts', content: '', agentId: 'a1' })
+  expect(posts).toEqual([])
+})
+
+test("a Write over an existing file is an update, shown by the engine's hunks", async ($, on) => {
+  const h = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }
+  const { posts } = await changes($, on, 's-1', { type: 'update', structuredPatch: [h] },
+    { tool: 'Write', file_path: '/w/a.ts', content: 'b\n', agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0].type).toBe('update')
+  expect(posts[0].hunks).toEqual([h])
+})
+
+test('an edit with no hunks reports nothing', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [] }, { ...EDIT, agentId: 'a1' })
+  expect(posts).toEqual([])
+})
+
+test('a denied edit reports no change', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', {}, { ...EDIT, agentId: 'a1' }, { deny: 'not allowed' })
+  expect(posts).toEqual([])
+})
+
+test('a failed edit reports no change', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', {}, { ...EDIT, agentId: 'a1' }, { isError: true, result: { structuredPatch: [hunk(2)] } })
+  expect(posts).toEqual([])
+})
+
+test('a patch that cannot be read reports nothing and does not stop the edit', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [null] }, { ...EDIT, agentId: 'a1' })
+  expect(posts).toEqual([])
+})
+
+test("the main session's edit is not reported as a change, and still shows as a tool", async ($, on) => {
+  const { bodies, posts } = await changes($, on, 's-1', { structuredPatch: [hunk(2)] }, EDIT)
+  expect(posts).toEqual([])
+  expect(bodies.filter(b => b.path === '/api/activity').map(b => b.kind)).toEqual(['tool', 'tool-done'])
+})
+
+test("a subagent's other tools post nothing", async ($, on) => {
+  const { bodies, posts } = await changes($, on, 's-1', { structuredPatch: [hunk(2)] }, { tool: 'Read', file_path: '/w/a.ts', agentId: 'a1' })
+  expect(posts).toEqual([])
+  expect(bodies.filter(b => b.path === '/api/activity')).toEqual([])
+})
+
+test('an edit with more than 2000 lines is cut to 2000 and says so', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [hunk(3000)] }, { ...EDIT, agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0].hunks.reduce((n: number, h: any) => n + h.lines.length, 0)).toBe(2000)
+  expect(posts[0].truncated).toBe(true)
+})
+
+test('a session Tatty did not start reports no changes', async ($, on) => {
+  const { seen } = await changes($, on, '', { structuredPatch: [hunk(2)] }, { ...EDIT, agentId: 'a1' })
+  expect(seen).toEqual([])
+})
+
+test('an edit held for approval reports no change', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [hunk(2)], staged: true }, { ...EDIT, agentId: 'a1' })
+  expect(posts).toEqual([])
+})
+
+test('very long lines are cut, so the post stays well under the size the server takes', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [hunk(100, 5000)] }, { ...EDIT, agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  const lines: string[] = posts[0].hunks.flatMap((h: any) => h.lines)
+  expect(lines.every(l => l.length <= 1000)).toBe(true)
+  expect(posts[0].truncated).toBe(true)
+  expect(JSON.stringify(posts[0]).length).toBeLessThan(1024 * 1024 / 4)
+})
+
+test('many long lines are cut at the total the post may carry', async ($, on) => {
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [hunk(1000, 1000)] }, { ...EDIT, agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0].hunks.reduce((n: number, h: any) => n + h.lines.length, 0)).toBeLessThan(1000)
+  expect(posts[0].truncated).toBe(true)
+  expect(JSON.stringify(posts[0]).length).toBeLessThan(1024 * 1024 / 2)
+})
+
+test('the total is counted in bytes, so multi-byte text stays under the size the server takes', async ($, on) => {
+  const wide = { oldStart: 1, oldLines: 0, newStart: 1, newLines: 1000, lines: Array.from({ length: 1000 }, () => '+' + '漢'.repeat(999)) }
+  const { posts } = await changes($, on, 's-1', { structuredPatch: [wide] }, { ...EDIT, agentId: 'a1' })
+  expect(posts.length).toBe(1)
+  expect(posts[0].truncated).toBe(true)
+  expect(new TextEncoder().encode(JSON.stringify(posts[0])).length).toBeLessThan(1024 * 1024 / 2)
 })
 
 test('a started session reports its running token total, the context and the cost', async ($, on) => {
