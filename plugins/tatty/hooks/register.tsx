@@ -133,9 +133,24 @@ function about(e: any): string {
 
 // The most a reported change may carry. The server refuses a body over 1 MiB and
 // a refused post is lost without a trace, so the lines are cut well below that.
+// The total is counted in bytes of the JSON the post carries, not in characters:
+// CJK text is 3 bytes a character and quotes, backslashes and tabs are doubled.
 const CHANGE_LINES = 2000
 const CHANGE_LINE_CHARS = 1000
-const CHANGE_TOTAL_CHARS = 400000
+const CHANGE_TOTAL_BYTES = 400000
+
+// What a line takes in the JSON body: its UTF-8 bytes, with the escapes, quotes and comma.
+function jsonBytes(s: string): number {
+  let n = 4
+  for (const ch of s) {
+    const c = ch.codePointAt(0) as number
+    if (c >= 0xd800 && c <= 0xdfff) n += 6 // a lone surrogate is written as \udXXX
+    else if (c < 0x20) n += 6
+    else if (c === 0x22 || c === 0x5c) n += 2
+    else n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4
+  }
+  return n
+}
 
 // reportChange: a file edit a subagent made, as the engine's patch hunks, for the
 // feature page. Only a finished edit counts: a denied or failed one, or one held
@@ -149,17 +164,22 @@ function reportChange($: EngineInterface, e: any, done: any) {
     Array.isArray(r.structuredPatch) ? r.structuredPatch : []
   // a new file has no patch to show, so its whole content is the addition
   if (e.tool === 'Write' && type === 'create' && !hunks.length && typeof e.content === 'string') {
-    const lines = e.content.split('\n').map((l: string) => '+' + l)
-    hunks = [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: lines.length, lines }]
+    // a file that ends with a newline has no line after it; an empty file has no lines at all
+    const parts: string[] = e.content.split('\n')
+    if (parts[parts.length - 1] === '') parts.pop()
+    if (parts.length) {
+      const lines = parts.map(l => '+' + l)
+      hunks = [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: lines.length, lines }]
+    }
   }
   let left = CHANGE_LINES
-  let chars = 0
+  let bytes = 0
   let truncated = false
   const kept: typeof hunks = []
   for (const h of hunks) {
     const lines: string[] = []
     for (const raw of Array.isArray(h.lines) ? h.lines : []) {
-      if (left <= 0 || chars >= CHANGE_TOTAL_CHARS) {
+      if (left <= 0 || bytes >= CHANGE_TOTAL_BYTES) {
         truncated = true
         break
       }
@@ -168,10 +188,10 @@ function reportChange($: EngineInterface, e: any, done: any) {
       if (cut !== line) truncated = true
       lines.push(cut)
       left--
-      chars += cut.length
+      bytes += jsonBytes(cut)
     }
     if (lines.length) kept.push({ ...h, lines })
-    if (truncated && (left <= 0 || chars >= CHANGE_TOTAL_CHARS)) break
+    if (truncated && (left <= 0 || bytes >= CHANGE_TOTAL_BYTES)) break
   }
   if (!kept.length) return
   report($, { tool: String(e.tool), file: String(e.file_path), type, hunks: kept, truncated, agent: String(e.agentId) }, '/api/change')
@@ -334,7 +354,11 @@ export const register: Register = on => {
       // a subagent's own tools stay off the tool rows; only the files it changes are reported
       if (e.tool !== 'Edit' && e.tool !== 'Write') return next(e)
       const changed = await next(e)
-      reportChange($, e, changed)
+      try {
+        reportChange($, e, changed)
+      } catch {
+        /* reporting never fails the tool that already ran */
+      }
       return changed
     }
     const id = e.tool_use_id || `${e.tool}-${Date.now()}`

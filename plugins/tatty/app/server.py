@@ -4140,28 +4140,40 @@ def read_diffs(folder):
     return {"seq": 0, "changes": [], "more": {}, **read_json(diffs_path(folder), {})}
 
 
+def diff_size(c):
+    """About what a change takes in the file, which write_json indents: its own
+    indented size plus the four spaces more that its place in the file adds to each line."""
+    s = json.dumps(c, indent=2)
+    return len(s) + 4 * (s.count("\n") + 1) + 2
+
+
 def change_diffs(state, folder, change):
     """Read a feature's code changes, change(d) them, trim the oldest while they
     are over DIFF_CAP and write them back, one change at a time: the result."""
     with state.diff_lock:
         d = read_diffs(folder)
         change(d)
-        while d["changes"] and len(json.dumps(d)) > DIFF_CAP:
-            d["changes"].pop(0)
+        # measured as the file is written, once; each oldest change dropped takes its own size off
+        over = len(json.dumps(d, indent=2)) - DIFF_CAP
+        while over > 0 and d["changes"]:
+            over -= diff_size(d["changes"].pop(0))
         write_json(diffs_path(folder), d)
         return d
 
 
-def build_task_rows(folder):
-    """The rows of the task board in the feature's status document, without the dropped ones:
-    [{id, title, executor, status}]; none when it has no such document."""
-    status = first_doc(docs_of(folder), "Task Status")
-    if not status:
-        return []
+def task_board(text):
+    """The rows of the task board in a status document's text, without the dropped ones:
+    [{id, title, executor, status}]."""
     return [{"id": r.get("ID", ""), "title": r.get("Task", ""), "executor": r.get("Executor", ""),
              "status": r.get("Status", "")}
-            for r in md_table(read_doc(folder, status), "# Task Board")
+            for r in md_table(text, "# Task Board")
             if r.get("ID") and r.get("Status") != "Dropped"]
+
+
+def build_task_rows(folder):
+    """The task board of the feature's status document; none when it has no such document."""
+    status = first_doc(docs_of(folder), "Task Status")
+    return task_board(read_doc(folder, status)) if status else []
 
 
 def current_task(rows):
@@ -4170,11 +4182,12 @@ def current_task(rows):
     return going[0] if len(going) == 1 else ""
 
 
-def task_cards(folder):
+def task_cards(folder, docs=None):
     """The words of each task from the feature's brief or its list of tasks:
     {id: {title, plain, goal}}. A card runs from its `### <id> - <title>` heading to
-    the next heading of level two or three, fenced code left out."""
-    docs = docs_of(folder)
+    the next heading of level two or three, fenced code left out. `docs` is docs_of(folder),
+    when the caller has it."""
+    docs = docs if docs is not None else docs_of(folder)
     name = first_doc(docs, "Lite Brief") or first_doc(docs, "Task Breakdown")
     if not name:
         return {}
@@ -4210,15 +4223,30 @@ def task_cards(folder):
     return out
 
 
-def task_result(folder, tid):
-    """What the coder wrote for a task in the feature's .tt results folder:
-    {summary, files}; {} when there is no such file."""
+def result_files(folder):
+    """The coder's result files in the feature's .tt folder, found in one walk:
+    {task id: path}. Where a task has more than one (it was run again), the newest."""
     tt = folder / ".tt"
-    found = sorted(tt.rglob(f"results/{tid}.md")) if tt.is_dir() else []
-    if not found:
+    found = {}
+    for p in tt.rglob("results/*.md") if tt.is_dir() else []:
+        try:
+            when = p.stat().st_mtime
+        except OSError:
+            continue
+        if p.stem not in found or when > found[p.stem][0]:
+            found[p.stem] = (when, p)
+    return {tid: p for tid, (_, p) in found.items()}
+
+
+def task_result(folder, tid, files=None):
+    """What the coder wrote for a task in the feature's .tt results folder:
+    {summary, files}; {} when there is no such file. `files` is result_files(folder),
+    when the caller has it."""
+    path = (files if files is not None else result_files(folder)).get(tid)
+    if not path:
         return {}
     try:
-        text = found[0].read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {}
     summary, files, part = [], [], ""
@@ -4294,17 +4322,21 @@ def record_change(state, tag, session, b):
 def diffs_view(state, folder):
     """What the Code Diff section shows for a feature: its changes, the
     explanations written, each task's words and state, and how far the build is."""
-    d = read_diffs(folder)
-    rows = build_task_rows(folder)
-    cards = task_cards(folder)
-    status = first_doc(docs_of(folder), "Task Status")
-    units, tasks = progress_of(read_doc(folder, status)) if status else ([], {"done": 0, "total": 0})
+    docs = docs_of(folder)
+    status = first_doc(docs, "Task Status")
+    text = read_doc(folder, status) if status else ""
+    rows = task_board(text)
+    cards = task_cards(folder, docs)
+    results = result_files(folder)
+    units, tasks = progress_of(text) if status else ([], {"done": 0, "total": 0})
     key = folder.as_posix()
     with state.diff_lock:
+        # read while no change is being written: on Windows a file being replaced can't be open
+        d = read_diffs(folder)
         busy = sorted(t for f, t in state.diff_runs if f == key)
     return {"changes": d["changes"], "more": d["more"],
             "tasks": [{**r, "plain": cards.get(r["id"], {}).get("plain", ""), "goal": cards.get(r["id"], {}).get("goal", ""),
-                       "summary": "", "files": [], **task_result(folder, r["id"])}
+                       "summary": "", "files": [], **task_result(folder, r["id"], results)}
                       for r in rows],
             "progress": {"tasks": tasks, "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)}},
             "running": any(r["status"] == "In Progress" for r in rows), "busy": busy}

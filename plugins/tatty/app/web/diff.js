@@ -3,9 +3,11 @@
 // task that has changed code with its own words and every changed file as a before/after.
 // The server keeps what the agent's edits reported (GET /api/diffs); this page only draws
 // it, and again now and then and on the server's "diff" event while it is on screen.
+// The now-and-then redraw leaves the page alone when nothing changed, so a reader's text
+// selection and sideways scroll survive it.
 // File contents are untrusted: every line is set as text, never as markup.
 
-let diffView = null; // the page on screen: { main, name, timer }
+let diffView = null; // the page on screen: { main, name, timer, last }
 let diffSoon = 0;    // the pending redraw after a "diff" event
 let diffDraws = 0;   // counts the draws, so a slow answer can't land on a newer one
 const diffAskErrors = new Map(); // "feature/task" -> why asking for more info failed, kept across redraws
@@ -13,12 +15,12 @@ const diffAskErrors = new Map(); // "feature/task" -> why asking for more info f
 function renderCodeDiff(main, f) {
   if (diffView) clearInterval(diffView.timer);
   clearTimeout(diffSoon);
-  const view = { main, name: f.name, timer: 0 };
+  const view = { main, name: f.name, timer: 0, last: "" };
   diffView = view;
   main.replaceChildren(el("p", { class: "dim pad" }, "Reading the changes…"));
   view.timer = setInterval(() => {
     if (!view.main.isConnected) { clearInterval(view.timer); return; }
-    if (!document.hidden) drawCodeDiff(view);
+    if (!document.hidden) drawCodeDiff(view, true);
   }, 5000);
   return drawCodeDiff(view);
 }
@@ -31,15 +33,23 @@ document.addEventListener("tt-event", e => {
   diffSoon = setTimeout(() => { if (view === diffView && view.main.isConnected) drawCodeDiff(view); }, 250);
 });
 
-async function drawCodeDiff(view) {
+// quiet: the answer is the same as the one on screen, so leave the page as it is. Only the
+// timer asks this: a click (More info) must always redraw, whatever the server says, because
+// the page itself holds state the answer doesn't (the button's wait, an ask error).
+async function drawCodeDiff(view, quiet = false) {
   const mine = ++diffDraws;
   let d;
   try { d = await api("/api/diffs?name=" + encodeURIComponent(view.name)); } catch (e) {
     if (mine !== diffDraws || !view.main.isConnected) return;
+    // a page already drawn is better than an error line in its place
+    if (view.last) return;
     view.main.replaceChildren(el("p", { class: "pad st missing" }, String(e.message || e)));
     return;
   }
   if (mine !== diffDraws || !view.main.isConnected) return;
+  const key = JSON.stringify(d);
+  if (quiet && key === view.last) return;
+  view.last = key;
   const top = view.main.scrollTop;
   view.main.replaceChildren(el("div", { class: "diff-page" }, diffProgress(d), diffGroups(d, view)));
   view.main.scrollTop = top;
@@ -131,7 +141,7 @@ function diffChange(c) {
     el("div", { class: "diff-change-head" },
       chip(c.type === "create" ? "new file" : "changed", "now"), el("code", { class: "mono" }, c.file), el("span", { class: "dim small" }, ago(c.ts))),
     el("div", { class: "diff-scroll" }, diffTable(c.hunks)),
-    c.truncated ? el("p", { class: "diff-note" }, "Only the first 2000 lines of this change are kept.") : "");
+    c.truncated ? el("p", { class: "diff-note" }, "Part of this change was cut because it is large.") : "");
 }
 
 // A change's hunks as rows of old line | new line. Removed lines are paired by position
@@ -157,6 +167,7 @@ function diffTable(hunks) {
       const dels = [], adds = [];
       while (i < lines.length && lines[i][0] === "-") dels.push(lines[i++].slice(1));
       while (i < lines.length && lines[i][0] === "+") adds.push(lines[i++].slice(1));
+      if (!dels.length && !adds.length) { i++; continue; } // a line of no known kind: skip it, never loop on it
       for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
         rows.push(el("tr", {},
           k < dels.length ? cell(o++, dels[k], "del") : cell(null, "", "empty"),
