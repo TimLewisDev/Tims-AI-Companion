@@ -12,7 +12,12 @@ visually:
   Tatty opens straight into it. The ones you haven't got are greyed on the modes
   page with **Add**, which installs them for you.
 - **Features:** every feature you're working on, where it stands in the
-  workflow (exploring, planning, building, done), and its progress.
+  workflow (exploring, planning, building, reviewing, done), and its progress.
+  Each workflow Tatty starts works on a branch of its own, so two don't trample
+  each other; after the build, **Review** takes the branch through a review, puts
+  each of its suggestions to you as a question with options, has the changes you
+  chose made, helps you commit them, and then walks you through pushing and
+  opening the pull / merge request, and watches for it.
 - **A feature's page:**
   - its documents, readable in place, with `[[wikilinks]]` that open the
     heading or item they name; View lays each kind out for reading (the
@@ -59,7 +64,9 @@ visually:
 - **Your Jira sprint, in the production mode:** your tickets in the open sprints
   on a board, a column per status. Open one to read it, and **Start workflow**
   makes it a feature: a folder with the ticket written into it, a Claude session
-  that starts planning from it, and the ticket moved to In Progress in Jira.
+  that starts planning from it, and the ticket moved to In Progress in Jira (and
+  to In Review once its request is open; a **Move to** row in the ticket's panel
+  takes it on to QA Ready or Done).
   Tatty reads Jira through the Atlassian MCP server you signed in to in Claude
   Code (`/mcp`). That spends tokens, so it keeps what it fetched and only
   fetches again when you press **Refresh**.
@@ -79,7 +86,7 @@ visually:
 Tatty is **optional and separate**. The toolbox never needs it and works the
 same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
 Edit mode, a ticket's when you start a workflow from a Jira ticket or a task, or a User Stories
-document through the toolbox's own script when you change a story) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
+document through the toolbox's own script when you change a story; and it moves or removes a feature's folder only when you choose Archive or Delete on that feature) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
 
 ## Install
 
@@ -115,6 +122,10 @@ install from a local checkout, and how to work on Tatty itself.
 | see your features | Tatty's **Full panel** → **Features** |
 | start a new feature | **Features** → **New feature…** |
 | run a feature's next step | its page → **Start…** → **Start session** |
+| commit what a finished workflow changed | its page → **Choose what to commit…** (or **Commit** in the left rail) → **Commit selected** or **Commit everything** |
+| review a feature's branch, even in another repo | its page, once the build is complete → **Review the branch** → **Start…** → **Change…** to pick the repo → **Start session** |
+| decide what to do about the review's findings | its page → **Decide on the suggestions…** (or **Review suggestions** in the left rail): one question at a time; the last answer starts the changes |
+| put a feature away, or delete it | its page → **Archive** (**▾** → **Delete…** to remove it for good); **Features** → **Archived** to restore |
 | see your Jira sprint | the production mode → **Jira** → **Refresh** |
 | start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |
 | turn a design document into user stories | design mode → **User Stories** → **New from a design document…** |

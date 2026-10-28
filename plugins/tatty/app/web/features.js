@@ -25,6 +25,15 @@ const PHASES = {
   "debug-done": "Root cause found", debugged: "Written up",
 };
 const ROUTES = { full: "Feature", lite: "Small change", bug: "Bug", new: "New" };
+
+// The toolbox's last phase is "complete" (built and validated); Tatty's Review step follows it.
+function phaseDone(f) { return f.phase === "complete" && (f.merge || {}).state === "merged"; }
+function phaseWord(f) {
+  if (f.phase !== "complete") return PHASES[f.phase] || f.phase || "—";
+  const state = (f.merge || {}).state;
+  const rv = (f.review || {}).phase;
+  return state === "merged" ? "Merged" : state === "opened" ? "In review" : { review: "Ready to review", decide: "Deciding", apply: "Applying review", commit: "To commit" }[rv] || "Ready to merge";
+}
 const EVENTS = {
   "explore.focus_confirmed": "Exploration focus confirmed", "explore.documented": "Familiarisation written",
   "plan.familiarisation_closed": "Familiarisation stage closed", "plan.requirements_closed": "Requirements closed",
@@ -33,7 +42,7 @@ const EVENTS = {
   "plan.signed_off": "Plan signed off", "breakdown.written": "Task Breakdown written",
   "lite.brief_written": "Lite Brief written", "build.unit_validated": "validated",
   "build.complete": "Build complete", "debug.root_cause_confirmed": "Root cause confirmed",
-  "debug.report_written": "Debug Report written",
+  "debug.report_written": "Debug Report written", "merge.opened": "Request opened", "merge.merged": "Merged",
 };
 
 function ago(seconds) {
@@ -102,7 +111,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review" };
   }
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
@@ -161,7 +170,7 @@ async function route() {
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.diff);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -325,10 +334,10 @@ async function renderHome(quiet) {
   if (!data.features.length) {
     put(missing, head, form, el("div", { class: "card empty-state" },
       el("p", {}, "No features yet. ", el("strong", {}, "New feature…"), " makes one here and starts it with the workflow."),
-      el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")));
+      el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")), archivedSection(data.archived));
     return;
   }
-  put(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)));
+  put(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)), archivedSection(data.archived)); // archive.js
 }
 
 // ------------------------------------------------------------- workflow tabs
@@ -458,7 +467,7 @@ function featureCard(f) {
   return el("a", { class: "fcard route-" + f.route, href: featureHref(f.name) },
     el("div", { class: "fcard-top" }, el("strong", {}, f.name), chip(ROUTES[f.route] || f.route, "route")),
     f.live ? el("div", {}, chip(`● Live: ${f.live.name}`, "live")) : "",
-    el("div", {}, chip(PHASES[f.phase] || f.phase || "—", f.phase === "complete" ? "done" : f.phase === "empty" ? "todo" : "now"),
+    el("div", {}, chip(phaseWord(f), phaseDone(f) ? "done" : f.phase === "empty" ? "todo" : "now"),
       f.stage && f.phase !== "complete" ? el("span", { class: "dim small" }, " · " + f.stage) : ""),
     el("p", { class: "ftext" }, f.text || ""),
     building ? bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} units · ${f.tasks.done} of ${f.tasks.total} tasks`) : "",
@@ -565,7 +574,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, diff) {
+async function renderFeature(name, doc, at, board, commit, suggestions, diff) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -584,8 +593,10 @@ async function renderFeature(name, doc, at, board, diff) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { diff }), f.name), main));
-  if (board) await featureBoard(f, main);
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit, suggestions, diff }), f.name), main));
+  if (suggestions) await reviewPage(f, main); // review-page.js
+  else if (commit) await commitPage(f, main); // commit.js
+  else if (board) await featureBoard(f, main);
   else if (diff) {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderCodeDiff === "function") renderCodeDiff(main, f);
@@ -615,9 +626,11 @@ function featureNav(f, current, board, opts = {}) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current && !board && !opts.side && !opts.diff),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
+    f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
+    f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -705,18 +718,35 @@ async function featureBoard(f, main) {
 // The steps of the feature's route, and which one it is on.
 function pipeline(f) {
   const p = f.phase;
+  const done = phaseDone(f); // the build is done at "complete"; the work is done once it is merged
   if (f.route === "lite") {
     const at = { "lite-focus": 0, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
-    return { steps: ["Explore", "Lite Brief", "Build", "Done"], at, done: p === "complete" };
+    return { steps: ["Explore", "Lite Brief", "Build", "Review", "Done"], at, done };
   }
   if (f.route === "bug") {
     const kinds = new Set(f.docList.map(d => d.doc));
     const at = p === "debugging" ? 0 : p === "debug-done" ? 1 : p === "complete" ? 3 : kinds.has("Lite Brief") ? 2 : p === "debugged" ? 2 : 1;
-    return { steps: ["Debug", "Write-up", "Fix", "Done"], at, done: p === "complete" };
+    return { steps: ["Debug", "Write-up", "Fix", "Review", "Done"], at, done };
   }
   const at = { empty: 0, exploring: 0, explored: 1, planning: 1, "signed-off": 2, "breakdown-draft": 2, "breakdown-orphan": 2,
     "breakdown-written": 3, building: 3, complete: 4 }[p] ?? 0;
-  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Done"], at, done: p === "complete" };
+  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Review", "Done"], at, done };
+}
+
+// The Review step's phases, as chips under it: the review, deciding on its suggestions, making the changes,
+// committing them, then the request (the merge phase). Where it stands comes from the Review Suggestions
+// document (f.review) and the request's state (f.merge).
+function reviewChips(f) {
+  const m = f.merge || {}, r = f.review || {};
+  const order = ["review", "decide", "apply", "commit", "merge"];
+  const merged = m.state === "merged";
+  const cur = m.state === "opened" ? 4 : Math.max(0, order.indexOf(r.phase));
+  const labels = ["Review", "Decide", "Apply", "Commit", merged ? "Merged" : m.state === "opened" ? "Request open" : "Merge"];
+  return el("div", { class: "substeps" }, labels.map((word, n) => {
+    const cls = "chip " + (merged || n < cur ? "done" : n === cur ? "now" : "todo");
+    if (n === 4 && m.url) return el("a", { class: cls, href: m.url, target: "_blank", rel: "noopener", title: m.url }, word);
+    return el("span", { class: cls, title: n === 1 && r.total ? `${r.decided} of ${r.total} decided` : n === 4 && m.branch ? m.branch : "" }, word);
+  }));
 }
 
 function tracker(f) {
@@ -726,7 +756,8 @@ function tracker(f) {
     const sub = s === "Plan" && f.stages.length ? el("div", { class: "substeps" },
       f.stages.map(st => el("span", { class: "chip " + statusClass(st.status), title: `${st.stage}: ${st.status}` + (st.ts ? ` (${new Date(st.ts).toLocaleDateString()})` : "") }, st.stage))) : "";
     const units = s === "Build" && f.tasks.total ? el("div", { class: "substeps" }, bar(f.tasks.done, f.tasks.total)) : "";
-    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units);
+    const reviewing = s === "Review" && f.phase === "complete" ? reviewChips(f) : "";
+    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units, reviewing);
   }));
 }
 
@@ -777,30 +808,99 @@ async function cancelWorkflow(name, text, client) {
   } catch (e) { alert(e.message || e); return null; }
 }
 
+// Which repository, and which of its local branches, this feature's work is on. Tatty otherwise makes a
+// branch from the feature's name, or takes the one the project's repo is on, the first time it starts a
+// step, and switches that repo back to it at every later Start. b is what /api/branch answered; project is
+// the feature's own project. Picking another repository lists its branches; picking a branch records both.
+function branchPicker(f, b0, project, done) {
+  const box = el("div", { class: "branch-picker" });
+  const draw = (b, switched) => {
+    const have = b.branch || "";
+    const repos = el("select", { class: "repo-select", "aria-label": "repository", title: "Which repository is the branch in?" });
+    const known = b.repos || [];
+    for (const r of known.includes(b.repo) ? known : [b.repo, ...known]) repos.append(el("option", { value: r }, r));
+    repos.append(el("option", { value: "::pick" }, "Choose a folder…"));
+    repos.value = b.repo;
+    repos.addEventListener("change", async () => {
+      repos.disabled = true;
+      const back = () => { repos.value = b.repo; repos.disabled = false; };
+      try {
+        const to = repos.value === "::pick" ? await pickFolder("Choose the repository", b.repo) : repos.value;
+        if (!to) return back();
+        const nb = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project) + "&repo=" + encodeURIComponent(to));
+        if (!nb.repo) { alert(nb.note || "That isn't a git repository."); return back(); }
+        draw(nb, true);
+      } catch (e) { alert(e.message || e); back(); }
+    });
+    const sel = el("select", { class: "branch-select", "aria-label": "branch", title: "Which branch is this feature's work on?" });
+    if (!have && b.create) sel.append(el("option", { value: "" }, "New branch " + b.create));
+    else if (!have && switched) sel.append(el("option", { value: "" }, "Choose a branch…"));
+    const all = b.branches || [];
+    for (const n of have && !all.includes(have) ? [have, ...all] : all) sel.append(el("option", { value: n }, n + (n === b.current ? " (checked out)" : "")));
+    sel.value = have || (b.create || switched ? "" : b.current || "");
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      sel.disabled = true;
+      try { await api("/api/branch", { name: f.name, project: b.repo, branch: sel.value }); featureCache.delete(f.name); await done(); }
+      catch (e) { alert(e.message || e); sel.disabled = false; }
+    });
+    box.replaceChildren(el("span", { class: "pick-label" }, "Repository"), repos, el("span", { class: "pick-label" }, "Branch"), sel);
+  };
+  draw(b0, false);
+  return box;
+}
+
 function startPanel(f, row, index, close) {
   const cmd = command(row);
   const inputs = placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
+  // A new feature's lite entry may say what the task is (tt-workflow-lite then needn't ask); a resume has no use for it.
+  const said = row.phase === "lite" && f.route === "new" ? el("input", { placeholder: "what is it (optional)", "aria-label": "what is it (optional)" }) : null;
   const preview = el("code", {});
   const name = row.phase === "empty" ? `${f.name} : Start` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
   const result = el("div", { class: "start-result" });
+  const picker = modelPicker("start-" + index);
   const go = el("button", { type: "button", class: "primary" }, "Start session");
+  // The review step asks which repo and branch (review.js) instead of using the project line.
+  const review = row.skill === "tt-branch-review" || row.skill === "tatty:review" ? reviewStart(f, () => refresh(), row.skill === "tatty:review" ? "/tatty:review" : "/tt-branch-review") : null;
   const refresh = () => {
-    let c = cmd;
+    let c = review ? review.cmd() : cmd;
     for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
+    if (said && said.value.trim()) c += " " + said.value.trim();
     preview.textContent = c;
-    go.disabled = !f.project || inputs.some(i => !i.input.value.trim());
+    go.disabled = (review ? !review.ready() : !f.project) || inputs.some(i => !i.input.value.trim());
   };
   for (const { input } of inputs) input.addEventListener("input", refresh);
+  if (said) said.addEventListener("input", refresh);
   const panel = el("div", { class: "start-panel" });
+  // The branch the work will be on: Tatty makes one on a feature's first Start, and switches the repo back to it later.
+  const branchLine = el("div", { class: "small branch-line" });
+  const showBranch = async () => {
+    branchLine.replaceChildren();
+    if (!f.project) return;
+    try {
+      const b = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(f.project));
+      const code = t => el("code", {}, t);
+      if (!b.repo) { branchLine.replaceChildren(el("span", { class: "dim" }, b.note || "")); return; }
+      branchLine.replaceChildren(el("span", {},
+        b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
+          : b.create ? ["A new branch ", code(b.create), " is made from ", code(b.current || "the detached HEAD")]
+            : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
+        branchPicker(f, b, f.project, showBranch),
+        b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "");
+    } catch { /* the server says so at Start */ }
+  };
   const draw = () => {
     panel.replaceChildren(
       el("div", { class: "start-title" }, "Start a new Claude session"),
-      projectLine(f, () => { draw(); refresh(); }),
+      ...(review ? [review.node] : [projectLine(f, () => { draw(); refresh(); }), branchLine]),
       inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
+      said ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "what is it (optional)"), said)) : "",
       el("div", { class: "small" }, "running ", preview),
       el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
+      picker.node,
       el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
       result);
+    if (!review) showBranch();
   };
   go.addEventListener("click", async () => {
     go.disabled = true;
@@ -808,7 +908,7 @@ function startPanel(f, row, index, close) {
     tell("allow-foreground");
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
-      const r = await api("/api/start", { name: f.name, row: index, values });
+      const r = await api("/api/start", { name: f.name, row: index, values, ...picker.fields(), ...(review ? review.fields() : {}), ...(said && said.value.trim() ? { hint: said.value.trim() } : {}) });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
@@ -1107,8 +1207,8 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
     agents, doing, questions,
-    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
+    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();
@@ -1142,6 +1242,13 @@ setInterval(async () => {
 
 // A step's command with Copy, Ask and Start…
 function stepActions(f, row, index, openNow) {
+  if (row.link) {  // a step done on a page of Tatty's own, not in a session
+    const label = row.phase === "decide" ? "Decide on the suggestions…" : "Choose what to commit…";
+    return el("div", { class: "start-actions" }, el("a", { class: "go-btn", id: "step-" + row.phase, href: row.link }, label),
+      row.phase === "commit" ? el("button", { type: "button", id: "step-review-done", title: "If the changes were committed another way", onclick: async () => {
+        try { await api("/api/review/done", { name: f.name }); featureCache.delete(f.name); route(); } catch (e) { alert(e.message || e); }
+      } }, "Mark the review done") : "");
+  }
   const cmd = command(row);
   if (!cmd) return "";
   const slot = el("div");
@@ -1155,6 +1262,43 @@ function stepActions(f, row, index, openNow) {
   return el("div", {}, cell, slot);
 }
 
+// The feature's branch (Tatty makes one when a workflow starts) and, once the build is done, its pull / merge
+// request: the Review step's merge phase (in Where it stands) walks through opening it; these buttons tell Tatty
+// what happened when it can't see for itself (it looks with glab / gh when asked, and once when the page opens).
+function mergeCard(f) {
+  const m = f.merge || {};
+  if (!m.branch && (f.phase !== "complete" || !f.project)) return "";
+  const atMerge = !!m.branch && f.phase === "complete" && m.state !== "merged";
+  // which branch the work is on: Tatty's record may be a branch it made or took, not the one the work went on
+  const chooser = el("div", { class: "small" });
+  const project = f.project || m.repo;
+  if (project) api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project)).then(b => {
+    if (b.repo) chooser.replaceChildren(el("div", { class: "dim" }, m.branch ? "Wrong repository or branch?" : "Which branch is the work on?"), branchPicker(f, b, project, () => route()));
+  }).catch(() => {});
+  const act = async (action, extra = {}) => {
+    try { await api("/api/merge", { name: f.name, action, ...extra }); featureCache.delete(f.name); route(); }
+    catch (e) { alert(e.message || e); }
+  };
+  if (atMerge) {  // one quiet look at the host; the page is drawn again only if it found something new
+    api("/api/merge", { name: f.name, action: "check" }).then(r => {
+      if (r.state !== m.state) { featureCache.delete(f.name); route(); }
+    }).catch(() => {});
+  }
+  return el("section", { class: "card merge-card" }, el("h4", {}, "Branch and merge"),
+    m.branch ? el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
+      m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : "") : el("div", { class: "small dim" }, "No branch is recorded for this feature yet."),
+    chooser,
+    m.url ? el("div", { class: "small" }, "Request: ", el("a", { href: m.url, target: "_blank", rel: "noopener" }, m.url)) : "",
+    m.note ? el("div", { class: "small dim" }, m.note) : "",
+    atMerge ? el("div", { class: "start-actions" },
+      el("button", { type: "button", id: "merge-check", onclick: () => act("check", { force: true }) }, "Check now"),
+      el("button", { type: "button", id: "merge-opened", onclick: () => {
+        const url = prompt("The pull / merge request's link (optional):", m.url || "");
+        if (url !== null) act("opened", { url: url.trim() });
+      } }, "I opened the request"),
+      el("button", { type: "button", id: "merge-merged", onclick: () => act("merged") }, "Mark merged")) : "");
+}
+
 function overview(f) {
   const stand = (f.rows || []).map((r, i) => r.kind ? el("div", { class: "stand " + r.kind },
     el("p", {}, r.kind === "warn" ? "⚠ " : r.kind === "alt" ? "Or: " : "", r.text),
@@ -1164,6 +1308,11 @@ function overview(f) {
   if (f.workflowStep) stand.push(el("div", { class: "stand alt" }, el("p", {}, f.workflowStep.text),
     stepActions(f, f.workflowStep, "workflow", openStartFor === f.name)));
   if (openStartFor === f.name) openStartFor = null;
+  // A small change or a bug fix is carried on by tt-workflow-lite (Resume, first); a new feature can go either way.
+  if (f.liteStep) {
+    const lite = el("div", { class: "stand " + (f.route === "new" ? "alt" : "resume") }, el("p", {}, f.liteStep.text), stepActions(f, f.liteStep, "lite"));
+    if (f.route === "new") stand.push(lite); else stand.unshift(lite);
+  }
   if (!f.toolbox) stand.unshift(el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."));
   const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
     bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
@@ -1175,7 +1324,7 @@ function overview(f) {
       el("span", {}, (e.qualifier ? e.qualifier + " " : "") + (EVENTS[e.event] || e.event)),
       e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : "";
   const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
-  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"),
+  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), commitCard(f), // commit.js
     stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
   // Each session Start opened that is still going has a tab on the Features page: one line
@@ -1217,16 +1366,19 @@ function overview(f) {
   return el("div", { class: "overview" },
     el("div", { class: "ov-head" },
       el("h2", {}, f.name), chip(ROUTES[f.route] || f.route, "route"),
-      chip(PHASES[f.phase] || f.phase || "—", f.phase === "complete" ? "done" : "now"),
+      chip(phaseWord(f), phaseDone(f) ? "done" : "now"),
       el("span", { class: "dim small" }, "updated " + ago(f.updated)),
-      f.task || going.length ? el("button", { type: "button", class: "right", id: "feature-cancel",
-        title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
-          const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
-          if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
-        } }, "Cancel workflow") : "",
-      el("button", { type: "button", class: f.task || going.length ? "" : "right", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh")),
+      el("span", { class: "ov-acts" },
+        f.task || going.length ? el("button", { type: "button", id: "feature-cancel",
+          title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
+            const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
+            if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
+          } }, "Cancel workflow") : "",
+        el("button", { type: "button", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh"),
+        archiveCombo(f))), // archive.js
     el("div", { class: "dim small" }, copyable(f.folder)),
     tracker(f),
+    mergeCard(f),
     process, ended,
     units, usage, events);
 }

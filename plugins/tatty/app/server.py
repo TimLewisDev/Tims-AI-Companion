@@ -44,6 +44,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -54,15 +55,21 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a checkout)
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import reviewdoc  # noqa: E402  the Review Suggestions document
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
+          "models.js": "text/javascript",
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
           "tasks.js": "text/javascript", "tasks.css": "text/css",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
-          "chat.js": "text/javascript", "chat.css": "text/css",
+          "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
+          "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
+          "review-page.js": "text/javascript", "review-page.css": "text/css",
           "diff.js": "text/javascript", "diff.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
@@ -222,6 +229,7 @@ class State:
                        "checked": 0.0, "message": "", "plugins": []}  # see "updates" below
         self.baseline = {}  # plugin name -> the version it was at when this server first looked
         self.update_lock = threading.Lock()
+        self.httpd = None  # the listening server, so a restart can stop it (see "restarting")
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
@@ -286,7 +294,9 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      "jiraServer": "atlassian", "jiraModel": "haiku", "jiraSite": "", "jiraProject": "",
                      # chats (see "chats" below): who writes a side chat's summary of what it is about
                      # (tatty: Tatty itself, no tokens; model: a small model), and the model chats use ("" Claude's own)
-                     "chatSummary": "tatty", "chatModel": ""}
+                     "chatSummary": "tatty", "chatModel": "",
+                     # branches (see "branches and merging" below): what a workflow's new branch name starts with
+                     "branchPrefix": "feature/"}
 
 
 def load_settings():
@@ -305,6 +315,8 @@ def save_settings(changes):
     now.update({k: v for k, v in changes.items() if k in now and isinstance(v, type(now[k]))})
     if now["chatSummary"] not in ("tatty", "model"):
         now["chatSummary"] = "tatty"
+    if not re.fullmatch(r"(?:[A-Za-z0-9_-]+/)*", now["branchPrefix"]) or len(now["branchPrefix"]) > 30:
+        now["branchPrefix"] = SETTINGS_DEFAULTS["branchPrefix"]
     home().mkdir(parents=True, exist_ok=True)
     tmp = home() / "settings.json.tmp"
     tmp.write_text(json.dumps(now, indent=2), encoding="utf-8")
@@ -352,7 +364,7 @@ def install_records():
                 continue
             e = next((i for i in installs if i.get("scope") == "user"), installs[0])
             out.append({"name": name, "id": pid, "market": market, "scope": str(e.get("scope", "user")),
-                        "installed": str(e.get("version", ""))})
+                        "installed": str(e.get("version", "")), "path": str(e.get("installPath", ""))})
     except (OSError, ValueError, AttributeError, TypeError):
         pass
     if not installed():
@@ -397,11 +409,133 @@ def run_claude(state, args):
 def set_update(state, **fields):
     with state.cond:
         state.update.update(fields)
-    state.emit("update", **state.update)
+    state.emit("update", **state.update, restart=restart_needs(state))
 
 
 def update_view(state):
-    return {**state.update, "autoUpdate": load_settings()["autoUpdate"]}
+    return {**state.update, "autoUpdate": load_settings()["autoUpdate"], "restart": restart_needs(state)}
+
+
+# ---------------------------------------------------------------- restarting
+# An installed update isn't live until Tatty restarts: the server runs the code it
+# started with, and a Claude session keeps the mod and skills it loaded. After an
+# update Settings says what needs restarting. Restarting the server loses what it
+# only holds in memory, and that includes the sessions Start opened (their feature,
+# name, model and what they were doing), so the ones still going are written to a
+# file first and the new server takes them back. Each session's mod finds the new
+# server through server.json and says hello again, so the session carries on under
+# the same tag. The new server starts beside the old one, writes server.json, and
+# only then does the old one stop: the tray app and the mods follow it without a gap.
+
+SESSION_CACHE_TTL = 600  # seconds a cache stays good for: it is for a restart, not for keeping
+SESSION_CACHE_ROWS = 300  # feed rows kept per session
+
+
+def sessions_cache_file():
+    return home() / "sessions-cache.json"
+
+
+def cache_sessions(state):
+    """Write the sessions still going (and their feed) to the cache; how many.
+    Nothing going removes any older cache."""
+    with state.cond:
+        keep = [dict(s) for s in state.sessions.values() if state.session_view(s)["status"] in ("starting", "running", "lost")]
+        tags = {s["tag"] for s in keep}
+        feed = {}
+        for ev in state.events:
+            if ev.get("tag") in tags and ev["type"] in ("activity", "card"):
+                feed.setdefault(ev["tag"], []).append({k: v for k, v in ev.items() if k != "seq"})
+    if not keep:
+        sessions_cache_file().unlink(missing_ok=True)
+        return 0
+    rows = sorted((r for t in feed.values() for r in t[-SESSION_CACHE_ROWS:]), key=lambda r: r["ts"])
+    home().mkdir(parents=True, exist_ok=True)
+    tmp = sessions_cache_file().with_suffix(".tmp")
+    tmp.write_text(json.dumps({"cachedAt": time.time(), "sessions": keep, "events": rows}, default=str), encoding="utf-8")
+    os.replace(tmp, sessions_cache_file())
+    return len(keep)
+
+
+def restore_sessions(state):
+    """Take back the sessions a restart cached, once: how many. A session counts as just
+    heard from, so it shows as running until its mod says hello (or, if the Claude session
+    was closed meanwhile, turns lost after the usual wait)."""
+    f = sessions_cache_file()
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        f.unlink(missing_ok=True)
+        if not isinstance(data, dict) or time.time() - float(data.get("cachedAt") or 0) > SESSION_CACHE_TTL:
+            return 0
+        saved = [s for s in data.get("sessions") or [] if isinstance(s, dict) and isinstance(s.get("tag"), str)]
+    except (OSError, ValueError, TypeError):
+        return 0
+    now = time.time()
+    with state.cond:
+        for s in saved:
+            state.sessions.setdefault(s["tag"], {**s, "seen": now, "restored": True})
+    for ev in data.get("events") or []:
+        if isinstance(ev, dict) and ev.get("tag") in state.sessions and ev.get("type") in ("activity", "card"):
+            state.emit(ev.pop("type"), **{k: v for k, v in ev.items() if k != "seq"})
+    for s in saved:
+        state.session_event(s["tag"])
+    return len(saved)
+
+
+def restart_needs(state):
+    """What the installed updates leave to restart: server (this one runs an older
+    Tatty than is installed); the sessions going, each with `stale` when it started before
+    an update this server installed (it still has the old mod and skills); and what a
+    restart would cut off: questions still open and background work running."""
+    plugins = state.update.get("plugins") or []
+    server = any(r.get("name") == "tatty" and r.get("status") == "ready" for r in plugins)
+    updated = state.update.get("updatedAt") or 0.0
+    with state.cond:
+        going = []
+        for s in state.sessions.values():
+            v = state.session_view(s)
+            if v["status"] not in ("ended", "unseen"):
+                going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
+                              "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
+        asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
+        busy = len(state.chat_runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0)
+    return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
+            "busy": busy, "cached": sessions_cache_file().exists()}
+
+
+def installed_server_script():
+    """The server.py of the Tatty that is installed now (an update puts it in a new
+    folder), else this one's."""
+    for r in install_records():
+        if r["name"] == "tatty" and r.get("path") and (Path(r["path"]) / "app" / "server.py").is_file():
+            return Path(r["path"]) / "app" / "server.py"
+    return Path(__file__).resolve()
+
+
+def hand_over(state):
+    """Once the new server has written server.json, stop this one."""
+    for _ in range(300):  # a minute
+        time.sleep(0.2)
+        info = load_info()
+        if info and info.get("pid") != os.getpid():
+            break
+    else:
+        return set_update(state, message="The restart didn't finish: the new server didn't start, so this one carries on. See server.log.")
+    time.sleep(1)  # the tray app and the mods look for the new server as this one's answers stop
+    if state.httpd:
+        state.httpd.shutdown()
+
+
+def restart_server(state):
+    """Restart the server on the installed Tatty, keeping the sessions going: (http code, answer)."""
+    if not restart_needs(state)["server"]:
+        return 409, {"error": "Nothing needs restarting: this server is the installed version."}
+    kept = cache_sessions(state)
+    try:
+        spawn_server(state.cwd, state.bash, installed_server_script())
+    except OSError as e:
+        return 500, {"error": f"Couldn't start the new server: {e}"}
+    threading.Thread(target=hand_over, args=(state,), daemon=True).start()
+    return 200, {"ok": True, "kept": kept}
 
 
 def update_work(state, apply):
@@ -436,6 +570,7 @@ def update_work(state, apply):
                     errors.append(f"Couldn't update {name}: {got[1]}")
                 else:
                     have = next((r["installed"] for r in install_records() if r["id"] == t["id"]), have)
+                    set_update(state, updatedAt=time.time())  # the sessions started before this are on the old one
             if version_key(have) > version_key(running):
                 status = "ready"
             elif version_key(available) > version_key(have):
@@ -457,6 +592,11 @@ def update_work(state, apply):
                   else "available" if waiting else "current")
         set_update(state, status=status, installed=first["installed"], available=first["available"], plugins=rows,
                    checked=time.time(), message=" ".join(errors + said) or "Everything is up to date.")
+        # The server needs restarting and sessions are going: keep them now, so that a
+        # restart by hand (not only the button) takes them back.
+        if restart_needs(state)["server"]:
+            cache_sessions(state)
+            set_update(state)
     except Exception as e:  # a background check must never take the server down
         set_update(state, status="error", checked=time.time(), message=f"{type(e).__name__}: {e}")
     finally:
@@ -515,6 +655,207 @@ def run_view(state, name, query):
         return {"exit": 2, "stdout": "", "stderr": str(e)}
 
 
+# ---------------------------------------------------------------- models
+# Which model and thinking effort a session, or a step of the workflow, runs on.
+# The models come from the LLM connections the toolbox keeps (tt-connections'
+# llms.sh: claude, copilot, codex), the choices per step from its tt-config
+# (model-config.sh), and that config's `session` role is what a Start launches
+# claude with. Tatty only runs those scripts, by argv, on a Start or a click in
+# Settings; the files stay the toolbox's (see docs/toolbox-contract.md).
+
+LLMS = "tt-connections/scripts/llms.sh"
+MODEL_CONFIG = "tt-common/scripts/model-config.sh"
+PROVIDERS = ("claude", "copilot", "codex")
+DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+# What claude offers when the toolbox has no llms.sh (an older install).
+BUILTIN_MODELS = [{"provider": "claude", "id": a, "label": a, "efforts": DEFAULT_EFFORTS, "runnable": True}
+                  for a in ("sonnet", "opus", "haiku", "fable")]
+MODEL_WORD = re.compile(r"[A-Za-z0-9._:/-]+\Z")
+_models = {"at": 0.0, "rows": None}
+
+
+def toolbox_run(state, rel, args, timeout=60):
+    """Run a toolbox script (by its path under core's skills folder) with args, no
+    shell: (exit code, stdout, stderr), or None when this toolbox doesn't have it."""
+    script = toolbox_script(rel)
+    if not script:
+        return None
+    try:
+        p = subprocess.run([state.bash, str(script), *args], cwd=state.cwd, capture_output=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+        return p.returncode, p.stdout.replace("\r", ""), p.stderr.replace("\r", "")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 2, "", str(e)
+
+
+def tsv_rows(text, n):
+    return [r for r in (line.split("\t") for line in text.splitlines() if line.strip()) if len(r) >= n]
+
+
+def llm_models(state, fresh=False):
+    """The models of the connected LLMs: dicts of provider, id, label, efforts (a
+    list, empty when none is offered) and runnable (a skill or session can use it).
+    Cached for a few seconds, as a Start asks for them."""
+    if not fresh and _models["rows"] is not None and time.time() - _models["at"] < 15:
+        return _models["rows"]
+    got = toolbox_run(state, LLMS, ["models", "--tsv"])
+    rows = []
+    if got and got[0] == 0:
+        rows = [{"provider": r[0], "id": r[1], "label": r[2], "efforts": [] if r[3] in ("", "-") else r[3].split(","),
+                 "runnable": r[4].strip() == "yes"} for r in tsv_rows(got[1], 5)]
+    _models.update(at=time.time(), rows=rows or BUILTIN_MODELS)
+    return _models["rows"]
+
+
+def model_choice(state, model, effort):
+    """Check a model and effort a session may start on: ([claude flags], "") or
+    (None, why not). Blank or "-" leaves that choice to Claude Code."""
+    model, effort = str(model or "").strip(), str(effort or "").strip()
+    model = "" if model == "-" else model
+    effort = "" if effort == "-" else effort
+    flags, allowed = [], DEFAULT_EFFORTS
+    if model:
+        if not MODEL_WORD.match(model):
+            return None, "That isn't a model name."
+        known = [m for m in llm_models(state) if m["id"] == model]
+        found = next((m for m in known if m["runnable"]), known[0] if known else None)
+        if not found:
+            return None, f"{model} isn't one of the models Tatty knows. Refresh the connections in Settings."
+        if not found["runnable"]:
+            return None, f"{model} ({found['provider']}) is connected, but can't run a workflow session yet."
+        allowed = found["efforts"] or allowed
+        flags += ["--model", model]
+    if effort:
+        if effort not in allowed:
+            return None, f"{model or 'The session model'} doesn't take the effort {effort} (it takes {', '.join(allowed)})."
+        flags += ["--effort", effort]
+    return flags, ""
+
+
+def model_fields(body):
+    """The model and effort a Start's body chose, to pass on to start_session
+    (left out when it chose nothing, so the toolbox's `session` setting applies)."""
+    return {k: body[k] for k in ("model", "effort") if k in body}
+
+
+def model_fields_error(state, body):
+    """Why the model and effort a body chose won't do, or "". Checked before a Start
+    makes a feature folder, so a bad choice leaves nothing behind."""
+    if "model" not in body and "effort" not in body:
+        return ""
+    return model_choice(state, body.get("model"), body.get("effort"))[1]
+
+
+def kv_pairs(text):
+    """model=opus effort=high -> {"model": "opus", "effort": "high"}"""
+    return dict(w.split("=", 1) for w in text.split() if "=" in w)
+
+
+def session_default(state):
+    """The model and effort the toolbox's `session` setting starts claude with ("" = Claude Code's own)."""
+    got = toolbox_run(state, MODEL_CONFIG, ["get", "session"])
+    pairs = kv_pairs(got[1]) if got and got[0] == 0 else {}
+    return {k: "" if pairs.get(k, "-") == "-" else pairs[k] for k in ("model", "effort")}
+
+
+def feature_models_file():
+    return home() / "session-models.json"
+
+
+def feature_model(feature):
+    """The model and effort a feature's workflow was last started on, else None."""
+    try:
+        got = json.loads(feature_models_file().read_text(encoding="utf-8")).get(feature)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return got if isinstance(got, dict) and (got.get("model") or got.get("effort")) else None
+
+
+def remember_feature_model(feature, model, effort):
+    """So the chats and runs of that feature use the same choice."""
+    try:
+        data = json.loads(feature_models_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[feature] = {"model": model, "effort": effort}
+    home().mkdir(parents=True, exist_ok=True)
+    tmp = feature_models_file().with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, feature_models_file())
+
+
+def llms_view(state):
+    got = toolbox_run(state, LLMS, ["status", "--tsv"])
+    providers = [{"provider": r[0], "state": r[1], "version": r[2], "models": int(r[3] or 0), "runnable": int(r[4] or 0)}
+                 for r in tsv_rows(got[1], 5)] if got and got[0] == 0 else []
+    return {"available": got is not None, "providers": providers, "models": llm_models(state, fresh=True),
+            "session": session_default(state)}
+
+
+def llms_change(state, b):
+    """connect / disconnect / refresh one LLM tool: (http code, answer)."""
+    action, provider = str(b.get("action", "")), str(b.get("provider", ""))
+    if action not in ("connect", "disconnect", "refresh") or (provider not in PROVIDERS and not (action == "refresh" and not provider)):
+        return 400, {"error": "action: connect, disconnect or refresh; provider: claude, copilot or codex"}
+    got = toolbox_run(state, LLMS, [action, *([provider] if provider else [])], timeout=90)
+    if got is None:
+        return 501, {"error": "This toolbox is too old to connect LLMs. Update the core plugin."}
+    _models["rows"] = None
+    if got[0] != 0:
+        return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
+    return 200, {**llms_view(state), "said": got[1].strip()}
+
+
+def model_config_view(state):
+    got = toolbox_run(state, MODEL_CONFIG, ["list", "--tsv"])
+    roles = [{"role": r[0], "kind": r[1], "tier": int(r[2]) if r[2].isdigit() else 4, "usedBy": r[3], "label": r[4],
+              "model": r[5], "effort": r[6], "defaultModel": r[7], "defaultEffort": r[8]}
+             for r in tsv_rows(got[1], 9)] if got and got[0] == 0 else []
+    modes, active = [], ""
+    shown = toolbox_run(state, MODEL_CONFIG, ["modes"])
+    for line in (shown[1].splitlines() if shown and shown[0] == 0 else []):
+        m = re.match(r"([* ]) (\S+) \((.+)\)\Z", line.rstrip())
+        if m:
+            modes.append({"name": m.group(2), "kind": m.group(3)})
+            if m.group(1) == "*":
+                active = m.group(2)
+    return {"available": bool(roles), "mode": active, "modes": modes, "roles": roles, "models": llm_models(state)}
+
+
+def model_config_change(state, b):
+    """set one role / use, reset, save or delete a mode, through model-config.sh: (http code, answer)."""
+    action = str(b.get("action", ""))
+    now = model_config_view(state)
+    if not now["available"]:
+        return 501, {"error": "This toolbox is too old to configure models. Update the core plugin."}
+    names = {m["name"] for m in now["modes"]}
+    if action == "set":
+        role = str(b.get("role", ""))
+        if role not in {r["role"] for r in now["roles"]}:
+            return 400, {"error": "no such step"}
+        args = ["set", role, str(b.get("model") or "-").strip() or "-", str(b.get("effort") or "-").strip() or "-"]
+    elif action in ("use", "reset", "delete"):
+        mode = str(b.get("mode", ""))
+        if mode not in names:
+            return 400, {"error": "no such mode"}
+        args = [action, mode]
+    elif action == "save":
+        name = str(b.get("name", "")).strip()
+        if not re.match(r"[a-z0-9][a-z0-9_-]*\Z", name):
+            return 400, {"error": "A mode's name is lowercase letters, digits, - and _."}
+        args = ["save", name]
+    else:
+        return 400, {"error": "action: set, use, reset, save or delete"}
+    if any(not MODEL_WORD.match(a) for a in args):
+        return 400, {"error": "model and effort are single words"}
+    got = toolbox_run(state, MODEL_CONFIG, args)
+    if got[0] != 0:
+        return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
+    return 200, {**model_config_view(state), "said": got[1].strip()}
+
+
 # ---------------------------------------------------------------- features (Tatty's root)
 
 # The documents a feature can have, in the order the workflow writes them.
@@ -544,7 +885,7 @@ def root_info():
     root, is_set = tatty_root()
     features = root / "features"
     return {"root": root.as_posix(), "features": features.as_posix(), "design": (root / "design").as_posix(),
-            "tasks": (root / "tasks").as_posix(), "isSet": is_set,
+            "tasks": (root / "tasks").as_posix(), "archive": (root / "archive").as_posix(), "isSet": is_set,
             "exists": features.is_dir(), "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
 
 
@@ -654,7 +995,12 @@ def workflow_rows(state, folder):
         p = quiet_run(state, [state.bash, str(script), "--tsv", folder.as_posix()], cwd=str(folder))
     except (OSError, subprocess.TimeoutExpired):
         return []
-    return [dict(zip(STATE_COLS, line.split("\t"))) for line in p.stdout.splitlines() if line.strip()]
+    rows = [dict(zip(STATE_COLS, line.split("\t"))) for line in p.stdout.splitlines() if line.strip()]
+    # The toolbox's last phase is "complete". Tatty adds the Review step after it (its own review row replaces
+    # the toolbox's), until the request is merged.
+    if any(r.get("phase") == "complete" for r in rows) and merge_view(folder.name)["state"] != "merged":
+        rows = [r for r in rows if r.get("skill") != REVIEW_SKILL] + review_rows(folder)
+    return rows
 
 
 def route_of(phase, docs=(), notes=()):
@@ -935,16 +1281,19 @@ def feature_summary(state, folder, detail=False):
            "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
-           "tasks": tasks,
+           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder),
            "live": next(({"name": x["name"], "status": x["status"], "tag": x["tag"]} for x in sessions_of(state, folder)
                          if x["status"] in ("starting", "running", "lost")), None)}
     if detail:
         events = events_of(folder)
         plan = first_doc(docs, "Comprehensive Tech Plan")
         project, project_from = feature_project(folder, docs)
-        out.update({"rows": rows, "workflowStep": workflow_row(folder), "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
+        out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
                     "stages": stages_of(read_doc(folder, plan) if plan else "", events),
-                    "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder)})
+                    "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder),
+                    # tt-workflow is the full pipeline's entry: a small change goes in through tt-workflow-lite
+                    "workflowStep": None if out["route"] in ("lite", "bug") else workflow_row(folder),
+                    "liteStep": lite_step(folder, out["route"], out["phase"], out["text"])})
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
         out["ticketOnly"] = [p.name for p in folder.iterdir()] == [f"{folder.name} - Ticket.md"]
@@ -956,12 +1305,742 @@ def features_list(state):
     base = Path(info["features"])
     toolbox = toolbox_core() is not None
     if not base.is_dir():
-        return {"root": info, "features": [], "toolbox": toolbox}
+        return {"root": info, "features": [], "toolbox": toolbox, "archived": []}
     folders = [d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=6) as pool:
         found = list(pool.map(lambda d: feature_summary(state, d), folders))
-    return {"root": info, "features": sorted(found, key=lambda f: -f["updated"]), "toolbox": toolbox}
+    return {"root": info, "features": sorted(found, key=lambda f: -f["updated"]), "toolbox": toolbox,
+            "archived": archived_list()}
+
+
+# ---------------------------------------------------------------- branches and merging
+# Two workflows in one repository must not trample each other's files, and finished
+# work mustn't sit uncommitted and forgotten. So a workflow Tatty starts runs on a
+# branch of its own, made here (the toolbox's skills never create one), and after
+# the build there is a Review step (see "the Review step"), whose last phase is a session that walks the
+# person through commit, push and opening a pull/merge request, each git write asked first.
+# Tatty itself runs `git switch`, and stages and commits only on the Commit page's buttons
+# (see "committing what the workflow left"); it never pushes.
+# <tatty home>/branches.json: feature name (lower case) -> {repo, branch, base,
+# created, merge: {state "" | opened | merged, url, number, host, checked, note}}.
+# Nothing here is the workflow's record: it reads the toolbox's phase and no more.
+
+BRANCH_LOCK = threading.Lock()
+MERGE_CHECK_EVERY = 30  # seconds: a look at the host for the request is never more often unless asked
+
+
+def git(repo, *args, timeout=60):
+    """(exit code, output) of a git command in repo: stdout, or stderr when it fails;
+    (1, "") when git can't run."""
+    try:
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, stdin=subprocess.DEVNULL,
+                           encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+    return p.returncode, ((p.stdout if p.returncode == 0 else (p.stderr or p.stdout)) or "").strip()
+
+
+def repo_of(project, workdir=""):
+    """The git repository a workflow works in: the work folder's if it has one, else the project's; "" if neither is in one."""
+    where = workdir or project
+    if not where or not os.path.isdir(where):
+        return ""
+    code, out = git(where, "rev-parse", "--show-toplevel")
+    return Path(out).as_posix() if code == 0 and out else ""
+
+
+def current_branch(repo):
+    code, out = git(repo, "branch", "--show-current")
+    return out if code == 0 else ""
+
+
+def branch_exists(repo, name):
+    return bool(name) and git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}")[0] == 0
+
+
+def branch_records():
+    return read_json(home() / "branches.json", {})
+
+
+def branch_record(feature):
+    rec = branch_records().get(feature.lower())
+    return rec if isinstance(rec, dict) else {}
+
+
+def save_branch(feature, rec):
+    """Store a feature's record (the lock held by the caller when it read it first)."""
+    rows = branch_records()
+    rows[feature.lower()] = rec
+    write_json(home() / "branches.json", rows)
+
+
+def branch_name(repo, feature):
+    """The new branch's name: the prefix setting and the feature's name made safe for a ref; -2, -3 ... if taken."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", feature)
+    slug = re.sub(r"\.{2,}", ".", slug).strip("-.")[:60].strip("-.")
+    slug = re.sub(r"\.lock$", "", slug) or "work"
+    base = load_settings()["branchPrefix"] + slug
+    name, n = base, 2
+    while branch_exists(repo, name):
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def local_branches(repo):
+    """The repo's local branches, the most recently committed first."""
+    code, out = git(repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
+    return [b for b in out.splitlines() if b.strip()][:300] if code == 0 else []
+
+
+def branch_repo(feature, project, workdir=""):
+    """The repo the feature's branch is in: the one the person chose for it when it
+    isn't the project's (pinned), else the work folder's or the project's."""
+    rec = branch_record(feature)
+    if rec.get("pinned") and os.path.isdir(str(rec.get("repo", ""))):
+        return Path(rec["repo"]).as_posix()
+    return repo_of(project, workdir)
+
+
+def known_repos(folder, *first):
+    """Git repositories to pick from: those named first, the feature's own, every other
+    feature's, and the projects chosen for features. Existing ones only, each once."""
+    cands = [*first, branch_record(folder.name).get("repo", ""),
+             *[r.get("repo", "") for r in branch_records().values() if isinstance(r, dict)], *chosen_projects().values()]
+    seen, out = set(), []
+    for c in cands:
+        c = str(c or "")
+        if not c or c.lower() in seen:
+            continue
+        seen.add(c.lower())
+        r = repo_of(c)
+        if r and r.lower() not in {o.lower() for o in out}:
+            out.append(r)
+        if len(out) >= 20:
+            break
+    return out
+
+
+def branch_info(state, folder, project, workdir="", pick=""):
+    """What a Start would do about the branch, for the Start panel; changes nothing.
+    pick: a repo the person is looking at instead of the feature's own."""
+    repo = repo_of(pick) if pick else branch_repo(folder.name, project, workdir)
+    rec = branch_record(folder.name)
+    if pick and not repo:
+        return {"repo": "", "note": f"{pick} isn't in a git repository."}
+    if not repo:
+        return {"repo": "", "note": "Not in a git repository: no branch will be made." if project else ""}
+    here = current_branch(repo)
+    rows = workflow_rows(state, folder)
+    fresh = bool(rows) and rows[0].get("phase") == "empty"
+    out = {"repo": repo, "current": here, "branch": "", "base": "", "create": "", "others": [], "branches": local_branches(repo),
+           "repos": known_repos(folder, repo, project)}
+    if rec.get("branch") and same_folder(rec.get("repo", ""), repo):
+        out.update(branch=rec["branch"], base=rec.get("base", ""))
+    elif fresh:
+        out["create"] = branch_name(repo, folder.name)
+    out["others"] = sorted(k for k, r in branch_records().items()
+                           if k != folder.name.lower() and isinstance(r, dict) and same_folder(r.get("repo", ""), repo)
+                           and r.get("branch") != (out["branch"] or out["create"])
+                           and (r.get("merge") or {}).get("state") != "merged")
+    return out
+
+
+# ---------------------------------------------------------------- committing what the workflow left
+# Once a build is complete, the next step before a review is to commit what the workflow changed
+# (a review only reads commits). Tatty shows the repo's uncommitted files on the feature's branch,
+# says which of them the workflow's own task results list as modified (the "Files Modified" of
+# <feature>/.tt/*/results/*.md), suggests a message from the feature and the style of the repo's
+# recent commits, and on a click stages and commits what was chosen. It never pushes (the Merge
+# step does), never skips the repo's hooks, and adds no trailer of its own to the message.
+
+COMMIT_LOCK = threading.Lock()
+COMMIT_CAP = 3000  # files listed at most
+SECRET_NAME = re.compile(r"(^|/)(\.env(\..*)?|id_(rsa|dsa|ecdsa|ed25519)[^/]*|[^/]*\.(pem|pfx|p12|key|keystore|jks)|credentials(\.json)?|[^/]*secrets?[^/]*)$", re.I)
+LARGE_FILE = 10 * 1024 * 1024
+CONVENTIONAL = ("feat", "fix", "refactor", "docs", "chore", "test", "perf", "style", "build", "ci", "revert")
+
+
+def git_run(repo, args, stdin=None, timeout=120):
+    """(exit code, stdout, stderr) of a git command in repo, as text; stdin is bytes or None."""
+    kw = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=timeout, creationflags=NO_WINDOW, **kw)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, "", str(e)
+    return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+
+
+def status_files(repo):
+    """The repo's uncommitted files, from git (one entry per file, renames as a delete and a new file):
+    ([{path, state, staged, secret, bytes}], conflicts, truncated). state: new, modified, deleted."""
+    code, out, err = git_run(repo, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames"], timeout=180)
+    if code != 0:
+        return [], [], False
+    files, conflicts = [], []
+    entries = [e for e in out.split("\0") if len(e) > 3]
+    for e in entries[:COMMIT_CAP]:
+        xy, path = e[:2], e[3:]
+        if "U" in xy or xy in ("AA", "DD"):
+            conflicts.append(path)
+            continue
+        state = "new" if xy == "??" or "A" in xy else "deleted" if "D" in xy else "modified"
+        size = 0
+        if state != "deleted":
+            try:
+                size = (Path(repo) / path).stat().st_size
+            except OSError:
+                pass
+        files.append({"path": path, "state": state, "staged": xy[0] not in " ?", "bytes": size,
+                      "secret": bool(SECRET_NAME.search(path)), "large": size > LARGE_FILE})
+    return sorted(files, key=lambda f: f["path"].lower()), conflicts, len(entries) > COMMIT_CAP
+
+
+def workflow_results(folder):
+    """What the workflow's task results say it did: ({paths it modified}, [task titles]), from
+    <feature>/.tt/**/results/*.md (the "Files Modified" list and the heading)."""
+    paths, titles = set(), []
+    tt = folder / ".tt"
+    for f in sorted(tt.rglob("results/*.md")) if tt.is_dir() else []:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        head = re.match(r"#\s*Result:\s*[A-Za-z0-9._-]+\s*[—–-]\s*(.+)", text)
+        if head:
+            titles.append(head.group(1).strip())
+        part = ""
+        for line in text.replace("\r", "").split("\n"):
+            if line.startswith("## "):
+                part = line[3:].strip()
+            elif part == "Files Modified" and line.startswith("- "):
+                for p in re.findall(r"`([^`]+)`", line.split(": ", 1)[0]):
+                    paths.add(re.sub(r"^\./", "", p.strip().replace("\\", "/")))
+    return paths, titles
+
+
+def in_workflow(path, mentioned, repo):
+    """Whether a changed file is one the workflow's results name (or lies under a folder they name)."""
+    root = Path(repo).as_posix().rstrip("/").lower() + "/"
+    for m in mentioned:
+        m = m[len(root):] if m.lower().startswith(root) else m
+        if path.lower() == m.lower() or (m.endswith("/") and path.lower().startswith(m.lower())):
+            return True
+    return False
+
+
+def suggest_commit_message(folder, repo, branch, titles, applied=None):
+    """A message from the feature's name and the style of the repo's recent commits (a conventional
+    `feat:` prefix and a trailing [KEY] only where they use them), with the workflow's tasks as the body.
+    After a review's changes were made (applied: their summaries) it says that instead."""
+    name = re.sub(r"^[A-Za-z]+-\d+\s*[-–:]\s*", "", folder.name).strip() or folder.name
+    kind = "feat"
+    if applied is not None:
+        name, kind, titles = "address review suggestions", "fix", applied
+    code, out, _ = git_run(repo, ["log", "-30", "--format=%s"])
+    subjects = [s for s in out.splitlines() if s.strip()] if code == 0 else []
+    n = max(len(subjects), 1)
+    typed = sum(1 for s in subjects if re.match(r"^(" + "|".join(CONVENTIONAL) + r")(\([^)]+\))?!?: ", s)) * 5 >= n * 2
+    keyed = sum(1 for s in subjects if re.search(r"\[[A-Z][A-Z0-9]*-\d+\]$", s)) * 5 >= n * 2
+    subject = (f"{kind}: {name[:1].lower()}{name[1:]}" if typed else name[:1].upper() + name[1:] if applied is not None else name)
+    key = re.search(r"[A-Z][A-Z0-9]*-\d+", branch or "") or re.search(r"[A-Z][A-Z0-9]*-\d+", folder.name)
+    if keyed and key:
+        subject += f" [{key.group(0)}]"
+    message = subject[:100]
+    if titles:
+        message += "\n\n" + "\n".join(f"- {t}" for t in titles[:12])
+    return message
+
+
+def commit_info(folder):
+    """What the Commit page shows for a feature: its repo and branch, and the uncommitted files, each
+    marked as the workflow's own or not. {repo: ""} when the feature has no repository to look in."""
+    rec = branch_record(folder.name)
+    project = feature_project(folder, docs_of(folder))[0] or ""
+    recorded = rec.get("repo", "") if os.path.isdir(rec.get("repo", "")) else ""
+    repo = repo_of(recorded or project)
+    if not repo:
+        return {"repo": "", "note": "No repository is known for this feature yet: choose its project on the feature's page."}
+    files, conflicts, truncated = status_files(repo)
+    mentioned, titles = workflow_results(folder)
+    for f in files:
+        f["workflow"] = in_workflow(f["path"], mentioned, repo)
+    branch, here = rec.get("branch", ""), current_branch(repo)
+    doc, _ = review_load(folder)  # the changes a review's suggestions led to get their own message
+    applied = [i["summary"] for i in doc.items if i["result"].startswith("Applied")] if doc and doc.status == "Applied" else None
+    return {"repo": repo, "branch": branch, "current": here, "files": files, "conflicts": conflicts,
+            "truncated": truncated, "mentioned": len(mentioned), "afterReview": applied is not None,
+            "message": suggest_commit_message(folder, repo, branch or here, titles, applied)}
+
+
+def feature_commit(state, folder, body):
+    """Stage and commit the files chosen (or all but the secret-looking), with the message given:
+    only those files are committed, whatever else is staged. (http code, answer)"""
+    info = commit_info(folder)
+    if not info["repo"]:
+        return 400, {"error": info["note"]}
+    if info["conflicts"]:
+        return 409, {"error": "The repo has files in conflict (" + ", ".join(info["conflicts"][:3]) + "): resolve them first."}
+    if info["branch"] and info["current"] != info["branch"]:
+        return 409, {"error": f"The repo is on {info['current'] or 'a detached HEAD'}, not the feature's branch {info['branch']}: switch it first, so the commit lands on the right branch."}
+    message = str(body.get("message") or "").replace("\r\n", "\n").strip()
+    if not message:
+        return 400, {"error": "Write a commit message."}
+    known = {f["path"]: f for f in info["files"]}
+    if body.get("all"):
+        chosen = [p for p, f in known.items() if not f["secret"]]
+    else:
+        chosen = [p for p in body.get("files") or [] if isinstance(p, str)]
+        if any(p not in known for p in chosen):
+            return 409, {"error": "The files changed since you looked: reload the page."}
+    if not chosen:
+        return 400, {"error": "Nothing is chosen to commit."}
+    repo = info["repo"]
+    spec = ("\0".join(chosen) + "\0").encode("utf-8")
+    fd, tmp = tempfile.mkstemp(prefix="tatty-commit-", suffix=".txt", dir=str(home()) if home().is_dir() else None)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(message + "\n")
+        with COMMIT_LOCK:
+            code, _, err = git_run(repo, ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=spec)
+            if code != 0:
+                return 500, {"error": f"git add failed: {err.strip()[-600:]}"}
+            code, out, err = git_run(repo, ["commit", "-F", tmp, "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=spec, timeout=600)
+            if code != 0:
+                fresh = ("\0".join(p for p in chosen if not known[p]["staged"]) + "\0").encode("utf-8")
+                if fresh != b"\0":  # put the index back as it was: what we staged for this, nothing else
+                    git_run(repo, ["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=fresh)
+                said = "\n".join([ln for ln in (err + "\n" + out).splitlines() if ln.strip()][-14:])
+                return 422, {"error": "git refused the commit (a hook, or your git identity?):\n" + said}
+            _, sha, _ = git_run(repo, ["rev-parse", "--short", "HEAD"])
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    review, _ = review_load(folder)
+    reviewed = bool(review and review.status == "Applied")
+    if reviewed:  # the changes the review led to are committed: the review is done
+        review_done(folder)
+    return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo, "reviewDone": reviewed}
+
+
+REVIEW_SKILL = "tt-branch-review"
+REF_NAME = re.compile(r"^[A-Za-z0-9._/@#+~^-]{1,200}$")  # a branch or ref: no spaces, quotes or shell characters
+
+
+def review_info(folder, repo=""):
+    """What a branch review of this feature would use, for the Start panel; changes nothing.
+    The review looks at the repo its session starts in, which need not be the feature's project
+    (a Tatty feature's session may run in another repo): the repo given, else the one the feature's
+    branch was made in, else its project's. The branch is the feature's own when the repo has it,
+    else the one checked out."""
+    rec = branch_record(folder.name)
+    project = feature_project(folder, docs_of(folder))[0] or ""
+    recorded = rec.get("repo", "") if os.path.isdir(rec.get("repo", "")) else ""
+    default = repo_of(recorded or project)
+    where = repo_of(repo) if repo else default
+    out = {"repo": where, "default": default, "project": project, "current": "", "branch": ""}
+    if not where:
+        out["note"] = "That folder isn't in a git repository." if repo else "No repository is known for this feature yet: choose one."
+        return out
+    here = current_branch(where)
+    mine = rec.get("branch", "") if same_folder(rec.get("repo", ""), where) else ""
+    out.update(current=here, branch=mine if mine and branch_exists(where, mine) else here)
+    return out
+
+
+def review_request(body):
+    """(the command, the repo the session starts in or "", an error) for the review step's Start. The
+    branch and the base are optional (the skill then takes the checked-out branch and finds the
+    base itself); the repo is where the session runs, since the skill reviews the repo it is in."""
+    r = body.get("review") if isinstance(body.get("review"), dict) else {}
+    branch, against = (str(r.get(k) or "").strip() for k in ("branch", "against"))
+    for v in (branch, against):
+        if v and not REF_NAME.match(v):
+            return "", "", f"Not a branch name: {v}"
+    cmd = " ".join(["/" + REVIEW_SKILL] + ([branch] if branch else []) + (["against", against] if against else []))
+    repo = str(r.get("repo") or "").strip()
+    if repo:
+        if not os.path.isdir(repo):
+            return "", "", f"no such folder: {repo}"
+        top = repo_of(repo)
+        if not top:
+            return "", "", f"{repo} isn't in a git repository."
+        repo = top
+    return cmd, repo, ""
+
+
+# ---------------------------------------------------------------- the Review step
+# After a build is complete the last step is Review: the branch is reviewed (the session that does it writes
+# <feature>/<feature> - Review Suggestions.md with options for each finding, through suggestions.sh), the person
+# decides each suggestion one at a time on the Review page, an implementation session applies the decisions, the
+# changes are committed (the Commit page), and then the merge phase (push, open the request) follows.
+# The document is the one record: its Status and decisions say where the step is (reviewdoc.py), so a restart
+# loses nothing and there is no second state to drift.
+
+REVIEW_DOC = " - Review Suggestions.md"
+SKILL_REVIEW, SKILL_APPLY = "tatty:review", "tatty:apply-review"
+
+
+def review_doc_path(folder):
+    return folder / f"{folder.name}{REVIEW_DOC}"
+
+
+def review_load(folder):
+    """(the document or None, why it can't be read or None)."""
+    try:
+        return reviewdoc.load(review_doc_path(folder)), None
+    except reviewdoc.DocError as e:
+        return None, str(e)
+
+
+def review_view(folder):
+    """Where the Review step stands, for the feature's page and tracker: {phase, status, total, decided, ...}.
+    phase: review (not started), decide, apply, commit, merge (done), or broken (the document isn't in its layout)."""
+    doc, bad = review_load(folder)
+    if bad:
+        return {"phase": "broken", "problem": bad}
+    if not doc:
+        return {"phase": "review"}
+    return {"phase": doc.phase(), "status": doc.status, "doc": review_doc_path(folder).name, **doc.counts()}
+
+
+def review_context(folder, repo, branch, against="", doc=None):
+    """The lines a Review session is given after its command: the facts, never the findings."""
+    return "\n".join(["Context from Tatty:", f"Feature: {folder.name}", f"Folder: {folder.as_posix()}", f"Repository: {repo}",
+                      f"Branch: {branch or '(the branch that is checked out)'}", *([f"Against: {against}"] if against else []),
+                      f"Document: {review_doc_path(folder).as_posix()}", f"Script: {(PLUGIN / 'scripts' / 'suggestions.sh').as_posix()}",
+                      *([f"Reviewed head: {doc.head['Reviewed']}"] if doc and doc.head["Reviewed"] else [])])
+
+
+def review_session(folder, body):
+    """(the command, the repo the session starts in, an error) for the Review step's first Start: the repo, branch
+    and base come from the Start panel (review.js), as for the toolbox's own review."""
+    r = body.get("review") if isinstance(body.get("review"), dict) else {}
+    branch, against = (str(r.get(k) or "").strip() for k in ("branch", "against"))
+    for v in (branch, against):
+        if v and not REF_NAME.match(v):
+            return "", "", f"Not a branch name: {v}"
+    repo = str(r.get("repo") or "").strip()
+    if repo:
+        if not os.path.isdir(repo):
+            return "", "", f"no such folder: {repo}"
+        repo = repo_of(repo)
+        if not repo:
+            return "", "", "That folder isn't in a git repository."
+    else:
+        repo = review_info(folder)["repo"]
+    if not repo:
+        return "", "", "Choose the repo to review."
+    return f"/{SKILL_REVIEW} \n" + review_context(folder, repo, branch, against), repo, ""
+
+
+def apply_session(folder):
+    """(the command, the repo, an error) for the session that applies the decisions."""
+    doc, bad = review_load(folder)
+    if bad or not doc or doc.status != "Decided":
+        return "", "", "There is nothing waiting to be applied: every suggestion must be decided first."
+    repo = doc.head["Repository"] or review_info(folder)["repo"]
+    if not repo or not os.path.isdir(repo):
+        return "", "", "The repo the review was made in isn't there."
+    return f"/{SKILL_APPLY} \n" + review_context(folder, repo, doc.head["Branch"], doc=doc), repo, ""
+
+
+def review_rows(folder):
+    """The Tatty rows after the toolbox's `complete`: the step the Review document says is next, until the request is merged."""
+    v = merge_view(folder.name)
+    if v["state"] == "merged":
+        return []
+    if v["state"] == "opened":  # a request is open already: past the review
+        return [merge_row(folder)]
+    href = "#feature/" + urllib.parse.quote(folder.name)
+    base = {"prefix": "", "kind": "primary", "verb": "", "arg": "", "hint": "", "stage": "Review"}
+    doc, bad = review_load(folder)
+    if bad:
+        return [{**base, "kind": "warn", "phase": "review-broken", "skill": "-", "text": f"The Review Suggestions document isn't in its layout, so Tatty can't go on with the review: {bad}"}]
+    phase = doc.phase() if doc else "review"
+    if phase == "review":
+        info = review_info(folder)
+        return [{**base, "phase": "review", "skill": SKILL_REVIEW,
+                 "text": "Review the branch: it is reviewed, you decide what to change, the changes are made and committed, then it goes into a request.",
+                 "hint": "\n" + review_context(folder, info["repo"], info["branch"])}]
+    c = doc.counts()
+    if phase == "decide":
+        return [{**base, "phase": "decide", "skill": "-", "link": href + "/review",
+                 "text": f"The review found {c['total']} suggestion{'s' if c['total'] != 1 else ''} for you to decide on ({c['decided']} decided)."}]
+    if phase == "apply":
+        repo = doc.head["Repository"] or review_info(folder)["repo"]
+        return [{**base, "phase": "apply", "stage": "Apply review", "skill": SKILL_APPLY,
+                 "text": "Every suggestion is decided. Make the changes you chose.",
+                 "hint": "\n" + review_context(folder, repo, doc.head["Branch"], doc=doc)}]
+    if phase == "commit":
+        return [{**base, "phase": "commit", "skill": "-", "link": href + "/commit",
+                 "text": f"The changes are made ({c['applied']} applied, {c['skipped']} skipped, {c['blocked']} blocked). Commit them, then it can go into a request."}]
+    return [merge_row(folder)]
+
+
+def review_apply_start(state, folder):
+    """Start the session that applies the decisions, unless one is going. (http code, answer)"""
+    if any(s["status"] in ("starting", "running", "lost") and s["name"].split(" : ")[-1].startswith("Apply review") for s in sessions_of(state, folder)):
+        return 409, {"error": "The changes are being made already: see its tab."}
+    rows = workflow_rows(state, folder)
+    idx = next((i for i, r in enumerate(rows) if r.get("phase") == "apply"), None)
+    if idx is None:
+        return 409, {"error": "There is nothing waiting to be applied: every suggestion must be decided first."}
+    return start_session(state, folder, {"row": idx})
+
+
+def review_suggestions(state, folder):
+    """The Review page's data: the document as data and where it stands. (http code, answer)"""
+    doc, bad = review_load(folder)
+    if bad:
+        return 409, {"error": bad}
+    if not doc:
+        return 404, {"error": "The review hasn't written its suggestions yet."}
+    return 200, {"doc": review_doc_path(folder).name, "status": doc.status, "phase": doc.phase(), "head": doc.head, "counts": doc.counts(),
+                 "items": [dict(i, chosen=(doc.chosen(i) or {}).get("title", "")) for i in doc.items]}
+
+
+def review_decide(state, folder, body):
+    """Record one decision; with the last one, start the session that applies them. (http code, answer)"""
+    try:
+        item = reviewdoc.change(review_doc_path(folder), lambda d: d.decide(str(body.get("id", "")), str(body.get("choice", "")), str(body.get("note", ""))))
+    except reviewdoc.DocError as e:
+        return (404 if "no such document" in str(e) else 409), {"error": str(e)}
+    doc, _ = review_load(folder)
+    answer = {"ok": True, "id": item["id"], "decision": item["decision"], "status": doc.status, "counts": doc.counts(), "started": None}
+    if doc.status == "Decided":
+        code, started = review_apply_start(state, folder)
+        answer["started"] = started if code == 200 else None
+        if code != 200:
+            answer["startError"] = started.get("error", "")
+    return 200, answer
+
+
+def review_done(folder):
+    """The review is done (the changes are committed, or were made another way). (http code, answer)"""
+    try:
+        reviewdoc.change(review_doc_path(folder), lambda d: d.done())
+    except reviewdoc.DocError as e:
+        return 409, {"error": str(e)}
+    return 200, {"ok": True}
+
+
+def ensure_branch(folder, project, workdir, fresh):
+    """Put the repo on the feature's branch before a session starts in it. (ok, info):
+    the first Start of an unstarted feature makes the branch from where the repo
+    is; a later Start switches back to it; a feature already under way with no
+    record adopts the branch the repo is on. Not a git repo: nothing to do."""
+    repo = branch_repo(folder.name, project, workdir)
+    if not repo:
+        return True, {"note": "Not in a git repository: no branch was made."}
+    feature = folder.name
+    with BRANCH_LOCK:
+        rec = branch_record(feature)
+        here = current_branch(repo)
+        if rec.get("branch") and same_folder(rec.get("repo", ""), repo):
+            want = rec["branch"]
+            if here == want:
+                return True, {"repo": repo, "branch": want, "base": rec.get("base", ""), "note": f"On {want}."}
+            if branch_exists(repo, want):
+                args = ["switch", want]
+            else:  # deleted since: made again from where it began
+                args = ["switch", "-c", want] + ([rec["base"]] if branch_exists(repo, rec.get("base", "")) else [])
+            code, out = git(repo, *args)
+            if code != 0:
+                return False, {"error": f"Couldn't switch {repo} to {want} (is it on another branch with changes in the way?): {out}"}
+            return True, {"repo": repo, "branch": want, "base": rec.get("base", ""), "note": f"Switched to {want} (it was on {here or 'a detached HEAD'})."}
+        if fresh:
+            name = branch_name(repo, feature)
+            dirty = len([l for l in git(repo, "status", "--porcelain", "--untracked-files=no")[1].splitlines() if l.strip()])
+            code, out = git(repo, "switch", "-c", name)
+            if code != 0:
+                return False, {"error": f"Couldn't make the branch {name} in {repo}: {out}"}
+            save_branch(feature, {"repo": repo, "branch": name, "base": here, "created": time.time(), "merge": {}})
+            note = f"Made {name} from {here or 'a detached HEAD'}." + (f" {dirty} changed file(s) already in the tree came with it." if dirty else "")
+            return True, {"repo": repo, "branch": name, "base": here, "created": True, "note": note}
+        if not here:
+            return True, {"repo": repo, "note": "The repo is on a detached HEAD: no branch recorded."}
+        save_branch(feature, {"repo": repo, "branch": here, "base": "", "created": time.time(), "merge": {}})
+        return True, {"repo": repo, "branch": here, "base": "", "note": f"Working on {here}."}
+
+
+def set_branch(folder, project, branch, home_project=""):
+    """(http code, answer): the person says which existing branch, of which repo, is this
+    feature's, in place of the one Tatty made or adopted. Only the record changes
+    (the next Start switches the repo to it); a request found for the old branch is
+    forgotten, since it was not this branch's. A repo other than the project's is
+    pinned, so a Start keeps using it."""
+    repo = repo_of(project)
+    if not repo:
+        return 400, {"error": "That isn't in a git repository."}
+    branch = str(branch or "").strip()
+    if not branch_exists(repo, branch):
+        return 400, {"error": f"{repo} has no branch called {branch or '(none)'}."}
+    feature = folder.name
+    with BRANCH_LOCK:
+        rec = branch_record(feature)
+        same = same_folder(rec.get("repo", ""), repo)
+        pinned = not same_folder(repo, repo_of(home_project))
+        if not (same and rec.get("branch") == branch and bool(rec.get("pinned")) == pinned):
+            save_branch(feature, {"repo": repo, "branch": branch, "base": rec.get("base", "") if same and rec.get("base") != branch else "",
+                                  "created": rec.get("created") or time.time(), "merge": {}, **({"pinned": True} if pinned else {})})
+    return 200, merge_view(feature)
+
+
+def merge_host(repo):
+    """gitlab, github or "" (unknown) from the origin remote's address."""
+    code, url = git(repo, "remote", "get-url", "origin")
+    u = url.lower() if code == 0 else ""
+    return "gitlab" if "gitlab" in u else "github" if "github" in u else ""
+
+
+def merge_cli(name):
+    import shutil
+    return os.environ.get(f"TATTY_{name.upper()}") or shutil.which(name)
+
+
+def merge_lookup(state, repo, branch, host):
+    """(url, number, state) of the request from `branch`, state opened or merged, else None.
+    Asks glab and/or gh, which carry the person's own sign-in; neither is needed (the
+    buttons do the same by hand)."""
+    tools = ["gh", "glab"] if host == "github" else ["glab", "gh"]
+    for tool in tools:
+        exe = merge_cli(tool)
+        if not exe:
+            continue
+        argv = ([exe, "mr", "list", "--source-branch", branch, "--all", "-F", "json"] if tool == "glab" else
+                [exe, "pr", "list", "--head", branch, "--state", "all", "--json", "url,state,number"])
+        if exe.endswith(".sh"):  # a stand-in in tests
+            argv = [state.bash, *argv]
+        try:
+            p = subprocess.run(argv, cwd=repo, capture_output=True, stdin=subprocess.DEVNULL, encoding="utf-8",
+                               errors="replace", timeout=40, creationflags=NO_WINDOW)
+            got = json.loads(p.stdout) if p.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            continue
+        if not isinstance(got, list):
+            continue
+        found = []
+        for r in got:
+            if not isinstance(r, dict):
+                continue
+            st = str(r.get("state", "")).lower()
+            st = {"open": "opened", "opened": "opened", "merged": "merged"}.get(st)
+            url = str(r.get("web_url") or r.get("url") or "")
+            if st and url:
+                found.append((url, r.get("iid") or r.get("number") or 0, st))
+        if found:
+            return next((f for f in found if f[2] == "merged"), found[0])
+    return None
+
+
+def merge_view(feature):
+    """What the feature page shows about the branch and its request."""
+    rec = branch_record(feature)
+    m = rec.get("merge") if isinstance(rec.get("merge"), dict) else {}
+    return {"branch": rec.get("branch", ""), "base": rec.get("base", ""), "repo": rec.get("repo", ""),
+            "state": m.get("state", ""), "url": m.get("url", ""), "number": m.get("number", 0),
+            "host": m.get("host", ""), "checked": m.get("checked", 0), "note": m.get("note", "")}
+
+
+def merge_set(state, folder, new, url="", number=0):
+    """Record that the request is opened or merged (never backwards). On the first
+    opened: the started card moves to In Review. Returns merge_view."""
+    feature = folder.name
+    with BRANCH_LOCK:
+        rec = branch_record(feature)
+        if not rec:
+            return merge_view(feature)
+        m = dict(rec.get("merge") or {})
+        was = m.get("state", "")
+        order = ["", "opened", "merged"]
+        if order.index(new) > order.index(was):
+            m["state"] = new
+        if url:
+            m["url"], m["number"] = url, number
+        m["host"] = m.get("host") or merge_host(rec.get("repo", ""))
+        rec["merge"] = m
+        save_branch(feature, rec)
+    if order.index(new) > order.index(was):
+        if new == "opened":
+            note = merge_board_move(state, feature)
+            with BRANCH_LOCK:
+                rec = branch_record(feature)
+                rec["merge"] = {**(rec.get("merge") or {}), "note": note}
+                save_branch(feature, rec)
+        state.emit("milestone", event="merge." + new, label="Request opened" if new == "opened" else "Merged",
+                   tier="small" if new == "opened" else "mid", prefix=feature, qualifier=feature, folder=folder.as_posix(),
+                   route="", skill="", feature=feature, link=feature_link(feature))
+    return merge_view(feature)
+
+
+def merge_check(state, folder, force=False):
+    """Look for the branch's pull/merge request on its host (glab / gh): opened or merged. Returns merge_view."""
+    feature = folder.name
+    with BRANCH_LOCK:
+        rec = branch_record(feature)
+        m = dict(rec.get("merge") or {})
+        if not rec.get("branch"):
+            return merge_view(feature)
+        if not force and time.time() - m.get("checked", 0) < MERGE_CHECK_EVERY:
+            return merge_view(feature)
+        m["checked"] = time.time()
+        rec["merge"] = m
+        save_branch(feature, rec)
+    host = merge_host(rec["repo"])
+    got = merge_lookup(state, rec["repo"], rec["branch"], host)
+    if got:
+        return merge_set(state, folder, got[2], got[0], got[1])
+    return merge_view(feature)
+
+
+def merge_board_move(state, feature):
+    """The request is open: the card this feature was started from moves on to its
+    board's In Review column (a Tasks card), or the Jira ticket to In Review. Never
+    backwards, and a board with no In Review column is left alone. Returns a note."""
+    notes = []
+    found = task_for_feature(feature)
+    if found:
+        folder, tid = found
+        try:
+            with task_store(folder)["lock"]:
+                b = task_board(folder, strict=True)
+                by, _ = task_ids(task_index(folder))
+                t = by.get(tid)
+                target = next((c["id"] for c in b["columns"] if c["name"].lower() == "in review"), None)
+                cols = [c["id"] for c in b["columns"]]
+                was = task_place(b, t["status"]) if t else ""
+                if not target:
+                    notes.append(f"{folder.name} has no In Review column: {tid} stays where it is.")
+                elif t and (was in ("backlog", "unsorted") or (was in cols and cols.index(was) < cols.index(target))):
+                    task_move_locked(state, folder, b, by, t, target, None)
+                    notes.append(f"{tid} moved to In Review on {folder.name}.")
+        except (BoardBroken, OSError) as e:
+            notes.append(f"Couldn't move {tid}: {e}")
+        else:
+            task_said(state, folder, "", [tid])
+    key = next((k for k, v in jira_started().items() if v == feature), "")
+    if key:
+        if jira_job(state, f"move:{key}", jira_move_work, key, IN_REVIEW):
+            notes.append(f"Moving {key} to In Review in Jira.")
+        else:
+            notes.append(f"{key} is being moved already: move it to In Review in Jira if it stays put.")
+    return " ".join(notes)
+
+
+def merge_row(folder):
+    """The step after the build, Tatty's own: the guided merge session (skill /tatty:merge).
+    The facts the skill needs go after it as plain lines (no angle brackets: those are
+    what a person fills in)."""
+    v = merge_view(folder.name)
+    ctx = "\n".join(["Context from Tatty:", f"Feature: {folder.name}", f"Folder: {folder.as_posix()}",
+                     f"Repository: {v['repo']}", f"Branch: {v['branch']}", f"Base: {v['base']}",
+                     f"Host: {v['host'] or (merge_host(v['repo']) if v['repo'] else '')}", f"Request: {v['url']}"])
+    return {"prefix": "", "kind": "primary", "phase": "merge", "skill": "tatty:merge", "verb": "", "arg": "",
+            "text": "Get the work into a pull / merge request: review, commit, push and open it.",
+            "hint": "\n" + ctx, "stage": "Merge"}
 
 
 # ---------------------------------------------------------------- starting a session
@@ -983,11 +2062,15 @@ def chosen_projects():
     return out
 
 
+def write_projects(rows):
+    home().mkdir(parents=True, exist_ok=True)
+    (home() / "projects.tsv").write_text("".join(f"{f}\t{p}\n" for f, p in sorted(rows.items())), encoding="utf-8")
+
+
 def choose_project(folder, project):
     rows = chosen_projects()
     rows[folder.as_posix().rstrip("/").lower()] = Path(project).as_posix()
-    home().mkdir(parents=True, exist_ok=True)
-    (home() / "projects.tsv").write_text("".join(f"{f}\t{p}\n" for f, p in sorted(rows.items())), encoding="utf-8")
+    write_projects(rows)
 
 
 def feature_project(folder, docs):
@@ -1045,13 +2128,24 @@ def workflow_row(folder):
             "hint": "", "stage": "Workflow"}
 
 
-def lite_row(folder, hint=""):
+def lite_row(folder, hint="", text="Start a small change on the lite route."):
     """The lite route's entry: tt-workflow-lite links the folder (in its own link
     file, so the full pipeline's link stays) and asks bug or feature if the folder
     holds no tt documents yet. The hint is what the task is, said after the folder."""
     return {"prefix": "", "kind": "alt", "phase": "lite", "skill": "tt-workflow-lite", "verb": "",
-            "arg": folder.as_posix(), "text": "Start a small change on the lite route.",
+            "arg": folder.as_posix(), "text": text,
             "hint": hint, "stage": "Lite"}
+
+
+def lite_step(folder, route, phase, said):
+    """The lite entry the feature page offers: Resume on a small change or a bug
+    fix (said is the state script's own sentence on where it stands), a second way
+    in on a new feature, and none on a full-route feature or a finished one."""
+    if route == "new":
+        return lite_row(folder, text="Or start a small change on the lite route (it asks bug or feature).")
+    if route in ("lite", "bug") and phase != "complete":
+        return lite_row(folder, text="Resume this small change: " + said)
+    return None
 
 
 def session_name(base):
@@ -1069,11 +2163,13 @@ def session_name(base):
     return name
 
 
-def launch(state, project, name, prompt, tag, workdir=""):
+def launch(state, project, name, prompt, tag, workdir="", flags=()):
     """Open a new terminal running claude in the project, named, started with the
     prompt, carrying TATTY_SESSION so Tatty's mod there reports to this window.
     A workdir (the folder the work is done in, when that isn't the project) is
-    added to the session with --add-dir.
+    added to the session with --add-dir. flags (--model, --effort) force the
+    session's model and effort: a running session can't be switched, so they go
+    on the command that starts it.
     From a checkout (not an install) the session loads this plugin with
     --plugin-dir. Windows Terminal, else a cmd window; elsewhere Terminal.app;
     else the command to run is given. TATTY_DRYRUN=1 opens nothing.
@@ -1083,7 +2179,7 @@ def launch(state, project, name, prompt, tag, workdir=""):
     claude = shutil.which("claude")
     if not claude:
         return False, "There's no claude command on this machine's PATH."
-    args = [] if installed() else ["--plugin-dir", PLUGIN.as_posix()]
+    args = [*flags] + ([] if installed() else ["--plugin-dir", PLUGIN.as_posix()])
     if workdir:
         args += ["--add-dir", Path(workdir).as_posix()]
     exports = {"TATTY_SESSION": tag}
@@ -1138,14 +2234,27 @@ def start_session(state, folder, body):
     cmd = command(row)
     if not cmd:
         return 400, {"error": "nothing left to run"}
+    review_repo, why = "", ""
+    skill = row.get("skill")
+    review = skill in (REVIEW_SKILL, SKILL_REVIEW, SKILL_APPLY)  # these only read, or edit the reviewed branch as it is
+    if skill == REVIEW_SKILL:  # the toolbox's "[branch]" is filled from the Start panel (never sent as it is)
+        cmd, review_repo, why = review_request(body)
+    elif skill == SKILL_REVIEW:
+        cmd, review_repo, why = review_session(folder, body)
+    elif skill == SKILL_APPLY:
+        cmd, review_repo, why = apply_session(folder)
+    if why:
+        return 400, {"error": why}
     values = body.get("values") or {}
-    for ph in PLACEHOLDER.findall(cmd):
+    for ph in ([] if row.get("phase") == "lite" else PLACEHOLDER.findall(cmd)):  # a lite hint is free text
         v = " ".join(str(values.get(ph, "")).split())[:2000]
         if not v:
             return 400, {"error": f"say what goes in <{ph}>"}
         cmd = cmd.replace(f"<{ph}>", v, 1)
     project = str(body.get("project") or "").strip()
-    if project:
+    if review_repo:  # this session only: the feature's own project choice stays as it is
+        project = review_repo
+    elif project:
         if not os.path.isdir(project):
             return 400, {"error": f"no such folder: {project}"}
         choose_project(folder, project)
@@ -1156,6 +2265,27 @@ def start_session(state, folder, body):
     workdir = str(body.get("workdir") or "").strip()
     if workdir and not os.path.isdir(workdir):
         return 400, {"error": f"no such folder: {workdir}"}
+    # The model and effort the session starts on: what the page sent (blank = Claude
+    # Code's own), else the toolbox's `session` setting.
+    if "model" in body or "effort" in body:
+        model, effort = str(body.get("model") or "").strip(), str(body.get("effort") or "").strip()
+    else:
+        default = session_default(state)
+        model, effort = default["model"], default["effort"]
+    flags, why = model_choice(state, model, effort)
+    if flags is None:
+        return 400, {"error": why}
+    # The work goes on a branch of the feature's own (see "branches and merging"), made on its first Start.
+    # A review only reads: it never makes or switches a branch, nor records one for the feature.
+    ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty")
+    if not ok_branch:
+        return 400, {"error": branch["error"]}
+    # A branch in a repo other than the project's: the session is given that repo too.
+    on = branch.get("repo", "")
+    add = on if on and not workdir and not same_folder(on, project) and not Path(on).as_posix().lower().startswith(Path(project).as_posix().rstrip("/").lower() + "/") else ""
+    if row.get("phase") == "merge":  # its context names the branch, which may have just been recorded
+        row = merge_row(folder)
+        cmd = command(row)
     if row.get("phase") in ("empty", "workflow", "lite"):
         base = f"{folder.name} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite"}[row["phase"]]
     else:
@@ -1164,13 +2294,17 @@ def start_session(state, folder, body):
     # The new session carries a tag naming it (TATTY_SESSION): Tatty's mod there
     # joins this window and reports what it does, for this feature's page.
     tag = "s-" + secrets.token_hex(4)
-    ok, said = launch(state, project, name, cmd, tag, workdir)
-    answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag}
+    ok, said = launch(state, project, name, cmd, tag, workdir or add, flags)
+    answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag,
+              "model": model, "effort": effort,
+              "branch": branch.get("branch", ""), "base": branch.get("base", ""), "branchNote": branch.get("note", "")}
     if ok:
+        remember_feature_model(folder.name, model, effort)  # its chats use the same choice
         with state.cond:
             state.sessions[tag] = {"tag": tag, "feature": folder.name, "folder": folder.as_posix(), "name": name,
-                                   "command": cmd, "project": project, "workdir": workdir, "started": time.time(), "status": "starting",
-                                   "seen": 0.0, "claude": "", "doing": "", "usage": None}
+                                   "command": cmd, "project": project, "workdir": workdir, "branch": branch.get("branch", ""),
+                                   "started": time.time(), "status": "starting",
+                                   "seen": 0.0, "claude": "", "doing": "", "usage": None, "model": model, "effort": effort}
         state.session_event(tag)
     return 200, answer
 
@@ -1317,6 +2451,7 @@ JIRA_BOARD_TOOLS = ("getAccessibleAtlassianResources", "searchJiraIssuesUsingJql
 JIRA_ISSUE_TOOLS = ("getJiraIssue", "getTransitionsForJiraIssue")
 JIRA_MOVE_TOOLS = ("transitionJiraIssue",)
 IN_PROGRESS = "in progress"
+IN_REVIEW = "in review"
 
 _s, _a = {"type": "string"}, {"type": "array", "items": {"type": "string"}}
 JIRA_BOARD_SCHEMA = {"type": "object", "required": ["site", "cloudId", "issues"], "properties": {
@@ -1539,25 +2674,48 @@ def jira_set_status(key, status, category):
     write_json(jira_dir() / "board.json", board)
 
 
-def jira_move_work(state, key):
-    """Move the ticket to In Progress, by the transition its detail named (found
-    by name, never a fixed id). A ticket already under way is left alone."""
-    issue = next((i for i in jira_board()["issues"] if i["key"] == key), {})
-    if issue.get("statusCategory", "todo") != "todo":
-        return {"ok": True, "key": key, "moved": False, "message": f"{key} is already {issue.get('status') or 'started'}."}
+def jira_category(status):
+    """The board's colour group for a status named on a move: done, in progress (also review / QA), else to do."""
+    n = status.lower()
+    if re.search(r"done|closed|resolved|complete", n):
+        return "done"
+    return "inprogress" if re.search(r"progress|review|qa|test|doing", n) else "todo"
+
+
+def jira_find_move(key, target):
+    """The transition of the ticket's cached detail that goes to `target` (a status name, any case), found by the status
+    it goes to, else by its own name; never a fixed id."""
     moves = jira_issue(key).get("transitions") or []
-    move = (next((t for t in moves if t.get("to", "").lower() == IN_PROGRESS), None)
-            or next((t for t in moves if t.get("name", "").lower() == IN_PROGRESS), None))
+    return (next((t for t in moves if t.get("to", "").lower() == target), None)
+            or next((t for t in moves if t.get("name", "").lower() == target), None))
+
+
+def jira_move_work(state, key, target=IN_PROGRESS):
+    """Move the ticket to `target` (In Progress when starting a workflow, In Review when its request is opened,
+    or any status the person picked from the ticket's own moves), by the transition its detail named. To
+    In Progress, a ticket already under way is left alone; to anything, so is one already there. A move the
+    cached list doesn't have is looked for once more in Jira's current list."""
+    target = " ".join(str(target or IN_PROGRESS).split()).lower()
+    issue = next((i for i in jira_board()["issues"] if i["key"] == key), {})
+    if target == IN_PROGRESS and issue.get("statusCategory", "todo") != "todo":
+        return {"ok": True, "key": key, "moved": False, "message": f"{key} is already {issue.get('status') or 'started'}."}
+    if issue.get("status", "").lower() == target:
+        return {"ok": True, "key": key, "moved": False, "message": f"{key} is already {issue.get('status')}."}
+    move = jira_find_move(key, target)
+    if not move and target != IN_PROGRESS:
+        jira_issue_work(state, key)  # the cached list may be old
+        move = jira_find_move(key, target)
     if not move or not move.get("id"):
-        return {"ok": False, "key": key, "error": f"Jira offers {key} no move to In Progress; move it in Jira."}
+        return {"ok": False, "key": key, "error": f"Jira offers {key} no move to {target.title()}; move it in Jira."}
+    shown = move.get("to") or move.get("name") or target.title()
     prompt = (f"{jira_where(jira_board())} Call transitionJiraIssue for issue {key} with transition id {move['id']} "
-              "(the move to In Progress), giving no other fields. Report ok: whether Jira accepted it, and message: "
+              f"(the move to {shown}), giving no other fields. Report ok: whether Jira accepted it, and message: "
               "Jira's error text if it didn't.")
     got, usage, error = jira_claude(state, prompt, JIRA_MOVE_TOOLS, JIRA_MOVE_SCHEMA)
     if error or got.get("ok") is not True:
         return {"ok": False, "key": key, "error": error or text_of(got.get("message"), 400) or "Jira refused the move."}
-    jira_set_status(key, "In Progress", "inprogress")
-    return {"ok": True, "key": key, "moved": True, "message": f"{key} is In Progress in Jira."}
+    jira_set_status(key, shown, jira_category(shown))
+    return {"ok": True, "key": key, "moved": True, "message": f"{key} is {shown} in Jira."}
 
 
 def jira_job(state, job, work, *args):
@@ -1631,6 +2789,9 @@ def jira_start(state, body):
     project = str(body.get("project") or "").strip()
     if not project or not os.path.isdir(project):
         return 400, {"error": "Choose the project (repo) the session should run in."}
+    why = model_fields_error(state, body)
+    if why:
+        return 400, {"error": why}
     code, made = new_feature(str(body.get("name") or "").strip() or jira_name(issue))
     if code != 200:
         return code, made
@@ -1646,7 +2807,8 @@ def jira_start(state, body):
     first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
     said = f'the Jira ticket {key} in "{doc.as_posix()}". Folder: {folder.as_posix()}. Prefix: {made["name"]}'
     values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
-    code, answer = start_session(state, folder, {"row": 0 if first else "workflow", "values": values, "project": project})
+    code, answer = start_session(state, folder, {"row": 0 if first else "workflow", "values": values, "project": project,
+                                                 **model_fields(body)})
     answer = {**answer, "feature": made["name"], "ticket": doc.name}
     if code == 200 and answer.get("ok"):
         answer["moving"] = jira_job(state, f"move:{key}", jira_move_work, key)
@@ -2847,7 +4009,7 @@ TASK_NAME_ID = re.compile(r"^([A-Za-z][A-Za-z0-9]*-\d+)(?![A-Za-z0-9])")
 TASK_H1 = re.compile(r"^#\s+(?:([A-Za-z][A-Za-z0-9]*-\d+)(?![A-Za-z0-9])\s*[:–—-]?\s*)?(.*?)\s*$")
 TASK_FIELD = re.compile(r"^(\s*[-*]\s+\*\*)([^*\n]+?)(:\*\*|\*\*:)(.*)$")
 TASK_FIELDS = ("Status", "Priority", "Labels", "Created", "Done", "Feature")
-TASK_COLUMNS = ("To Do", "In Progress", "In Review", "Done")
+TASK_COLUMNS = ("To Do", "In Progress", "In Review", "QA Ready", "Done")
 TASK_PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"]
 TASK_RESERVED = ("backlog", "completed", "not on a column")
 TASK_HEAD = 16384  # bytes of a file the index reads: its header is all a card needs
@@ -3376,7 +4538,7 @@ def task_workflow(state, name, begun):
     the feature, and the newest session Start opened for it."""
     folder = feature_dir(name)
     if not folder:
-        return {"feature": name, "missing": True}
+        return {"feature": name, "missing": True, "archived": archive_dir(name) is not None}
     s = feature_summary(state, folder)
     route = s["route"] if s["route"] != "new" else (begun.get("mode") or "new")
     sess = sessions_of(state, folder)
@@ -3880,6 +5042,9 @@ def task_start(state, folder, body, client):
             return 400, {"error": f"No such work folder: {workdir}"}
         if workdir and is_folder(workdir, Path(project)):
             workdir = ""  # the same folder: nothing is split
+        why = model_fields_error(state, body)
+        if why:
+            return 400, {"error": why}
         detail = task_detail(folder, t)
         code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t))
         if code != 200:
@@ -3907,7 +5072,7 @@ def task_start(state, folder, body, client):
         first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
         values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
         go = {"row": 0 if first else "workflow", "values": values}
-    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir})
+    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body)})
     answer = {**answer, "feature": made["name"], "ticket": doc.name}
     if code == 200 and answer.get("ok"):
         with task_store(folder)["lock"]:
@@ -4010,6 +5175,287 @@ def workflow_cancel(state, name, client=""):
             answer["said"] = (answer["said"] + f" Couldn't move the folder away: {e}").strip()
     else:
         answer["kept"] = len(left)
+    return 200, answer
+
+
+# ---------------------------------------------------------------- archiving and deleting a feature
+
+_ARCHIVED_LOCK = threading.Lock()
+
+
+def archive_dir(name):
+    """An archived feature's folder, or None (the same name rules as feature_dir)."""
+    return area_dir("archive", name)
+
+
+def archived_at():
+    """feature name -> when it was archived (<home>/archived.json)."""
+    return read_json(home() / "archived.json", {})
+
+
+def archived_set(name, when):
+    """Record (or, with when None, forget) when a feature was archived."""
+    with _ARCHIVED_LOCK:
+        rows = archived_at()
+        if when is None:
+            rows.pop(name, None)
+        else:
+            rows[name] = when
+        home().mkdir(parents=True, exist_ok=True)
+        tmp = home() / "archived.json.tmp"
+        tmp.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        os.replace(tmp, home() / "archived.json")
+
+
+def archived_list():
+    """The archived features, newest archived first: the Features page's Archived section."""
+    base = tatty_root()[0] / "archive"
+    if not base.is_dir():
+        return []
+    when, out = archived_at(), []
+    for d in base.iterdir():
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        docs = docs_of(d)
+        updated = max([x["updated"] for x in docs] or [d.stat().st_mtime])
+        out.append({"name": d.name, "folder": d.as_posix(), "docs": len(docs), "updated": updated,
+                    "archivedAt": when.get(d.name, updated)})
+    return sorted(out, key=lambda a: -a["archivedAt"])
+
+
+def is_link(path):
+    """Whether a path is a symbolic link or a Windows junction (neither is followed)."""
+    path = str(path)
+    if os.path.islink(path):
+        return True
+    junction = getattr(os.path, "isjunction", None)
+    if junction:
+        return junction(path)
+    try:
+        return bool(os.lstat(path).st_file_attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+    except (OSError, AttributeError):
+        return False
+
+
+def remove_link(path):
+    """Remove a link itself, never what it points at."""
+    try:
+        os.rmdir(path)  # a directory link (a junction too)
+    except OSError:
+        os.unlink(path)
+
+
+def remove_file(path):
+    try:
+        os.unlink(path)
+    except PermissionError:
+        os.chmod(path, 0o666)  # a read-only file
+        os.unlink(path)
+
+
+def remove_tree(path):
+    """Delete what is inside a folder, and count the files. A link met on the way
+    is removed, not followed, so nothing outside the folder is touched."""
+    count = 0
+    for entry in list(os.scandir(path)):
+        if is_link(entry.path):
+            remove_link(entry.path)
+        elif entry.is_dir(follow_symlinks=False):
+            count += remove_tree(entry.path)
+            os.rmdir(entry.path)
+        else:
+            remove_file(entry.path)
+            count += 1
+    return count
+
+
+def tree_size(path, cap=200000):
+    """(files, bytes) in a folder without following links; stops counting at cap files."""
+    files = size = 0
+    stack = [str(path)]
+    while stack and files < cap:
+        for entry in os.scandir(stack.pop()):
+            if is_link(entry.path):
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+            else:
+                files += 1
+                try:
+                    size += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+    return files, size
+
+
+def delete_refused(folder):
+    """Why a feature's real folder must not be deleted, or "": it holds (or is) something
+    Tatty or the person depends on, or it belongs to another feature."""
+    real = folder.resolve()
+    if real.parent == real or len(real.parts) < 3:
+        return "its real folder is a drive or a top-level folder"
+    root = tatty_root()[0].resolve()
+    keep = [root, root / "features", root / "archive", root / "design", root / "tasks", home().resolve(),
+            config_dir().resolve(), Path.home().resolve(), PLUGIN.resolve()]
+    for p in keep:
+        if real == p or real in p.parents:
+            return f"its real folder ({real.as_posix()}) is, or contains, {p.as_posix()}"
+    if real != folder.parent.resolve() / folder.name:
+        for area in ("features", "archive"):
+            base = root / area
+            if base in real.parents:
+                return "it is a link to another feature's folder"
+    return ""
+
+
+def rekey_feature(old, new, old_board):
+    """A feature folder moved from old to new: carry Tatty's own records along (the
+    project chosen for it, keyed by where it is listed, and its whiteboard, keyed by
+    where it really is: a link keeps both of those when only the link moves)."""
+    rows = chosen_projects()
+    key = old.as_posix().rstrip("/").lower()
+    if key in rows:
+        rows[new.as_posix().rstrip("/").lower()] = rows.pop(key)
+        write_projects(rows)
+    new_board = board_path(new)
+    if old_board != new_board and old_board.is_file():
+        with wb_lock(old_board):
+            new_board.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(old_board, new_board)
+
+
+def forget_feature_records(name):
+    """Drop what Tatty keeps per feature name: the model and effort its workflow started on and
+    its branch record. (The git branch itself is left: Tatty never deletes one.)"""
+    with BRANCH_LOCK:
+        rows = branch_records()
+        if rows.pop(name.lower(), None) is not None:
+            write_json(home() / "branches.json", rows)
+    models = read_json(feature_models_file(), {})
+    if isinstance(models, dict) and models.pop(name, None) is not None:
+        write_json(feature_models_file(), models)
+
+
+def end_feature_work(state, folder, name):
+    """End what is running for a feature: the sessions Start opened and its open chats.
+    Returns (stopped sessions, what they said)."""
+    with state.cond:
+        tags = [s["tag"] for s in state.sessions.values() if s.get("feature") and is_folder(s["folder"], folder) and not s.get("closed")]
+    stopped, said = 0, []
+    for tag in tags:
+        code, r = stop_session(state, tag)
+        if code == 200:
+            stopped += 1
+            if r.get("said"):
+                said.append(r["said"])
+    for c in chats_open(state):
+        if c.get("feature") == name:
+            chat_close(state, c["id"])
+    return stopped, " ".join(said)
+
+
+def feature_archive(state, name):
+    """Move a feature to <root>/archive (a link moves, not the folder it points at):
+    its sessions and chats are ended; a task started from it is left as it is, as an
+    archived feature is usually a finished one. Restore brings it back. (http code, answer)"""
+    folder = feature_dir(name)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    stopped, said = end_feature_work(state, folder, folder.name)
+    base = tatty_root()[0] / "archive"
+    dest, n = base / folder.name, 1
+    while dest.exists() or is_link(dest):
+        n += 1
+        dest = base / f"{folder.name} ({n})"
+    old_board = board_path(folder)
+    base.mkdir(exist_ok=True)
+    os.replace(folder, dest)
+    rekey_feature(folder, dest, old_board)
+    archived_set(dest.name, time.time())
+    return 200, {"ok": True, "feature": folder.name, "archived": dest.name, "stopped": stopped, "said": said}
+
+
+def feature_restore(state, name):
+    """Bring an archived feature back under features/. (http code, answer)"""
+    folder = archive_dir(name)
+    if not folder:
+        return 404, {"error": "no such archived feature"}
+    base = tatty_root()[0] / "features"
+    if not base.is_dir():
+        return 400, {"error": "Set Tatty's root folder first."}
+    dest = base / folder.name
+    if dest.exists() or is_link(dest):
+        return 409, {"error": f"There's a feature called {folder.name} already. Rename or archive it first."}
+    old_board = board_path(folder)
+    os.replace(folder, dest)
+    rekey_feature(folder, dest, old_board)
+    archived_set(dest.name, None)
+    return 200, {"ok": True, "feature": dest.name}
+
+
+def delete_target(name, archived):
+    return archive_dir(name) if archived else feature_dir(name)
+
+
+def feature_delete_preview(state, name, archived):
+    """What Delete would remove, for the confirmation: (http code, answer)."""
+    folder = delete_target(name, archived)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    real = folder.resolve()
+    files, size = tree_size(real)
+    return 200, {"name": folder.name, "archived": archived, "path": real.as_posix(), "link": is_link(folder),
+                 "files": files, "bytes": size, "refused": delete_refused(folder),
+                 "sessions": len([s for s in sessions_of(state, folder) if s["status"] in ("starting", "running", "lost")]),
+                 "task": bool(task_for_feature(folder.name))}
+
+
+def feature_delete(state, name, archived, confirm, client=""):
+    """Delete a feature and its folder for good. For a link into a vault that is the
+    real folder it points at (and the link). The name must be typed back as the
+    confirmation. (http code, answer)"""
+    folder = delete_target(name, archived)
+    if not folder:
+        return 404, {"error": "no such feature"}
+    if confirm != folder.name:
+        return 400, {"error": "Type the feature's name to confirm."}
+    why = delete_refused(folder)
+    if why:
+        return 409, {"error": f"Won't delete it: {why}."}
+    real, link = folder.resolve(), is_link(folder)
+    board = board_path(folder)
+    stopped, said = end_feature_work(state, folder, folder.name)
+    other = feature_dir(folder.name) if archived else None  # a live feature of the same name keeps its records
+    answer = {"ok": True, "feature": folder.name, "stopped": stopped, "said": said, "task": None, "removed": 0}
+    found = None if other else task_for_feature(folder.name)
+    if found:
+        answer["task"] = {"board": found[0].name, "id": found[1]}
+        task_unstart(state, found[0], found[1], client)
+    try:
+        if link:
+            answer["removed"] = remove_tree(real)
+            os.rmdir(real)
+            remove_link(folder)
+        else:
+            answer["removed"] = remove_tree(folder)
+            os.rmdir(folder)
+    except OSError as e:
+        return 500, {"error": f"couldn't delete it all: {e}", "removed": answer["removed"]}
+    rows = chosen_projects()
+    for k in {folder.as_posix().rstrip("/").lower(), real.as_posix().rstrip("/").lower()}:
+        rows.pop(k, None)
+    write_projects(rows)
+    try:
+        board.unlink()
+    except OSError:
+        pass
+    if not other:
+        forget_feature_records(folder.name)
+        started = jira_started()
+        if any(v == folder.name for v in started.values()):
+            jira_dir().mkdir(parents=True, exist_ok=True)
+            (jira_dir() / "started.tsv").write_text("".join(f"{k}\t{v}\n" for k, v in sorted(started.items()) if v != folder.name), encoding="utf-8")
+    archived_set(folder.name, None)
     return 200, answer
 
 
@@ -4161,7 +5607,7 @@ def change_diffs(state, folder, change):
         return d
 
 
-def task_board(text):
+def status_rows(text):
     """The rows of the task board in a status document's text, without the dropped ones:
     [{id, title, executor, status}]."""
     return [{"id": r.get("ID", ""), "title": r.get("Task", ""), "executor": r.get("Executor", ""),
@@ -4173,7 +5619,7 @@ def task_board(text):
 def build_task_rows(folder):
     """The task board of the feature's status document; none when it has no such document."""
     status = first_doc(docs_of(folder), "Task Status")
-    return task_board(read_doc(folder, status)) if status else []
+    return status_rows(read_doc(folder, status)) if status else []
 
 
 def current_task(rows):
@@ -4325,7 +5771,7 @@ def diffs_view(state, folder):
     docs = docs_of(folder)
     status = first_doc(docs, "Task Status")
     text = read_doc(folder, status) if status else ""
-    rows = task_board(text)
+    rows = status_rows(text)
     cards = task_cards(folder, docs)
     results = result_files(folder)
     units, tasks = progress_of(text) if status else ([], {"done": 0, "total": 0})
@@ -4629,7 +6075,12 @@ def chat_argv(state, claude, c):
              "--tools", ",".join(CHAT_TOOLS), "--allowedTools", *CHAT_TOOLS,
              "--permission-mode", "dontAsk", "--setting-sources", "user", "--strict-mcp-config",
              "--max-budget-usd", CHAT_BUDGET]
-    if load_settings()["chatModel"].strip():
+    # The model and effort the feature's workflow was started on, else the chat model setting.
+    started = feature_model(c.get("feature", ""))
+    flags = model_choice(state, started["model"], started["effort"])[0] if started else None
+    if flags:
+        argv += flags
+    elif load_settings()["chatModel"].strip():
         argv += ["--model", load_settings()["chatModel"].strip()]
     if not installed():
         argv += ["--plugin-dir", PLUGIN.as_posix()]  # for /tatty:side-chat
@@ -4900,8 +6351,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, root_info())
         if path == "/api/settings":
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+        if path == "/api/llms":
+            return self.send(200, llms_view(st))
+        if path == "/api/model-config":
+            return self.send(200, model_config_view(st))
         if path == "/api/features":
             return self.send(200, features_list(st))
+        if path == "/api/feature/delete-preview":
+            try:
+                code, answer = feature_delete_preview(st, q.get("name", [""])[0], q.get("archived", [""])[0] == "1")
+            except OSError as e:
+                code, answer = 500, {"error": f"couldn't look: {e}"}
+            return self.send(code, answer)
         if path == "/api/resolve":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -4936,6 +6397,28 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             return self.send(200, diffs_view(st, folder))
+        if path == "/api/branch":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            project = q.get("project", [""])[0].strip() or feature_project(folder, docs_of(folder))[0]
+            return self.send(200, branch_info(st, folder, project, q.get("workdir", [""])[0].strip(), q.get("repo", [""])[0].strip()))
+        if path == "/api/commit":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            return self.send(200, commit_info(folder))
+        if path == "/api/review/suggestions":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = review_suggestions(st, folder)
+            return self.send(code, answer)
+        if path == "/api/review":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            return self.send(200, review_info(folder, q.get("repo", [""])[0].strip()))
         if path == "/api/jira":
             return self.send(200, jira_view(st))
         if path == "/api/jira/issue":
@@ -5113,13 +6596,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             save_settings(b if isinstance(b, dict) else {})
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+        if path in ("/api/llms", "/api/model-config"):
+            # The toolbox's own scripts change its connections and its model choices;
+            # only on a click in Settings.
+            code, answer = (llms_change if path == "/api/llms" else model_config_change)(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path == "/api/restart":
+            # After an update: start the installed Tatty, keep the sessions going, stop this server.
+            code, answer = restart_server(st)
+            return self.send(code, answer)
         if path == "/api/update":
             # check: look only; apply: look, and install what is newer. Runs in the
             # background (the claude command takes seconds); the page hears the result
             # as an "update" event.
             if st.update_lock.locked():
                 return self.send(409, {"error": "an update check is already running"})
-            threading.Thread(target=update_work, args=(st, b.get("action") == "apply"), daemon=True).start()
+            apply = b.get("action") == "apply"
+            if b.get("launch"):  # Tatty was launched again: also move to what was installed, if nothing is lost
+                threading.Thread(target=update_on_relaunch, args=(st, apply), daemon=True).start()
+            else:
+                threading.Thread(target=update_work, args=(st, apply), daemon=True).start()
             return self.send(202, update_view(st))
         if path == "/api/mode/install":
             # Add a discipline from the modes page: Claude Code installs the
@@ -5147,7 +6643,10 @@ class Handler(BaseHTTPRequestHandler):
                 key = str(b.get("key", "")).strip()
                 if not any(i["key"] == key for i in jira_board()["issues"]):
                     return self.send(400, {"error": "That ticket isn't on the board. Refresh the board first."})
-                job, work, args = (f"issue:{key}", jira_issue_work, (key,)) if path == "/api/jira/issue" else                     (f"move:{key}", jira_move_work, (key,))
+                if path == "/api/jira/issue":
+                    job, work, args = f"issue:{key}", jira_issue_work, (key,)
+                else:
+                    job, work, args = f"move:{key}", jira_move_work, (key, str(b.get("to") or IN_PROGRESS)[:60])
             if not jira_job(st, job, work, *args):
                 return self.send(409, {"error": "that is already running"})
             return self.send(202, jira_view(st))
@@ -5175,6 +6674,38 @@ class Handler(BaseHTTPRequestHandler):
                 code, answer = 409, {"error": str(e)}
             except OSError as e:
                 code, answer = 500, {"error": f"couldn't cancel: {e}"}
+            return self.send(code, answer)
+        if path in ("/api/review/decide", "/api/review/apply", "/api/review/done"):
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            if path == "/api/review/decide":
+                code, answer = review_decide(st, folder, b if isinstance(b, dict) else {})
+            elif path == "/api/review/apply":
+                code, answer = review_apply_start(st, folder)
+            else:
+                code, answer = review_done(folder)
+            return self.send(code, answer)
+        if path == "/api/commit":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = feature_commit(st, folder, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path in ("/api/feature/archive", "/api/feature/restore", "/api/feature/delete"):
+            name = str(b.get("name", ""))
+            try:
+                if path == "/api/feature/archive":
+                    code, answer = feature_archive(st, name)
+                elif path == "/api/feature/restore":
+                    code, answer = feature_restore(st, name)
+                else:
+                    code, answer = feature_delete(st, name, bool(b.get("archived")), str(b.get("confirm", "")),
+                                                  str(b.get("client", ""))[:40])
+            except BoardBroken as e:
+                code, answer = 409, {"error": str(e)}
+            except OSError as e:
+                code, answer = 500, {"error": f"couldn't do that: {e}"}
             return self.send(code, answer)
         if path == "/api/chat/new":
             code, answer = chat_new(st, b if isinstance(b, dict) else {})
@@ -5220,6 +6751,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": "text (a string) and expected (the mtime /api/doc gave) are required"})
             code, answer = save_doc(p, text, float(expected))
             return self.send(code, answer)
+        if path == "/api/branch":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            project = str(b.get("project") or "").strip() or feature_project(folder, docs_of(folder))[0]
+            code, answer = set_branch(folder, project, b.get("branch"), feature_project(folder, docs_of(folder))[0])
+            return self.send(code, answer)
+        if path == "/api/merge":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            action = str(b.get("action", ""))
+            if not branch_record(folder.name).get("branch"):
+                return self.send(409, {"error": "No branch is recorded for this feature: start one of its steps from Tatty first."})
+            if action == "check":
+                return self.send(200, merge_check(st, folder, force=bool(b.get("force"))))
+            if action in ("opened", "merged"):
+                url = str(b.get("url", "")).strip()[:500]
+                if url and not re.match(r"https?://", url):
+                    return self.send(400, {"error": "The request's link should start with http:// or https://"})
+                return self.send(200, merge_set(st, folder, action, url))
+            return self.send(400, {"error": "action is check, opened or merged"})
         if path in ("/api/start", "/api/project"):
             folder = feature_dir(str(b.get("name", "")))
             if not folder:
@@ -5272,6 +6825,8 @@ def serve(cwd, bash):
     httpd.daemon_threads = True
     port = httpd.server_address[1]
     Handler.state, Handler.token, Handler.port = state, token, port
+    state.httpd = httpd
+    restore_sessions(state)  # the sessions a restart was told to keep (see "restarting")
     url = f"http://127.0.0.1:{port}/#token={token}"
     tmp = h / "server.json.tmp"
     tmp.write_text(json.dumps({"port": port, "token": token, "pid": os.getpid(), "url": url,
@@ -5357,11 +6912,13 @@ def flag(args, name):
     return False
 
 
-def start_detached(cwd, bash):
+def spawn_server(cwd, bash, script=None):
+    """Start a window server in the background, from `script` (a server.py; this
+    one when none is given). It is not waited for: see start_detached."""
     h = home()
     h.mkdir(parents=True, exist_ok=True)
     log = open(h / "server.log", "ab")
-    argv = [sys.executable, str(Path(__file__).resolve()), "serve", "--cwd", cwd, "--bash", bash]
+    argv = [sys.executable, str(script or Path(__file__).resolve()), "serve", "--cwd", cwd, "--bash", bash]
     kw = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "close_fds": True, "cwd": cwd}
     if os.name == "nt":
         # A hidden console, not none: a console program started by a process
@@ -5374,6 +6931,11 @@ def start_detached(cwd, bash):
             subprocess.Popen(argv, creationflags=base, **kw)
     else:
         subprocess.Popen(argv, start_new_session=True, **kw)
+
+
+def start_detached(cwd, bash):
+    h = home()
+    spawn_server(cwd, bash)
     for _ in range(100):
         time.sleep(0.1)
         info = alive()
@@ -5536,15 +7098,79 @@ def wake_companion():
     return bool(h)
 
 
-def write_boot_json(bash):
-    """Tell the launcher where this plugin and bash are. The launcher runs from a
-    stable place; the plugin moves with every update. (A copy in Claude Code's plugin
-    cache is only a fallback: the launcher runs the installed version before it, since
-    an update leaves the old folder there. A checkout is what this keeps for it.)"""
+def read_boot():
+    return read_json(BOOT_JSON, {})
+
+
+def installed_tatty_root():
+    """The folder of the Tatty Claude Code has installed (its record of installs: from the
+    marketplace, which is GitHub), else None. An update puts the new version in a new folder."""
+    found = None
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for pid, installs in recorded.get("plugins", {}).items():
+            if pid.startswith("tatty@"):
+                for e in installs:
+                    p = Path(str(e.get("installPath", "")))
+                    if (p / "scripts" / "tatty.sh").is_file():
+                        found = p
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return found
+
+
+def write_boot_json(bash, pin=None):
+    """Tell the launcher where Tatty and bash are. The launcher runs the Tatty Claude Code
+    has installed (the one the marketplace, GitHub, offers and updates), not a checkout of
+    the repository: a copy in the plugin cache is what this names, and the launcher looks the
+    installed one up itself since an update leaves the old folder there. A checkout is run
+    only when pinned on purpose (`tatty.sh install --pin`): boot.json then names it, and a
+    boot leaves it so until installed again without. Without an install, the checkout
+    that is running is the only thing there is to name. pin None: keep what it is now."""
+    cur = read_boot()
+    pinned = bool(cur.get("pin")) if pin is None else bool(pin)
+    if pinned:
+        root = PLUGIN.as_posix() if pin else (cur.get("pluginRoot") or PLUGIN.as_posix())
+    else:
+        root = (installed_tatty_root() or PLUGIN).as_posix()
     APP.mkdir(parents=True, exist_ok=True)
     tmp = BOOT_JSON.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"bash": bash, "pluginRoot": PLUGIN.as_posix()}, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps({"bash": bash, "pluginRoot": root, "pin": pinned}, indent=2), encoding="utf-8")
     os.replace(tmp, BOOT_JSON)
+
+
+LAUNCH_UPDATE_WAIT = float(os.environ.get("TATTY_LAUNCH_UPDATE_WAIT", "45"))  # seconds a launch waits for the look
+
+
+def relaunch_restart_ok(needs):
+    """After an update found on a relaunch: restart the server onto it only if that cuts nothing off."""
+    return bool(needs["server"]) and not needs["openQuestions"] and not needs["busy"]
+
+
+def update_on_relaunch(state, apply):
+    """A launch with the server already up: look for a newer Tatty (and, with auto-update on,
+    install it) and move to it when nothing would be lost; else Settings says to restart."""
+    update_work(state, apply)
+    if apply and relaunch_restart_ok(restart_needs(state)):
+        restart_server(state)
+
+
+def update_at_launch(bash, cwd):
+    """Every launch with no server up: look for a newer Tatty and the toolbox plugins before
+    starting, installing what it finds when auto-update is on. The folder of a Tatty newer than
+    this one to carry on from, else None. It never stops a launch: offline, slow or failing,
+    Tatty starts as it is."""
+    if os.environ.get("TATTY_LAUNCH_UPDATED") or os.environ.get("TATTY_NO_LAUNCH_UPDATE"):
+        return None
+    state = State(cwd, bash)
+    look = threading.Thread(target=update_work, args=(state, load_settings()["autoUpdate"]), daemon=True)
+    look.start()
+    look.join(LAUNCH_UPDATE_WAIT)
+    root = installed_tatty_root()
+    if not root or root.resolve() == PLUGIN.resolve():
+        return None
+    now = read_json(root / ".claude-plugin" / "plugin.json", {}).get("version", "")
+    return root if version_key(now) > version_key(plugin_version()) else None
 
 
 def boot(bash, project, no_ui, no_claude=False):
@@ -5560,10 +7186,21 @@ def boot(bash, project, no_ui, no_claude=False):
         return 2
     if BOOT_JSON.exists():
         write_boot_json(bash)
+    pinned = bool(read_boot().get("pin"))
     info = alive()
     if not info:
+        newer = None if pinned else update_at_launch(bash, cwd)
+        if newer:  # an update was installed: carry on from the new Tatty, so everything of this launch is its
+            argv = [sys.executable, str(newer / "app" / "server.py"), "boot", "--bash", bash]
+            argv += (["--project", project] if project else []) + (["--no-browser"] if no_ui else []) + (["--no-claude"] if no_claude else [])
+            return subprocess.run(argv, env={**os.environ, "TATTY_LAUNCH_UPDATED": "1"}).returncode
         info = start_detached(cwd, bash)
         greet(info, cwd, bash)
+    elif not pinned and not os.environ.get("TATTY_NO_LAUNCH_UPDATE"):
+        try:  # the server that is up looks for an update (and moves to it if nothing is lost): not waited for
+            call(info, "POST", "/api/update", {"action": "apply" if load_settings()["autoUpdate"] else "check", "launch": True})
+        except (OSError, urllib.error.URLError, ValueError):
+            pass
     print(info["url"])
     if not no_ui:
         ui = show_ui(info)
@@ -5573,16 +7210,24 @@ def boot(bash, project, no_ui, no_claude=False):
     return 0
 
 
-def install(bash):
+def install(bash, pin=False):
     """Put Tatty on the Desktop and in the Start menu: build the launcher, tell it
-    where the plugin is, and make the shortcuts. 0 ok, 2 when it can't."""
+    where the plugin is, and make the shortcuts. The shortcut runs the Tatty Claude Code
+    has installed, and looks for an update each time; with pin it runs this checkout
+    instead (for working on Tatty itself). 0 ok, 2 when it can't."""
     if os.name != "nt":
         print("install: the desktop app is Windows-only; elsewhere Tatty opens in a browser tab.", file=sys.stderr)
         return 2
     if build_stale(LAUNCHER, LAUNCHER_EXE) and not build_exe(LAUNCHER, LAUNCHER_BUILD, LAUNCHER_EXE, "Tatty's launcher"):
         print(f"install: couldn't build the launcher (it needs the .NET 9 SDK); see {home() / 'server.log'}", file=sys.stderr)
         return 2
-    write_boot_json(bash)
+    write_boot_json(bash, pin=pin)
+    if pin:
+        print(f"The launcher is pinned to this checkout ({PLUGIN.as_posix()}): it will not use the installed Tatty or look for updates.")
+    elif installed_tatty_root():
+        print(f"The launcher runs the installed Tatty ({installed_tatty_root().as_posix()}) and looks for an update each time it starts.")
+    else:
+        print("Tatty isn't installed through Claude Code, so the launcher runs this folder. Install it for updates: /plugin install tatty@tims-ai-companion")
     p = subprocess.run([str(LAUNCHER_EXE), "--make-shortcuts"], stdin=subprocess.DEVNULL, capture_output=True,
                        encoding="utf-8", errors="replace", timeout=60)
     if p.returncode != 0:
@@ -5656,7 +7301,7 @@ def main(argv):
     if cmd == "boot":
         return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"))
     if cmd == "install":
-        return install(bash)
+        return install(bash, flag(args, "--pin"))
     if cmd == "uninstall":
         return uninstall()
     if cmd == "status":

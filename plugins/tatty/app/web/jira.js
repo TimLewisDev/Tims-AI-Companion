@@ -70,7 +70,7 @@ function drawJira() {
   if (busy) said.push(el("p", { class: "home-note small jprogress", id: "jira-progress" },
     "Asking Claude to read your tickets from Jira… ", jiraSince("board"), ". It usually takes about 20 s."));
   for (const job of (b.busy || []).filter(j => j.startsWith("move:"))) {
-    said.push(el("p", { class: "home-note small jprogress" }, `Moving ${job.slice(5)} to In Progress in Jira… `, jiraSince(job)));
+    said.push(el("p", { class: "home-note small jprogress" }, `Moving ${job.slice(5)} in Jira… `, jiraSince(job)));
   }
   if (b.error) said.push(el("p", { class: "home-note small st missing", id: "jira-error" }, "The last refresh failed: " + b.error));
   if (jiraNote) said.push(el("p", { class: "home-note small " + (jiraNote.bad ? "st missing" : "ok") }, jiraNote.text));
@@ -117,6 +117,18 @@ function closeTicket() {
   for (const n of document.querySelectorAll(".jshade, .jticket")) n.remove();
 }
 
+// Move to: the statuses Jira offers this ticket (as of when it was loaded), one click each. When a workflow's
+// request is opened the ticket goes to In Review by itself; QA Ready and Done are for the person to choose.
+function moveRow(i, d) {
+  const here = (i.status || "").toLowerCase();
+  const targets = [...new Set((d.transitions || []).map(t => t.to || t.name).filter(Boolean))].filter(t => t.toLowerCase() !== here);
+  if (!targets.length) return "";
+  const busy = jiraBusy("move:" + i.key);
+  return el("div", { class: "jmove small" }, el("span", { class: "dim" }, "Move to: "),
+    targets.map(t => el("button", { type: "button", class: "jmove-to", "data-to": t, disabled: busy,
+      onclick: () => moveTicket(i.key, t) }, t)));
+}
+
 function showTicket(key) {
   const i = jiraIssue(key);
   for (const n of document.querySelectorAll(".jshade, .jticket")) n.remove();
@@ -140,6 +152,7 @@ function showTicket(key) {
     loaded
       ? el("div", {},
         el("dl", { class: "jfacts small" }, facts.flatMap(([k, v]) => [el("dt", { class: "dim" }, k), el("dd", {}, v)])),
+        moveRow(i, d),
         el("div", { class: "jdesc" }, mdNode(d.description || "*No description.*")),
         (d.subtasks || []).length ? el("div", {}, el("h4", {}, "Sub-tasks"),
           el("ul", {}, d.subtasks.map(t => el("li", {}, `${t.key} ${t.summary}`, t.status ? el("span", { class: "dim" }, ` (${t.status})`) : "")))) : "",
@@ -170,6 +183,7 @@ function startForm(i) {
   const where = el("span", {});
   const go = el("button", { type: "button", class: "primary", id: "jira-start" }, "Start workflow");
   const result = el("div", { class: "start-result" });
+  const picker = modelPicker("jira-start-" + i.key);
   const drawWhere = () => {
     where.replaceChildren(project ? copyable(project) : el("strong", { class: "st missing" }, "no project chosen yet"));
     go.disabled = !project || !name.value.trim();
@@ -184,7 +198,7 @@ function startForm(i) {
     result.replaceChildren(el("span", { class: "dim small" }, "Making the feature and opening a session…"));
     tell("allow-foreground");
     try {
-      const r = await api("/api/jira/start", { key: i.key, name: name.value.trim(), project });
+      const r = await api("/api/jira/start", { key: i.key, name: name.value.trim(), project, ...picker.fields() });
       jiraNow.started = { ...(jiraNow.started || {}), [i.key]: r.feature };
       if (r.ok) {
         closeTicket();
@@ -193,7 +207,7 @@ function startForm(i) {
       }
       // No terminal could be opened: the command to run, and the move by hand.
       result.replaceChildren(el("p", { class: "st missing" }, "Couldn't open a terminal here. Run this yourself:"), el("pre", {}, r.said),
-        el("button", { type: "button", onclick: () => moveTicket(i.key) }, `Move ${i.key} to In Progress`));
+        el("button", { type: "button", onclick: () => moveTicket(i.key, "In Progress") }, `Move ${i.key} to In Progress`));
     } catch (e) {
       result.replaceChildren(el("p", { class: "st missing" }, String(e.message || e)));
       go.disabled = false;
@@ -205,6 +219,7 @@ function startForm(i) {
     el("div", { class: "start-title" }, "Start a workflow from this ticket"),
     el("label", { class: "jname" }, el("span", { class: "dim small" }, "Feature folder"), name),
     el("div", { class: "project-line small" }, "Runs in ", where, " ", choose),
+    picker.node,
     el("div", { class: "small dim" }, `Writes the ticket into the feature's folder, opens a new Claude session that starts planning from it, ${moving}.`),
     el("div", { class: "start-actions" }, go),
     result);
@@ -223,8 +238,8 @@ async function loadTicket(key) {
   showTicket(key);
 }
 
-async function moveTicket(key) {
-  try { jiraNow = await api("/api/jira/move", { key }); } catch (e) { if (e.status !== 409) alert(String(e.message || e)); }
+async function moveTicket(key, to) {
+  try { jiraNow = await api("/api/jira/move", { key, to }); } catch (e) { if (e.status !== 409) alert(String(e.message || e)); }
   drawJira();
 }
 

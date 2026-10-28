@@ -979,7 +979,7 @@ const { renderTasks, renderTaskBoard } = (() => {
         words ? el("div", { id: "task-workflow-state" }, chip(words[0], "route"), " ", chip(words[1], "now"), " ",
           s ? el("a", { href: "#workflows/" + encodeURIComponent(s.tag), onclick: () => closePanel(true), title: s.name }, words[2])
             : el("span", { class: "dim" }, words[2]))
-          : el("div", { class: "dim small" }, w && w.missing ? "Its feature folder is gone." : "Where it stands shows once the board has been read."),
+          : el("div", { class: "dim small" }, w && w.missing ? (w.archived ? "Its feature is archived: restore it on the Features page." : "Its feature folder is gone.") : "Where it stands shows once the board has been read."),
         el("div", { class: "start-actions" },
           el("a", { href: featureHref(feature), onclick: () => closePanel(true) }, feature + " →"), " ", cancel));
     };
@@ -1004,6 +1004,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     const go = el("button", { type: "button", class: "primary", id: "task-start" }, "Start workflow");
     const goLite = el("button", { type: "button", id: "task-start-lite" }, "Start lite");
     const result = el("div", { class: "start-result" });
+    const picker = modelPicker("task-start-" + d.id);
     const drawWhere = () => {
       where.replaceChildren(project ? copyable(project) : el("strong", { class: "st missing" }, "no project chosen yet"));
       whereWork.replaceChildren(workdir ? copyable(workdir) : el("span", { class: "dim" }, "the project itself"));
@@ -1024,7 +1025,7 @@ const { renderTasks, renderTaskBoard } = (() => {
       result.replaceChildren(el("span", { class: "dim small" }, "Making the feature and opening a session…"));
       tell("allow-foreground");
       try {
-        const r = await send("/api/tasks/start", { name: t.name, id: d.id, project, workdir, mode, feature: name.value.trim() });
+        const r = await send("/api/tasks/start", { name: t.name, id: d.id, project, workdir, mode, feature: name.value.trim(), ...picker.fields() });
         if (r.ok) {
           closePanel(true);
           location.hash = featureHref(r.feature); // its page shows the session as it runs
@@ -1046,6 +1047,7 @@ const { renderTasks, renderTaskBoard } = (() => {
       el("label", { class: "jname" }, el("span", { class: "dim small" }, "Feature folder"), name),
       el("div", { class: "project-line small" }, "Linked project (the session runs here) ", where, " ", choose),
       el("div", { class: "project-line small" }, "Works in ", whereWork, " ", chooseWork, " ", clearWork),
+      picker.node,
       el("div", { class: "small dim" }, "Writes the task into the feature's folder as its Ticket and opens a new Claude session. ",
         "Start workflow plans it in full; Start lite writes a one-page brief for a small change. ",
         "When it works in another folder, code, git and checks are for that folder only",

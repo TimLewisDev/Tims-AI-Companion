@@ -1,0 +1,20 @@
+/* The Review page: one suggestion at a time (review-page.js). */
+.rv-page { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; max-width: 900px; }
+.rv-page h2 { margin: 0; font-size: 19px; }
+.rv-progress { display: flex; align-items: center; gap: 10px; }
+.rv-progress .bar { flex: 1; max-width: 320px; }
+.rv-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.rv-dot { min-width: 26px; padding: 1px 6px; font-size: 12px; border-radius: 12px; }
+.rv-dot.done { border-color: var(--ok); color: var(--ok); }
+.rv-dot.now { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.rv-item h3 { margin: 6px 0 4px; font-size: 16px; }
+.rv-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rv-finding { margin: 6px 0 10px; }
+.rv-opts { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.rv-opt { display: flex; align-items: flex-start; gap: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.rv-opt:hover { border-color: var(--accent); }
+.rv-opt.picked { border-color: var(--accent); background: var(--accent-soft); }
+.rv-opt .chip { margin-left: 8px; }
+#rv-other, #rv-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
+.rv-row { padding: 5px 0; border-top: 1px solid var(--line); }
+.rv-row:first-child { border-top: none; }

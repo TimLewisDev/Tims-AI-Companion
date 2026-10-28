@@ -315,6 +315,10 @@ table.units td { padding: 3px 8px; }
 .start-panel { margin: 8px 0 4px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft);
   display: flex; flex-direction: column; gap: 6px; }
 .start-panel .project-line { border-top: none; margin: 0; padding: 0; }
+.model-picker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-picker select, .settings-page select { font: inherit; padding: 1px 4px; }
+.settings-page table.plugins select { max-width: 170px; }
+.settings-page table.plugins td { vertical-align: top; }
 .start-title { font-weight: 600; }
 .start-inputs { display: flex; flex-direction: column; gap: 4px; }
 .start-inputs label { display: flex; flex-direction: column; gap: 2px; }
@@ -669,3 +673,19 @@ body.companion:not(.expanded) #toasts { display: none; }
   .burst, body.asking::after { display: none; }
   .jprogress::before { animation: none; } /* the seconds still count */
 }
+
+/* The repository and branch pickers (the Start panel, the Branch and merge card): a label beside each
+   full-width dropdown, drawn in the theme's colours with a chevron instead of the browser's own arrow. */
+.branch-picker { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px 14px; margin: 10px 0 6px; }
+.branch-picker .pick-label { color: var(--dim); font-size: 12px; font-weight: 600; }
+.branch-picker select, .start-panel .model-picker select { appearance: none; -webkit-appearance: none; width: 100%; min-width: 0; box-sizing: border-box; font: inherit; font-size: 13px;
+  color: var(--ink); background-color: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 30px 6px 10px; cursor: pointer;
+  text-overflow: ellipsis; background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%), linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+.branch-picker select:hover, .start-panel .model-picker select:hover { border-color: var(--accent); }
+.branch-picker select:focus-visible, .start-panel .model-picker select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.branch-picker select:disabled, .start-panel .model-picker select:disabled { opacity: .6; cursor: progress; }
+.branch-picker option, .start-panel .model-picker option { color: var(--ink); background: var(--panel); }
+.merge-card .branch-picker { margin-top: 6px; }
+.start-panel .model-picker { gap: 8px 10px; margin: 8px 0 4px; }
+.start-panel .model-picker select { width: auto; max-width: 100%; padding: 4px 28px 4px 8px; }

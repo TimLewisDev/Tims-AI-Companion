@@ -66,13 +66,16 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     `%LOCALAPPDATA%\Tatty\launcher`, that the Desktop and Start menu shortcuts run. It
     finds the plugin and runs `tatty.sh boot` hidden, so a plugin update never
     breaks the shortcut. The plugin is the one Claude Code has installed
-    (`installed_plugins.json`) unless `boot.json`, which every boot rewrites, names
-    a folder outside Claude Code's plugin cache (a checkout run on purpose). A
-    cache folder is never taken from `boot.json`: an update leaves the old
-    version's folder in the cache, so a pin to it would be rewritten by every
-    boot from it and Tatty would stay on that version for good. The choice is
-    `ChoosePlugin`. The exe is rebuilt by `/tatty install`, which does it when the
-    sources are newer than the exe. The
+    (`installed_plugins.json`: from the marketplace, which is GitHub) unless
+    `boot.json` names a folder outside Claude Code's plugin cache, which only a
+    pin does: `tatty.sh install --pin` for working on Tatty from a checkout
+    (`write_boot_json`: `{bash, pluginRoot, pin}`). A boot never repoints it at the
+    checkout it happens to run from (a test run once did, and the launcher then
+    ran a worktree): unpinned, it names the installed Tatty, and pinned it is
+    left alone. A cache folder is never taken from `boot.json`: an update leaves
+    the old version's folder in the cache. The choice is `ChoosePlugin`. The exe
+    is rebuilt by `/tatty install`, which does it when the sources are newer than
+    the exe. The
     shortcuts carry the AppUserModelID the tray app names itself with
     (`TimsAICompanion.Tatty`), so a taskbar pin and the running window are one button.
   - `server.py boot` starts the server and shows the tray app (or rings the
@@ -81,6 +84,19 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
     what that session was for is now the headless chats (see [Chats](#chats)).
     `--no-claude` is still taken and does nothing; an old `claude-link.json` is
     left where it is.
+  - **Every launch looks for an update** (unless pinned). With no server up,
+    `update_at_launch` runs the same look as Settings' (`update_work`: refresh
+    the marketplace, then `claude plugin update` for what is newer, when
+    auto-update is on) before starting anything, waiting at most
+    `TATTY_LAUNCH_UPDATE_WAIT` (45 s) for it; if a newer Tatty was installed, `boot`
+    runs that copy's `boot` instead (`TATTY_LAUNCH_UPDATED=1` stops it looping), so
+    the server and the tray app of the launch are the new version's. Offline or
+    failing, it starts as it is. With the server already up, `boot` posts
+    `/api/update {launch: true}`: the server looks (and installs, with auto-update
+    on) and then restarts onto the new Tatty if that cuts nothing off
+    (`relaunch_restart_ok`: no open question, no chat or Jira run going; the
+    sessions are kept as for any restart), else Settings says to restart.
+    `TATTY_NO_LAUNCH_UPDATE=1` turns the look off.
   - The icon is `assets/tatty.ico`, drawn natively at each size by
     `tools/make-icon` (which also writes the plugin's `icon.png`) from the same
     geometry as `TattyWindow.xaml`'s head. It is built into both exes as their file
@@ -292,17 +308,120 @@ folders and Claude Code's own install records; see
   focuses the item when the link is followed.
 - **New feature…** makes the folder. **Start** then runs the workflow's own
   `/tt-workflow "<folder>"`, so the toolbox links and starts the feature.
-  Tatty never changes the workflow's records.
+  Tatty never changes the workflow's records. A new feature is also offered
+  `/tt-workflow-lite "<folder>"` (with an optional sentence on what the task is),
+  and a feature already on the lite route (a bug fix included) shows **Resume
+  this small change** first, which runs the same command; its own next-step rows
+  stay below it and the `/tt-workflow` row is left off.
 - **Start session:**
-  - It opens a terminal with `claude -n "<Feature> : <Stage>" "<command>"` in
-    the feature's project. The project comes from a choice on the page, a
-    tt-workflow link, the ledger, or a `Repo` path in the documents.
+  - It opens a terminal with `claude [--model <m>] [--effort <e>] -n
+    "<Feature> : <Stage>" "<command>"` in the feature's project. The project
+    comes from a choice on the page, a tt-workflow link, the ledger, or a
+    `Repo` path in the documents.
+  - The model and effort come from the picker on the Start panel (also on a
+    Jira ticket's and a task's Start), which starts on the toolbox's `session`
+    setting. A running session can't be switched, so they are forced only at
+    launch. Only models the toolbox marks runnable are accepted (today claude's);
+    the feature's chats then answer on the same model (`session-models.json`).
+    Settings holds the connections (`llms.sh`), the session default and the
+    step models (`model-config.sh`).
   - It sets `TATTY_SESSION=<tag>` in the launcher script, because a new
     Windows Terminal tab doesn't inherit environment variables.
   - From a checkout it also passes `--plugin-dir`, so the new session loads the
     mod.
+  - Before it opens, the work is put on a branch of its own (`ensure_branch`,
+    "Branches and merging", below).
   - The page then opens that session's tab (see Workflow tabs, below). The
     feature page keeps "Where it stands" and adds a line pointing to the tab.
+- **Updates and restarts:** an installed update isn't live until Tatty restarts,
+  so after Check or Update now Settings says what needs it (`restart_needs`):
+  this server, when Tatty itself was updated, and the sessions going, with the
+  ones that started before the update marked as still on the old mod. The server
+  only holds its sessions in memory, so the ones going are written to
+  `sessions-cache.json` as soon as a restart is due, and again when **Restart
+  Tatty** is pressed. That starts the installed Tatty's server beside this one;
+  it takes the cache back (the sessions with their feature, name and model, and
+  their feed), writes `server.json`, and only then does the old one stop, so the
+  tray app (`FollowNewServer`) and each session's mod (which looks up
+  `server.json` and says hello again under the same tag) move over without a
+  gap. A browser tab needs reopening: the token and port are new. Questions
+  still open and background work (chats, Jira, Stories) are lost, and the
+  button asks first when there are any. The tray app's own build updates the
+  next time it is started.
+- **Branches and merging:** two workflows in one repository must not trample
+  each other's files, and finished work mustn't sit uncommitted and forgotten.
+  Neither is the toolbox's business (its skills never create a branch or commit),
+  so both are Tatty's, and the toolbox is unchanged.
+  - **A branch per workflow.** `start_session` calls `ensure_branch` before it
+    launches. The first Start of a feature that has no documents yet (New
+    feature, a Jira ticket, a task, a lite start) makes the branch with `git
+    switch -c` from the branch the repo is on (`<branchPrefix><feature name>`,
+    prefix `feature/` by default, a setting; `-2`, `-3` when the name is taken)
+    and records it in `<tatty home>/branches.json`. A later Start switches the
+    repo back to it; a feature already under way with no record adopts the
+    branch the repo is on, and is never moved. The repo is the work folder's
+    when a task has one, else the project's; outside a git repository nothing is
+    done. Tatty only ever runs `git switch`: it never stages, commits or pushes,
+    and a switch git refuses (changes in the way) stops the Start with git's
+    words. The branch is switched in place, not in a worktree, so two workflows
+    in one checkout share its working tree: the Start panel (`GET
+    /api/branch`) names the branch it will make or use and warns when another
+    workflow has a branch in the same repo.
+  - **The Review step.** The toolbox's last phase is `complete` (built and
+    validated). Tatty adds one more step after it, Review, on all three routes
+    (the tracker reads Explore, Plan, Breakdown, Build, Review, Done), and the
+    feature is Done only when its request is merged. The step has phases, shown
+    as chips under it: **Review, Decide, Apply, Commit, Merge**. They are read from
+    the Review Suggestions document (below); `review_rows` (called by
+    `workflow_rows`) turns the phase into the Tatty row, until the request is merged,
+    and replaces the toolbox's own "review the branch" row. A request that is open
+    already skips the review.
+    - **Review** (`/tatty:review`, plugin skill `review`): the Start panel (review.js)
+      chooses the repo, branch and base; the session runs the toolbox's
+      `tt-branch-review`, reads its `Review.md` and writes the Review Suggestions
+      document, each finding with two to four options, only through `suggestions.sh`.
+    - **Decide** (the Review page, review-page.js, `#feature/<name>/review`): the
+      suggestions one at a time, each with its options, "something else" (the person's own
+      words) and a note; every answer is saved into the document at once
+      (`POST /api/review/decide`), so it can be left and resumed. The last answer
+      starts the next session from the server (`review_apply_start`).
+    - **Apply** (`/tatty:apply-review`, plugin skill `apply-review`): makes only the
+      chosen changes on the reviewed branch (the smallest coherent diff, no review IDs
+      in code, a check at the end), records `Applied`, `Skipped` or `Blocked` against
+      each suggestion and ends with `suggestions.sh finish`. It never stages or commits,
+      and asks in the session when a decision is unclear.
+    - **Commit** (the Commit page, below): offers the review's changes with a message
+      "address review suggestions"; a successful commit marks the review Done
+      (`reviewDone`), or **Mark the review done** does if they were committed another way.
+    - **Merge** (`/tatty:merge`, plugin skill `merge`): looks the change over, then commits
+      (if anything is left), pushes and opens the pull / merge request, asking before
+      each git write and using the project's own commit and request skills and rules when
+      it has them. The facts the skill needs (feature, folder, repository, branch, base,
+      host, existing request) follow the command as plain lines.
+  - **The Review Suggestions document** (`<Feature> - Review Suggestions.md` in the
+    feature's folder; `reviewdoc.py`, run as `scripts/suggestions.sh`). It is Tatty-owned
+    and script-written (no skill or page edits it by hand, so its layout never varies;
+    `check` reports a hand-edit that breaks it, and the step then shows a warning). Header:
+    Repository, Branch, Base, Reviewed (head), Report (the toolbox's `Review.md`), Status
+    (`Open` → `Decided` → `Applied` → `Done`) and "Decided n of N". Then a table and a
+    section per suggestion `RS01…` (ids never reused): Severity, Dimension, Where, Finding,
+    Options (`A — title: detail`, one marked recommended, "Leave as is" always last),
+    Decision (`A`, `Other: <words>` or `—`), Note, Result. The document is the one record
+    of where the step is (`Doc.phase()`), so a restart loses nothing; writes take a lock
+    directory and replace the file whole (CRLF and a BOM are kept). `init --replace` keeps
+    the old document in the feature's `.tt/Review Suggestions history/`. No findings: `done`
+    straight away.
+  - **Seeing the request.** The record keeps `merge: {state, url, number, host,
+    checked, note}`, `state` being empty, `opened` or `merged` and never going
+    back. `merge_check` asks the host's own tool, `glab mr list --source-branch`
+    or `gh pr list --head` (no tokens, no model; at most every 30 s unless the
+    button is pressed), when the page opens at the Merge step and on **Check
+    now**; **I opened the request** and **Mark merged** say it by hand
+    (`POST /api/merge`). When the request is first seen open, the card the
+    feature was started from moves to In Review: a Tasks card to the board's
+    In Review column (forward only, nothing if the board has none), a Jira
+    ticket by its transition to In Review. Moving it on to QA Ready or Done is
+    the person's. `merge.opened` and `merge.merged` are milestones.
 - **Workflow tabs:** the Features page (`#home`) has a strip of tabs along the
   top (`workflowTabs` in `features.js`): Features, the list of features, then one
   tab for each session Start opened (`#workflows/<tag>`), each showing that
@@ -310,8 +429,8 @@ folders and Claude Code's own install records; see
   process of its own, so any number of workflows can run at once, in different
   features or in one. The live panels and usage widgets are kept per tag
   (`livePanels`, `usageViews`), and `route()` clears them as the page is redrawn.
-  - **The panel's order** is the question waiting for an answer, the box to
-    message the session, the activity log, then **Previously answered**: the
+  - **The panel's order** is the question waiting for an answer, the activity
+    log, the box to message the session, then **Previously answered**: the
     questions answered, as small boxes titled by the question's headline, newest
     first, each opened and closed by a click (`answeredBox` in `app.js`). The
     section shows once there is a first answer. When a question is answered the
@@ -531,10 +650,13 @@ toolbox contract's "Jira" section; how it is built:
   `--bare` would be smaller still, but it drops the MCP servers.
 - **The board** is a column per status, ordered by the status's category (to
   do, under way, done) and then by Jira's rank. The MCP server can't read a
-  board's own column setup, so statuses are the columns.
+  board's own column setup, so statuses are the columns: In Review, QA Ready
+  and the rest appear as tickets reach them.
 - **A ticket** opens in a panel at the right. Its detail is loaded on its own
   (description in markdown, sub-tasks, links, and the transitions it offers),
-  and kept.
+  and kept. The panel's **Move to** row offers each status those transitions
+  go to (`POST /api/jira/move` with `to`); a status Jira doesn't offer is never
+  asked for.
 - **Start workflow** (`POST /api/jira/start`, `jira_start`):
   1. makes `<KEY> - <summary>` with `new_feature`;
   2. writes the ticket into it as `<name> - Ticket.md`;
@@ -554,7 +676,9 @@ server.py's "tasks" section) is a tracker of Tatty's own, for a project that
 doesn't use Jira, Trello or the like. The toolbox has no part in it.
 
 - **On disk:** `<root>/tasks/<board>/`, a folder per board:
-  - `board.json`: the columns (an id and a name each, left to right), the order
+  - `board.json`: the columns (an id and a name each, left to right; a new
+    board has To Do, In Progress, In Review, QA Ready and Done, and a request
+    seen open moves the started card to the one called In Review), the order
     of the cards in the backlog and each column, the next ID, the options
     (`autoCompleteDays`, `startColumn`, `project`, `celebrate`, `priorities`) and
     the feature each started task became. Unknown keys are kept.
@@ -676,6 +800,72 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   Cancelling after a failed launch works the same, so the task can be started
   again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
   are left alone; it asks again when its folder is missing.
+- **Commit** (commit.js; server.py "committing what the workflow left"). Once a
+  build is complete, a review only sees commits, so the step before it is to commit
+  what the workflow changed, as a page and not a manual step. A card at the top of
+  "Where it stands" says when the feature's branch has uncommitted files (a quiet
+  background look: `git status` can be slow in a big repo) and links to
+  `#feature/<name>/commit`, which also puts a note under the review row. The page
+  (`GET /api/commit?name=`) lists the repo's changed files, one per file
+  (`status_files`: `-uall --no-renames`), in two groups: the ones the workflow's own
+  task results name (`workflow_results`: the "Files Modified" lists of
+  `<feature>/.tt/**/results/*.md`, a folder entry covering what is under it), ticked,
+  and the rest, not ticked ("Not named in the workflow's task results"); with none
+  named, everything is ticked. A name that looks like a secret (`.env`, keys,
+  `*secret*`) is marked and left out of **Commit everything**. The message is suggested
+  from the feature's name and the repo's last 30 commits (`suggest_commit_message`: a
+  `feat:` prefix and a trailing `[KEY]` only if the repo uses them; the workflow's tasks as
+  the body), and is edited freely: nothing of Tatty's is added to it (no trailer).
+  **Commit selected** and **Commit everything** (`POST /api/commit {files | all, message}`,
+  `feature_commit`) stage (`git add -A`) and commit by pathspec, so only those files are
+  committed and whatever else the person staged stays staged; they refuse when the repo is
+  not on the feature's branch, when files are in conflict, or when the list changed since
+  it was shown. The repo's hooks run (never `--no-verify`); if one refuses, its words are
+  shown and what Tatty staged is unstaged again. Committing outside the workflow's own files
+  asks first. It never pushes (the Merge step does).
+- **Review the branch** (review.js; server.py `review_info`, `review_session`).
+  Once a build is complete the Review step starts `/tatty:review`, which runs the toolbox's
+  `/tt-branch-review [branch]`. That skill reviews the repo its session starts in, so a feature whose sessions run in
+  one repo (its project) but whose work is in another would be reviewed in the wrong
+  one. The review row's Start panel therefore asks which repo and branch instead of
+  showing the project line: `GET /api/review?name=&repo=` offers the repo the
+  feature's branch was made in (`branches.json`), else its project's, and the
+  feature's branch if that repo has it, else the one checked out; **Change…** picks
+  another repo. `POST /api/start {review: {repo, branch, against}}` starts the session
+  in that repo, for that session only: the feature's project choice and branch
+  record are untouched, and no branch is made or switched (a review only reads).
+  The toolbox's `[branch]` hint is never sent as text: the command is `/tatty:review`
+  followed by the facts as lines (repository, branch, base, the document and the script),
+  and the skill passes the branch and base on to `tt-branch-review`.
+- **Archive and Delete** (archive.js; server.py "archiving and deleting a
+  feature"). The feature page's header has a split button: **Archive**, with
+  **Delete…** behind its caret (the menu is split.js's `showMenu`).
+  - **Archive** (`POST /api/feature/archive {name}`) ends the feature's sessions
+    and chats and moves its folder to `<root>/archive/<name>` (" (2)" if the
+    name is taken there). A feature that is a link (a junction into a vault) is
+    moved as the link, and the vault's folder stays where it is. The task it
+    was started from is left as it is (an archived feature is usually a finished
+    one); its card says the feature is archived. `GET /api/features` lists them
+    as `archived`, newest archived first (when: `<home>/archived.json`), under a
+    collapsed **Archived (n)** section on the Features page. **Restore**
+    (`/api/feature/restore {name}`) moves it back (409 if the name is taken).
+    Both carry the project chosen for the feature (`projects.tsv`, keyed by the
+    listed path) and its whiteboard (`boards/<key>.json`, keyed by where the folder
+    really is, which only changes for a folder that isn't a link) along: `rekey_feature`.
+    Archived features can't be opened; restore one first.
+  - **Delete** is for good, and the one thing in Tatty that is. The side panel
+    (`deleteFeaturePanel`) first reads `GET /api/feature/delete-preview` (the real
+    path, whether it's a link, how many files and bytes) and asks for the feature's
+    name to be typed; `POST /api/feature/delete {name, archived, confirm}` is a 400
+    without it. It ends the sessions and chats, undoes a task's Start
+    (`task_unstart`, as Cancel workflow does), removes the folder (for a link: the
+    real folder it points at, then the link) and forgets the project choice,
+    whiteboard and Jira "started" row. A link met *inside* the folder is removed,
+    not followed (`remove_tree`), so what it points at is untouched. `delete_refused`
+    answers 409 for a real folder that is, or holds, Tatty's root, its features,
+    archive, design or tasks folders, Tatty's or Claude's home, the user's home or the
+    plugin, for a drive or top-level folder, and for a link to another feature.
+    The toolbox's links and ledger are not touched.
 
 ## User Stories (the design mode)
 
@@ -791,7 +981,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  599 checks against a real toolbox (the User Stories board's with a stand-in
+  782 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,
@@ -845,6 +1035,10 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   dragged, keyed, reset and held to its minimums, the pane across another workflow
   tab and a reload, the documents rail (opening in the pane, collapsing, kept over a reload), the right-click link menu, an unsaved edit asked about, and the
   pane closing with its last tab. It needs the toolbox (for the planning IDs).
+  `features-check.py ... --settings` walks the Settings page's connections
+  table, session setting and step table (a step's model changed and put back,
+  so run it on a server with a throwaway `TT_CONFIG_DIR`), and a model picker
+  drawn on the page.
   `features-check.py ... --chats` starts a session without opening a terminal
   and posts it a reply with a sentence and a code block, then walks the chats:
   the old chat column gone, a right-click with nothing selected left alone, a
@@ -864,6 +1058,11 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   nothing in the stories document. It also reports how the view is drawn: a pan
   leaves the content as drawn (`contentSame`), and a zoom or an ease settles
   back to a sharp drawing (`crisp`, `settledAfterEase`, `layer`).
+  `features-check.py ... --archive` makes a feature of its own ("Walk archive") and walks
+  the split button with real mouse and keys: the caret's menu (Esc, the caret again), the
+  Delete panel (the name typed, case matters, Esc), Archive into the Archived section,
+  Restore, and Delete from the section. It deletes a folder, so run it only on a
+  throwaway root.
   `features-check.py ... --export` clicks through Export to Tasks on the first
   User Stories board (the panel, two stories exported, their IDs on the notes,
   the backlog, a task's panel, the panel again). It writes task files, so run

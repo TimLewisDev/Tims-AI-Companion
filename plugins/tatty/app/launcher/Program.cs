@@ -19,9 +19,10 @@ namespace TattyLauncher
     //
     // It is deliberately thin. Everything that changes with a release lives in the
     // plugin, which is found at run time -- from Claude Code's record of what is
-    // installed, and from boot.json (which every boot keeps up to date) for a plugin
-    // run from somewhere else, such as a checkout -- so a plugin update never leaves
-    // the shortcut pointing at nothing, and this exe never has to be rebuilt for one.
+    // installed (the Tatty the marketplace, GitHub, offers), and from boot.json only
+    // for a checkout pinned on purpose (`tatty.sh install --pin`) -- so a plugin update
+    // never leaves the shortcut pointing at nothing, and this exe never has to be
+    // rebuilt for one. The plugin's `boot` looks for a newer Tatty each time it runs.
     //
     // A copy in Claude Code's plugin cache is never trusted over the record: an
     // update leaves the old version's folder there, so a boot.json that named it
