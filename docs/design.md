@@ -629,10 +629,41 @@ contract's "Chats" section; how it is built:
   asks (`pickChatProject`: the folders Tatty knows, `GET /api/chat/projects`, or
   Explorer).
 
+## The shared board (`taskboard.js`)
+
+The Tasks and Jira pages draw the same board, as the design pages share
+`whiteboard.js`: `makeTaskBoard(o)` (`taskboard.js` and `taskboard.css`) is a
+factory with its state in a closure, so a page makes one and a new board
+feature is built once. Its header comment lists what a page gives it
+(`load()`, `cardBody(x)`, `move(id, to, before)`, `ops`, `colOp(body)`, and so
+on). It owns:
+
+- the columns and cards, and the filter (`/`);
+- the drag (pointer events, a 4 px threshold, a ghost and a placeholder,
+  edge scrolling, Esc to cancel) and Alt+arrows, with `canDrop` and a refused
+  `move` putting the card back;
+- the ⋯ menu of a column, each entry only if the page's `ops` allow it (Tasks:
+  rename, move, delete, and "+ Add column"; Jira: move and hide, with a "Show
+  <name>" button for each hidden one);
+- the panel's dimmed page behind it (`.tshade`, `.tpanel`), which one page
+  draws at a time and Esc takes away;
+- **the Start section**: the feature's name, the project the session runs in,
+  **Works in** (the folder the work is done in, when that is another),
+  the model, **Start workflow** and **Start lite**, and, once a workflow is
+  going, its route, stage and session with **Cancel workflow**. Both pages'
+  cards show the same workflow line. The ids are `#<item>-feature`,
+  `-start`, `-start-lite`, `-workdir` (`item` is `task` or `jira`), and the
+  board's are `#<id>-board`, `-filter`, `-strip`, `-live` (`id` is `tasks` or
+  `jira`).
+
+The pages keep only what is theirs: Tasks the list of boards, the Backlog and
+Completed pages, Clear done, the problems list and the task form; Jira the
+header, the ticket's panel and what a drop does.
+
 ## The Jira board
 
-The production mode's page (`#jira`, `jira.js`). The rules it keeps are in the
-toolbox contract's "Jira" section; how it is built:
+The production mode's page (`#jira`, `jira.js`, on the shared board above). The
+rules it keeps are in the toolbox contract's "Jira" section; how it is built:
 
 - **Reading Jira costs tokens.** Tatty can only reach the Atlassian MCP server
   through Claude, so the server runs `claude -p` (`jira_claude`) with a JSON
@@ -648,26 +679,48 @@ toolbox contract's "Jira" section; how it is built:
   most of it cached between runs. A board of six tickets took about 20 s and
   60k tokens over its turns ($0.04); a ticket about 20 s and 40k ($0.035).
   `--bare` would be smaller still, but it drops the MCP servers.
-- **The board** is a column per status, ordered by the status's category (to
-  do, under way, done) and then by Jira's rank. The MCP server can't read a
-  board's own column setup, so statuses are the columns: In Review, QA Ready
-  and the rest appear as tickets reach them.
+- **The board** is a column per status. The MCP server can't read a board's own
+  column setup, so statuses are the columns: those of the tickets on the board
+  and those a ticket's moves go to (remembered in `<home>/jira/layout.json`,
+  so a status nobody is in yet is still a column to drop on). Unplaced columns
+  go by category (to do, under way, done) and then as first seen, so one never
+  jumps as tickets move. The person's own order and the columns hidden are in
+  the same file (`POST /api/jira/layout`: move, hide, show, order), keyed by
+  the status name lower-cased; add, rename and delete are not offered, since
+  statuses are Jira's. `GET /api/jira` sends `columns`, `hidden` and `layout`
+  beside `issues`.
+- **Dragging a card** to another status asks Jira to make that move
+  (`POST /api/jira/reorder` for the place, then `/api/jira/move` with `to`,
+  which is a headless run of a few seconds): the card stays where it was
+  dropped, dimmed, until the `jira` event says how it went, and goes back with
+  Jira's reason if there is no such move. In the same status a drop only
+  records the place. A move the person picks is made even to In Progress for a
+  ticket already under way; only the automatic one at Start leaves it alone.
 - **A ticket** opens in a panel at the right. Its detail is loaded on its own
   (description in markdown, sub-tasks, links, and the transitions it offers),
   and kept. The panel's **Move to** row offers each status those transitions
   go to (`POST /api/jira/move` with `to`); a status Jira doesn't offer is never
   asked for.
-- **Start workflow** (`POST /api/jira/start`, `jira_start`):
-  1. makes `<KEY> - <summary>` with `new_feature`;
-  2. writes the ticket into it as `<name> - Ticket.md`;
+- **Start workflow** and **Start lite** (`POST /api/jira/start`, `jira_start`,
+  with the same `card_start_target` and `card_start_session` as a task's Start):
+  1. makes `<KEY> - <summary>` with `new_feature` (a second Start is a 409
+     naming the feature);
+  2. writes the ticket into it as `<name> - Ticket.md`, with a `## Working
+     folder` section when `workdir` is another folder than `project` (the
+     session runs in `project` with `--add-dir`, and is told to read, change,
+     run git and verify only in the work folder);
   3. starts the folder's first step with `start_session`, its placeholder
-     naming the ticket document;
+     naming the ticket document, or for `mode: "lite"` `/tt-workflow-lite`;
   4. once the session is open, moves the ticket by the transition to In
      Progress named in its detail.
 
   The page then goes to the feature's page, which shows the session live.
-  `started.tsv` remembers the feature, so the card says so and the panel links
-  to it.
+  `started.tsv` remembers the feature and `begun.json` the route, so the card
+  says so, shows the workflow line (`workflows` in `GET /api/jira`, from
+  `feature_workflow`) and the panel links to it; the last project and work
+  folder (`jiraProject`, `jiraWorkdir`) start the next form. **Cancel workflow**
+  ends the sessions and unlinks the ticket (it stays where it is in Jira: moving
+  it back would cost a run), and so does deleting the feature.
 
 ## Tasks (the production mode)
 
@@ -747,8 +800,8 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
 - **The task panel** (`#tasks/<board>/task/<id>`, `/task/new`): the title,
   status, priority, labels, and the description with Write and Preview; the
   other fields and sections as they are; **Edit whole file** for the raw
-  markdown; Save (Ctrl+Enter) and Delete. Its classes are its own: jira.js takes
-  `.jticket` away on every change of page.
+  markdown; Save (Ctrl+Enter) and Delete. The panel's frame is the shared
+  board's (`.tpanel`).
 - **Completed:** the total, this week, this month, the best week and the streak
   of weeks; a bar for each of the last 12 weeks; a line that says how it's
   going, whatever the motion setting; and the tasks by week, then by month, each
@@ -1018,8 +1071,9 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   land on its card on the tab. It also posts a challenge-style
   question and reports how it was laid out (`ask_format`).
   `features-check.py` ends with the Jira board, drawn from a sample board in
-  the page (columns, a ticket's panel, Esc, the nav item per mode), and the
-  task boards. `features-check.py ... --tasks` walks only those, on the
+  the page with `api()` stood in for (`--jira`: columns, a ticket's panel and
+  Start lite, Esc, the column menu, a card dragged to another status and within
+  one, the nav item per mode), and the task boards. `features-check.py ... --tasks` walks only those, on the
   fixture's `Sample` board, with real mouse input: a card dragged to another
   column and back, a reorder and back, one dragged in from the backlog rail and
   back, Alt+arrows, the task panel (Write and Preview, Cancel, Esc), the backlog

@@ -320,12 +320,17 @@ toolbox has no part in it. What it does, and the limits it keeps:
   (a ticket already under way is left alone; if no terminal could be opened the
   page offers **Move to In Progress** by hand); **In Review** once the feature's
   pull / merge request is seen open (see "Branches and merging" in the design
-  notes); and any status the person picks in the ticket panel's **Move to** row.
-  A ticket already in the status is left alone.
-- **One document written.** Start workflow makes `<root>/features/<KEY> -
-  <summary>` (refused if it exists and isn't empty) and writes `<name> -
-  Ticket.md` in it: the ticket's fields, its description, sub-tasks and links.
-  The workflow plans from it; Tatty never touches it again.
+  notes); and any status the person picks in the ticket panel's **Move to** row
+  or drops the ticket's card on. A ticket already in the status is left alone.
+- **One document written.** Start workflow, or Start lite, makes
+  `<root>/features/<KEY> - <summary>` (refused if it exists and isn't empty)
+  and writes `<name> - Ticket.md` in it: the ticket's fields, its description,
+  sub-tasks and links, and, when the work is done in another folder than the
+  one the session runs in, a `## Working folder` section. The workflow plans
+  from it; Tatty never touches it again.
+- **Columns are Tatty's.** The person's order for the columns and which are
+  hidden are kept in Tatty's home (`jira/layout.json`); nothing about them is
+  written to Jira.
 
 ## Tasks
 
@@ -422,8 +427,9 @@ are therefore Tatty's own, outside the workflow's records:
     left the server to restart, written for the restart and used once by the new
     server, which deletes it (and ignores one older than ten minutes);
   - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
-    (`issues/<KEY>.json`), and which feature was started from which ticket
-    (`started.tsv`);
+    (`issues/<KEY>.json`), which feature was started from which ticket
+    (`started.tsv`) and by which route (`begun.json`), and the person's column
+    order, hidden columns and card places (`layout.json`);
   - `boards/<key>.json`: a User Stories board's or a feature's whiteboard:
     where each card sits, the view, the text fields, comments and lines on it,
     each group's colour, and which task each exported story became (never in

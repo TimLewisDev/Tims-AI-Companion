@@ -28,6 +28,7 @@ session (no terminal opens) that reports one edit, and reports the rail item, th
 and the task's chip; a throwaway root and home only;
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
+--jira only the Jira board (drawn from a sample board, with the page's api() stood in for: nothing is fetched or started);
 --export only Export to Tasks from the first User Stories board. It writes task
 files, so only ever on a throwaway root.
 --whiteboard only the whiteboard: a new blank board with text, a comment and a
@@ -582,43 +583,144 @@ def check_chats(p):
 
 
 def check_jira(p):
-    """The Jira board, drawn from a sample board in the page (nothing is fetched
-    from Jira, nothing started): its columns, a ticket's panel, Esc, and the nav
-    item shown in the production mode only."""
+    """The Jira board, drawn from a sample board in the page with the page's api() stood in for by a small
+    Jira (nothing is fetched from Jira, nothing started), and real mouse input: its columns, a ticket's
+    panel (Start workflow, Start lite, the folder the work is done in), Esc, the column menu (move, hide,
+    show), a card dragged to another status (a move in Jira, shown where it was dropped until Jira has
+    made it) and within one status (only a place), and the nav item shown in the production mode only."""
     res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
     was = p.js("({ modes: installedModes, mode: currentMode })")
     p.js("setInstalledModes(['engineering', 'production']); applyMode('engineering'); 1")
     res["navInEngineering"] = p.js("!document.querySelector('.pnav a[data-page=jira]').classList.contains('hidden')")
     p.js("location.hash = '#jira'; 1")
     # the page's own (empty) board first, so the sample isn't drawn over by it
-    wait(p, "currentMode === 'production' && !!document.querySelector('#page-jira.on .jira-page')")
+    wait(p, "currentMode === 'production' && !!document.querySelector('#page-jira.on .tasks-page')")
     res["mode"] = p.js("currentMode")
     res["navInProduction"] = p.js("!document.querySelector('.pnav a[data-page=jira]').classList.contains('hidden')")
     p.js("""(() => {
-      const t = (key, status, cat, type) => ({ key, summary: 'Sample ' + key, type, status, statusCategory: cat, priority: 'P3',
-                                              parent: { key: 'S-9', summary: 'The epic' }, url: 'https://example.atlassian.net/browse/' + key });
-      jiraNow = { fetchedAt: Date.now() / 1000 - 120, site: 'example.atlassian.net', jql: 'assignee = currentUser()',
-                  usage: { tokens: 16000, seconds: 18 }, busy: [], started: { 'S-4': 'S-4 - Sample S-4' }, project: '', cached: [],
-                  issues: [t('S-1', 'Closed', 'done', 'Task'), t('S-2', 'Open', 'todo', 'Bug'), t('S-3', 'In Review', 'inprogress', 'Story'),
-                           t('S-4', 'Open', 'todo', 'Story')] };
-      jiraDetail.set('S-2', { key: 'S-2', description: '### Steps\\n\\n1. Open it', labels: ['ui'], fetchedAt: Date.now() / 1000 });
+      const t = (key, status, cat, type) => ({ key, id: key, summary: 'Sample ' + key, title: 'Sample ' + key, type, status, statusCategory: cat,
+                                              priority: 'P3', parent: { key: 'S-9', summary: 'The epic' }, url: 'https://example.atlassian.net/browse/' + key });
+      const issues = [t('S-1', 'Closed', 'done', 'Task'), t('S-2', 'Open', 'todo', 'Bug'), t('S-3', 'In Review', 'inprogress', 'Story'),
+                      t('S-4', 'Open', 'todo', 'Story'), t('S-5', 'Closed', 'done', 'Task')];
+      const cols = [['open', 'Open', 'todo'], ['in review', 'In Review', 'inprogress'], ['in progress', 'In Progress', 'inprogress'], ['closed', 'Closed', 'done']];
+      const st = { order: cols.map(c => c[0]), hidden: [], where: Object.fromEntries(issues.map(i => [i.key, i.status.toLowerCase()])),
+                   seq: issues.map(i => i.key), busy: [], moves: [], starts: [], layouts: [], reorders: [] };
+      const name = id => cols.find(c => c[0] === id)[1];
+      const view = () => ({ fetchedAt: Date.now() / 1000 - 120, site: 'example.atlassian.net', jql: 'assignee = currentUser()',
+        usage: { tokens: 16000, seconds: 18 }, busy: st.busy, since: {}, started: { 'S-4': 'S-4 - Sample S-4' }, project: '', workdir: '', cached: [],
+        issues, workflows: {},
+        columns: st.order.filter(id => !st.hidden.includes(id)).map(id => ({ id, name: name(id), cat: cols.find(c => c[0] === id)[2],
+          tasks: st.seq.filter(k => st.where[k] === id).map(k => issues.find(i => i.key === k)) })),
+        hidden: st.hidden.map(id => ({ id, name: name(id), count: st.seq.filter(k => st.where[k] === id).length })) });
+      window.__jira = st;
+      window.__apiWas = api;
+      window.__jiraFinish = () => {  // Jira has made the move the page asked for
+        const key = st.busy[0].slice(5), to = st.moves[st.moves.length - 1][1];
+        st.where[key] = to.toLowerCase(); st.busy = [];
+        document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'jira', job: 'move:' + key, busy: false, ok: true, key, message: key + ' is ' + to + ' in Jira.' } }));
+      };
+      api = async (path, body) => {
+        if (path === '/api/jira') return view();
+        if (path === '/api/jira/layout') {
+          st.layouts.push(body);
+          const shown = st.order.filter(id => !st.hidden.includes(id)), i = shown.indexOf(body.status);
+          if (body.op === 'move') { const j = st.order.indexOf(shown[i + body.dir]); const k = st.order.indexOf(body.status); [st.order[k], st.order[j]] = [st.order[j], st.order[k]]; }
+          if (body.op === 'hide') st.hidden.push(body.status);
+          if (body.op === 'show') st.hidden = st.hidden.filter(id => id !== body.status);
+          return view();
+        }
+        if (path === '/api/jira/reorder') {
+          st.reorders.push(body);
+          const same = st.where[body.key] === body.to;
+          st.seq = st.seq.filter(k => k !== body.key);
+          const at = body.before ? st.seq.indexOf(body.before) : -1;
+          st.seq.splice(at < 0 ? st.seq.length : at, 0, body.key);
+          if (!same) st.pendingKey = body.key;
+          return view();
+        }
+        if (path === '/api/jira/move') { st.busy = ['move:' + body.key]; st.moves.push([body.key, body.to]); return view(); }
+        if (path === '/api/jira/start') { st.starts.push(body); return { ok: true, feature: body.feature }; }
+        if (path.startsWith('/api/jira/issue?')) return { key: path.split('=')[1], cached: false };
+        return window.__apiWas(path, body);
+      };
+      jiraNow = view();
+      jiraDetail.set('S-2', { key: 'S-2', description: '### Steps\\n\\n1. Open it', labels: ['ui'], transitions: [{ id: '1', name: 'Go', to: 'In Progress' }], fetchedAt: Date.now() / 1000 });
       drawJira(); })(); 1""")
-    res["columns"] = p.js("[...document.querySelectorAll('#jira-board .jcol')].map(c => c.querySelector('h3').textContent)")
-    res["cards"] = p.js("[...document.querySelectorAll('#jira-board .jcol')].map(c => c.querySelectorAll('.jcard').length)")
-    res["startedCard"] = p.js("(document.querySelector('.jcard[data-key=S-4] .jstarted') || {}).textContent || ''")
-    p.js("document.querySelector('.jcard[data-key=S-2]').click(); 1")
-    wait(p, "!!document.querySelector('.jticket')")
-    res["panel"] = p.js("""({ title: (document.querySelector('.jticket h3') || {}).textContent,
-                             desc: (document.querySelector('.jticket .jdesc h3') || {}).textContent,
+    centre = lambda sel: p.js(f"(() => {{ const n = document.querySelector({json.dumps(sel)}); if (!n) return null; const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()")
+    settle = lambda: (time.sleep(0.6), wait(p, "!document.querySelector('.tghost')"))
+    names = "[...document.querySelectorAll('#jira-board .tcol h3')].map(h => h.firstChild.textContent.trim())"
+    cards = "[...document.querySelectorAll('#jira-board .tcol')].map(c => c.dataset.col + ':' + [...c.querySelectorAll('.tcard')].map(x => x.dataset.id).join(','))"
+    res["columns"] = p.js(names)
+    res["cards"] = p.js(cards)
+    res["startedCard"] = p.js("(document.querySelector('.tcard[data-id=S-4] .jstarted') || {}).textContent || ''")
+    # a card opens on a click
+    a = centre(".tcard[data-id=S-2]")
+    click(p, a[0], a[1])
+    wait(p, "!!document.querySelector('.tpanel')")
+    res["panel"] = p.js("""({ title: (document.querySelector('.tpanel h3') || {}).textContent,
+                             desc: (document.querySelector('.tpanel .jdesc h3') || {}).textContent,
                              link: (document.querySelector('.jticket-head a') || {}).href,
-                             name: (document.querySelector('#jira-name') || {}).value,
-                             startDisabled: (document.querySelector('#jira-start') || {}).disabled })""")
+                             name: (document.querySelector('#jira-feature') || {}).value,
+                             moveTo: [...document.querySelectorAll('.jmove-to')].map(b => b.textContent),
+                             start: (document.querySelector('#jira-start') || {}).disabled,
+                             startLite: (document.querySelector('#jira-start-lite') || {}).disabled,
+                             workdirPicker: !!document.querySelector('#jira-workdir') })""")
+    # Start lite, with the project and the folder the work is done in set
+    p.js("""(() => { jiraNow.project = '/work/project'; jiraNow.workdir = '/work/other'; showTicket('S-2'); })(); 1""")
+    p.js("document.querySelector('#jira-start-lite').click(); 1")
+    wait(p, "__jira.starts.length > 0")
+    res["startLite"] = p.js("__jira.starts[0]")
+    p.js("location.hash = '#jira'; 1")
+    wait(p, "!document.querySelector('.tpanel')")
+    # Esc closes the panel
+    a = centre(".tcard[data-id=S-2]")
+    click(p, a[0], a[1])
+    wait(p, "!!document.querySelector('.tpanel')")
     p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
-    res["closedByEsc"] = p.js("!document.querySelector('.jticket') && !document.querySelector('.jshade')")
-    p.js("document.querySelector('.jcard[data-key=S-3]').click(); 1")
-    wait(p, "!!document.querySelector('.jticket')")
+    res["closedByEsc"] = p.js("!document.querySelector('.tpanel') && !document.querySelector('.tshade')")
+    a = centre(".tcard[data-id=S-3]")
+    click(p, a[0], a[1])
+    wait(p, "!!document.querySelector('.tpanel')")
     res["notLoaded"] = p.js("""({ load: (document.querySelector('#jira-load') || {}).textContent, start: !!document.querySelector('#jira-start') })""")
     p.js("closeTicket(); 1")
+
+    # the column menu: only moving and hiding (the statuses are Jira's)
+    p.js("document.querySelector('.tcol[data-col=\"in review\"] .tcol-menu').click(); 1")
+    res["menu"] = p.js("[...document.querySelectorAll('.tmenu button')].map(b => b.textContent + (b.disabled ? ' (off)' : ''))")
+    p.js("[...document.querySelectorAll('.tmenu button')].find(b => b.textContent === 'Move right').click(); 1")
+    wait(p, "__jira.layouts.length === 1")
+    time.sleep(0.3)
+    res["movedRight"] = p.js(names)
+    p.js("document.querySelector('.tcol[data-col=\"closed\"] .tcol-menu').click(); [...document.querySelectorAll('.tmenu button')].find(b => b.textContent === 'Hide').click(); 1")
+    wait(p, "__jira.layouts.length === 2")
+    time.sleep(0.3)
+    res["hidden"] = {"columns": p.js(names), "shown": p.js("[...document.querySelectorAll('.thidden')].map(b => b.textContent)")}
+    p.js("document.querySelector('.thidden').click(); 1")
+    wait(p, "__jira.layouts.length === 3")
+    time.sleep(0.3)
+    res["shownAgain"] = p.js(names)
+    res["layoutCalls"] = p.js("__jira.layouts")
+
+    # a card dragged to another status: a move in Jira, shown where it was dropped until it is made
+    a, b = centre(".tcard[data-id=S-2]"), centre(".tcol[data-col='in progress'] .tcards")
+    drag(p, a[0], a[1], b[0], b[1])
+    settle()
+    wait(p, "__jira.moves.length > 0")
+    res["dropped"] = {"moves": p.js("__jira.moves"), "cards": p.js(cards),
+                      "moving": p.js("document.querySelector('.tcard[data-id=S-2]').classList.contains('tmoving')"),
+                      "noted": p.js("(document.querySelector('.jprogress') || {}).textContent || ''")}
+    p.js("__jiraFinish(); 1")
+    wait(p, "!document.querySelector('.tcard.tmoving')")
+    res["made"] = {"cards": p.js(cards), "said": p.js("(document.querySelector('.jira-notes .home-note') || {}).textContent || ''")}
+
+    # a card dragged within its status: only its place, and no move in Jira
+    a, b = centre(".tcard[data-id=S-5]"), centre(".tcard[data-id=S-1]")
+    drag(p, a[0], a[1], b[0], b[1] - 12)  # onto the top half of the first card: before it
+    settle()
+    time.sleep(0.3)
+    res["reordered"] = {"cards": p.js(cards), "reorders": p.js("__jira.reorders.length"), "moves": p.js("__jira.moves.length")}
+
     # a refresh running: what it is doing, and for how long
     p.js("jiraNow.busy = ['board']; jiraNow.since = { board: Date.now() / 1000 - 5 }; drawJira(); 1")
     res["progress"] = p.js("(document.querySelector('#jira-progress') || {}).textContent || ''")
@@ -626,7 +728,7 @@ def check_jira(p):
     # a page whose script didn't load says so, rather than staying blank
     p.js("window.renderJiraWas = renderJira; renderJira = undefined; route(); 1")
     res["staleServer"] = p.js("document.querySelector('#page-jira').textContent.slice(0, 40)")
-    p.js("renderJira = window.renderJiraWas; 1")
+    p.js("renderJira = window.renderJiraWas; api = window.__apiWas; 1")
     p.js(f"setInstalledModes({json.dumps(was['modes'])}); applyMode({json.dumps(was['mode'])}); jiraNow = null; jiraDetail.clear(); location.hash = '#home'; 1")
     return res
 
@@ -1433,8 +1535,8 @@ def main(argv):
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
         out = {}
-        if feature in ("--stories", "--tasks", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions", "--diff"):
-            out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--export": check_export,
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions", "--diff"):
+            out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
                                 "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))

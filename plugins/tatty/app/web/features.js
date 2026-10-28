@@ -78,8 +78,8 @@ function copyable(text) {
 
 // A panel from the right edge over a dimmed page, for a short form ("New board"). build(msg)
 // returns the form's node, msg being the line under it for errors. One at a time; it goes
-// with Esc, ×, a click on the dimmed page, or a change of page. Not the Jira or task panel's
-// classes: jira.js and tasks.js each remove their own.
+// with Esc, ×, a click on the dimmed page, or a change of page. Not the board panel's classes
+// (.tpanel, taskboard.js's, which the Jira and Tasks pages both use).
 let sidePanelNodes = [];
 function closeSidePanel() {
   for (const n of sidePanelNodes) n.remove();
@@ -791,7 +791,7 @@ function projectLine(f, onChange) {
 function cancelWorkflowText(name, task, ticketOnly, running) {
   return [`Cancel the workflow ${name}?`,
     running ? "Its Claude session is ended, and anything it is in the middle of is lost." : "",
-    task ? `${task.id} goes back to where it was, and can be started again.` : "",
+    task ? (task.stays ? `${task.id} stays where it is in Jira, and can be started again.` : `${task.id} goes back to where it was, and can be started again.`) : "",
     task ? (ticketOnly ? "The feature folder holds only the ticket, so it is moved to features/.deleted." : "The feature folder has documents in it, so it stays.") : ""]
     .filter(Boolean).join("\n\n");
 }

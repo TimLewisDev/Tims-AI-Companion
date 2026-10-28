@@ -1493,6 +1493,130 @@ post /api/jira/move '{"key":"ABC-1","to":"Nowhere"}' >/dev/null; jira_wait
 [ ! -f "$T/jira-move.args" ] && ok "a status Jira doesn't offer isn't asked for" || bad "a status Jira doesn't offer isn't asked for"
 get /api/events >"$T/ev"
 has "and the page is told" "$T/ev" "Jira offers ABC-1 no move to Nowhere"
+# the Jira board, laid out and started the way a task is
+[ "$(code "$U/static/taskboard.js")" = 200 ] && ok "taskboard.js served" || bad "taskboard.js served"
+[ "$(code "$U/static/taskboard.css")" = 200 ] && ok "taskboard.css served" || bad "taskboard.css served"
+wcancel() { curl -s -o "$T/wc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/workflow/cancel"; }
+post /api/jira/issue '{"key":"ABC-2"}' >/dev/null; jira_wait
+post /api/jira/issue '{"key":"ABC-3"}' >/dev/null; jira_wait
+# a status picked (a drop on a column) is moved to even when it is In Progress and the ticket is under way
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-2","to":"In Progress"}' >/dev/null; jira_wait
+has "a ticket under way is moved to In Progress when that is picked" "$T/jira-move.args" "transition id 7"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"workdir\":\"$FX/nope\"}" "$U/api/jira/start")" = 400 ] && ok "a work folder must exist" || bad "a work folder must exist"
+post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"workdir\":\"$FX\",\"mode\":\"lite\",\"feature\":\"ABC-2 - Under way\"}" >"$T/js"
+has "a lite workflow starts from a ticket, with a work folder" "$T/js" '"ok": true'
+has "named as it is asked" "$T/js" '"feature": "ABC-2 - Under way"'
+has "with the lite route's own command" "$T/js" "Prompt: /tt-workflow-lite \\\""
+has "on the ticket" "$T/js" "the Jira ticket ABC-2 in"
+has "named as lite" "$T/js" "Name: ABC-2 - Under way : Lite"
+has "the session adds the work folder" "$T/js" "--add-dir $FX"
+has "and still runs in the project" "$T/js" "cd $HERE &&"
+has "and says where the work is done" "$T/js" "Never read, build or verify against $HERE"
+TW="$FX/features/ABC-2 - Under way/ABC-2 - Under way - Ticket.md"
+has "the ticket says it too" "$TW" "## Working folder"
+has "and which repo to write in its documents" "$TW" "Write **Repo:** $FX in every document"
+jira_wait
+[ "$(pick "$T/jb" "d['workdir']")" = "$FX" ] && ok "the work folder is remembered for the next" || bad "the work folder is remembered for the next" "$(pick "$T/jb" "d['workdir']")"
+post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\"}" >"$T/js"
+has "a second start is refused, naming the feature" "$T/js" '"feature": "ABC-2 - Under way"'
+has "and why" "$T/js" "A workflow was started from this ticket already."
+post /api/jira/start "{\"key\":\"ABC-3\",\"project\":\"$HERE\",\"workdir\":\"$HERE\",\"name\":\"ABC-3 - Done one\"}" >"$T/js"
+has "a start with only the name asked for (the old field) still works" "$T/js" '"feature": "ABC-3 - Done one"'
+hasnt "a work folder that is the project isn't a split" "$T/js" "--add-dir"
+hasnt "and the ticket has no work-folder section" "$FX/features/ABC-3 - Done one/ABC-3 - Done one - Ticket.md" "## Working folder"
+jira_wait
+[ "$(pick "$T/jb" "repr(d['workdir'])")" = "''" ] && ok "so none is remembered" || bad "so none is remembered" "$(pick "$T/jb" "repr(d['workdir'])")"
+# what the board says of a started ticket's workflow (after a refresh that puts the tickets back where the fixture has them)
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "(d['workflows']['ABC-1']['route'], d['workflows']['ABC-2']['route'], 'ABC-3' in d['workflows'])")" = "('full', 'lite', False)" ] && ok "a card knows the route: full, or lite before its documents say; a done ticket's isn't asked" || bad "a card knows the route" "$(pick "$T/jb" "d['workflows']")"
+[ "$(pick "$T/jb" "(d['workflows']['ABC-2']['session']['status'], d['workflows']['ABC-2']['ticketOnly'], d['workflows']['ABC-2']['phase'])")" = "('starting', True, 'empty')" ] && ok "and its session, and where it stands" || bad "and its session, and where it stands" "$(pick "$T/jb" "d['workflows']['ABC-2']")"
+get "/api/feature?name=ABC-2%20-%20Under%20way" >"$T/j"
+[ "$(pick "$T/j" "(d['ticket'], d['task'])")" = "('ABC-2', None)" ] && ok "a feature knows its ticket" || bad "a feature knows its ticket" "$(pick "$T/j" "(d['ticket'], d['task'])")"
+# cancel: the session ended, the ticket unlinked (Jira is not asked to move it back), the ticket-only folder out of the way
+rm -f "$T/jira-move.args"
+[ "$(wcancel '{"name":"ABC-2 - Under way"}')" = 200 ] && ok "a ticket's workflow is cancelled" || bad "a ticket's workflow is cancelled" "$(cat "$T/wc")"
+has "its session ended" "$T/wc" '"stopped": 1'
+has "it names the ticket" "$T/wc" '"ticket": "ABC-2"'
+has "its ticket-only folder was removed" "$T/wc" '"folder": "removed"'
+[ ! -e "$FX/features/ABC-2 - Under way" ] && ls "$FX/features/.deleted/ABC-2 - Under way/"*Ticket.md >/dev/null 2>&1 && ok "into features/.deleted, not gone" || bad "into features/.deleted, not gone" "$(ls -a "$FX/features" "$FX/features/.deleted")"
+jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "and Jira isn't asked to move the ticket back" || bad "and Jira isn't asked to move the ticket back"
+[ "$(pick "$T/jb" "('ABC-2' in d['started'], 'ABC-2' in d['workflows'])")" = "(False, False)" ] && ok "the board forgets the start" || bad "the board forgets the start" "$(pick "$T/jb" "(d['started'], d['workflows'])")"
+hasnt "begun.json too" "$TATTY_HOME/jira/begun.json" "ABC-2"
+post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"mode\":\"lite\"}" >"$T/js"
+has "the ticket can be started again" "$T/js" '"ok": true'
+# delete unlinks too
+post /api/feature/delete '{"name":"ABC-3 - Done one","confirm":"ABC-3 - Done one"}' >"$T/j"
+has "a started ticket's feature is deleted" "$T/j" '"ok": true'
+hasnt "and the ticket is unlinked" "$TATTY_HOME/jira/started.tsv" "ABC-3"
+hasnt "and forgotten in begun.json" "$TATTY_HOME/jira/begun.json" "ABC-3"
+
+# the layout: the statuses are the columns, in the person's order
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "open,in review,in progress,closed" ] && ok "a column per status, by category; one nobody is in (a move the tickets offer) is a column to drop on" || bad "a column per status" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
+[ "$(pick "$T/jb" "[t['key'] for t in d['columns'][0]['tasks']]")" = "['ABC-1']" ] && ok "with its tickets" || bad "with its tickets" "$(pick "$T/jb" "d['columns'][0]")"
+[ "$(pick "$T/jb" "(d['columns'][0]['tasks'][0]['id'], d['columns'][0]['tasks'][0]['title'], d['columns'][0]['name'], d['columns'][0]['cat'])")" = "('ABC-1', 'Fix the thing', 'Open', 'todo')" ] && ok "each card has an id and a title, each column its name and category" || bad "card and column fields" "$(pick "$T/jb" "d['columns'][0]")"
+[ "$(pick "$T/jb" "[c['tasks'] for c in d['columns'] if c['id'] == 'in progress']")" = "[[]]" ] && ok "an empty one stays a column" || bad "an empty one stays a column"
+jl() { curl -s -o "$T/jl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/jira/layout"; }
+cols() { pick "$T/jl" "','.join(c['id'] for c in d['columns'])"; }
+[ "$(jl '{"op":"move","status":"in review","dir":1}')" = 200 ] && ok "a column moves right" || bad "a column moves right" "$(cat "$T/jl")"
+[ "$(cols)" = "open,in progress,in review,closed" ] && ok "one place along" || bad "one place along" "$(cols)"
+[ -f "$TATTY_HOME/jira/layout.json" ] && ok "kept in Tatty's home" || bad "kept in Tatty's home"
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "open,in progress,in review,closed" ] && ok "and read back" || bad "and read back"
+[ "$(jl '{"op":"move","status":"open","dir":-1}')" = 200 ] && [ "$(cols)" = "open,in progress,in review,closed" ] && ok "the first column can't move left" || bad "the first column can't move left" "$(cols)"
+[ "$(jl '{"op":"hide","status":"open"}')" = 200 ] && ok "a column is hidden" || bad "a column is hidden"
+[ "$(cols)" = "in progress,in review,closed" ] && ok "no longer a column" || bad "no longer a column" "$(cols)"
+[ "$(pick "$T/jl" "[(h['id'], h['name'], h['count']) for h in d['hidden']]")" = "[('open', 'Open', 1)]" ] && ok "but listed, with its tickets counted" || bad "but listed" "$(pick "$T/jl" "d['hidden']")"
+[ "$(jl '{"op":"move","status":"in progress","dir":-1}')" = 200 ] && [ "$(cols)" = "in progress,in review,closed" ] && ok "a hidden column isn't stepped onto" || bad "a hidden column isn't stepped onto" "$(cols)"
+[ "$(jl '{"op":"show","status":"open"}')" = 200 ] && [ "$(cols)" = "open,in progress,in review,closed" ] && ok "shown again, where it was" || bad "shown again, where it was" "$(cols)"
+[ "$(jl '{"op":"hide","status":"In  Review"}')" = 200 ] && [ "$(cols)" = "open,in progress,closed" ] && ok "a status is found by its name, any case" || bad "a status is found by its name" "$(cols)"
+jl '{"op":"show","status":"in review"}' >/dev/null
+[ "$(jl '{"op":"fly"}')" = 400 ] && ok "an op that isn't one is refused" || bad "an op that isn't one is refused"
+[ "$(jl '{"op":"hide","status":"no such"}')" = 400 ] && ok "so is a column there isn't" || bad "so is a column there isn't"
+[ "$(jl '{"op":"move","status":"open","dir":2}')" = 400 ] && ok "and a step of two" || bad "and a step of two"
+[ "$(jl '{"op":"order","order":["closed","open","nope"]}')" = 200 ] && [ "$(cols)" = "closed,open,in progress,in review" ] && ok "the whole order can be set (the unknown is ignored, the rest keep their order)" || bad "the whole order can be set" "$(cols)"
+jl '{"op":"order","order":["open","in progress","in review","closed"]}' >/dev/null
+# a new status, a status with odd characters, a second ticket in a column
+cat >"$T/jira-board.out" <<'EOJ'
+{"is_error":false,"total_cost_usd":0.02,"usage":{"input_tokens":10},
+ "structured_output":{"site":"https://example.atlassian.net/","cloudId":"c-1","issues":[
+  {"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open","statusCategory":"todo"},
+  {"key":"ABC-2","summary":"Under way","type":"Story","status":"QA","statusCategory":"inprogress"},
+  {"key":"ABC-3","summary":"Done one","type":"Task","status":"Closed","statusCategory":"done"},
+  {"key":"ABC-4","summary":"Another","type":"Task","status":"Closed","statusCategory":"done"},
+  {"key":"ABC-5","summary":"Odd","type":"Task","status":"Won't Fix/../x <b>","statusCategory":"done"}]}}
+EOJ
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "open,in progress,in review,closed,qa,won't fix/../x <b>" ] && ok "a status seen for the first time comes after the ones placed, by category; one nobody is in now stays" || bad "a new status comes last" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
+[ "$(jl "{\"op\":\"hide\",\"status\":\"Won't Fix/../x <b>\"}")" = 200 ] && [ "$(pick "$T/jl" "[h['id'] for h in d['hidden']]")" = "[\"won't fix/../x <b>\"]" ] && ok "a status of odd characters is only a name" || bad "an odd status" "$(pick "$T/jl" "d['hidden']")"
+[ ! -e "$TATTY_HOME/jira/x <b>" ] && [ ! -e "$TATTY_HOME/x <b>" ] && ok "never a path" || bad "never a path"
+# cards: where one is dropped is kept
+[ "$(pick "$T/jb" "[t['key'] for t in [c for c in d['columns'] if c['id'] == 'closed'][0]['tasks']]")" = "['ABC-3', 'ABC-4']" ] && ok "a column's cards are in Jira's order" || bad "a column's cards are in Jira's order"
+rjl() { curl -s -o "$T/jl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/jira/reorder"; }
+ccards() { pick "$T/jl" "[t['key'] for t in [c for c in d['columns'] if c['id'] == '$1'][0]['tasks']]"; }
+[ "$(rjl '{"key":"ABC-4","to":"closed","before":"ABC-3"}')" = 200 ] && [ "$(ccards closed)" = "['ABC-4', 'ABC-3']" ] && ok "a card dropped before another" || bad "a card dropped before another" "$(ccards closed)"
+[ "$(rjl '{"key":"ABC-4","to":"closed","before":null}')" = 200 ] && [ "$(ccards closed)" = "['ABC-3', 'ABC-4']" ] && ok "or last" || bad "or last" "$(ccards closed)"
+rjl '{"key":"ABC-4","to":"closed","before":"ABC-3"}' >/dev/null
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "[t['key'] for t in [c for c in d['columns'] if c['id'] == 'closed'][0]['tasks']]")" = "['ABC-4', 'ABC-3']" ] && ok "kept across a refresh" || bad "kept across a refresh"
+[ "$(pick "$T/jb" "[h['id'] for h in d['hidden']]")" = "[\"won't fix/../x <b>\"]" ] && ok "as is what was hidden" || bad "hidden across a refresh" "$(pick "$T/jb" "d['hidden']")"
+[ "$(rjl '{"key":"ABC-1","to":"qa","before":null}')" = 200 ] && [ "$(pick "$T/jl" "d['layout']['cards']['qa']")" = "['ABC-2', 'ABC-1']" ] && ok "a card dropped in another column takes its place there for when it gets there" || bad "a card dropped in another column" "$(pick "$T/jl" "d['layout']['cards']")"
+[ "$(rjl '{"key":"ZZZ-1","to":"qa","before":null}')" = 400 ] && ok "only a ticket of the board is placed" || bad "only a ticket of the board is placed"
+[ "$(rjl '{"key":"ABC-1","to":"nowhere","before":null}')" = 400 ] && ok "only in a column of the board" || bad "only in a column of the board"
+[ "$(rjl '{"key":"ABC-1","to":"qa","before":"x"}')" = 400 ] && ok "before is a ticket or null" || bad "before is a ticket or null"
+# a card dropped on a status nobody is in: the ticket's own move to it
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-1","to":"In Progress"}' >/dev/null; jira_wait
+has "goes by the move the ticket offers" "$T/jira-move.args" "transition id 7"
+[ "$(pick "$T/jb" "[c['id'] for c in d['columns'] if 'ABC-1' in [t['key'] for t in c['tasks']]]")" = "['in progress']" ] && ok "and the card is in that column" || bad "and the card is in that column" "$(pick "$T/jb" "[(c['id'], [t['key'] for t in c['tasks']]) for c in d['columns']]")"
+# a layout file that won't read is ignored
+printf '{ nope' >"$TATTY_HOME/jira/layout.json"
+[ "$(code -H "X-TT-Token: $K" "$U/api/jira")" = 200 ] && ok "a layout file that won't read doesn't break the board" || bad "a broken layout file breaks the board"
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "in progress,qa,closed,won't fix/../x <b>" ] && ok "the columns are then the tickets' own, by category" || bad "the tickets' own columns" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
+rm -f "$TATTY_HOME/jira/layout.json"
 
 echo "# task boards"
 [ "$(code "$U/static/tasks.js")" = 200 ] && ok "tasks.js served" || bad "tasks.js served"

@@ -64,6 +64,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
+          "taskboard.js": "text/javascript", "taskboard.css": "text/css",
           "tasks.js": "text/javascript", "tasks.css": "text/css",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
@@ -289,9 +290,9 @@ class State:
 # An unknown or mistyped key is ignored, so a hand-edited file can't break Tatty.
 SETTINGS_DEFAULTS = {"autoUpdate": True,
                      # the Jira board (see "Jira" below): what it shows, through which MCP server and model,
-                     # on which site when the sign-in reaches several, and the project last started in
+                     # on which site when the sign-in reaches several, and the project and work folder last started in
                      "jiraJql": "assignee = currentUser() AND sprint in openSprints() ORDER BY Rank",
-                     "jiraServer": "atlassian", "jiraModel": "haiku", "jiraSite": "", "jiraProject": "",
+                     "jiraServer": "atlassian", "jiraModel": "haiku", "jiraSite": "", "jiraProject": "", "jiraWorkdir": "",
                      # chats (see "chats" below): who writes a side chat's summary of what it is about
                      # (tatty: Tatty itself, no tokens; model: a small model), and the model chats use ("" Claude's own)
                      "chatSummary": "tatty", "chatModel": "",
@@ -1296,6 +1297,7 @@ def feature_summary(state, folder, detail=False):
                     "liteStep": lite_step(folder, out["route"], out["phase"], out["text"])})
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
+        out["ticket"] = next(iter(jira_for_feature(folder.name)), "")  # the Jira ticket it was started from
         out["ticketOnly"] = [p.name for p in folder.iterdir()] == [f"{folder.name} - Ticket.md"]
     return out
 
@@ -2438,8 +2440,22 @@ def save_doc(p, text, expected):
 # the tools the job names, and loads only that one server (its entry copied from
 # Claude Code's own config, which keeps its sign-in). Each run spends tokens, so
 # what it brings back is kept under <home>/jira and fetched again only on a click.
-# The one change Tatty makes in Jira is moving a ticket to In Progress, when a
-# workflow is started from it. See docs/toolbox-contract.md, "Jira".
+# The one change Tatty makes in Jira is moving a ticket to a status, when a workflow
+# is started from it (In Progress), its request is opened (In Review) or the person
+# picks one (the Move to row, or a card dropped on a column). See docs/toolbox-contract.md, "Jira".
+#
+# The columns are the statuses (Jira's, not Tatty's), laid out as the person likes:
+# <home>/jira/layout.json keeps the statuses Tatty has seen (so a status no ticket is
+# in now is still a column to drop on), the order of the columns, which are hidden,
+# and the order of the cards in a column. All of it local; nothing in Jira changes.
+#   GET  /api/jira          jira_view: the board as fetched, plus columns / hidden / layout / workflows
+#   POST /api/jira/layout   {op: "move", status: <column id>, dir: -1|1} | {op: "hide"|"show", status} |
+#                           {op: "order", order: [<column id>...]}  -> 200, jira_view
+#   POST /api/jira/reorder  {key: <ticket>, to: <column id>, before: <ticket>|null}: where a card sits in
+#                           a column (before=null: last). The move to another status is /api/jira/move;
+#                           this only records the place the card is dropped at  -> 200, jira_view
+#   POST /api/jira/start    {key, feature?, name?, project, workdir?, mode?: "full"|"lite", model?, effort?}
+# A column's id is its status name, lower-cased with its spaces squeezed (jira_status_key).
 
 JIRA_KEY = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 JIRA_HOST = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
@@ -2512,10 +2528,187 @@ def jira_started():
     return out
 
 
-def jira_mark_started(key, name):
-    rows = {**jira_started(), key: name}
+JIRA_LINK_LOCK = threading.Lock()  # started.tsv and begun.json change together
+
+
+def jira_write_started(rows):
     jira_dir().mkdir(parents=True, exist_ok=True)
     (jira_dir() / "started.tsv").write_text("".join(f"{k}\t{v}\n" for k, v in sorted(rows.items())), encoding="utf-8")
+
+
+def jira_begun():
+    """ticket key -> {mode, from}: how its workflow was started (full or lite) and the status the ticket was
+    in (<home>/jira/begun.json), so the card says which route it is on before the documents do."""
+    got = read_json(jira_dir() / "begun.json", {})
+    return {k: v for k, v in got.items() if isinstance(v, dict)}
+
+
+def jira_mark_started(key, name, mode="full", was=""):
+    with JIRA_LINK_LOCK:
+        jira_write_started({**jira_started(), key: name})
+        write_json(jira_dir() / "begun.json", {**jira_begun(), key: {"mode": mode, "from": was}})
+
+
+def jira_for_feature(name):
+    """The tickets a feature was started from (normally one)."""
+    return [k for k, v in jira_started().items() if v == name]
+
+
+def jira_unstart(name):
+    """Undo Start for a feature that is cancelled or deleted: its tickets are unlinked, so each can be started again.
+    Jira is not touched (a ticket that moved to In Progress stays there: moving it back would cost a headless run).
+    Returns the keys."""
+    with JIRA_LINK_LOCK:
+        rows = jira_started()
+        keys = [k for k, v in rows.items() if v == name]
+        if keys:
+            jira_write_started({k: v for k, v in rows.items() if v != name})
+            begun = jira_begun()
+            if any(begun.pop(k, None) is not None for k in keys):
+                write_json(jira_dir() / "begun.json", begun)
+    return keys
+
+
+# ---- the layout of the columns
+
+JIRA_LAYOUT_LOCK = threading.Lock()
+JIRA_LAYOUT_CAP = 300  # statuses, and cards in one column's order: a hand-edited file can't grow without end
+
+
+def jira_status_key(name):
+    """A column's id: its status name, any case, spaces squeezed."""
+    return " ".join(str(name or "").lower().split()) or "no status"
+
+
+def jira_layout():
+    """<home>/jira/layout.json as {statuses: {key: {name, cat}}, order: [key], hidden: [key], cards: {key: [ticket]}};
+    anything wrongly shaped in the file is ignored (it is Tatty's own, but it may be edited by hand)."""
+    got = read_json(jira_dir() / "layout.json", {})
+
+    def keys(v):
+        return [x for x in v if isinstance(x, str)][:JIRA_LAYOUT_CAP] if isinstance(v, list) else []
+
+    statuses = {}
+    for k, v in (got.get("statuses") if isinstance(got.get("statuses"), dict) else {}).items():
+        if isinstance(v, dict) and isinstance(v.get("name"), str) and len(statuses) < JIRA_LAYOUT_CAP:
+            statuses[k] = {"name": v["name"][:60], "cat": v.get("cat") if v.get("cat") in JIRA_CATEGORIES else "todo"}
+    cards = got.get("cards") if isinstance(got.get("cards"), dict) else {}
+    return {"statuses": statuses, "order": keys(got.get("order")), "hidden": keys(got.get("hidden")),
+            "cards": {k: keys(v) for k, v in list(cards.items())[:JIRA_LAYOUT_CAP]}}
+
+
+def jira_layout_edit(change):
+    """Read the layout, let `change(layout)` alter it, keep it if it is different. Returns the layout."""
+    with JIRA_LAYOUT_LOCK:
+        layout = jira_layout()
+        before = json.dumps(layout, sort_keys=True)
+        change(layout)
+        if json.dumps(layout, sort_keys=True) != before:
+            write_json(jira_dir() / "layout.json", layout)
+        return layout
+
+
+def jira_remember(found, override=False):
+    """Note statuses (name, category) as columns: the board's own (override: its category is Jira's) and the
+    ones a ticket's moves go to (only added if new, their category a guess), so a status nobody is in yet
+    can still be dropped on."""
+    def add(layout):
+        for name, cat in found:
+            name = text_of(name, 60)
+            k = jira_status_key(name)
+            if name and (override or k not in layout["statuses"]) and (k in layout["statuses"] or len(layout["statuses"]) < JIRA_LAYOUT_CAP):
+                layout["statuses"][k] = {"name": name, "cat": cat if cat in JIRA_CATEGORIES else jira_category(name)}
+    jira_layout_edit(add)
+
+
+def jira_all_columns(board, layout):
+    """Every column, hidden or not, as {id, name, cat, tasks}: a status of a ticket on the board or one remembered,
+    in the order the layout gives, then the rest by category (to do, under way, done) and, within one, as first
+    seen (the tickets' rank when the board was first read). Its tasks are the tickets in it, with an id and a title as a card has: the layout's
+    card order first, then the board's."""
+    found = {}
+    for i in board.get("issues", []):
+        k = jira_status_key(i.get("status"))
+        found.setdefault(k, {"id": k, "name": i.get("status") or "No status", "cat": i.get("statusCategory") or "todo", "tasks": []})
+        found[k]["tasks"].append({**i, "id": i["key"], "title": i.get("summary", "")})
+    for k, v in layout["statuses"].items():
+        found.setdefault(k, {"id": k, "name": v["name"], "cat": v["cat"], "tasks": []})
+    ordered = [k for k in dict.fromkeys(layout["order"]) if k in found]
+    seen = {k: n for n, k in enumerate(layout["statuses"])}  # when each status was first seen: a column doesn't jump as tickets move
+    rest = sorted((k for k in found if k not in ordered), key=lambda k: (JIRA_CATEGORIES.index(found[k]["cat"]), seen.get(k, len(seen))))
+    for c in found.values():
+        place = layout["cards"].get(c["id"], [])
+        c["tasks"].sort(key=lambda t: place.index(t["key"]) if t["key"] in place else len(place))  # (stable: board order within the rest)
+    return [found[k] for k in ordered + rest]
+
+
+def jira_columns(board, layout):
+    """(columns, hidden) for the page: the columns on show, and [{id, name, count}] for the hidden ones."""
+    every = jira_all_columns(board, layout)
+    return ([c for c in every if c["id"] not in layout["hidden"]],
+            [{"id": c["id"], "name": c["name"], "count": len(c["tasks"])} for c in every if c["id"] in layout["hidden"]])
+
+
+def jira_column_ids(layout):
+    """(the ids of the columns on show, of the hidden ones), each in the order the layout gives."""
+    cols, hidden = jira_columns(jira_board(), layout)
+    return [c["id"] for c in cols], [h["id"] for h in hidden]
+
+
+def jira_layout_op(body):
+    """Change the layout as the page asked. (http code, error or None)"""
+    op, status = str(body.get("op") or ""), jira_status_key(body.get("status")) if body.get("status") else ""
+    if op not in ("move", "hide", "show", "order"):
+        return 400, {"error": "op is move, hide, show or order."}
+    if op != "order" and status not in sum(jira_column_ids(jira_layout()), []):
+        return 400, {"error": "That isn't a column of the board."}
+    if op == "move" and body.get("dir") not in (-1, 1):
+        return 400, {"error": "dir is -1 (left) or 1 (right)."}
+
+    def change(layout):
+        hid = jira_column_ids(layout)[1]
+        # the order in full: a hidden column keeps its place in it, whatever is moved
+        full = [c["id"] for c in jira_all_columns(jira_board(), layout)]
+        if op == "order":
+            asked = [jira_status_key(k) for k in body.get("order") or [] if isinstance(k, str)]
+            layout["order"] = [k for k in dict.fromkeys(asked) if k in full] + [k for k in full if k not in asked]
+        elif op == "move":
+            i = full.index(status)
+            j = i + body["dir"]
+            while 0 <= j < len(full) and full[j] in hid:  # one place along among the columns on show
+                j += body["dir"]
+            if 0 <= j < len(full):
+                full[i], full[j] = full[j], full[i]
+                layout["order"] = full
+        elif op == "hide" and status not in layout["hidden"]:
+            layout["hidden"].append(status)
+        elif op == "show":
+            layout["hidden"] = [k for k in layout["hidden"] if k != status]
+    jira_layout_edit(change)
+    return 200, None
+
+
+def jira_reorder(body):
+    """Record where a card was dropped in a column (before another ticket, or last). (http code, error or None)"""
+    key, to, before = str(body.get("key") or "").strip(), jira_status_key(body.get("to")), body.get("before")
+    if not any(i["key"] == key for i in jira_board()["issues"]):
+        return 400, {"error": "That ticket isn't on the board."}
+    if before is not None and not (isinstance(before, str) and JIRA_KEY.match(before)):
+        return 400, {"error": "before is a ticket key, or null for last."}
+    if to not in sum(jira_column_ids(jira_layout()), []):
+        return 400, {"error": "That isn't a column of the board."}
+
+    def change(layout):
+        for k in layout["cards"]:
+            layout["cards"][k] = [x for x in layout["cards"][k] if x != key]
+        col = next((c for c in jira_columns(jira_board(), layout)[0] if c["id"] == to), None)
+        # the column as it is now, so the cards already in it keep the places they have
+        order = [t["key"] for t in col["tasks"] if t["key"] != key] if col else [x for x in layout["cards"].get(to, []) if x != key]
+        order.insert(order.index(before) if before in order else len(order), key)
+        layout["cards"] = {k: v for k, v in layout["cards"].items() if v}
+        layout["cards"][to] = order[:JIRA_LAYOUT_CAP]
+    jira_layout_edit(change)
+    return 200, None
 
 
 def claude_user_config():
@@ -2651,6 +2844,7 @@ def jira_refresh_work(state):
     write_json(jira_dir() / "board.json", {**fresh, "site": fresh["site"] or board.get("site", ""),
                                            "cloudId": fresh["cloudId"] or board.get("cloudId", ""),
                                            "jql": jql, "fetchedAt": time.time(), "usage": usage, "error": ""})
+    jira_remember([(i["status"], i["statusCategory"]) for i in fresh["issues"] if i["status"]], override=True)
     return {"ok": True, "count": len(fresh["issues"])}
 
 
@@ -2662,7 +2856,9 @@ def jira_issue_work(state, key):
     got, usage, error = jira_claude(state, prompt, JIRA_ISSUE_TOOLS, JIRA_ISSUE_SCHEMA)
     if error:
         return {"ok": False, "key": key, "error": error}
-    write_json(jira_dir() / "issues" / f"{key}.json", {**clean_issue(key, got), "usage": usage})
+    detail = clean_issue(key, got)
+    write_json(jira_dir() / "issues" / f"{key}.json", {**detail, "usage": usage})
+    jira_remember([(t["to"], "") for t in detail["transitions"] if t["to"]])  # where it can go: columns to drop on
     return {"ok": True, "key": key}
 
 
@@ -2672,6 +2868,7 @@ def jira_set_status(key, status, category):
         if i["key"] == key:
             i["status"], i["statusCategory"] = status, category
     write_json(jira_dir() / "board.json", board)
+    jira_remember([(status, category)])
 
 
 def jira_category(status):
@@ -2690,19 +2887,20 @@ def jira_find_move(key, target):
             or next((t for t in moves if t.get("name", "").lower() == target), None))
 
 
-def jira_move_work(state, key, target=IN_PROGRESS):
+def jira_move_work(state, key, target=IN_PROGRESS, picked=False):
     """Move the ticket to `target` (In Progress when starting a workflow, In Review when its request is opened,
-    or any status the person picked from the ticket's own moves), by the transition its detail named. To
-    In Progress, a ticket already under way is left alone; to anything, so is one already there. A move the
-    cached list doesn't have is looked for once more in Jira's current list."""
+    or any status the person picked from the ticket's own moves or by dragging it), by the transition its detail
+    named. To In Progress by itself (`picked` false: starting a workflow), a ticket already under way is left
+    alone; to anything, so is one already there. A move the cached list doesn't have is looked for once more
+    in Jira's current list."""
     target = " ".join(str(target or IN_PROGRESS).split()).lower()
     issue = next((i for i in jira_board()["issues"] if i["key"] == key), {})
-    if target == IN_PROGRESS and issue.get("statusCategory", "todo") != "todo":
+    if target == IN_PROGRESS and not picked and issue.get("statusCategory", "todo") != "todo":
         return {"ok": True, "key": key, "moved": False, "message": f"{key} is already {issue.get('status') or 'started'}."}
     if issue.get("status", "").lower() == target:
         return {"ok": True, "key": key, "moved": False, "message": f"{key} is already {issue.get('status')}."}
     move = jira_find_move(key, target)
-    if not move and target != IN_PROGRESS:
+    if not move and (picked or target != IN_PROGRESS):
         jira_issue_work(state, key)  # the cached list may be old
         move = jira_find_move(key, target)
     if not move or not move.get("id"):
@@ -2740,12 +2938,34 @@ def jira_job(state, job, work, *args):
     return True
 
 
+def jira_workflows(state, board, started):
+    """feature_workflow for each started ticket still of interest: on the board and not in a done status.
+    ticket key -> the same shape a Tasks board gives (route, phase, stage, session...)."""
+    from concurrent.futures import ThreadPoolExecutor
+    open_ = {i["key"] for i in board["issues"] if i.get("statusCategory") != "done"}
+    begun = jira_begun()
+    live = [(k, name) for k, name in started.items() if k in open_]
+    if not live:
+        return {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        found = list(pool.map(lambda x: feature_workflow(state, x[1], begun.get(x[0], {})), live))
+    return {k: w for (k, _), w in zip(live, found)}
+
+
 def jira_view(state):
+    """The board as fetched, and what the page lays out from it: `columns` ([{id, name, cat, tasks}], in the person's
+    order, the hidden ones left out), `hidden` ([{id, name, count}]), `layout` ({order, hidden, cards}), `workflows`
+    (a started ticket's workflow, as a Tasks board has them), and the project and work folder last started in."""
     s = load_settings()
     with state.cond:
         since = dict(state.jira_busy)
-    return {**jira_board(), "busy": sorted(since), "since": since, "started": jira_started(), "jql": s["jiraJql"], "project": s["jiraProject"],
-            "cached": sorted(p.stem for p in (jira_dir() / "issues").glob("*.json"))}
+    board, started, layout = jira_board(), jira_started(), jira_layout()
+    columns, hidden = jira_columns(board, layout)
+    return {**board, "busy": sorted(since), "since": since, "started": started, "jql": s["jiraJql"], "project": s["jiraProject"],
+            "workdir": s["jiraWorkdir"], "cached": sorted(p.stem for p in (jira_dir() / "issues").glob("*.json")),
+            "columns": columns, "hidden": hidden,
+            "layout": {"order": layout["order"], "hidden": layout["hidden"], "cards": layout["cards"]},
+            "workflows": jira_workflows(state, board, started)}
 
 
 def jira_name(issue):
@@ -2754,8 +2974,9 @@ def jira_name(issue):
     return f"{issue['key']} - {summary}"[:70].rstrip(" .-") if summary else issue["key"]
 
 
-def ticket_md(issue, d):
-    """The ticket as a document in the feature folder: what the workflow plans from."""
+def ticket_md(issue, d, work=""):
+    """The ticket as a document in the feature folder: what the workflow plans from. `work` is the
+    work-folder note, when the work is done in another folder (as task_ticket_md has it)."""
     parent = issue.get("parent") or {}
     meta = [("Type", d.get("type") or issue.get("type")), ("Status", d.get("status") or issue.get("status")),
             ("Priority", d.get("priority") or issue.get("priority")), ("Assignee", d.get("assignee")),
@@ -2772,13 +2993,18 @@ def ticket_md(issue, d):
     if d.get("links"):
         out += ["## Linked issues", ""] + [f"- {link.get('relation') or 'relates to'}: {link['key']} {link.get('summary', '')}".rstrip()
                                            for link in d["links"]] + [""]
+    if work:
+        out += ["## Working folder", "", work, ""]
     return "\n".join(out)
 
 
 def jira_start(state, body):
     """Start a workflow from a ticket: a feature folder with the ticket in it as a
-    document, a session started on it (the workflow's own first command), and the
-    ticket moved to In Progress once the session is open. (http code, answer)."""
+    document, a session started on it (the workflow's own first command, or the lite
+    route's with mode "lite"), run in `project` with the work done in `workdir` if
+    that is another folder, and the ticket moved to In Progress once the session
+    is open. The ticket says which feature it became before the session starts, so
+    a second Start is refused. (http code, answer)."""
     key = str(body.get("key", "")).strip()
     issue = next((i for i in jira_board()["issues"] if i["key"] == key), None) if JIRA_KEY.match(key) else None
     if not issue:
@@ -2786,30 +3012,26 @@ def jira_start(state, body):
     detail = jira_issue(key)
     if not detail:
         return 400, {"error": "Load the ticket first: the document is written from it."}
-    project = str(body.get("project") or "").strip()
-    if not project or not os.path.isdir(project):
-        return 400, {"error": "Choose the project (repo) the session should run in."}
-    why = model_fields_error(state, body)
-    if why:
-        return 400, {"error": why}
-    code, made = new_feature(str(body.get("name") or "").strip() or jira_name(issue))
+    if jira_started().get(key):
+        return 409, {"error": "A workflow was started from this ticket already.", "feature": jira_started()[key]}
+    got, refused = card_start_target(state, body)
+    if refused:
+        return refused
+    project, workdir, lite = got
+    code, made = new_feature(str(body.get("feature") or body.get("name") or "").strip() or jira_name(issue))
     if code != 200:
         return code, made
     folder = feature_dir(made["name"])
     doc = folder / f"{made['name']} - Ticket.md"
-    doc.write_text(ticket_md(issue, detail), encoding="utf-8")
-    jira_mark_started(key, made["name"])
-    save_settings({"jiraProject": Path(project).as_posix()})
+    note = work_folder_note(project, workdir) if workdir else ""
+    doc.write_text(ticket_md(issue, detail, note), encoding="utf-8")
+    jira_mark_started(key, made["name"], "lite" if lite else "full", issue.get("status", ""))
+    save_settings({"jiraProject": Path(project).as_posix(), "jiraWorkdir": Path(workdir).as_posix() if workdir else ""})
     # A folder holding only the ticket is one the workflow hasn't started: its own
     # first step names a <placeholder> for what the feature is. That is the
     # ticket, said the way tt-workflow itself hands a new folder to planning.
-    rows = workflow_rows(state, folder)
-    first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
     said = f'the Jira ticket {key} in "{doc.as_posix()}". Folder: {folder.as_posix()}. Prefix: {made["name"]}'
-    values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
-    code, answer = start_session(state, folder, {"row": 0 if first else "workflow", "values": values, "project": project,
-                                                 **model_fields(body)})
-    answer = {**answer, "feature": made["name"], "ticket": doc.name}
+    code, answer = card_start_session(state, folder, made["name"], doc, said, note, project, workdir, lite, body)
     if code == 200 and answer.get("ok"):
         answer["moving"] = jira_job(state, f"move:{key}", jira_move_work, key)
     return code, answer
@@ -4532,10 +4754,10 @@ def task_read(folder):
     return b, by, problems
 
 
-def task_workflow(state, name, begun):
-    """Where a task's workflow stands, for its card and panel: the route (full or
-    lite, from what Start began until the documents say), the toolbox's stage for
-    the feature, and the newest session Start opened for it."""
+def feature_workflow(state, name, begun):
+    """Where the workflow started from a task or a Jira ticket stands, for its card and panel: the route
+    (full or lite, from what Start began until the documents say), the toolbox's stage for the feature,
+    and the newest session Start opened for it."""
     folder = feature_dir(name)
     if not folder:
         return {"feature": name, "missing": True, "archived": archive_dir(name) is not None}
@@ -4549,7 +4771,7 @@ def task_workflow(state, name, begun):
 
 
 def task_workflows(state, b, by):
-    """task_workflow for each task whose workflow is still of interest: started,
+    """feature_workflow for each task whose workflow is still of interest: started,
     and neither in the done column nor completed."""
     from concurrent.futures import ThreadPoolExecutor
     done = task_done_column(b)
@@ -4558,7 +4780,7 @@ def task_workflows(state, b, by):
     if not live:
         return {}
     with ThreadPoolExecutor(max_workers=6) as pool:
-        found = list(pool.map(lambda x: task_workflow(state, x[1], b["begun"].get(x[0], {})), live))
+        found = list(pool.map(lambda x: feature_workflow(state, x[1], b["begun"].get(x[0], {})), live))
     return {tid: w for (tid, _), w in zip(live, found)}
 
 
@@ -5001,6 +5223,43 @@ def work_folder_note(project, workdir):
             f"not from {p}.")
 
 
+def card_start_target(state, body):
+    """What a Start from a task or a Jira ticket asks for, checked, the same for both:
+    ((project, workdir, lite), None), else (None, (http code, answer)). The session runs
+    in `project`; the work is done in `workdir` ("" when it is the project itself)."""
+    project = str(body.get("project") or "").strip()
+    workdir = str(body.get("workdir") or "").strip()
+    if not project or not os.path.isdir(project):
+        return None, (400, {"error": "Choose the project (repo) the session should run in."})
+    if workdir and not os.path.isdir(workdir):
+        return None, (400, {"error": f"No such work folder: {workdir}"})
+    if workdir and is_folder(workdir, Path(project)):
+        workdir = ""  # the same folder: nothing is split
+    why = model_fields_error(state, body)
+    if why:
+        return None, (400, {"error": why})
+    return (project, workdir, body.get("mode") == "lite"), None
+
+
+def card_start_session(state, feature, name, doc, said, note, project, workdir, lite, body):
+    """Start the session on a feature made from a task or a ticket (its folder `feature`, named `name`, with the
+    ticket in `doc`). The folder holds only the ticket, so the workflow's own first step names a <placeholder>
+    for what the feature is: `said` (the work-folder `note` after it, if any), the way tt-workflow itself
+    hands a new folder to planning. Lite has no planning command to fill: its hint is `said`.
+    (http code, answer), the answer with the feature's name and the ticket document's file."""
+    if note:
+        said += f". {note}"
+    if lite:
+        go = {"row": "lite", "hint": said}
+    else:
+        rows = workflow_rows(state, feature)
+        first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
+        values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
+        go = {"row": 0 if first else "workflow", "values": values}
+    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body)})
+    return code, {**answer, "feature": name, "ticket": doc.name}
+
+
 def task_ticket_md(board, d, work=""):
     """The task as a feature's Ticket document: what the workflow plans from. `work`
     is the work-folder note, when the work is done in another folder."""
@@ -5024,9 +5283,6 @@ def task_start(state, folder, body, client):
     says which feature it became before the session starts, so a second Start is
     refused rather than making a second feature."""
     tid = str(body.get("id", "")).strip().upper()
-    project = str(body.get("project") or "").strip()
-    workdir = str(body.get("workdir") or "").strip()
-    lite = body.get("mode") == "lite"
     with task_store(folder)["lock"]:
         b = task_board(folder, strict=True)
         by, _ = task_ids(task_index(folder))
@@ -5036,15 +5292,10 @@ def task_start(state, folder, body, client):
         if b["started"].get(tid) or t["feature"]:
             return 409, {"error": "A workflow was started from this task already.",
                          "feature": b["started"].get(tid) or t["feature"]}
-        if not project or not os.path.isdir(project):
-            return 400, {"error": "Choose the project (repo) the session should run in."}
-        if workdir and not os.path.isdir(workdir):
-            return 400, {"error": f"No such work folder: {workdir}"}
-        if workdir and is_folder(workdir, Path(project)):
-            workdir = ""  # the same folder: nothing is split
-        why = model_fields_error(state, body)
-        if why:
-            return 400, {"error": why}
+        got, refused = card_start_target(state, body)
+        if refused:
+            return refused
+        project, workdir, lite = got
         detail = task_detail(folder, t)
         code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t))
         if code != 200:
@@ -5059,21 +5310,8 @@ def task_start(state, folder, body, client):
         b["options"]["workdir"] = Path(workdir).as_posix() if workdir else ""
         task_rewrite(folder, t, {"Feature": made["name"]})
         task_board_save(folder, b)
-    # The folder holds only the ticket, so the workflow's own first step names a
-    # <placeholder> for what the feature is: the task, said as jira_start says it.
     said = f'the task {tid} in "{doc.as_posix()}". Folder: {feature.as_posix()}. Prefix: {made["name"]}'
-    if note:
-        said += f". {note}"
-    if lite:
-        # the lite route's own entry: no planning command to fill, the task is said after the folder
-        go = {"row": "lite", "hint": said}
-    else:
-        rows = workflow_rows(state, feature)
-        first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
-        values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
-        go = {"row": 0 if first else "workflow", "values": values}
-    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body)})
-    answer = {**answer, "feature": made["name"], "ticket": doc.name}
+    code, answer = card_start_session(state, feature, made["name"], doc, said, note, project, workdir, lite, body)
     if code == 200 and answer.get("ok"):
         with task_store(folder)["lock"]:
             b = task_board(folder, strict=True)
@@ -5152,13 +5390,17 @@ def workflow_cancel(state, name, client=""):
             if r.get("said"):
                 said.append(r["said"])
     answer = {"ok": True, "feature": folder.name, "stopped": len(stopped), "said": " ".join(said), "task": None,
-              "movedTo": "", "folder": "kept"}
+              "ticket": "", "movedTo": "", "folder": "kept"}
     found = task_for_feature(folder.name)
-    if not found:
-        return 200, answer  # not started from a task: only its sessions are ended
-    tfolder, tid = found
-    answer["task"] = {"board": tfolder.name, "id": tid}
-    answer["movedTo"] = task_unstart(state, tfolder, tid, client)
+    tickets = jira_unstart(folder.name)  # (Jira is not touched: a ticket moved to In Progress stays there)
+    if not found and not tickets:
+        return 200, answer  # not started from a task or a ticket: only its sessions are ended
+    if found:
+        tfolder, tid = found
+        answer["task"] = {"board": tfolder.name, "id": tid}
+        answer["movedTo"] = task_unstart(state, tfolder, tid, client)
+    if tickets:
+        answer["ticket"] = tickets[0]
     left = [p.name for p in folder.iterdir()]
     if left == [f"{folder.name} - Ticket.md"]:
         trash = folder.parent / ".deleted"
@@ -5407,7 +5649,7 @@ def feature_delete_preview(state, name, archived):
     return 200, {"name": folder.name, "archived": archived, "path": real.as_posix(), "link": is_link(folder),
                  "files": files, "bytes": size, "refused": delete_refused(folder),
                  "sessions": len([s for s in sessions_of(state, folder) if s["status"] in ("starting", "running", "lost")]),
-                 "task": bool(task_for_feature(folder.name))}
+                 "task": bool(task_for_feature(folder.name)), "ticket": bool(jira_for_feature(folder.name))}
 
 
 def feature_delete(state, name, archived, confirm, client=""):
@@ -5451,10 +5693,7 @@ def feature_delete(state, name, archived, confirm, client=""):
         pass
     if not other:
         forget_feature_records(folder.name)
-        started = jira_started()
-        if any(v == folder.name for v in started.values()):
-            jira_dir().mkdir(parents=True, exist_ok=True)
-            (jira_dir() / "started.tsv").write_text("".join(f"{k}\t{v}\n" for k, v in sorted(started.items()) if v != folder.name), encoding="utf-8")
+        jira_unstart(folder.name)
     archived_set(folder.name, None)
     return 200, answer
 
@@ -6635,6 +6874,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(501, {"error": "no folder dialog on this machine"})
             chosen = pick_folder(st, str(b.get("start", "")), str(b.get("title", ""))[:100])
             return self.send(200, {"path": chosen} if chosen else {"cancelled": True})
+        if path in ("/api/jira/layout", "/api/jira/reorder"):
+            # Only Tatty's own record of how the board is laid out: nothing is asked of Jira.
+            b = b if isinstance(b, dict) else {}
+            code, answer = (jira_layout_op if path == "/api/jira/layout" else jira_reorder)(b)
+            return self.send(code, answer or jira_view(st))
         if path in ("/api/jira/refresh", "/api/jira/issue", "/api/jira/move"):
             # Each spends tokens (a headless claude run), so only ever on a click.
             if path == "/api/jira/refresh":
@@ -6646,7 +6890,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/jira/issue":
                     job, work, args = f"issue:{key}", jira_issue_work, (key,)
                 else:
-                    job, work, args = f"move:{key}", jira_move_work, (key, str(b.get("to") or IN_PROGRESS)[:60])
+                    job, work, args = f"move:{key}", jira_move_work, (key, str(b.get("to") or IN_PROGRESS)[:60], bool(b.get("to")))
             if not jira_job(st, job, work, *args):
                 return self.send(409, {"error": "that is already running"})
             return self.send(202, jira_view(st))
