@@ -157,7 +157,10 @@ to the bundled plugin); see
 toolbox location (after `TATTY_TOOLBOX` and the pointers), `managed_plugin_dirs()` loads its
 `core` and disciplines into sessions with `--plugin-dir` (unless Claude Code has them
 installed), and `update_managed_toolbox` fetches and fast-forwards it when no Claude plugin
-installs exist. LLM tools are set up in the Hub (`llm_setup_view` / `llm_setup_change`,
+installs exist. `update_standalone` updates Tatty itself: the newest GitHub release's
+`Tatty-Setup-<version>.exe` is downloaded, checked, and run with `/VERYSILENT` (hiding
+bootstrap's console); the server writes down its sessions (`cache_sessions`) and stops, and the
+installer's bootstrap starts Tatty again. LLM tools are set up in the Hub (`llm_setup_view` / `llm_setup_change`,
 `/api/llm-setup`): winget install on a thread, sign-in in a terminal window through the tool's
 own login, then `llms.sh connect`. The exes are self-contained single-file `win-x64` publishes
 (`tools/build-installer.ps1`), so the machine needs no .NET. `server.py` takes them

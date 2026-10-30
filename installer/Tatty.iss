@@ -74,13 +74,16 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
   Args: String;
+  Show: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
     WizardForm.StatusLabel.Caption := 'Setting Tatty up (a console window shows the progress)...';
     Args := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\bootstrap.ps1') + '"';
-    // visible, so a prerequisite's installer can ask for what it needs; waits until it is done
-    if not Exec('powershell.exe', Args, '', SW_SHOW, ewWaitUntilTerminated, Code) then
+    // visible, so a prerequisite's installer can ask for what it needs; waits until it is done.
+    // An update from inside Tatty is silent, and so is this.
+    if WizardSilent then Show := SW_HIDE else Show := SW_SHOW;
+    if not Exec('powershell.exe', Args, '', Show, ewWaitUntilTerminated, Code) then
       MsgBox('Tatty''s files are installed, but its setup could not start: ' + SysErrorMessage(Code) + #13#10 +
         'Run "Repair Tatty" from the Start menu to try again.', mbError, MB_OK)
     else if Code <> 0 then

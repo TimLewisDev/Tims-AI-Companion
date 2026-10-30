@@ -102,7 +102,7 @@ Copilot CLI or Codex: installed, signed in and connected there, only if you want
 features) and make your first project.
 
 Run **Repair Tatty** from the Start menu to repeat the setup (it skips what is
-already done, and updates the toolbox). The installer is not code-signed yet, so Windows SmartScreen may ask
+already done, and updates the toolbox). Later updates need no new download: Tatty updates itself and the toolbox from inside the app. The installer is not code-signed yet, so Windows SmartScreen may ask
 you to confirm it. See [docs/install.md](docs/install.md) for the details.
 
 ### From inside Claude Code

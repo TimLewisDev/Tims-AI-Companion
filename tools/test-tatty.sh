@@ -487,6 +487,62 @@ has "connect goes through the toolbox" "$T/f" "connect: 200 connected copilot"
 has "connecting needs the toolbox" "$T/f" "connect without toolbox: 501"
 has "a failed install says what happened" "$T/f" "failed install: error True"
 
+echo "# the installer's Tatty updates itself from a release"
+mkdir -p "$T/su" "$T/suapp"
+$PY - "$SRV" "$T/su" "$T/suapp" "$BASHW" >"$T/f" 2>&1 <<'EOF'
+import hashlib, importlib.util, json, os, pathlib, sys, time
+base, app = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+os.environ.pop("TATTY_TOOLBOX", None); os.environ["LOCALAPPDATA"] = str(app)
+os.environ["TT_PLUGINS_HOME"] = str(base / "no-pointers"); os.environ["CLAUDE_CONFIG_DIR"] = str(base / "claude")
+rel = base / "latest.json"
+os.environ["TATTY_RELEASES_URL"] = rel.as_uri()
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+m.PLUGIN = m.APP / "plugin"; m.plugin_version = lambda: "0.23.0"
+exe = base / "Tatty-Setup-9.9.9.exe"; exe.write_bytes(b"MZ not really an installer")
+def release(version="9.9.9", digest=None, name=None):
+    sha = hashlib.sha256(exe.read_bytes()).hexdigest() if digest is None else digest
+    rel.write_text(json.dumps({"assets": [{"name": name or f"Tatty-Setup-{version}.exe", "browser_download_url": exe.as_uri(),
+                                           "digest": "sha256:" + sha, "size": exe.stat().st_size}]}))
+spawned = []
+m.spawn_installer = lambda p: spawned.append(pathlib.Path(p).name)
+st = m.State(str(base), sys.argv[4])
+print("is the installer's copy:", m.standalone_install())
+release()
+m.update_work(st, False)
+print("look:", st.update["status"], st.update["available"], [(r["name"], r["status"]) for r in st.update["plugins"]], spawned)
+st.chat_runs["x"] = 1
+m.update_work(st, True)
+print("busy:", st.update["status"], "isn't installed yet" in st.update["message"], spawned)
+st.chat_runs.clear()
+release(digest="0" * 64)
+m.update_work(st, True)
+print("bad checksum:", st.update["status"], "checksum" in st.update["message"], spawned, list((m.home() / "updates").glob("*.exe")))
+release(name="Tatty-Setup-evil.exe")
+m.update_work(st, False)
+print("no installer:", st.update["status"])
+release()
+m.update_work(st, True)
+print("apply:", st.update["status"], spawned, [p.name for p in (m.home() / "updates").glob("*")])
+release("0.23.0")
+m.update_work(st, False)
+print("current:", st.update["status"])
+rel.unlink()
+m.update_work(st, False)
+print("offline:", st.update["status"])
+m.PLUGIN = pathlib.Path(sys.argv[1]).resolve().parent.parent
+print("a checkout isn't the installer's copy:", m.standalone_install())
+EOF
+has "the installer's copy is recognised" "$T/f" "is the installer's copy: True"
+has "a newer release is seen" "$T/f" "look: available 9.9.9 [('tatty', 'available')] []"
+has "open work holds the update back" "$T/f" "busy: available True []"
+has "a download that fails its checksum is refused" "$T/f" "bad checksum: error True [] []"
+has "a release with no installer is an error" "$T/f" "no installer: error"
+has "an update downloads and starts the installer" "$T/f" "apply: updating ['Tatty-Setup-9.9.9.exe'] ['Tatty-Setup-9.9.9.exe']"
+has "the same version is current" "$T/f" "current: current"
+has "no network is an error, not a crash" "$T/f" "offline: error"
+has "a checkout is not updated that way" "$T/f" "a checkout isn't the installer's copy: False"
+
 [ "$TOOLBOX" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
 
 echo "# toolbox views"

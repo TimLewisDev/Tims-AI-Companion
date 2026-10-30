@@ -56,7 +56,7 @@ function drawSettings() {
       el("label", { class: "opt-row" }, auto,
         el("span", {}, el("strong", {}, "Keep Tatty and the toolbox up to date automatically"),
           el("br"), el("span", { class: "dim small" },
-            "Looks when Tatty starts and every few hours, and installs newer versions of Tatty and the toolbox plugins. Tatty's takes effect the next time you start it; the toolbox's in Claude sessions you start after."))),
+            "Looks when Tatty starts and every few hours, and installs newer versions of Tatty and the toolbox. The installed Tatty restarts itself to update, once no session or job is running; otherwise Tatty's takes effect the next time you start it. The toolbox's, in Claude sessions you start after."))),
       (u.plugins || []).length ? el("table", { class: "plugins", id: "update-plugins" },
         el("tr", {}, el("th", {}, "Plugin"), el("th", {}, "Installed"), el("th", {}, "Latest"), el("th", {})),
         (u.plugins || []).map(r => el("tr", { class: r.status }, el("td", {}, r.name), el("td", {}, r.installed || "?"),
