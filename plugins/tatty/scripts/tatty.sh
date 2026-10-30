@@ -10,7 +10,12 @@ usage() {
 	cat >&2 <<'EOF'
 usage: tatty.sh open [--no-browser]     start Tatty (if needed) and show it; prints the URL
        tatty.sh boot [--project DIR]    what the Desktop shortcut runs: the server and the tray app
-                                        (looks for a newer Tatty first, and installs it with auto-update on)
+                                        (looks for a newer Tatty first, and installs it with auto-update on);
+                                        opens on the Hub unless --project (or --no-hub) is given
+       tatty.sh hub list                the Hub's projects (* marks the open one)
+       tatty.sh hub add [--name N] [--root DIR] [--repo DIR] [--open]
+                                        add a project (makes its folders); --open makes it the active one
+       tatty.sh hub open <id|name>      make a project the active one
        tatty.sh install [--pin]         Desktop and Start menu shortcuts for Tatty (Windows); they run the
                                         installed Tatty, or with --pin this checkout (no update look)
        tatty.sh uninstall               take them away
@@ -69,7 +74,7 @@ cmd=$1; shift
 case $cmd in
 open)
 	exec $PY "$(winpath "$SERVER")" open --cwd "$(winpath "$PWD")" --bash "$(winpath "${BASH:-$(command -v bash)}")" "$@" ;;
-boot | install)
+boot | install | hub)
 	exec $PY "$(winpath "$SERVER")" "$cmd" --bash "$(winpath "${BASH:-$(command -v bash)}")" "$@" ;;
 close) exec $PY "$(winpath "$SERVER")" stop ;;
 uninstall) exec $PY "$(winpath "$SERVER")" uninstall ;;

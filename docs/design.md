@@ -62,7 +62,7 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   - It is built from a copy of its sources into `%LOCALAPPDATA%\Tatty`, never
     inside the plugin's folder.
 - **`app/launcher` and `assets/`:** Tatty as a desktop program (Windows).
-  - `Tatty.exe` is a thin WinExe, built by `/tatty install` into
+  - `Tatty.exe` is a thin WinExe, built by `/tatty install` (or the installer's prebuilt one, used when there is no .NET SDK) into
     `%LOCALAPPDATA%\Tatty\launcher`, that the Desktop and Start menu shortcuts run. It
     finds the plugin and runs `tatty.sh boot` hidden, so a plugin update never
     breaks the shortcut. The plugin is the one Claude Code has installed
@@ -119,6 +119,42 @@ from the toolbox, and [history.md](history.md) for how it was worked out.
   status, show, ask, answer, listen). Any agent that can run a shell command can use it.
   **`scripts/tatty-root.sh`:** the root setting. It never accepts a root
   inside the Claude folder, whichever way the path is spelled.
+
+## The Hub and projects
+
+A **project** is a Tatty root folder (`features`, `design`, `tasks`, `archive`) and an
+optional default code repo. The registry is `<home>/hub.json`
+(`{version, projects: [{id, name, root, repo, created, lastOpened, legacy?}]}`), kept by
+`hub_load` and changed through `hub_change` (`/api/hub`, and `tatty.sh hub`).
+
+- **The active project is `<home>/root`**, the single source of truth that
+  `tatty-root.sh` and the toolbox's skills already read (or `TATTY_ROOT`, which fixes
+  it and skips the Hub). Opening a project writes `root` and moves the server to it;
+  `hub_load` registers whatever `root` already names, as `legacy` when `hub.json`
+  didn't exist yet.
+- **Records are per project** (`project_home()`): the legacy project keeps its
+  session models, branches and archive records in `<home>`, so nothing is lost on
+  upgrade; the others use `<home>/projects/<id>/`. Stores keyed by a full-path hash
+  (boards, diffs, the tasks index, `projects.tsv`) were per folder already; chats are
+  global, keyed by the project folder.
+- **Forgetting** a project removes its entry, never its files, and is refused (409)
+  for the active one. `hub_root_refused` rejects relative roots and any inside Claude's
+  config folder.
+- **The page** (`web/hub.js`, `hub.css`): `boot` posts `/api/hub {action: "show"}`,
+  which makes the Hub *pending*; the page then opens on it instead of the mode
+  chooser, and **Open** clears the pending state. The tray menu's **Switch
+  project…** (`App.xaml.cs`) posts the same. The page ignores stale SSE replays.
+  `--no-hub` and `--project` skip it.
+
+## The installer
+
+`installer/Tatty.iss` (Inno Setup, per user) copies the prebuilt exes to
+`%LOCALAPPDATA%\Tatty\prebuilt` and runs `installer/bootstrap.ps1`; see
+[install.md](install.md). The exes are self-contained single-file `win-x64` publishes
+(`tools/build-installer.ps1`), so the machine needs no .NET. `server.py` takes them
+only when it can't build: `build_or_prebuilt` runs `build_exe` first (a present SDK
+rebuilds from the plugin's own, possibly newer, sources) and falls back to
+`use_prebuilt`, which copies the exe to where the version's build would be.
 
 ## Tatty's own life
 

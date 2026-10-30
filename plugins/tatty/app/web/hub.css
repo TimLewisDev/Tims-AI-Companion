@@ -1,0 +1,17 @@
+/* The Hub (hub.js): the page Tatty opens on, a card per project. */
+.hub { max-width: 1100px; margin: 0 auto; padding: 8px 16px 32px; }
+.hub-grid { margin-bottom: 20px; }
+.hub-card { display: flex; flex-direction: column; gap: 6px; }
+.hub-card .actions { margin-top: auto; padding-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.hub-card.hub-active { border-color: var(--accent, #3b9bd6); }
+.hub-card.hub-missing { opacity: 0.8; }
+.hub-path { overflow-wrap: anywhere; font-size: 0.85em; }
+.hub-new, .hub-form { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+.hub-new label, .hub-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; }
+.hub-new input, .hub-form input { flex: 1; min-width: 0; margin: 0; }
+.hub-new h3, .hub-new p { margin: 0; }
+.hub-new .row, .hub-form .row { display: flex; gap: 8px; align-items: center; padding: 0; margin: 0; }
+.hub-new .row button, .hub-form .row button, .hub-path button { white-space: nowrap; flex: none; }
+.hub-new > button[type=submit] { align-self: stretch; }
+/* The Hub is the whole window: no pages to go to until a project is open. */
+body.hub-open .pnav, body.hub-open .mode-switch { visibility: hidden; }

@@ -272,6 +272,110 @@ has "a name and title that disagree are a problem" "$T/tf" "its name says T-0001
 has "so is a file with no ID" "$T/tf" "no ID: ['has no task ID in its name or its title']"
 has "a title makes a file name" "$T/tf" "file name: T-0003 - What A quick one 2 draft.md"
 
+echo "# the Hub"
+# Several projects, each its own Tatty root; its own TATTY_HOME so the checks below keep the root unset.
+HH="$T/hubhome"; mkdir -p "$HH"
+wpath() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
+mkdir -p "$T/hubwork/alpha-repo"; HW=$(wpath "$T/hubwork")
+hub() { env TATTY_HOME="$HH" bash "$W" hub "$@"; }
+expect "hub: nothing listed yet" 0 hub list
+[ ! -s "$T/out" ] && ok "an empty list" || bad "an empty list" "$(cat "$T/out")"
+expect "hub: add a project" 0 hub add --name Alpha --root "$HW/alpha" --repo "$HW/alpha-repo"
+[ -d "$HW/alpha/features" ] && ok "adding makes the features folder" || bad "adding makes the features folder"
+[ ! -s "$HH/root" ] && ok "adding doesn't switch the root" || bad "adding doesn't switch the root"
+expect "hub: add and open" 0 hub add --name Beta --root "$HW/beta" --open
+has "the root is the opened project's" "$HH/root" "beta"
+expect "hub: list" 0 hub list
+has "both are listed" "$T/out" "Alpha"
+has "the open one is starred" "$T/out" "* "
+expect "hub: open by name" 0 hub open alpha
+has "the root follows" "$HH/root" "alpha"
+expect "hub: unknown project" 2 hub open nope
+expect "hub: a relative root refused" 2 hub add --name Bad --root some/where
+expect "hub: the Claude folder refused" 2 hub add --name Bad --root "$(wpath "$CLAUDE_CONFIG_DIR")/proj"
+expect "hub: a missing repo refused" 2 hub add --name Bad --root "$HW/bad" --repo "$HW/no-such-repo"
+expect "hub: a missing folder with --no-create" 2 hub add --name Bad --root "$HW/never" --no-create
+# The same server code over HTTP: show, forget, per-project records.
+env TATTY_HOME="$HH" bash "$W" open --no-browser >/dev/null 2>&1
+HP=$($PY -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['port'], d['token'])" "$HH/server.json")
+HU="http://127.0.0.1:${HP% *}"; HK=${HP#* }
+hget() { curl -s -H "X-TT-Token: $HK" "$HU$1"; }
+hpost() { curl -s -H "X-TT-Token: $HK" -H 'Content-Type: application/json' -d "$2" "$HU$1"; }
+hget /api/hub >"$T/j"
+pick "$T/j" "','.join(sorted(p['name'] for p in d['projects']))" >"$T/f"
+has "the page's list names the projects" "$T/f" "Alpha,Beta"
+pick "$T/j" "[p['name'] for p in d['projects'] if p['id'] == d['active']][0]" >"$T/f"
+has "the active one is the root's" "$T/f" "Alpha"
+hget /api/status >"$T/st"
+has "status says the Hub isn't pending" "$T/st" '"pending": false'
+hpost /api/hub '{"action":"show"}' >"$T/j"
+hget /api/status >"$T/st"
+has "show makes the Hub pending" "$T/st" '"pending": true'
+BETA=$(hget /api/hub | $PY -c "import json,sys; print([p['id'] for p in json.load(sys.stdin)['projects'] if p['name']=='Beta'][0])")
+ALPHA=$(hget /api/hub | $PY -c "import json,sys; print([p['id'] for p in json.load(sys.stdin)['projects'] if p['name']=='Alpha'][0])")
+[ "$(code -X POST -H "X-TT-Token: $HK" -H 'Content-Type: application/json' -d "{\"action\":\"forget\",\"id\":\"$ALPHA\"}" "$HU/api/hub")" = 409 ] &&
+	ok "the open project can't be forgotten" || bad "the open project can't be forgotten"
+hpost /api/hub "{\"action\":\"open\",\"id\":\"$BETA\"}" >"$T/j"
+has "opening answers with the project" "$T/j" '"name": "Beta"'
+hget /api/status >"$T/st"
+has "opening ends the pending Hub" "$T/st" '"pending": false'
+has "the root moved" "$HH/root" "beta"
+hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"name\":\"Alpha 2\"}" >"$T/j"
+has "a project is renamed" "$T/j" '"name": "Alpha 2"'
+hpost /api/hub "{\"action\":\"forget\",\"id\":\"$ALPHA\"}" >"$T/j"
+hasnt "a forgotten project is gone from the list" "$T/j" "Alpha 2"
+[ -d "$HW/alpha/features" ] && ok "forgetting deletes no folder" || bad "forgetting deletes no folder"
+hpost /api/hub '{"action":"nope"}' >"$T/j"
+has "an unknown action is refused" "$T/j" "action:"
+env TATTY_HOME="$HH" bash "$W" close >/dev/null 2>&1
+# Records kept by feature name belong to a project: the first project keeps them in the home, the others in their own folder.
+$PY - "$SRV" "$T/hubiso" "$HW" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, sys
+home = pathlib.Path(sys.argv[2]); os.environ["TATTY_HOME"] = str(home); os.environ["CLAUDE_CONFIG_DIR"] = str(home / "claude")
+os.environ.pop("TATTY_ROOT", None)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+base = pathlib.Path(sys.argv[3])
+(home).mkdir(parents=True, exist_ok=True)
+(base / "first" / "features").mkdir(parents=True, exist_ok=True)
+(home / "root").write_text(str(base / "first"), encoding="utf-8")   # Tatty's root before the Hub
+print("migrated:", m.hub_load()["projects"][0].get("legacy"), m.project_home() == home)
+m.save_branch("Same", {"repo": "r1", "branch": "one"})
+second = m.hub_register(str(base / "second"))
+(base / "second" / "features").mkdir(parents=True, exist_ok=True)
+(home / "root").write_text(str(base / "second"), encoding="utf-8")
+print("own folder:", m.project_home() == home / "projects" / second["id"])
+print("not seen:", m.branch_records().get("same"))
+m.save_branch("Same", {"repo": "r2", "branch": "two"})
+m.archived_set("Same", 5.0)
+(home / "root").write_text(str(base / "first"), encoding="utf-8")
+print("first keeps its own:", m.branch_records()["same"]["branch"], m.archived_at())
+(home / "root").write_text(str(base / "second"), encoding="utf-8")
+print("second keeps its own:", m.branch_records()["same"]["branch"], m.archived_at())
+EOF
+has "a root from before the Hub is the first project" "$T/f" "migrated: True True"
+has "another project has its own folder" "$T/f" "own folder: True"
+has "it doesn't see the first one's record" "$T/f" "not seen: None"
+has "the first keeps its record" "$T/f" "first keeps its own: one {}"
+has "the second keeps its own" "$T/f" "second keeps its own: two {'Same': 5.0}"
+
+echo "# the installer's prebuilt exes"
+mkdir -p "$T/prebuilt" "$T/pbout"
+echo "exe" >"$T/prebuilt/TtCompanion.exe"
+$PY - "$SRV" "$T/prebuilt" "$T/pbout" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, sys
+os.environ["TATTY_PREBUILT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+exe = pathlib.Path(sys.argv[3]) / "bin" / "TtCompanion.exe"
+print("found:", m.prebuilt_dir() == pathlib.Path(sys.argv[2]))
+print("copied:", m.use_prebuilt("TtCompanion.exe", exe), exe.is_file())
+print("missing one:", m.use_prebuilt("Nope.exe", exe.with_name("Nope.exe")))
+EOF
+has "the prebuilt folder is found" "$T/f" "found: True"
+has "a prebuilt exe is put where it is expected" "$T/f" "copied: True True"
+has "a missing prebuilt exe is refused" "$T/f" "missing one: False"
+
 echo "# without the toolbox"
 $PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
 import importlib.util, os, sys

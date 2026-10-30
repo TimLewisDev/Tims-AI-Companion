@@ -1,5 +1,55 @@
 # Installing Tatty
 
+## The installer (Windows)
+
+`Tatty-Setup-<version>.exe`, from the repository's
+[releases](https://github.com/TimLewisDev/Tims-AI-Companion/releases), installs Tatty for
+the current user with no admin rights and no `/tatty install` from inside an LLM.
+
+What it asks: which LLM tools (**Claude Code**, and/or **GitHub Copilot CLI**), which
+toolbox disciplines (Engineering, Design, Production), and an optional first project
+(name, Tatty folder, code repository). Then it copies Tatty's prebuilt tray app and
+launcher to `%LOCALAPPDATA%\Tatty\prebuilt` and runs `bootstrap.ps1` in a visible
+console, which, skipping whatever is already there:
+
+1. installs **Git for Windows**, **Python 3** and the **WebView2 runtime** with winget;
+2. installs **Claude Code** (winget `Anthropic.ClaudeCode`) and signs you in
+   (`claude auth login`), and, if chosen, **Copilot CLI** (`GitHub.Copilot`) and signs
+   you in (`copilot login`);
+3. adds the toolbox's and Tatty's marketplaces and installs `core`, the chosen
+   disciplines and `tatty` (`claude plugin install ... --scope user`);
+4. for Copilot, runs the toolbox's `llms.sh connect copilot`;
+5. runs `tatty.sh install` (the Desktop and Start menu shortcuts; the tray app and
+   launcher are the prebuilt ones, so **no .NET SDK is needed**);
+6. adds your first project to the Hub.
+
+Each step that fails is logged and the rest still run; the log is
+`%LOCALAPPDATA%\Tatty\setup.log`. **Repair Tatty** (Start menu) runs it again with the
+same choices, and `bootstrap.ps1 -DryRun` shows what it would do. Uninstalling removes
+the program, the shortcuts and the prebuilt exes; Tatty's own state (the Hub's list, your
+projects' folders and chats) and the plugins stay.
+
+The installer isn't code-signed, so SmartScreen may warn about it. To build it yourself:
+`tools\build-installer.ps1` (needs the .NET 9 SDK and Inno Setup 6). The release workflow
+(`.github/workflows/release-installer.yml`) builds and attaches it for a `v*` tag.
+
+The prebuilt exes are the ones built from this version's sources. When the .NET SDK is
+present, Tatty still rebuilds from the plugin's sources (they may be newer than the
+installer); with no SDK, it uses the prebuilt ones.
+
+## The Hub
+
+Tatty opens on the **Hub**, a page listing your projects. Each project is a Tatty folder
+(`features`, `design`, `tasks`, `archive`) and, optionally, a default code repository.
+Opening one makes its folder Tatty's root (`<home>\root`, which the toolbox's skills read),
+and then the usual window opens. **Switch project…** in the tray menu returns to the Hub.
+The list is `<home>\hub.json`; forgetting a project removes only its entry. The project
+Tatty used before the Hub existed is listed as the first one and keeps its records where
+they were; every other project keeps its session models, branches and archive records
+under `<home>\projects\<id>`. `TATTY_ROOT`, or `tatty.sh boot --no-hub` or `--project`,
+skip the Hub. From a shell: `tatty.sh hub list`, `hub add --name N [--root DIR]
+[--repo DIR] [--open]`, `hub open <id|name>`.
+
 ## What Tatty needs
 
 - **The TT toolbox,** installed (its `core` and `engineering` plugins). Tatty
@@ -12,9 +62,10 @@
   `TATTY_PYTHON` names another interpreter.
 - **Bash.** Git Bash on Windows, as for the toolbox.
 - **On Windows, for the tray app:**
-  - the .NET 9 SDK (Tatty builds the tray app with `dotnet build` the first
-    time);
-  - the WebView2 runtime, which is part of Windows 11.
+  - the WebView2 runtime, which is part of Windows 11;
+  - the .NET 9 SDK, only to build the tray app from source (Tatty does it with
+    `dotnet build` the first time); the installer ships prebuilt exes, which need
+    no SDK.
 
   Without them, or anywhere other than Windows, Tatty opens in a browser tab
   instead. `TATTY_UI=browser` forces that.
