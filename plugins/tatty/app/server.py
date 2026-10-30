@@ -567,8 +567,8 @@ def restart_server(state):
 
 def update_managed_toolbox(state, apply):
     """The standalone install has no Claude Code plugins to update: the toolbox is a git clone
-    the installer made, so it is fetched, and fast-forwarded when `apply`. Tatty itself comes
-    with a new installer."""
+    the installer made, so it is fetched, and fast-forwarded when `apply`. Tatty itself is
+    updated by update_standalone."""
     repo = managed_toolbox()
     set_update(state, status="checking", message="")
 
@@ -597,9 +597,138 @@ def update_managed_toolbox(state, apply):
     return set_update(state, status="current", checked=time.time(), plugins=[], message="Everything is up to date.")
 
 
-def update_work(state, apply):
+# The installer's own copy of Tatty updates itself from GitHub's releases: the newest
+# release's Tatty-Setup-<version>.exe is downloaded (and checked against GitHub's
+# running, after writing down the sessions going for the new server to take back. The
+# installer's last step (bootstrap.ps1) starts Tatty again.
+RELEASES_URL = os.environ.get("TATTY_RELEASES_URL") or "https://api.github.com/repos/TimLewisDev/Tims-AI-Companion/releases/latest"
+RELEASE_DOWNLOAD_PREFIX = "https://github.com/TimLewisDev/Tims-AI-Companion/releases/download/"
+SETUP_ASSET = re.compile(r"Tatty-Setup-(\d+\.\d+\.\d+)\.exe")
+
+
+def standalone_install():
+    """True when this Tatty is the copy the installer made (%LOCALAPPDATA%\\Tatty\\plugin)."""
+    try:
+        return PLUGIN.resolve() == (APP / "plugin").resolve()
+    except OSError:
+        return False
+
+
+def latest_release():
+    """(version, download url, sha256 or "", size or 0) of the installer on GitHub's latest
+    release. OSError (offline, rate limited) or ValueError (nothing usable there) when it can't say."""
+    req = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": "Tatty"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    for a in data.get("assets") or [] if isinstance(data, dict) else []:
+        m = SETUP_ASSET.fullmatch(str(a.get("name", "")))
+        url = str(a.get("browser_download_url", ""))
+        # only ever GitHub's own download address (TATTY_RELEASES_URL is for tests)
+        if m and (url.startswith(RELEASE_DOWNLOAD_PREFIX) or os.environ.get("TATTY_RELEASES_URL")):
+            digest = str(a.get("digest") or "")
+            sha = digest[7:].lower() if digest.startswith("sha256:") else ""
+            return m.group(1), url, sha, int(a.get("size") or 0)
+    raise ValueError("the latest release has no installer")
+
+
+def download_installer(version, url, sha, size):
+    """Fetch the installer into <home>/updates and check it: the file's path. Raises
+    OSError or ValueError, leaving nothing half-written."""
+    dest_dir = home() / "updates"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"Tatty-Setup-{version}.exe"
+    part = dest.with_suffix(".part")
+    digest = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Tatty"}), timeout=60) as r, open(part, "wb") as f:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                f.write(chunk)
+                digest.update(chunk)
+        if sha and digest.hexdigest() != sha:
+            raise ValueError("the download doesn't match the checksum GitHub gives for it")
+        if size and part.stat().st_size != size:
+            raise ValueError("the download is the wrong size")
+        os.replace(part, dest)
+    finally:
+        part.unlink(missing_ok=True)
+    for old in dest_dir.glob("Tatty-Setup-*.exe"):
+        if old != dest:
+            old.unlink(missing_ok=True)
+    return dest
+
+
+def spawn_installer(exe):
+    """Run the downloaded installer silently, on its own, so it outlives this server."""
+    argv = [str(exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-",
+            f"/LOG={home() / 'update-setup.log'}"]
+    kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
+    base = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(argv, creationflags=base | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
+    except OSError:
+        subprocess.Popen(argv, creationflags=base, **kw)
+
+
+def update_standalone(state, apply, auto=False):
+    """The installer's copy has no Claude Code plugins to update: the toolbox is a git clone
+    (see update_managed_toolbox) and Tatty is the newest release's installer. With `apply`, a
+    newer Tatty is downloaded and installed, and Tatty restarts. `auto` (the background
+    look, not a click) waits until nothing is going, and a click until nothing is asked or running."""
+    toolbox = (managed_toolbox() / ".git").exists()
+    if toolbox:
+        update_managed_toolbox(state, apply)
+    tool = dict(state.update) if toolbox else {"status": "current", "message": ""}
+    now = plugin_version()
+    try:
+        version, url, sha, size = latest_release()
+    except (OSError, ValueError) as e:
+        if toolbox:
+            return  # the toolbox's answer stands: an unreachable GitHub is no news
+        return set_update(state, status="error", checked=time.time(), message=f"Couldn't look for a newer Tatty: {e}")
+    newer = version_key(version) > version_key(now)
+    row = {"name": "tatty", "installed": now, "available": version, "status": "available" if newer else "current"}
+    kept = tool["message"] if tool["status"] in ("ready", "available", "error") else ""
+    if not newer:
+        return set_update(state, status=tool["status"], installed=now, available=version, plugins=[row], checked=time.time(),
+                          message=kept or "Everything is up to date.")
+    said = f"Tatty {version} is available."
+    if apply:
+        needs = restart_needs(state)
+        waiting = ""
+        if needs["openQuestions"] or needs["busy"]:
+            waiting = "answer or finish what is open first"
+        elif auto and needs["sessions"]:
+            waiting = "a session is going"
+        if waiting:
+            said += f" It isn't installed yet ({waiting})."
+        else:
+            set_update(state, status="updating", installed=now, available=version, plugins=[row],
+                       message=f"Downloading Tatty {version}...")
+            try:
+                exe = download_installer(version, url, sha, size)
+            except (OSError, ValueError) as e:
+                return set_update(state, status="error", checked=time.time(), message=f"Couldn't download Tatty {version}: {e}")
+            cache_sessions(state)
+            try:
+                spawn_installer(exe)
+            except OSError as e:
+                return set_update(state, status="error", checked=time.time(), message=f"Couldn't start the installer: {e}")
+            set_update(state, status="updating", checked=time.time(),
+                       message=f"Installing Tatty {version}. Tatty closes and opens again by itself.")
+            if state.httpd:
+                def stop():
+                    time.sleep(2)  # the page hears the message first
+                    state.httpd.shutdown()
+                threading.Thread(target=stop, daemon=True).start()
+            return
+    return set_update(state, status="error" if tool["status"] == "error" else "available", installed=now, available=version,
+                      plugins=[row], checked=time.time(), message=" ".join(m for m in (kept, said) if m))
+
+
+def update_work(state, apply, auto=False):
     """Look for newer versions of Tatty and the toolbox plugins and, when `apply`,
-    install them. The result is in state.update: status (the most pressing of the
+    install them (`auto`: the background look, which is gentler about restarting
+    Tatty; see update_standalone). The result is in state.update: status (the most pressing of the
     plugins': error, ready, available, else current; or checkout when there is
     nothing installed to update), the top-level installed/available of Tatty
     itself, and `plugins`, a row for each."""
@@ -607,6 +736,8 @@ def update_work(state, apply):
         return  # one at a time
     try:
         targets = install_records()
+        if not targets and standalone_install():
+            return update_standalone(state, apply, auto)
         if not targets and (managed_toolbox() / ".git").exists():
             return update_managed_toolbox(state, apply)
         if not targets:
@@ -671,7 +802,7 @@ def watch_updates(state):
     time.sleep(UPDATE_FIRST)
     while True:
         if load_settings()["autoUpdate"]:
-            update_work(state, apply=True)
+            update_work(state, apply=True, auto=True)
         time.sleep(UPDATE_EVERY)
 
 
@@ -7758,6 +7889,8 @@ def build_or_prebuilt(sources, build, exe, name, what):
     if build_exe(sources, build, exe, what):
         return True
     if exe.exists():
+        if build_stale(sources, exe):  # a newer installer's exe over an older one; if it is running, the old one stays
+            use_prebuilt(name, exe)
         return True
     return use_prebuilt(name, exe)
 
@@ -8007,7 +8140,7 @@ def install(bash, pin=False):
         return 2
     write_boot_json(bash, pin=pin)
     if pin and PLUGIN.resolve() == (APP / "plugin").resolve():
-        print(f"The launcher runs the copy of Tatty the installer made ({PLUGIN.as_posix()}). A newer Tatty comes with a newer installer; the toolbox updates itself.")
+        print(f"The launcher runs the copy of Tatty the installer made ({PLUGIN.as_posix()}). Tatty and the toolbox update themselves from inside the app.")
     elif pin:
         print(f"The launcher is pinned to this checkout ({PLUGIN.as_posix()}): it will not use the installed Tatty or look for updates.")
     elif installed_tatty_root():

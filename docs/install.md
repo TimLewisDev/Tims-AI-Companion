@@ -25,8 +25,7 @@ On a first run it is step one of "Get started", next to making the first project
 load the toolbox from the clone with `--plugin-dir`, so no Claude Code plugin install is
 needed; Claude Code's own plugins, if installed, are used instead.
 
-Tatty itself updates with a newer installer; the toolbox updates through git (Tatty's update
-check fetches it, and applies it when auto-update is on).
+Tatty and the toolbox update themselves from inside the app (see below).
 
 Each step that fails is logged and the rest still run; the log is
 `%LOCALAPPDATA%\Tatty\setup.log`. **Repair Tatty** (Start menu) runs it again, and
@@ -41,6 +40,22 @@ The installer isn't code-signed, so SmartScreen may warn about it. To build it y
 The prebuilt exes are the ones built from this version's sources. When the .NET SDK is
 present, Tatty still rebuilds from the plugin's sources (they may be newer than the
 installer); with no SDK, it uses the prebuilt ones.
+
+## Updating
+
+Nothing to download by hand. Tatty looks for updates a little after it starts and every few
+hours (Settings, **Keep Tatty and the toolbox up to date automatically**, on by default; or
+**Check for updates** / **Update now** there):
+
+- **The toolbox** (`%LOCALAPPDATA%\Tatty\toolbox`) is fetched and fast-forwarded with git.
+  Claude sessions started afterwards use it.
+- **Tatty** is compared with the newest GitHub release. A newer one is downloaded
+  (`Tatty-Setup-<version>.exe`, checked against GitHub's sha256 of it), and run silently: it
+  replaces Tatty's copy, and Tatty closes and opens again by itself, keeping the sessions going.
+  In the background this waits until no session, question or job is open; **Update now** only
+  waits for questions and jobs. The installer's log is `<Tatty home>\update-setup.log`.
+
+The Start menu's **Repair Tatty** is still there if a setup step failed.
 
 ## The Hub
 

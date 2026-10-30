@@ -24,7 +24,12 @@ Check 'parses' ($errors.Count -eq 0) ($errors | Out-String)
 
 function Dry([string[]]$extra) {
     $log = Join-Path ([IO.Path]::GetTempPath()) "tatty-installer-test-$([guid]::NewGuid().ToString('N')).log"
-    $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $bootstrap -DryRun -LogFile $log @extra 2>&1 | Out-String
+    # an empty LOCALAPPDATA, so what is already installed on this machine doesn't change the answer
+    $fresh = Join-Path ([IO.Path]::GetTempPath()) "tatty-installer-test-$([guid]::NewGuid().ToString('N'))"
+    $was = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $fresh
+    try { $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $bootstrap -DryRun -LogFile $log @extra 2>&1 | Out-String }
+    finally { $env:LOCALAPPDATA = $was }
     $code = $LASTEXITCODE
     $logged = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
     Remove-Item $log -ErrorAction SilentlyContinue
@@ -49,6 +54,8 @@ foreach ($rel in 'installer\bootstrap.ps1', 'plugins\tatty\assets\tatty.ico') {
 Check 'puts the prebuilt exes where the plugin looks' (($iss -match [regex]::Escape('{localappdata}\Tatty\prebuilt')) -and ($server -match '"Tatty" / "prebuilt"'))
 Check 'ships both exes' (($iss -match 'TtCompanion\.exe') -and ($iss -match 'Source: "[^"]*\\Tatty\.exe"'))
 Check 'runs bootstrap.ps1' ($iss -match 'bootstrap\.ps1')
+Check 'a silent install (an update from inside Tatty) hides the setup console' ($iss -match 'WizardSilent' -and $iss -match 'SW_HIDE')
+Check 'the app updates itself with the release installer, silently' (($server -match 'Tatty-Setup-') -and ($server -match '/VERYSILENT'))
 Check 'removes the shortcuts on uninstall' ($iss -match '--remove-shortcuts')
 
 Write-Host '# build script and release'
