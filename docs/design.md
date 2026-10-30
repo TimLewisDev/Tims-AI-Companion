@@ -148,9 +148,18 @@ optional default code repo. The registry is `<home>/hub.json`
 
 ## The installer
 
-`installer/Tatty.iss` (Inno Setup, per user) copies the prebuilt exes to
-`%LOCALAPPDATA%\Tatty\prebuilt` and runs `installer/bootstrap.ps1`; see
-[install.md](install.md). The exes are self-contained single-file `win-x64` publishes
+`installer/Tatty.iss` (Inno Setup, per user, no wizard pages) copies Tatty's plugin folder to
+`%LOCALAPPDATA%\Tatty\plugin` and the prebuilt exes to `%LOCALAPPDATA%\Tatty\prebuilt`, and
+runs `installer/bootstrap.ps1`, which installs the prerequisites, clones the toolbox to
+`%LOCALAPPDATA%\Tatty\toolbox` and runs `tatty.sh install --pin` (the launcher is pinned
+to the bundled plugin); see
+[install.md](install.md). No LLM tool is installed: `managed_toolbox()` makes the clone a
+toolbox location (after `TATTY_TOOLBOX` and the pointers), `managed_plugin_dirs()` loads its
+`core` and disciplines into sessions with `--plugin-dir` (unless Claude Code has them
+installed), and `update_managed_toolbox` fetches and fast-forwards it when no Claude plugin
+installs exist. LLM tools are set up in the Hub (`llm_setup_view` / `llm_setup_change`,
+`/api/llm-setup`): winget install on a thread, sign-in in a terminal window through the tool's
+own login, then `llms.sh connect`. The exes are self-contained single-file `win-x64` publishes
 (`tools/build-installer.ps1`), so the machine needs no .NET. `server.py` takes them
 only when it can't build: `build_or_prebuilt` runs `build_exe` first (a present SDK
 rebuilds from the plugin's own, possibly newer, sources) and falls back to

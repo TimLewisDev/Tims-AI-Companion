@@ -5,7 +5,8 @@
 .DESCRIPTION
   1. Publishes the tray companion and the launcher as self-contained single-file
      win-x64 exes (so the person installing needs no .NET), into dist\prebuilt.
-  2. Compiles installer\Tatty.iss with Inno Setup (ISCC.exe).
+  2. Stages the Tatty plugin folder into dist\plugin (the installer ships it).
+  3. Compiles installer\Tatty.iss with Inno Setup (ISCC.exe).
 
   Needs the .NET 9 SDK and Inno Setup 6 (winget install JRSoftware.InnoSetup).
   -SkipPublish reuses dist\prebuilt; -SkipInstaller stops after the publish.
@@ -49,6 +50,14 @@ if (-not $SkipPublish) {
 foreach ($f in 'TtCompanion.exe', 'Tatty.exe') {
     if (-not (Test-Path (Join-Path $prebuilt $f))) { throw "dist\prebuilt\$f is missing (run without -SkipPublish)" }
 }
+
+# Tatty itself, as the installer copies it (the plugin folder, without caches and build output).
+$staged = Join-Path $dist 'plugin'
+Remove-Item $staged -Recurse -Force -ErrorAction SilentlyContinue
+$src = Join-Path $repo 'plugins\tatty'
+& robocopy $src $staged /E /XD __pycache__ bin obj /XF '*.pyc' /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy failed staging the plugin (exit $LASTEXITCODE)" }
+if (-not (Test-Path (Join-Path $staged 'scripts\tatty.sh'))) { throw 'the staged plugin has no scripts\tatty.sh' }
 if ($SkipInstaller) { return }
 
 $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source

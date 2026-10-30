@@ -109,6 +109,57 @@ function hubNewForm(data, msg) {
   el("button", { type: "submit", class: "primary" }, "Create and open"));
 }
 
+// The "Connect an LLM" card. Tatty needs no LLM to run; the agentic features do. Per tool:
+// install (winget), sign in (the tool's own login in a terminal), then connect.
+async function hubLlmCard(msg, firstRun) {
+  const card = el("div", { class: "card hub-llm", id: "hub-llm" });
+  let timer = 0;
+  const say = (text, bad) => { msg.className = "home-note small" + (bad ? " st missing" : " dim"); msg.textContent = text; };
+  const act = async (action, provider, busy) => {
+    say(busy || "Working…");
+    try {
+      const got = await api("/api/llm-setup", { action, provider });
+      say(got.said || "");
+      draw(got);
+    } catch (e) { say(String(e.message || e), true); }
+  };
+  const row = t => {
+    const job = t.job;
+    const running = job && job.status === "running";
+    const state = t.connected ? el("span", { class: "chip now" }, "connected")
+      : t.installed ? el("span", { class: "dim small" }, t.signedIn === false ? "installed · not signed in" : t.signedIn ? "installed · signed in" : "installed")
+      : el("span", { class: "dim small" }, "not installed");
+    const btn = (label, action, cls, title) => el("button", { type: "button", class: cls || "", id: `llm-${action}-${t.provider}`, title: title || "",
+      onclick: () => act(action, t.provider, label + "…") }, label);
+    const buttons = [];
+    if (!t.installed) buttons.push(running ? el("button", { type: "button", disabled: true, id: `llm-install-${t.provider}` }, "Installing…") : btn("Install", "install", "primary", "Install it with winget"));
+    else if (t.connected) { if (t.provider !== "claude") buttons.push(btn("Disconnect", "disconnect")); }
+    else {
+      if (t.signedIn !== true) buttons.push(btn("Sign in", "signin", t.signedIn === false ? "primary" : "", "Opens a terminal window running the tool's own sign-in"));
+      buttons.push(btn("Connect", "connect", t.signedIn === true ? "primary" : "", "Let Tatty use it"));
+    }
+    return el("div", { class: "hub-llm-row", "data-llm": t.provider },
+      el("strong", {}, t.label), state, el("div", { class: "actions" }, ...buttons),
+      job && job.status === "error" ? el("div", { class: "st missing small hub-llm-note" }, job.message) : "");
+  };
+  function draw(d) {
+    clearTimeout(timer);
+    const running = d.tools.some(t => t.job && t.job.status === "running");
+    if (running && card.isConnected) timer = setTimeout(() => act("check", "", ""), 3000);
+    card.replaceChildren(
+      el("h3", {}, firstRun ? "Step 1: connect an LLM (optional for now)" : "LLMs"),
+      el("p", { class: "dim small" }, "Tatty runs without one. Agentic features (writing designs, running tasks, headless runs) use an LLM tool signed in on this machine. Install one, sign in, then connect it."),
+      !d.toolbox ? el("p", { class: "st missing small" }, "The Tatty toolbox isn't installed, so connecting is unavailable. Run the installer's Repair.") : "",
+      !d.winget ? el("p", { class: "dim small" }, "winget isn't available here: install a tool yourself, then press Check again.") : "",
+      el("div", { class: "hub-llm-list" }, d.tools.map(row)),
+      el("div", { class: "actions" }, el("button", { type: "button", id: "llm-check", onclick: () => act("check", "", "Checking…") }, "Check again")));
+  }
+  try { draw(await api("/api/llm-setup")); } catch (e) {
+    card.replaceChildren(el("p", { class: "st missing small" }, "LLM setup didn't load: " + String(e.message || e)));
+  }
+  return card;
+}
+
 async function renderHub(box) {
   const mine = ++hubDraw;
   const msg = el("p", { class: "home-note small" });
@@ -120,15 +171,19 @@ async function renderHub(box) {
   }
   if (mine !== hubDraw) return;
   hubPending = data.pending;
+  const first = !data.projects.length;
+  const llm = await hubLlmCard(msg, first);
+  if (mine !== hubDraw) return;
   const list = data.projects.length
     ? el("div", { class: "fgrid hub-grid" }, data.projects.map(p => hubProjectCard(p, p.id === data.active, redraw, msg)))
-    : el("div", { class: "card empty-state" }, el("h3", {}, "No projects yet"), el("p", {}, "Make your first one below: Tatty works in a folder per project."));
+    : el("div", { class: "card empty-state" }, el("h3", {}, "Welcome to Tatty"), el("p", {}, "Tatty works in a folder per project. Make your first one below" + " (you can connect an LLM first or later)."));
   box.replaceChildren(
     el("div", { class: "hub" },
       el("div", { class: "home-head" }, el("div", {},
-        el("h2", {}, "Which project are you working on?"),
+        el("h2", {}, first ? "Get started" : "Which project are you working on?"),
         el("div", { class: "dim small" }, data.locked
           ? "TATTY_ROOT fixes Tatty's root folder in this environment, so opening a project here won't change it."
           : "Each project has its own folder of features, designs and tasks."))),
-      list, hubNewForm(data, msg), msg));
+      first ? el("div", {}, list, llm, hubNewForm(data, msg)) : el("div", {}, list, hubNewForm(data, msg), llm),
+      msg));
 }

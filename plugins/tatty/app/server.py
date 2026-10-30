@@ -122,8 +122,17 @@ def installed():
 # at its install; TATTY_TOOLBOX may name a toolbox checkout instead (for
 # development and the tests). See docs/toolbox-contract.md.
 
-TOOLBOX_MISSING = ("Tatty can't find the TT toolbox (its core plugin). Install the toolbox, "
+TOOLBOX_MISSING = ("Tatty can't find the TT toolbox (its core plugin). Run the Tatty installer's Repair, "
                    "or set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout.")
+TOOLBOX_REPO = "https://github.com/TimLewisDev/Tims-AI-Toolbox.git"
+NO_CLAUDE = ("There's no claude command on this machine's PATH, so no LLM is connected. "
+             "Open the Hub (the tray icon's “Switch project…”) and connect Claude Code.")
+
+
+def managed_toolbox():
+    """The toolbox checkout the Tatty installer keeps (%LOCALAPPDATA%\\Tatty\\toolbox): Tatty
+    works from it when no LLM tool has installed the toolbox. It is a git clone, so it can be updated."""
+    return APP / "toolbox"
 
 
 def toolbox_core():
@@ -133,6 +142,7 @@ def toolbox_core():
     if own:
         tries += [Path(own) / "plugins" / "core" / "skills", Path(own) / "skills", Path(own)]
     tries.append(Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins") / "core" / "skills")
+    tries.append(managed_toolbox() / "plugins" / "core" / "skills")
     return next((t for t in tries if (t / "tt-common" / "scripts" / "workflow-state.sh").is_file()), None)
 
 
@@ -195,6 +205,7 @@ def installed_modes():
     if own:
         roots.append(Path(own) / "plugins")  # a toolbox checkout
     roots.append(Path(os.environ.get("TT_PLUGINS_HOME") or config_dir() / "tt-plugins"))
+    roots.append(managed_toolbox() / "plugins")
     have = recorded_modes()
     return [m for m in MODES if m in have or any((r / m).is_dir() for r in roots)]
 
@@ -209,8 +220,20 @@ def install_mode(state, mode):
     for the tests.)"""
     got = run_claude(state, ["plugin", "install", f"{mode}@{toolbox_market()}", "--scope", "user"])
     if got is None:
-        return 2, "There's no claude command on this machine's PATH."
+        return 2, NO_CLAUDE
     return got
+
+
+def managed_plugin_dirs():
+    """--plugin-dir arguments that load the installer's toolbox clone into a session: its core
+    and the disciplines, but not any Claude Code has installed itself (loaded twice they clash)."""
+    root = managed_toolbox() / "plugins"
+    have = {r["name"] for r in install_records()}
+    out = []
+    for name in ("core", *MODES):
+        if name not in have and (root / name / "skills").is_dir():
+            out += ["--plugin-dir", (root / name).as_posix()]
+    return out
 
 
 # ---------------------------------------------------------------- state
@@ -240,6 +263,7 @@ class State:
         self.diff_runs = set()  # (feature folder, task id) pairs whose explanation is being written (see "code changes")
         self.last_activity = time.time()
         self.hub_pending = False  # the Hub is up, waiting for a project to be picked (see "the Hub")
+        self.llm_jobs = {}  # LLM tool -> the install running or last run for it (see "setting up LLM tools")
 
     def touch(self):
         self.last_activity = time.time()
@@ -541,6 +565,38 @@ def restart_server(state):
     return 200, {"ok": True, "kept": kept}
 
 
+def update_managed_toolbox(state, apply):
+    """The standalone install has no Claude Code plugins to update: the toolbox is a git clone
+    the installer made, so it is fetched, and fast-forwarded when `apply`. Tatty itself comes
+    with a new installer."""
+    repo = managed_toolbox()
+    set_update(state, status="checking", message="")
+
+    def git(*args):
+        try:
+            p = quiet_run(state, ["git", "-C", str(repo), *args], timeout=UPDATE_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return 2, str(e)
+        return p.returncode, (p.stdout + p.stderr).strip()
+
+    code, said = git("fetch", "--quiet")
+    if code != 0:
+        return set_update(state, status="error", checked=time.time(), message=f"Couldn't look for a newer toolbox: {said}")
+    behind = git("rev-list", "--count", "HEAD..@{u}")[1]
+    behind = int(behind) if behind.isdigit() else 0
+    if behind and apply:
+        code, said = git("merge", "--ff-only", "@{u}")
+        if code != 0:
+            return set_update(state, status="error", checked=time.time(), message=f"Couldn't update the toolbox: {said}")
+        set_update(state, updatedAt=time.time())  # sessions started before this have the old skills
+        return set_update(state, status="ready", checked=time.time(), plugins=[],
+                          message="The toolbox is updated. Claude sessions started from now on use it.")
+    if behind:
+        return set_update(state, status="available", checked=time.time(), plugins=[],
+                          message="A newer toolbox is available.")
+    return set_update(state, status="current", checked=time.time(), plugins=[], message="Everything is up to date.")
+
+
 def update_work(state, apply):
     """Look for newer versions of Tatty and the toolbox plugins and, when `apply`,
     install them. The result is in state.update: status (the most pressing of the
@@ -551,6 +607,8 @@ def update_work(state, apply):
         return  # one at a time
     try:
         targets = install_records()
+        if not targets and (managed_toolbox() / ".git").exists():
+            return update_managed_toolbox(state, apply)
         if not targets:
             return set_update(state, status="checkout", checked=time.time(), installed="", available="", plugins=[],
                               message="Nothing installed to update: this copy of Tatty runs from a checkout (or was started with --plugin-dir), and the toolbox isn't installed through Claude Code.")
@@ -558,7 +616,7 @@ def update_work(state, apply):
         for market in dict.fromkeys(t["market"] for t in targets):
             got = run_claude(state, ["plugin", "marketplace", "update", market])
             if got is None:
-                return set_update(state, status="error", message="There's no claude command on this machine's PATH.")
+                return set_update(state, status="error", message=NO_CLAUDE)
             if got[0] != 0:
                 return set_update(state, status="error", checked=time.time(), message=f"Couldn't refresh the marketplace {market}: {got[1]}")
         rows, errors = [], []
@@ -806,6 +864,182 @@ def llms_change(state, b):
     if got[0] != 0:
         return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
     return 200, {**llms_view(state), "said": got[1].strip()}
+
+
+# ---------------------------------------------------------------- setting up LLM tools (the Hub)
+# The installer puts only Tatty and the toolbox on the machine: no LLM tool is needed
+# until something agentic runs. The Hub sets them up when a person asks: install one
+# with winget, sign in through the tool's own login in a terminal window (Tatty never
+# sees a credential), then connect it with the toolbox's llms.sh (llms_change above).
+
+LLM_TOOLS = {
+    "claude": {"label": "Claude Code", "exe": "claude", "winget": "Anthropic.ClaudeCode",
+               "login": ["auth", "login"], "status": ["auth", "status"]},
+    "copilot": {"label": "GitHub Copilot CLI", "exe": "copilot", "winget": "GitHub.Copilot",
+                "login": ["login"], "status": None},
+    "codex": {"label": "Codex CLI", "exe": "codex", "winget": "OpenAI.Codex",
+              "login": ["login"], "status": ["login", "status"]},
+}
+WINGET_ALREADY = -1978335189  # installed, and nothing newer
+INSTALL_TIMEOUT = 1200
+
+
+def extend_path():
+    """Add where winget and the tools' own installers put commands to this process's PATH, so
+    a tool installed after Tatty started is found without restarting it."""
+    home_, local, roaming = Path.home(), os.environ.get("LOCALAPPDATA"), os.environ.get("APPDATA")
+    dirs = [home_ / ".local" / "bin"]
+    if local:
+        dirs.append(Path(local) / "Microsoft" / "WinGet" / "Links")
+    if roaming:
+        dirs.append(Path(roaming) / "npm")
+    have = {os.path.normcase(p) for p in os.environ.get("PATH", "").split(os.pathsep)}
+    add = [str(d) for d in dirs if d.is_dir() and os.path.normcase(str(d)) not in have]
+    if add:
+        os.environ["PATH"] = os.pathsep.join([os.environ.get("PATH", ""), *add]).strip(os.pathsep)
+
+
+def llm_exe(provider):
+    """The command of an LLM tool: the toolbox's TT_<TOOL>_BIN (as llms.sh reads it), else PATH's."""
+    import shutil
+    t = LLM_TOOLS[provider]
+    own = os.environ.get(f"TT_{provider.upper()}_BIN") or (os.environ.get("TATTY_CLAUDE") if provider == "claude" else "")
+    return own or shutil.which(t["exe"])
+
+
+def run_tool(state, exe, args, timeout=30):
+    """Run an LLM tool's command quietly (a .sh in bash): the CompletedProcess, or None."""
+    argv = [state.bash, exe] if exe.endswith(".sh") else [exe]
+    try:
+        return quiet_run(state, argv + args, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def llm_signed_in(state, provider, exe):
+    """True when the tool says it is signed in, False when not, None when that can't be told.
+    Copilot has no command for it: its own config file lists the logged-in users."""
+    if provider == "copilot":
+        cfg = Path(os.environ.get("COPILOT_HOME") or Path.home() / ".copilot") / "config.json"
+        try:
+            text = re.sub(r"^\s*//.*$", "", cfg.read_text(encoding="utf-8"), flags=re.M)
+            return bool(json.loads(text).get("loggedInUsers"))
+        except (OSError, ValueError, AttributeError):
+            return False
+    got = run_tool(state, exe, LLM_TOOLS[provider]["status"])
+    return None if got is None else got.returncode == 0
+
+
+def llm_states(state):
+    """What the toolbox says of each tool (connected, available, missing, not installed), or {}."""
+    got = toolbox_run(state, LLMS, ["status", "--tsv"])
+    return {r[0]: r[1] for r in tsv_rows(got[1], 2)} if got and got[0] == 0 else {}
+
+
+def llm_setup_view(state):
+    extend_path()
+    import shutil
+    linked = llm_states(state)
+    rows = []
+    for p, t in LLM_TOOLS.items():
+        exe = llm_exe(p)
+        job = state.llm_jobs.get(p)
+        connected = linked.get(p) in ("connected", "missing")
+        rows.append({"provider": p, "label": t["label"], "installed": bool(exe),
+                     "signedIn": llm_signed_in(state, p, exe) if exe else False,
+                     "connected": connected and bool(exe), "state": linked.get(p, "available" if exe else "not installed"),
+                     "job": dict(job) if job else None})
+    return {"toolbox": toolbox_core() is not None, "winget": bool(os.environ.get("TATTY_WINGET") or shutil.which("winget")),
+            "tools": rows, "anyConnected": any(r["connected"] for r in rows)}
+
+
+def install_tool_work(state, provider, winget):
+    """Install one tool with winget, on a thread; the job says how it went."""
+    job = state.llm_jobs[provider]
+    argv = [state.bash, winget] if winget.endswith(".sh") else [winget]
+    argv += ["install", "--id", LLM_TOOLS[provider]["winget"], "--exact", "--silent",
+             "--accept-package-agreements", "--accept-source-agreements"]
+    try:
+        p = quiet_run(state, argv, timeout=INSTALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        job.update(status="error", message=f"winget didn't finish: {e}")
+        return
+    extend_path()
+    lines = [ln.strip() for ln in (p.stdout + "\n" + p.stderr).splitlines() if ln.strip()]
+    if p.returncode not in (0, WINGET_ALREADY):
+        job.update(status="error", message=f"winget couldn't install {LLM_TOOLS[provider]['label']} (exit {p.returncode}): {lines[-1] if lines else ''}")
+    elif not llm_exe(provider):
+        job.update(status="error", message=f"{LLM_TOOLS[provider]['label']} is installed, but its command isn't on this PATH yet. Restart Tatty.")
+    else:
+        job.update(status="done", message=f"{LLM_TOOLS[provider]['label']} is installed.")
+    state.emit("llm-setup", provider=provider, status=job["status"])
+
+
+def open_in_terminal(state, name, lines, tag):
+    """Show a bash script (the lines) in a new terminal window, left open at the end so its
+    output can be read. (ok, what happened or what to run). TATTY_DRYRUN=1 opens nothing."""
+    import shlex
+    import shutil
+    script = "\n".join(["#!/usr/bin/env bash", f"printf '\\033]0;%s\\007' {shlex.quote(name)}", *lines, "echo",
+                        "read -r -p 'Press Enter to close this window. ' _", ""])
+    if os.environ.get("TATTY_DRYRUN") == "1":
+        return True, "Would open a terminal and run:\n" + "\n".join(lines)
+    out = Path(os.environ.get("TEMP") or os.environ.get("TMPDIR") or "/tmp") / f"tatty-{tag}.sh"
+    out.write_text(script, encoding="utf-8", newline="\n")
+    try:
+        if os.name == "nt":
+            bash = shutil.which(state.bash) or state.bash
+            for argv in (["wt.exe", bash, str(out)], ["cmd.exe", "/c", "start", "", bash, str(out)]):
+                try:
+                    if subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      timeout=20, creationflags=NO_WINDOW).returncode == 0:
+                        return True, "opened a terminal window"
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+        elif sys.platform == "darwin":
+            if subprocess.run(["osascript", "-e", f'tell application "Terminal" to do script "bash {out}"',
+                               "-e", 'tell application "Terminal" to activate'], capture_output=True).returncode == 0:
+                return True, "opened Terminal"
+    except OSError:
+        pass
+    return False, "Open a terminal and run:\n" + "\n".join(lines)
+
+
+def llm_setup_change(state, b):
+    """Install, sign in, connect or disconnect one LLM tool, or just look again: (http code, answer)."""
+    import shlex
+    import shutil
+    action, provider = str(b.get("action", "")), str(b.get("provider", ""))
+    if action == "check":
+        return 200, llm_setup_view(state)
+    if action not in ("install", "signin", "connect", "disconnect") or provider not in LLM_TOOLS:
+        return 400, {"error": "action: install, signin, connect, disconnect or check; provider: claude, copilot or codex"}
+    extend_path()
+    t, exe = LLM_TOOLS[provider], llm_exe(provider)
+    if action == "install":
+        if exe:
+            return 409, {"error": f"{t['label']} is already installed."}
+        winget = os.environ.get("TATTY_WINGET") or shutil.which("winget")
+        if not winget:
+            return 501, {"error": f"winget isn't available here, so Tatty can't install {t['label']}. Install it yourself, then choose Check again."}
+        with state.cond:
+            if (state.llm_jobs.get(provider) or {}).get("status") == "running":
+                return 409, {"error": f"{t['label']} is being installed."}
+            state.llm_jobs[provider] = {"status": "running", "message": f"Installing {t['label']}…", "started": time.time()}
+        threading.Thread(target=install_tool_work, args=(state, provider, winget), daemon=True).start()
+        return 202, llm_setup_view(state)
+    if not exe and action != "disconnect":
+        return 409, {"error": f"{t['label']} isn't installed yet: install it first."}
+    if action == "signin":
+        ok, said = open_in_terminal(state, f"Sign in to {t['label']}",
+                                    [f"{shlex.quote(Path(exe).as_posix())} " + " ".join(t["login"])], f"signin-{provider}")
+        return (200 if ok else 500), ({**llm_setup_view(state), "said": said} if ok else {"error": said})
+    if not toolbox_core():
+        return 501, {"error": TOOLBOX_MISSING}
+    code, got = llms_change(state, {"action": action, "provider": provider})
+    if code != 200:
+        return code, got
+    return 200, {**llm_setup_view(state), "said": got.get("said", "")}
 
 
 def model_config_view(state):
@@ -2433,8 +2667,8 @@ def launch(state, project, name, prompt, tag, workdir="", flags=()):
     import shutil
     claude = shutil.which("claude")
     if not claude:
-        return False, "There's no claude command on this machine's PATH."
-    args = [*flags] + ([] if installed() else ["--plugin-dir", PLUGIN.as_posix()])
+        return False, NO_CLAUDE
+    args = [*flags] + ([] if installed() else ["--plugin-dir", PLUGIN.as_posix()]) + managed_plugin_dirs()
     if workdir:
         args += ["--add-dir", Path(workdir).as_posix()]
     exports = {"TATTY_SESSION": tag}
@@ -2986,7 +3220,7 @@ def jira_claude(state, prompt, tools, schema):
     server = settings["jiraServer"]
     claude = os.environ.get("TATTY_CLAUDE") or shutil.which("claude")
     if not claude:
-        return None, None, "There's no claude command on this machine's PATH."
+        return None, None, NO_CLAUDE
     argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
     argv += ["-p", prompt, "--system-prompt", JIRA_SYSTEM, "--model", settings["jiraModel"],
              "--output-format", "json", "--json-schema", json.dumps(schema), "--tools", "",
@@ -3570,6 +3804,7 @@ def toolbox_plugin(name):
                 tries.append(Path(e["installPath"]))
     except (OSError, ValueError, AttributeError, TypeError):
         pass
+    tries.append(managed_toolbox() / "plugins" / name)
     return next((t for t in tries if (t / "skills").is_dir()), None)
 
 
@@ -3816,7 +4051,7 @@ def stories_change(state, folder, b):
     elif action == "add":
         note = " ".join(str(b.get("note", "")).split())[:MAX_NOTE]
         if note and not claude_path():
-            return 501, {"error": "There's no claude command on this machine's PATH, so Tatty can't write it for you."}
+            return 501, {"error": NO_CLAUDE + " Without one Tatty can't write it for you."}
         try:
             text = story_placeholder(note) if note else spec_text(b)
         except ValueError as e:
@@ -4102,7 +4337,7 @@ def start_stories_run(state, folder, b):
         return 501, {"error": DESIGN_MISSING}
     claude = claude_path()
     if not claude:
-        return 501, {"error": "There's no claude command on this machine's PATH."}
+        return 501, {"error": NO_CLAUDE}
     intake = design_intake(folder, doc)
     sid, note = str(b.get("id", "")), str(b.get("note", "")).strip()
     run_dir = home() / "runs" / secrets.token_hex(4)
@@ -6592,7 +6827,7 @@ def chat_say(state, b):
         return 400, {"error": f"Say something (at most {MAX_MESSAGE} characters)."}
     claude = claude_path()
     if not claude:
-        return 501, {"error": "There's no claude command on this machine's PATH."}
+        return 501, {"error": NO_CLAUDE}
     if not os.path.isdir(c["project"]):
         return 400, {"error": f"The chat's project isn't there any more: {c['project']}"}
     with state.cond:
@@ -6845,6 +7080,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
         if path == "/api/llms":
             return self.send(200, llms_view(st))
+        if path == "/api/llm-setup":
+            return self.send(200, llm_setup_view(st))
         if path == "/api/model-config":
             return self.send(200, model_config_view(st))
         if path == "/api/features":
@@ -7087,6 +7324,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, root_info())
         if path == "/api/hub":
             code, answer = hub_change(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path == "/api/llm-setup":
+            code, answer = llm_setup_change(st, b if isinstance(b, dict) else {})
             return self.send(code, answer)
         if path == "/api/settings":
             save_settings(b if isinstance(b, dict) else {})
@@ -7766,7 +8006,9 @@ def install(bash, pin=False):
         print(f"install: couldn't build the launcher (it needs the .NET 9 SDK); see {home() / 'server.log'}", file=sys.stderr)
         return 2
     write_boot_json(bash, pin=pin)
-    if pin:
+    if pin and PLUGIN.resolve() == (APP / "plugin").resolve():
+        print(f"The launcher runs the copy of Tatty the installer made ({PLUGIN.as_posix()}). A newer Tatty comes with a newer installer; the toolbox updates itself.")
+    elif pin:
         print(f"The launcher is pinned to this checkout ({PLUGIN.as_posix()}): it will not use the installed Tatty or look for updates.")
     elif installed_tatty_root():
         print(f"The launcher runs the installed Tatty ({installed_tatty_root().as_posix()}) and looks for an update each time it starts.")
@@ -7858,6 +8100,7 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         usage()
     cmd, args = argv[0], argv[1:]
+    extend_path()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     cwd = opt(args, "--cwd", os.getcwd())
