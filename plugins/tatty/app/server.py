@@ -59,10 +59,12 @@ PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a ch
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import reviewdoc  # noqa: E402  the Review Suggestions document
+import compact_chat  # noqa: E402  the compact window's chat, one per project
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "models.js": "text/javascript", "hub.js": "text/javascript", "hub.css": "text/css",
-          "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
+                    "compact-chat.css": "text/css",
+                    "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
           "taskboard.js": "text/javascript", "taskboard.css": "text/css",
@@ -259,6 +261,7 @@ class State:
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
         self.chat_lock = threading.Lock()  # one change to a chat's file at a time
+        self.compact = compact_chat.CompactChat(self, compact_hooks(self))  # see "the compact chat"
         self.diff_lock = threading.Lock()  # one change to a feature's file of code changes at a time
         self.diff_runs = set()  # (feature folder, task id) pairs whose explanation is being written (see "code changes")
         self.last_activity = time.time()
@@ -524,7 +527,7 @@ def restart_needs(state):
                 going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
                               "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
         asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
-        busy = len(state.chat_runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0)
+        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0)
     return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
             "busy": busy, "cached": sessions_cache_file().exists()}
 
@@ -7083,6 +7086,20 @@ def chat_close(state, cid):
     return 200, {"ok": True}
 
 
+# ---------------------------------------------------------------- the compact chat
+# The compact window's chat (compact_chat.py) is one more conversation, one per
+# project, kept apart from the chats above: it shares how a turn is run (the same
+# read-only command) but none of their records, runs or events.
+
+
+def compact_hooks(state):
+    return compact_chat.Hooks(
+        home=home, claude_path=claude_path,
+        argv=lambda sid: chat_argv(state, claude_path(), {"claudeSession": sid, "feature": ""}),
+        git_bash_path=lambda: git_bash_path(state), kill_tree=kill_tree, step_label=chat_step,
+        no_claude=NO_CLAUDE, no_window=NO_WINDOW, timeout=CHAT_TIMEOUT)
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -7205,6 +7222,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, chat_view(st, c)) if c else self.send(404, {"error": "no such chat"})
         if path == "/api/chat/projects":
             return self.send(200, chat_projects(st))
+        if path == "/api/compact-chat":
+            code, answer = st.compact.get(q.get("project", [""])[0])
+            return self.send(code, answer)
         if path == "/api/root":
             return self.send(200, root_info())
         if path == "/api/settings":
@@ -7589,6 +7609,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/chat/close":
             code, answer = chat_close(st, str(b.get("id", "")))
             return self.send(code, answer)
+        if path == "/api/compact-chat/say":
+            code, answer = st.compact.say(b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path == "/api/compact-chat/stop":
+            return self.send(200, {"ok": st.compact.stop(b.get("project") if isinstance(b, dict) else "")})
         if path == "/api/stories/cancel":
             return self.send(200, {"ok": cancel_stories_run(st)})
         if path == "/api/whiteboard":

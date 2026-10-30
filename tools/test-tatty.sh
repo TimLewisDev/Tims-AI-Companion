@@ -2603,6 +2603,18 @@ hasnt "it leaves the tabs" "$T/c" "$C1"
 [ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Hello?\"}")" = 404 ] && ok "a closed chat takes no message" || bad "a closed chat takes no message"
 post /api/bye '{"tag":"s-chatwf"}' >/dev/null
 
+echo "# the compact chat and its questions"
+# tools/test-compact-chat.py prints a line a check in this script's own format; they are counted here.
+$PY "$root/tools/test-compact-chat.py" --project "$CP" >"$T/cc.out" 2>&1; cc_rc=$?
+while IFS= read -r line; do
+	case "$line" in
+	"ok "*) pass=$((pass + 1)) ;;
+	FAIL*) fail=$((fail + 1)) ;;
+	esac
+	case "$line" in *" passed, "*) ;; *) printf '%s\n' "$line" ;; esac
+done <"$T/cc.out"
+[ "$cc_rc" = 0 ] && ok "the compact chat's tests ran to the end" || bad "the compact chat's tests ran to the end" "exit $cc_rc: $(tail -n 3 "$T/cc.out")"
+
 echo "# archiving and deleting a feature"
 [ "$(code "$U/static/archive.js")" = 200 ] && ok "archive.js served" || bad "archive.js served"
 [ "$(code "$U/static/archive.css")" = 200 ] && ok "archive.css served" || bad "archive.css served"

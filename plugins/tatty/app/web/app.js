@@ -541,6 +541,7 @@ function alertFrom(ev) {
   if (!companion) return;
   const fresh = ev.ts * 1000 >= pageOpened - 5000;
   if (ev.type === "ask") {
+    if (compactQuestions && compactQuestions.dismissed(ev.id)) return; // sent away from the bubble until it is answered
     pushAlert({ kind: "ask", key: ev.id, title: questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer",
                sub: [ev.source, ev.feature].filter(Boolean).join(" · "), link: ev.link || "" });
   } else if (fresh && ev.type === "milestone") {
@@ -550,6 +551,150 @@ function alertFrom(ev) {
     pushAlert({ kind: "reply", key: "r" + ev.seq, title: ev.title || "Claude replied",
                sub: firstLine(ev.body).slice(0, 200), link: ev.link || "" });
   }
+}
+
+// ------------------------------------------------------- the bubble's questions
+//
+// The compact bubble's Questions view: every question still waiting, from any
+// session, the newest first and answered in place. The answer goes through
+// /api/reply, by the question's id, so it reaches the session that asked. The X
+// hides a question from the bubble without answering it; its id is kept (in
+// localStorage, across restarts, for every project alike) until its "answered"
+// event arrives. The full panel and the feed are not touched by any of this.
+const DISMISSED_KEY = "tt-compact-dismissed";
+let compactQuestions = null;
+
+function compactQuestionQueue(mount, { changed, arrived }) {
+  const open = new Map(); // ask id -> its "ask" event, while it is unanswered
+  const drafts = new Map(); // ask id -> what has been typed for each of its questions
+  const fresh = new Set(); // asked a moment ago and not answered since
+  let selected = "", shown = "", freshTimer = 0;
+  const dismissed = (() => {
+    try { return new Set((JSON.parse(localStorage.getItem(DISMISSED_KEY)) || []).map(String)); } catch { return new Set(); }
+  })();
+  const save = () => { try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed].slice(-500))); } catch { /* not remembered */ } };
+  const visible = () => [...open.values()].filter(ev => !dismissed.has(ev.id)).sort((a, b) => b.seq - a.seq);
+
+  const forget = id => {
+    open.delete(id);
+    drafts.delete(id);
+    fresh.delete(id);
+    if (selected === id) selected = "";
+  };
+
+  const dismiss = id => {
+    dismissed.add(id);
+    save();
+    forget(id);
+    dropAlert(id);
+    if (!alerts.length) tell("alert-cleared");
+    draw();
+  };
+
+  const xButton = ev => el("button", { type: "button", class: "cq-x", title: "Dismiss without answering",
+    "aria-label": "Dismiss this question without answering it",
+    onclick: e => { e.stopPropagation(); dismiss(ev.id); } }, "×");
+
+  const origin = ev => [ev.source, ev.feature].filter(Boolean).join(" · ");
+
+  const card = (ev, latest) => {
+    if (!drafts.has(ev.id)) drafts.set(ev.id, ev.questions.map(() => ""));
+    const draft = drafts.get(ev.id);
+    const status = el("div", { class: "cq-status dim small" });
+    const send = el("button", { type: "button", class: "primary", disabled: true }, "Send answer");
+    const ready = () => { send.disabled = !draft.every(t => t.trim()); };
+    const fields = ev.questions.map((q, i) => {
+      const input = el("input", { class: "cq-input", "aria-label": "Your answer", placeholder: "Type your answer…" });
+      input.value = draft[i];
+      input.addEventListener("input", () => { draft[i] = input.value; ready(); });
+      input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); if (!send.disabled) send.click(); } });
+      const pick = o => {
+        if (q.multiSelect) {
+          const have = input.value.split(",").map(s => s.trim()).filter(Boolean);
+          input.value = (have.includes(o.label) ? have.filter(s => s !== o.label) : [...have, o.label]).join(", ");
+        } else input.value = o.label;
+        draft[i] = input.value;
+        ready();
+      };
+      return el("div", { class: "cq-q" },
+        q.header ? el("div", { class: "head" }, q.header) : "",
+        el("div", { class: "cq-text" }, questionNode(q.question)),
+        q.options.length ? el("div", { class: "cq-opts" }, q.options.map(o =>
+          el("button", { type: "button", class: "cq-opt", title: o.description || "", onclick: () => pick(o) }, o.label))) : "",
+        input);
+    });
+    ready();
+    send.addEventListener("click", async () => {
+      const answers = {};
+      ev.questions.forEach((q, i) => { answers[q.question] = draft[i].trim(); });
+      send.disabled = true;
+      status.textContent = "";
+      try {
+        await api("/api/reply", { id: ev.id, answers });
+        forget(ev.id);
+        draw();
+      } catch (e) { status.textContent = String(e.message || e); ready(); }
+    });
+    return el("div", { class: "cq-card" },
+      el("div", { class: "cq-top" },
+        el("div", { class: "cq-who" }, el("span", { class: "cq-kind" }, latest ? "Latest" : "Selected"), origin(ev) ? el("span", { class: "dim small" }, " " + origin(ev)) : ""),
+        xButton(ev)),
+      fields, el("div", { class: "actions" }, status, send));
+  };
+
+  const row = ev => el("li", { class: "cq-row" },
+    el("button", { type: "button", class: "cq-pick", onclick: () => { selected = ev.id; draw(); } },
+      el("span", { class: "cq-title" }, questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer"),
+      origin(ev) ? el("span", { class: "dim small" }, origin(ev)) : ""),
+    xButton(ev));
+
+  function draw() {
+    const list = visible();
+    const current = list.find(ev => ev.id === selected) || list[0];
+    changed(list.length);
+    const key = list.map(ev => ev.id).join(",") + "|" + (current ? current.id : "");
+    if (key === shown) return;
+    shown = key;
+    if (!current) {
+      mount.replaceChildren(el("div", { class: "cq-empty" },
+        el("div", { class: "cq-empty-title" }, "No questions waiting"),
+        el("div", { class: "dim small" }, "When a session asks something, it comes up here.")));
+      return;
+    }
+    const rest = list.filter(ev => ev !== current);
+    mount.replaceChildren(card(current, current === list[0]),
+      rest.length ? el("div", { class: "cq-more dim small" }, `Also waiting (${rest.length})`) : "",
+      rest.length ? el("ol", { class: "cq-backlog" }, rest.map(row)) : "");
+  }
+
+  // Whether to bring the questions up is decided a moment after they arrive: when the
+  // page connects, the stream replays old questions with their answers close behind.
+  const settle = () => {
+    const waiting = [...fresh].some(id => open.has(id) && !dismissed.has(id));
+    fresh.clear();
+    if (waiting) arrived();
+  };
+
+  draw();
+  return {
+    count: () => visible().length,
+    dismissed: id => dismissed.has(id),
+    ask(ev) {
+      if (open.has(ev.id)) return;
+      open.set(ev.id, ev);
+      if (dismissed.has(ev.id)) return;
+      selected = "";
+      fresh.add(ev.id);
+      clearTimeout(freshTimer);
+      freshTimer = setTimeout(settle, 150);
+      draw();
+    },
+    answered(id) {
+      forget(id);
+      if (dismissed.delete(id)) save();
+      draw();
+    },
+  };
 }
 
 // ------------------------------------------------------- toasts
@@ -615,9 +760,10 @@ document.addEventListener("tt-expanded", toastsSeen);
 
 function feedEvent(ev) {
   alertFrom(ev);
-  if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); toastAsk(ev); }
+  if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); toastAsk(ev); if (compactQuestions) compactQuestions.ask(ev); }
   else if (ev.type === "answered") {
     answered(ev);
+    if (compactQuestions) compactQuestions.answered(ev.id);
     dropAlert(ev.id);
     dropToast(ev.id);
     if (companion && !alerts.length) tell("alert-cleared"); // nothing is calling any more
@@ -716,6 +862,32 @@ const tell = (type, arg) => { if (host) host.postMessage(arg === undefined ? { t
 
 if (companion) {
   document.body.classList.add("companion");
+  // The bubble shows the chat or the questions waiting, one at a time. Questions
+  // take over: when one arrives, or is already waiting as the page opens.
+  const compactTabs = $("#compact-tabs");
+  let compactMode = "chat";
+  let waiting = 0;
+  const drawCompactTabs = () => {
+    compactTabs.replaceChildren(el("div", { class: "modeswitch", role: "radiogroup", "aria-label": "What the bubble shows" },
+      [["chat", "Chat"], ["questions", waiting ? `Questions (${waiting})` : "Questions"]].map(([id, label]) => el("button", {
+        type: "button", class: "mode-seg" + (id === compactMode ? " on" : ""), role: "radio",
+        "aria-checked": id === compactMode ? "true" : "false",
+        onclick: () => { setCompactMode(id); compactTabs.querySelector(".mode-seg.on").focus(); },
+      }, label))));
+  };
+  const setCompactMode = mode => {
+    compactMode = mode;
+    document.body.dataset.compact = mode;
+    drawCompactTabs();
+    document.dispatchEvent(new CustomEvent("tt-compact-mode", { detail: mode })); // chat.js
+  };
+  const compactQueue = el("div", { id: "compact-queue", "aria-label": "Questions waiting", "aria-live": "polite" });
+  feed.parentElement.prepend(compactQueue);
+  compactQuestions = compactQuestionQueue(compactQueue, {
+    changed: n => { if (n !== waiting) { waiting = n; drawCompactTabs(); } },
+    arrived: () => { if (compactMode !== "questions") setCompactMode("questions"); },
+  });
+  setCompactMode("chat");
   const expand = on => {
     document.body.classList.toggle("expanded", on);
     if (on) document.dispatchEvent(new Event("tt-expanded")); // features.js shows the page

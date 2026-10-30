@@ -331,3 +331,98 @@ async function closeChat(id) {
   chatList.delete(id);
   return true;
 }
+
+// ------------------------------------------------------------- the compact window's chat
+
+// The compact bubble's chat: the one conversation about the project Tatty is on
+// (server.py's "compact chat"), read-only, kept between sessions. Its box is built
+// once and only hidden while the bubble shows the questions, so what has been
+// typed and not sent is still there when the chat comes back.
+function compactChatView(mount) {
+  const head = el("div", { class: "cchat-head dim small" });
+  const list = el("ol", { class: "chat-msgs", "aria-live": "polite" });
+  const step = el("div", { class: "chat-step dim small" });
+  const box = el("textarea", { rows: 2, class: "chat-box", "aria-label": "Your message",
+    placeholder: "Ask about this project…  (Enter sends, Shift+Enter for a new line)" });
+  const stop = el("button", { type: "button", class: "chat-stop", title: "Stop this answer" }, "Stop");
+  const send = el("button", { type: "submit", class: "primary chat-send" }, "Send");
+  const said = el("span", { class: "dim small chat-said" });
+  const form = el("form", { class: "chat-form" }, box, el("div", { class: "chat-actions" }, said, stop, send));
+  const node = el("div", { class: "chat cchat" }, head, list, step, form);
+  mount.replaceChildren(node);
+  let chat = null, drawn = -1, problem = "", loading = 0;
+
+  const draw = () => {
+    const name = chat ? chat.project.split("/").filter(Boolean).pop() || chat.project : "";
+    head.textContent = name ? `Chat · ${name}` : "Chat";
+    head.title = chat ? chat.project : "";
+    if (!chat) {
+      list.replaceChildren(el("li", { class: "chat-msg " + (problem ? "error" : "dim") }, problem || "Loading…"));
+      drawn = -1;
+      send.disabled = !!problem;
+      return;
+    }
+    if (drawn !== chat.messages.length) {
+      drawn = chat.messages.length;
+      list.replaceChildren(...(chat.messages.length ? chat.messages.map(m => chatMessage(m, { feature: "" }))
+        : [el("li", { class: "chat-msg dim" }, `Ask about ${name}. The chat reads its documents when it needs them, and can't change anything.`)]));
+      list.scrollTop = list.scrollHeight;
+    }
+    const busy = !!chat.busy;
+    node.classList.toggle("busy", busy);
+    step.textContent = busy ? (chat.step || "Thinking") + "…" : "";
+    stop.hidden = !busy;
+    send.disabled = busy;
+  };
+  const load = async () => {
+    const mine = ++loading;
+    try {
+      const c = await api("/api/compact-chat");
+      if (mine !== loading) return;
+      chat = c;
+      problem = "";
+    } catch (e) {
+      if (mine !== loading) return;
+      chat = null;
+      problem = String(e.message || e);
+    }
+    draw();
+  };
+
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const text = box.value.trim();
+    if (!text || !chat || chat.busy) return;
+    if (SECRETISH.test(text) && !confirm("That looks like it might hold a secret. Send it anyway?")) return;
+    said.textContent = "";
+    send.disabled = true;
+    try {
+      chat = await api("/api/compact-chat/say", { project: chat.project, text });
+      box.value = "";
+    } catch (err) { said.textContent = String(err.message || err); }
+    draw();
+  });
+  box.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+  stop.addEventListener("click", async () => {
+    try { await api("/api/compact-chat/stop", { project: chat ? chat.project : "" }); } catch (err) { said.textContent = String(err.message || err); }
+  });
+
+  document.addEventListener("tt-event", e => {
+    const ev = e.detail;
+    if (ev.type !== "compact-chat") return;
+    // a step while it answers needs no read of the chat; anything else does
+    if (chat && ev.project === chat.project && ev.busy && ev.step && !ev.done) { chat.busy = true; chat.step = ev.step; draw(); }
+    else load();
+  });
+  // coming back to the chat reads it again (the project may have changed meanwhile)
+  document.addEventListener("tt-compact-mode", e => {
+    if (e.detail !== "chat") return;
+    load();
+    requestAnimationFrame(() => box.focus());
+  });
+
+  draw();
+  load();
+}
+
+if (document.body.classList.contains("companion") && token) compactChatView(document.getElementById("compact-chat"));

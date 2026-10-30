@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="/static/commit.css">
 <link rel="stylesheet" href="/static/review-page.css">
 <link rel="stylesheet" href="/static/hub.css">
+<link rel="stylesheet" href="/static/compact-chat.css">
 </head>
 <body>
 <!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
@@ -37,6 +38,8 @@
 <!-- Tatty's compact bubble only: what is calling for the person (the question, or
      what finished). Opening it goes to the page it is about. -->
 <div id="alert" hidden></div>
+<!-- Tatty's compact bubble only: the radio between the chat and the questions waiting. -->
+<div id="compact-tabs"></div>
 <!-- A question raised over the full panel or a browser page, with a Go straight to it. -->
 <div id="toasts" role="region" aria-label="Needs you" aria-live="polite"></div>
 <header>
@@ -116,6 +119,9 @@
     </section>
   </nav>
   </section>
+
+  <!-- the compact bubble's chat about the project (chat.js), shown in place of the feed -->
+  <section id="compact-chat" aria-label="Chat about the project"></section>
 
   <!-- the compact bubble: questions and milestones; in the full panel, only while a question waits -->
   <section class="feed-col" aria-label="Questions and milestones">

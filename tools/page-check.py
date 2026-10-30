@@ -8,6 +8,9 @@ usage: page-check.py <browser exe> <page url> [--answer <option label>]
        page-check.py attach <devtools port> [--answer <option label>]
 (The chats, which replaced the old chat box, are walked by features-check.py --chats.)
 Prints one JSON object: {"text": <the page's visible text>, "cards": n, "asks": n, ...}.
+Opened as the companion (?mode=companion), it also reports "compact_chat": the bubble's
+Chat and Questions at 380x440 (the mode it opens in, a question taking over, their
+order, an inline answer, the X and the empty state).
 """
 
 import base64
@@ -92,6 +95,84 @@ class Page:
         if "exceptionDetails" in res:
             raise RuntimeError(json.dumps(res["exceptionDetails"])[:500])
         return res.get("result", {}).get("value")
+
+
+def compact_chat_check(p):
+    """The compact bubble's Chat and Questions (a page opened as the companion): its size,
+    the mode it opens in, a question taking over from the chat without losing the draft,
+    the newest question first, an answer reaching its own question, the X hiding a question
+    (across a reload) without answering it, and the empty state. The window is 380x440.
+    Every question it asks is cleared again, and the dismissed ones forgotten."""
+    p.call("Emulation.setDeviceMetricsOverride", width=380, height=440, deviceScaleFactor=1, mobile=False)
+
+    def reload():
+        p.js("location.reload(); 1")
+        time.sleep(3)
+
+    def view():
+        return p.js("""(() => {
+            const shown = s => { const n = document.querySelector(s); return !!n && n.offsetParent !== null; };
+            const text = s => { const n = document.querySelector(s); return n ? n.innerText.replace(/\\s+/g, ' ').trim() : ''; };
+            const inside = s => { const n = document.querySelector(s); if (!n || n.offsetParent === null) return null;
+                const r = n.getBoundingClientRect(); return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; };
+            return { mode: document.body.dataset.compact,
+                tabs: [...document.querySelectorAll('#compact-tabs .mode-seg')].map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
+                chatShown: shown('#compact-chat'), queueShown: shown('#compact-queue'),
+                draft: (document.querySelector('#compact-chat .chat-box') || {}).value,
+                kind: text('#compact-queue .cq-card .cq-kind'), latest: text('#compact-queue .cq-card .cq-text'),
+                backlog: [...document.querySelectorAll('#compact-queue .cq-backlog .cq-title')].map(n => n.textContent),
+                empty: text('#compact-queue .cq-empty-title'),
+                dismissed: JSON.parse(localStorage.getItem('tt-compact-dismissed') || '[]') };
+        })()""")
+
+    out = {}
+    p.js("document.body.classList.remove('expanded'); location.hash = ''; 1")
+    p.js("Promise.all([...asks.keys()].map(id => api('/api/reply', { id, declined: true }))).then(() => 1)")
+    p.js("localStorage.removeItem('tt-compact-dismissed'); 1")
+    reload()
+    out["size"] = p.js("""({ width: innerWidth, height: innerHeight,
+        overflowX: document.documentElement.scrollWidth > innerWidth, overflowY: document.documentElement.scrollHeight > innerHeight,
+        chatInside: (() => { const r = document.querySelector('#compact-chat').getBoundingClientRect();
+            return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })() })""")
+    out["opens_in_chat"] = view()  # no question waits: Chat, with the box for a message
+    out["chat_box"] = p.js("!!document.querySelector('#compact-chat .chat-box') && document.querySelector('#compact-chat .chat-box').offsetParent !== null")
+    p.js("(() => { const b = document.querySelector('#compact-chat .chat-box'); b.value = 'an unsent draft'; b.dispatchEvent(new Event('input')); return 1; })()")
+
+    first = p.js("api('/api/ask', { questions: [{ question: 'Older question?', options: ['Yes', 'No'] }], source: 'Compact older' })")["id"]
+    second = p.js("api('/api/ask', { questions: [{ question: 'Newer question?', options: ['Yes', 'No'] }], source: 'Compact newer' })")["id"]
+    time.sleep(1)
+    out["takeover"] = view()  # Questions, the newer one first, the older one listed after it
+    out["takeover_inside"] = p.js("(() => { const r = document.querySelector('#compact-queue').getBoundingClientRect();"
+                                  " return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })()")
+    p.js("[...document.querySelectorAll('#compact-tabs .mode-seg')][0].click(); 1")
+    time.sleep(0.5)
+    out["back_to_chat"] = view()  # the draft is still in the box
+    p.js("[...document.querySelectorAll('#compact-tabs .mode-seg')][1].click(); 1")
+    time.sleep(0.3)
+
+    p.js("""(() => { const i = document.querySelector('#compact-queue .cq-card .cq-input'); i.value = 'typed answer';
+        i.dispatchEvent(new Event('input')); document.querySelector('#compact-queue .cq-card button.primary').click(); return 1; })()""")
+    time.sleep(1)
+    out["answered_newer"] = {"reply": p.js(f"api('/api/answer/{second}')"), "older_still_waiting": p.js(f"api('/api/answer/{first}')")["status"],
+                             "view": view()}
+
+    reload()  # the older question is still waiting as the page opens: Questions
+    out["startup_takeover"] = view()
+    p.js("document.querySelector('#compact-queue .cq-card .cq-x').click(); 1")
+    time.sleep(0.5)
+    out["dismissed"] = {"view": view(), "server": p.js(f"api('/api/answer/{first}')")["status"]}
+    reload()  # still hidden, and unanswered, after a restart: back to Chat
+    out["dismissed_after_reload"] = {"view": view(), "server": p.js(f"api('/api/answer/{first}')")["status"]}
+    p.js("[...document.querySelectorAll('#compact-tabs .mode-seg')][1].click(); 1")
+    time.sleep(0.3)
+    out["empty_state"] = view()
+    p.js(f"api('/api/reply', {{ id: {json.dumps(first)}, declined: true }})")
+    time.sleep(1)
+    out["dismissed_cleared_when_answered"] = view()["dismissed"]
+
+    p.call("Emulation.clearDeviceMetricsOverride")
+    p.js("localStorage.removeItem('tt-compact-dismissed'); 1")
+    return out
 
 
 def main(argv):
@@ -329,6 +410,7 @@ def main(argv):
                 hash: location.hash, page: [...document.querySelectorAll('.page.on')].map(s => s.id).join(),
                 left: alerts.map(a => a.key) })""")}
             p.js("document.body.classList.remove('expanded'); 1")
+            out["compact_chat"] = compact_chat_check(p)
         print(json.dumps(out, indent=1))  # ASCII, whatever the console's code page
         return 0
     finally:

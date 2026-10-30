@@ -677,6 +677,57 @@ contract's "Chats" section; how it is built:
   asks (`pickChatProject`: the folders Tatty knows, `GET /api/chat/projects`, or
   Explorer).
 
+## The compact bubble's chat and questions
+
+The compact bubble (380×440) shows one of two things at a time, chosen with a
+**Chat / Questions** radio (the existing `modeswitch` styling, in `app.js`'s
+companion block; the choice is `body[data-compact]`, and `compact-chat.css`
+styles both views for the bubble only). The full panel is not touched by any of
+it.
+
+- **Chat** is `compactChatView` in `chat.js`, backed by `compact_chat.py` and
+  the server's `/api/compact-chat` (`GET`, `say`, `stop`). It is not one of the
+  chats above and shares none of their records, runs or tabs.
+  - **One conversation per project**, kept in
+    `<home>/compact-chats/<key>.json`; the key is a hash of the project's
+    normalised folder, so the same folder is the same chat however it is
+    written. There is never a chat without a project and no global
+    fallback: a folder that isn't there is a 400. The latest 200 messages are
+    kept; restarting Tatty keeps the history and the Claude conversation.
+  - **A turn is one headless `claude -p` run** in the project's folder
+    (`--session-id` then `--resume`, built by `chat_argv`), so the project's
+    documents are read on demand, not handed over. One turn at a time per
+    project (409); Stop kills it and leaves "Stopped.".
+  - **First release: read-only.** The run gets `Read,Glob,Grep,Skill` and
+    nothing else, and `read_only_argv` refuses a turn whose command would allow
+    more (no agent is started). There is no permission dropdown or edit mode.
+  - **Events are small:** `compact-chat {project, busy, step, done, ok, error}`;
+    the page reads the conversation with `GET /api/compact-chat`.
+  - **Unsent text is kept:** the message box is built once and only hidden while
+    Questions shows, so a draft is there when Chat comes back.
+- **Questions** is `compactQuestionQueue` in `app.js`: every open question from
+  any session, built from the `ask` and `answered` events (the stream replays
+  them, so a page that opens late has them all), newest first. The newest is
+  shown in full with an inline reply; the rest are listed under it.
+  - **Taking over:** a question that is not dismissed switches the bubble to
+    Questions, as it arrives or when the page opens with one waiting. The chat
+    draft is left alone. When none is left, Questions stays selected and says
+    "No questions waiting"; with none waiting at the start, the bubble opens on
+    Chat.
+  - **Answering** posts `{ id, answers }` to `/api/reply`, so the answer reaches
+    the session that asked (not `/api/answer/<id>`, which the asking session
+    polls).
+  - **The X** hides a question without answering it: its id goes in the
+    WebView's `localStorage` (`tt-compact-dismissed`), for every project alike,
+    and no answer route is called, so the session keeps waiting. It stays hidden
+    across restarts until its `answered` event arrives, which clears the id. The
+    feed, the toast and the full panel still show it.
+
+Checked by `tools/test-compact-chat.py` (the worker against a stand-in `claude`:
+per-project history, restart, the folder it runs in, read-only; then the
+server's API and answer routing) and by `tools/page-check.py` (the bubble's
+size, its modes and the question flow); see Tests.
+
 ## The shared board (`taskboard.js`)
 
 The Tasks and Jira pages draw the same board, as the design pages share
@@ -1100,7 +1151,12 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   (only reading, no command, the conversation named then resumed), the side
   chat's context in front of its first message only, both summaries, one turn
   at a time and Stop, closing, and a workflow beside a chat hearing nothing of
-  it. And the code changes: a reported edit kept under the task In Progress, one
+  it. And the compact chat and its questions (`tools/test-compact-chat.py`, run
+  from here and on its own with `python tools/test-compact-chat.py`): the worker
+  against a stand-in `claude`, so no agent runs: a history per project, kept
+  across a restart, a turn in the project's folder, a command that could do more
+  than read refused, one turn at a time and Stop; then through the server, the
+  same and a question's answer reaching its own session by id, one at a time. And the code changes: a reported edit kept under the task In Progress, one
   inside the feature's folder skipped, an unknown tool or feature refused, the
   task's words from its card and result file, the progress and whether it is
   running, and More info (the explanation stored, a task not on the board
@@ -1116,8 +1172,18 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   itself (`OpenAlert`) is only checked by hand. Companion or not, it checks the
   question toast (shown, its Go, gone when answered or followed) and the
   `#workflows/<tag>/ask/<id>` route; `features-check.py --tabs` has a toast's Go
-  land on its card on the tab. It also posts a challenge-style
+  land on its card on the tab. Opened as the companion it also walks the
+  compact bubble at 380×440 (`compact_chat`): it opens on Chat; a question takes
+  over without losing the unsent draft; the newest is first; an inline answer
+  reaches its question; the X hides one without answering it, across a reload,
+  until its answer arrives; and the empty state. It reports; read the JSON. It also posts a challenge-style
   question and reports how it was laid out (`ask_format`).
+  Run the self-contained compact browser checks with
+  `python tools/test-compact-chat-browser.py page` or
+  `python tools/test-compact-chat-browser.py features`. The runner creates
+  isolated temporary Tatty and project state, starts and stops its own server,
+  and discovers an installed Edge or Chrome; set `TATTY_BROWSER` to override
+  the browser executable.
   `features-check.py` ends with the Jira board, drawn from a sample board in
   the page with `api()` stood in for (`--jira`: columns, a ticket's panel and
   Start lite, Esc, the column menu, a card dragged to another status and within
