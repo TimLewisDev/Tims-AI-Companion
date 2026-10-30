@@ -94,15 +94,15 @@ document through the toolbox's own script when you change a story; and it moves 
 
 Download **`Tatty-Setup-<version>.exe`** from the
 [latest release](https://github.com/TimLewisDev/Tims-AI-Companion/releases/latest)
-and run it. It installs for you alone (no admin rights), asks which LLM you use
-(Claude Code and/or GitHub Copilot CLI), which parts of the toolbox you want, and
-your first project, then sets everything up: Git, Python, WebView2, the LLM tools
-and their sign-in, the toolbox and Tatty plugins, Copilot's link to the toolbox, and
-the Desktop and Start menu shortcuts. Start **Tatty** from either one. It opens on
-the **Hub**, where you pick the project to work in.
+and run it. It installs for you alone (no admin rights) and asks nothing: it sets up only
+what Tatty needs to run (Git, Python, WebView2, a clone of the toolbox, and the Desktop and
+Start menu shortcuts). You don't need an LLM tool installed first. Start **Tatty** from
+either shortcut. It opens on the **Hub**, where you connect an LLM (Claude Code, GitHub
+Copilot CLI or Codex: installed, signed in and connected there, only if you want the agentic
+features) and make your first project.
 
 Run **Repair Tatty** from the Start menu to repeat the setup (it skips what is
-already done). The installer is not code-signed yet, so Windows SmartScreen may ask
+already done, and updates the toolbox). The installer is not code-signed yet, so Windows SmartScreen may ask
 you to confirm it. See [docs/install.md](docs/install.md) for the details.
 
 ### From inside Claude Code

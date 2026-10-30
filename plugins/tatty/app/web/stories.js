@@ -50,7 +50,7 @@ const { renderDesigns, renderBoard } = (() => {
       : !d.plugin
         ? el("div", { class: "card toolbox-missing" }, el("strong", {}, "The design plugin isn't installed. "),
           "The board needs the toolbox's tt-user-stories skill: add the Design mode on ", el("a", { href: "#modes" }, "the modes page"), ".")
-        : !d.claude ? el("div", { class: "card toolbox-missing" }, "There's no claude command on this machine's PATH, so Tatty can open boards but can't write stories.") : "";
+        : !d.claude ? el("div", { class: "card toolbox-missing" }, "There's no claude command on this machine's PATH, so Tatty can open boards but can't write stories. Connect an LLM in the Hub.") : "";
     const cards = d.designs.map(x => el("a", { class: "fcard board-card", href: designHref(x.name) },
       el("div", { class: "fcard-top" }, el("strong", {}, x.name), x.running ? chip("● Writing", "live") : ""),
       el("div", {}, chip(`${x.stories} stor${x.stories === 1 ? "y" : "ies"}`, x.stories ? "done" : "todo"),

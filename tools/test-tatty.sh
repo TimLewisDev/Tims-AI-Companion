@@ -389,6 +389,104 @@ EOF
 has "no toolbox found" "$T/f" "core: None"
 has "a view says so" "$T/f" "can't find the TT toolbox"
 
+echo "# the installer's toolbox clone and the Hub's LLM setup"
+mkdir -p "$T/mt" "$T/mtapp"
+BASHW=$(cygpath -w "$(command -v bash)" 2>/dev/null || command -v bash)
+$PY - "$SRV" "$T/mt" "$T/mtapp" "$BASHW" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, shutil, subprocess, sys, time
+base, app = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+os.environ.pop("TATTY_TOOLBOX", None); os.environ.pop("TATTY_MODES", None)
+os.environ["TT_PLUGINS_HOME"] = str(base / "no-pointers"); os.environ["LOCALAPPDATA"] = str(app)
+os.environ["CLAUDE_CONFIG_DIR"] = str(base / "claude")
+for v in ("TT_CLAUDE_BIN", "TT_COPILOT_BIN", "TT_CODEX_BIN"): os.environ.pop(v, None)
+os.environ["TATTY_CLAUDE"] = ""; os.environ["COPILOT_HOME"] = str(base / "copilot-home"); os.environ["TATTY_DRYRUN"] = "1"
+os.environ.pop("TATTY_WINGET", None)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+
+def put(p, text=""):
+    p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text, encoding="utf-8", newline="\n")
+
+# A toolbox repo (the "remote"), cloned the way the installer does it.
+git = lambda *a, cwd=None: subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, check=True)
+remote = base / "remote"; remote.mkdir()
+git("init", "-q", "-b", "main", cwd=remote); git("config", "user.email", "t@t", cwd=remote); git("config", "user.name", "t", cwd=remote)
+put(remote / "plugins/core/skills/tt-common/scripts/workflow-state.sh", "#!/usr/bin/env bash\n")
+put(remote / "plugins/core/skills/tt-connections/scripts/llms.sh", "#!/usr/bin/env bash\ncase \"$1\" in status) printf 'copilot\\tavailable\\t-\\nclaude\\tconnected\\t-\\n';; connect) echo \"connected $2\";; *) exit 1;; esac\n")
+put(remote / "plugins/design/skills/x/SKILL.md", "x"); put(remote / "plugins/engineering/skills/y/SKILL.md", "y")
+git("add", "-A", cwd=remote); git("commit", "-q", "-m", "one", cwd=remote)
+print("no clone yet:", m.toolbox_core())
+tb = app / "Tatty" / "toolbox"; tb.parent.mkdir(parents=True)
+git("clone", "-q", str(remote), str(tb))
+print("clone found:", m.toolbox_core() == tb / "plugins/core/skills")
+print("clone modes:", m.installed_modes())
+dirs = m.managed_plugin_dirs()
+print("plugin dirs:", [pathlib.PurePath(d).name for d in dirs if d != "--plugin-dir"])
+# an update on the remote: found, then taken
+put(remote / "plugins/design/skills/x/SKILL.md", "x2"); git("commit", "-qam", "two", cwd=remote)
+st = m.State(str(base), sys.argv[4])
+m.update_work(st, False); print("look:", st.update["status"])
+m.update_work(st, True); print("apply:", st.update["status"], (tb / "plugins/design/skills/x/SKILL.md").read_text())
+m.update_work(st, False); print("again:", st.update["status"])
+
+# LLM setup
+fake = base / "bin"; fake.mkdir()
+real_which = shutil.which
+shutil.which = lambda n, *a, **k: str(fake / n) if (fake / n).exists() else (real_which(n) if n in ("bash", "git") else None)
+m.extend_path = lambda: None
+v = m.llm_setup_view(st)
+print("view:", [(t["provider"], t["installed"], t["connected"]) for t in v["tools"]], v["toolbox"], v["winget"], v["anyConnected"])
+print("signin needs it installed:", m.llm_setup_change(st, {"action": "signin", "provider": "copilot"})[0])
+print("bad action:", m.llm_setup_change(st, {"action": "nope", "provider": "copilot"})[0], m.llm_setup_change(st, {"action": "install", "provider": "gemini"})[0])
+print("no winget:", m.llm_setup_change(st, {"action": "install", "provider": "copilot"})[0])
+put(base / "winget.sh", f"#!/usr/bin/env bash\necho \"$*\" >> '{base.as_posix()}/winget.log'\ntouch '{(fake / 'copilot').as_posix()}'\nexit 0\n")
+os.environ["TATTY_WINGET"] = str(base / "winget.sh")
+code, got = m.llm_setup_change(st, {"action": "install", "provider": "copilot"})
+print("install started:", code, [t["job"]["status"] for t in got["tools"] if t["provider"] == "copilot"])
+for _ in range(100):
+    if st.llm_jobs["copilot"]["status"] != "running": break
+    time.sleep(0.1)
+print("install done:", st.llm_jobs["copilot"]["status"], "|", (base / "winget.log").read_text().strip())
+print("again refused:", m.llm_setup_change(st, {"action": "install", "provider": "copilot"})[0])
+v = m.llm_setup_view(st)
+print("copilot now:", [(t["installed"], t["signedIn"], t["connected"], t["state"]) for t in v["tools"] if t["provider"] == "copilot"])
+put(base / "copilot-home" / "config.json", '// User settings\n{\n  // who\n  "loggedInUsers": [{"host": "https://github.com", "login": "me"}]\n}\n')
+print("signed in:", [t["signedIn"] for t in m.llm_setup_view(st)["tools"] if t["provider"] == "copilot"])
+code, got = m.llm_setup_change(st, {"action": "signin", "provider": "copilot"})
+print("signin:", code, got["said"].splitlines()[-1].endswith("copilot login"))
+code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
+print("connect:", code, got.get("said"))
+shutil.rmtree(tb, onerror=lambda f, p, e: (os.chmod(p, 0o700), f(p)))
+code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
+print("connect without toolbox:", code)
+os.environ["TATTY_WINGET"] = str(base / "winget-fail.sh"); put(base / "winget-fail.sh", "#!/usr/bin/env bash\necho nope >&2\nexit 5\n")
+code, got = m.llm_setup_change(st, {"action": "install", "provider": "codex"})
+for _ in range(100):
+    if st.llm_jobs["codex"]["status"] != "running": break
+    time.sleep(0.1)
+print("failed install:", st.llm_jobs["codex"]["status"], "exit 5" in st.llm_jobs["codex"]["message"])
+EOF
+has "no clone, no toolbox" "$T/f" "no clone yet: None"
+has "the installer's clone is the toolbox" "$T/f" "clone found: True"
+has "its disciplines are the modes" "$T/f" "clone modes: ['engineering', 'design']"
+has "its plugins load into sessions" "$T/f" "plugin dirs: ['core', 'engineering', 'design']"
+has "an update is seen" "$T/f" "look: available"
+has "and fast-forwarded" "$T/f" "apply: ready x2"
+has "then it is current" "$T/f" "again: current"
+has "the view says what is installed and connected" "$T/f" "view: [('claude', False, False), ('copilot', False, False), ('codex', False, False)] True False False"
+has "signing in needs the tool installed" "$T/f" "signin needs it installed: 409"
+has "bad requests are refused" "$T/f" "bad action: 400 400"
+has "no winget says so" "$T/f" "no winget: 501"
+has "an install starts in the background" "$T/f" "install started: 202 ['running']"
+has "it runs winget for the exact id" "$T/f" "install done: done | install --id GitHub.Copilot --exact --silent"
+has "installing twice is refused" "$T/f" "again refused: 409"
+has "the installed tool is found, not signed in, not connected" "$T/f" "copilot now: [(True, False, False, 'available')]"
+has "Copilot's JSONC config says it is signed in" "$T/f" "signed in: [True]"
+has "sign in runs the tool's login in a terminal" "$T/f" "signin: 200 True"
+has "connect goes through the toolbox" "$T/f" "connect: 200 connected copilot"
+has "connecting needs the toolbox" "$T/f" "connect without toolbox: 501"
+has "a failed install says what happened" "$T/f" "failed install: error True"
+
 [ "$TOOLBOX" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
 
 echo "# toolbox views"

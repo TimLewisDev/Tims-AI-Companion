@@ -31,20 +31,18 @@ function Dry([string[]]$extra) {
     return @{ out = $out; code = $code; log = $logged }
 }
 
-$r = Dry @('-Llm', 'claude,copilot', '-Disciplines', 'engineering,design', '-ProjectName', 'Demo')
+$r = Dry @()
 Check 'dry run succeeds' ($r.code -eq 0) $r.out
-Check 'dry run adds both marketplaces' (($r.out -match 'marketplace add TimLewisDev/Tims-AI-Toolbox') -and ($r.out -match 'marketplace add TimLewisDev/Tims-AI-Companion'))
-Check 'dry run installs core, the chosen disciplines and tatty' (($r.out -match 'install core@tims-ai-toolbox') -and ($r.out -match 'install engineering@tims-ai-toolbox') -and ($r.out -match 'install design@tims-ai-toolbox') -and ($r.out -match 'install tatty@tims-ai-companion') -and ($r.out -notmatch 'install production@'))
-Check 'dry run links Copilot to the toolbox' ($r.out -match 'llms\.sh: connect copilot')
-Check 'dry run adds the first project' ($r.out -match "add the project 'Demo'")
+Check 'dry run clones the toolbox' ($r.out -match 'git clone https://github\.com/TimLewisDev/Tims-AI-Toolbox\.git')
+Check 'dry run makes the shortcuts from the bundled plugin, pinned' ($r.out -match 'tatty\.sh install --pin')
+Check 'dry run needs no LLM: no Claude or Copilot steps' (($r.out -notmatch 'claude') -and ($r.out -notmatch 'Copilot') -and ($r.out -notmatch 'marketplace'))
 Check 'dry run writes the log' ($r.log -match 'Setup finished')
-
-$r = Dry @('-Llm', 'claude')
-Check 'claude only: no Copilot steps' ($r.code -eq 0 -and $r.out -notmatch 'Copilot')
-Check 'claude only: no first project asked for' ($r.out -match 'no first project asked for')
+Check 'the LLM and project parameters are gone' ((Get-Content $bootstrap -Raw) -notmatch '\$Llm|\$Disciplines|\$ProjectName')
 
 Write-Host '# Tatty.iss'
 Check 'installs per user' ($iss -match 'PrivilegesRequired=lowest')
+Check 'has no LLM or project wizard pages' ($iss -notmatch 'CreateInputOptionPage|CreateInputQueryPage')
+Check 'ships Tatty itself and removes it on uninstall' (($iss -match [regex]::Escape('{#OutputDir}\plugin\*')) -and ($iss -match [regex]::Escape('{localappdata}\Tatty\plugin')) -and ($iss -match [regex]::Escape('{localappdata}\Tatty\toolbox')))
 foreach ($rel in 'installer\bootstrap.ps1', 'plugins\tatty\assets\tatty.ico') {
     Check "$rel exists" (Test-Path (Join-Path $repo $rel))
 }
@@ -59,6 +57,7 @@ $errors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'tools\build-installer.ps1'), [ref]$null, [ref]$errors)
 Check 'build-installer.ps1 parses' ($errors.Count -eq 0) ($errors | Out-String)
 Check 'build-installer.ps1 passes the version to Inno Setup' ($build -match '/DAppVersion')
+Check 'build-installer.ps1 stages the plugin for the installer' ($build.Contains("Join-Path `$dist 'plugin'"))
 Check 'release workflow exists' (Test-Path (Join-Path $repo '.github\workflows\release-installer.yml'))
 
 Write-Host ''

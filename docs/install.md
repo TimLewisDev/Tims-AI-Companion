@@ -6,28 +6,33 @@
 [releases](https://github.com/TimLewisDev/Tims-AI-Companion/releases), installs Tatty for
 the current user with no admin rights and no `/tatty install` from inside an LLM.
 
-What it asks: which LLM tools (**Claude Code**, and/or **GitHub Copilot CLI**), which
-toolbox disciplines (Engineering, Design, Production), and an optional first project
-(name, Tatty folder, code repository). Then it copies Tatty's prebuilt tray app and
-launcher to `%LOCALAPPDATA%\Tatty\prebuilt` and runs `bootstrap.ps1` in a visible
+What it asks: nothing. It copies Tatty itself to `%LOCALAPPDATA%\Tatty\plugin` and its prebuilt
+tray app and launcher to `%LOCALAPPDATA%\Tatty\prebuilt`, then runs `bootstrap.ps1` in a visible
 console, which, skipping whatever is already there:
 
 1. installs **Git for Windows**, **Python 3** and the **WebView2 runtime** with winget;
-2. installs **Claude Code** (winget `Anthropic.ClaudeCode`) and signs you in
-   (`claude auth login`), and, if chosen, **Copilot CLI** (`GitHub.Copilot`) and signs
-   you in (`copilot login`);
-3. adds the toolbox's and Tatty's marketplaces and installs `core`, the chosen
-   disciplines and `tatty` (`claude plugin install ... --scope user`);
-4. for Copilot, runs the toolbox's `llms.sh connect copilot`;
-5. runs `tatty.sh install` (the Desktop and Start menu shortcuts; the tray app and
-   launcher are the prebuilt ones, so **no .NET SDK is needed**);
-6. adds your first project to the Hub.
+2. clones the **TT toolbox** (`github.com/TimLewisDev/Tims-AI-Toolbox`) into
+   `%LOCALAPPDATA%\Tatty\toolbox` (a repeat run, or **Repair Tatty**, pulls it instead);
+3. runs `tatty.sh install --pin` from the bundled plugin (the Desktop and Start menu
+   shortcuts; the tray app and launcher are the prebuilt ones, so **no .NET SDK is needed**).
+
+No LLM tool is installed or needed here. Tatty runs without one; only the agentic features
+(headless runs, writing designs and tasks, chats) need one signed in. The **Hub** has a
+**Connect an LLM** card for **Claude Code**, **GitHub Copilot CLI** and **Codex CLI**: Install
+(winget `Anthropic.ClaudeCode`, `GitHub.Copilot`, `OpenAI.Codex`), Sign in (the tool's own login,
+in a terminal window, so Tatty never sees a credential) and Connect (the toolbox's `llms.sh`).
+On a first run it is step one of "Get started", next to making the first project. Sessions
+load the toolbox from the clone with `--plugin-dir`, so no Claude Code plugin install is
+needed; Claude Code's own plugins, if installed, are used instead.
+
+Tatty itself updates with a newer installer; the toolbox updates through git (Tatty's update
+check fetches it, and applies it when auto-update is on).
 
 Each step that fails is logged and the rest still run; the log is
-`%LOCALAPPDATA%\Tatty\setup.log`. **Repair Tatty** (Start menu) runs it again with the
-same choices, and `bootstrap.ps1 -DryRun` shows what it would do. Uninstalling removes
-the program, the shortcuts and the prebuilt exes; Tatty's own state (the Hub's list, your
-projects' folders and chats) and the plugins stay.
+`%LOCALAPPDATA%\Tatty\setup.log`. **Repair Tatty** (Start menu) runs it again, and
+`bootstrap.ps1 -DryRun` shows what it would do. Uninstalling removes
+the program, the shortcuts, Tatty's copy and the toolbox clone; Tatty's own state (the Hub's list, your
+projects' folders and chats) stays.
 
 The installer isn't code-signed, so SmartScreen may warn about it. To build it yourself:
 `tools\build-installer.ps1` (needs the .NET 9 SDK and Inno Setup 6). The release workflow

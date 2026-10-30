@@ -4,51 +4,31 @@
   it can also be run by hand to repair an install (it skips what is already done).
 
 .DESCRIPTION
+  Installs only what Tatty needs to run. No LLM tool is needed yet: the Hub connects
+  Claude Code, Copilot or Codex later, when you want the agentic features.
   1. Prerequisites: Git for Windows (Git Bash), Python 3, the WebView2 runtime (winget).
-  2. The LLM tools you chose: Claude Code and/or GitHub Copilot CLI, and their sign-in.
-  3. The TT toolbox and Tatty, as Claude Code plugins, from their marketplaces.
-  4. Copilot's link to the toolbox (the toolbox's `llms.sh connect copilot`).
-  5. Tatty's shortcuts, and your first project in the Hub.
+  2. The TT toolbox: cloned from GitHub into %LOCALAPPDATA%\Tatty\toolbox (updated when it is there).
+  3. Tatty's shortcuts, running the copy of Tatty the installer put in %LOCALAPPDATA%\Tatty\plugin.
 
   Every step is safe to repeat. -DryRun prints what it would do and changes nothing.
   The log is %LOCALAPPDATA%\Tatty\setup.log.
 #>
 [CmdletBinding()]
 param(
-    [string]$Llm = 'claude',
-    [string]$Disciplines = 'engineering',
-    [string]$ProjectName = '',
-    [string]$ProjectRoot = '',
-    [string]$ProjectRepo = '',
-    [switch]$SkipSignIn,
     [switch]$DryRun,
     [switch]$NoLaunch,
-    [string]$LogFile = ''
+    [string]$LogFile = '',
+    [string]$PluginDir = ''
 )
 $ErrorActionPreference = 'Stop'
 
-# powershell -File passes a list as one comma-separated string
-$choicesFile = Join-Path (Join-Path $(if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\Local' }) 'Tatty') 'setup-choices.json'
-if (-not $PSBoundParameters.ContainsKey('Llm') -and -not $PSBoundParameters.ContainsKey('Disciplines') -and (Test-Path $choicesFile)) {
-    # a repair run: the choices made at install
-    try {
-        $saved = Get-Content $choicesFile -Raw | ConvertFrom-Json
-        $Llm = $saved.llm; $Disciplines = $saved.disciplines
-    } catch { }
-}
-$LlmList = @($Llm -split '[,;\s]+' | Where-Object { $_ -in 'claude', 'copilot' })
-if (-not $LlmList) { $LlmList = @('claude') }
-$DisciplineList = @($Disciplines -split '[,;\s]+' | Where-Object { $_ -in 'engineering', 'design', 'production' })
-
-$ToolboxMarket = 'TimLewisDev/Tims-AI-Toolbox'
-$ToolboxName = 'tims-ai-toolbox'
-$TattyMarket = 'TimLewisDev/Tims-AI-Companion'
-$TattyName = 'tims-ai-companion'
+$ToolboxRepo = 'https://github.com/TimLewisDev/Tims-AI-Toolbox.git'
 
 $localApp = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\Local' }
 $appDir = Join-Path $localApp 'Tatty'
 if (-not $LogFile) { $LogFile = Join-Path $appDir 'setup.log' }
-$configDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
+if (-not $PluginDir) { $PluginDir = Join-Path $appDir 'plugin' }
+$toolboxDir = Join-Path $appDir 'toolbox'
 $script:failed = @()
 
 function Log([string]$msg, [string]$level = 'INFO') {
@@ -72,7 +52,7 @@ function Step([string]$name, [scriptblock]$body) {
 function Refresh-Path {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $extra = @("$HOME\.local\bin", "$localApp\Microsoft\WinGet\Links") -join ';'
+    $extra = @("$HOME\.local\bin", "$localApp\Microsoft\WinGet\Links", "$env:ProgramFiles\Git\cmd") -join ';'
     $env:Path = "$machine;$user;$extra;$env:Path"
 }
 
@@ -83,8 +63,13 @@ function Run([string]$exe, [string[]]$arguments) {
     $shown = "$exe $($arguments -join ' ')"
     if ($DryRun) { Log "would run: $shown"; return 0 }
     Log "running: $shown"
-    & $exe @arguments 2>&1 | ForEach-Object { Add-Content -Path $LogFile -Value "    $_" -Encoding UTF8; Write-Host "    $_" }
-    return $LASTEXITCODE
+    # a program's progress on stderr is not an error (and would stop the script under 'Stop')
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        & $exe @arguments 2>&1 | ForEach-Object { Add-Content -Path $LogFile -Value "    $_" -Encoding UTF8; Write-Host "    $_" }
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prev }
+    return $code
 }
 
 function Winget-Install([string]$id, [string]$what) {
@@ -133,29 +118,8 @@ function Has-WebView2 {
 
 function To-Posix([string]$p) { ($p -replace '\\', '/') }
 
-# Where Claude Code put an installed plugin (its installed_plugins.json).
-function Plugin-Path([string]$id) {
-    $f = Join-Path $configDir 'plugins\installed_plugins.json'
-    if (-not (Test-Path $f)) { return $null }
-    try {
-        $entries = (Get-Content $f -Raw | ConvertFrom-Json).plugins.$id
-        foreach ($e in @($entries)) { if ($e.installPath -and (Test-Path $e.installPath)) { return $e.installPath } }
-    } catch { }
-    return $null
-}
-
-function Claude-Plugin-Install([string]$plugin, [string]$market) {
-    if (-not $DryRun -and (Plugin-Path "$plugin@$market")) { Log "$plugin@$market is already installed"; return }
-    $code = Run 'claude' @('plugin', 'install', "$plugin@$market", '--scope', 'user')
-    if ($code -ne 0) { throw "claude plugin install $plugin@$market failed (exit $code)" }
-}
-
 Log "Tatty setup, $(Get-Date -Format 'u')$(if ($DryRun) { ' (dry run)' })"
-Log "LLMs: $($LlmList -join ', '); toolbox: core $($DisciplineList -join ', ')"
-if (-not $DryRun) {
-    New-Item -ItemType Directory $appDir -Force | Out-Null
-    @{ llm = ($LlmList -join ','); disciplines = ($DisciplineList -join ',') } | ConvertTo-Json | Set-Content -Path $choicesFile -Encoding UTF8
-}
+if (-not $DryRun) { New-Item -ItemType Directory $appDir -Force | Out-Null }
 Refresh-Path
 
 Step 'Git for Windows' {
@@ -173,93 +137,32 @@ Step 'WebView2 runtime' {
     Winget-Install 'Microsoft.EdgeWebView2Runtime' 'the WebView2 runtime'
 }
 
-# Tatty and the toolbox are Claude Code plugins, so Claude Code hosts the
-# workflow whichever LLMs were chosen to work in.
-Step 'Claude Code' {
-    if (Have 'claude') { Log 'Claude Code is installed' }
-    else { Winget-Install 'Anthropic.ClaudeCode' 'Claude Code' }
-}
-
-if (($LlmList -contains 'claude') -and -not $SkipSignIn) {
-    Step 'Claude Code sign-in' {
-        if ($DryRun) { Log 'would check `claude auth status`, and run `claude auth login` when not signed in'; return }
-        if (-not (Have 'claude')) { throw 'Claude Code is not installed, so it cannot sign in' }
-        & claude auth status *> $null
-        if ($LASTEXITCODE -eq 0) { Log 'Claude Code is signed in'; return }
-        Log 'Signing in to Claude Code: a browser window opens.'
-        $code = Run 'claude' @('auth', 'login')
-        & claude auth status *> $null
-        if ($LASTEXITCODE -ne 0) { throw "Claude Code isn't signed in yet (exit $code). Run `claude auth login` yourself, then run this setup again." }
+Step 'The TT toolbox' {
+    if ($DryRun) {
+        if (Test-Path (Join-Path $toolboxDir '.git')) { Log "would run: git -C $toolboxDir pull --ff-only" }
+        else { Log "would run: git clone $ToolboxRepo $toolboxDir" }
+        return
     }
-}
-
-if ($LlmList -contains 'copilot') {
-    Step 'GitHub Copilot CLI' {
-        if (Have 'copilot') { Log 'Copilot CLI is installed' }
-        else { Winget-Install 'GitHub.Copilot' 'GitHub Copilot CLI' }
+    if (-not (Have 'git')) { throw 'Git is not available, so the toolbox cannot be fetched' }
+    if (Test-Path (Join-Path $toolboxDir '.git')) {
+        $code = Run 'git' @('-C', $toolboxDir, 'pull', '--ff-only', '--quiet')
+        if ($code -ne 0) { Log "the toolbox could not be updated (exit $code); keeping the copy that is there" 'WARN' }
+        return
     }
-    if (-not $SkipSignIn) {
-        Step 'Copilot sign-in' {
-            $state = Join-Path $appDir 'copilot-signin.done'
-            if (Test-Path $state) { Log 'Copilot sign-in was done before (delete copilot-signin.done to repeat it)'; return }
-            if ($DryRun) { Log 'would run `copilot login`'; return }
-            if (-not (Have 'copilot')) { throw 'Copilot CLI is not installed, so it cannot sign in' }
-            Log 'Signing in to GitHub Copilot: a browser window opens.'
-            $code = Run 'copilot' @('login')
-            if ($code -ne 0) { throw "copilot login failed (exit $code). Run `copilot login` yourself later." }
-            Set-Content -Path $state -Value (Get-Date -Format 's')
-        }
-    }
-}
-
-Step 'The TT toolbox and Tatty' {
-    if (-not $DryRun -and -not (Have 'claude')) { throw 'Claude Code is not available, so the plugins cannot be installed' }
-    foreach ($m in @($ToolboxMarket, $TattyMarket)) {
-        $code = Run 'claude' @('plugin', 'marketplace', 'add', $m)  # adding a known marketplace is harmless
-        if ($code -ne 0) { Log "marketplace ${m}: claude said exit $code (it may already be added)" 'WARN' }
-    }
-    $plugins = @('core') + $DisciplineList
-    foreach ($p in $plugins) { Claude-Plugin-Install $p $ToolboxName }
-    Claude-Plugin-Install 'tatty' $TattyName
-}
-
-if ($LlmList -contains 'copilot') {
-    Step 'Link Copilot to the toolbox' {
-        if ($DryRun) { Log "would run the toolbox's llms.sh: connect copilot"; return }
-        $core = Plugin-Path "core@$ToolboxName"
-        $script = if ($core) { Join-Path $core 'skills\tt-connections\scripts\llms.sh' } else { $null }
-        $bash = Find-GitBash
-        if (-not $script -or -not (Test-Path $script)) { throw "the toolbox's llms.sh was not found (is core installed?)" }
-        if (-not $bash) { throw 'Git Bash was not found' }
-        $code = Run $bash @((To-Posix $script), 'connect', 'copilot')
-        if ($code -ne 0) { throw "llms.sh connect copilot failed (exit $code)" }
-    }
+    if (Test-Path $toolboxDir) { throw "$toolboxDir exists but is not a git clone. Move it away, then run this again." }
+    $code = Run 'git' @('clone', '--quiet', $ToolboxRepo, $toolboxDir)
+    if ($code -ne 0) { throw "git clone of the toolbox failed (exit $code). Check your internet connection, then run Repair Tatty." }
 }
 
 Step 'Tatty shortcuts' {
-    if ($DryRun) { Log 'would run tatty.sh install (the Desktop and Start menu shortcuts)'; return }
-    $plugin = Plugin-Path "tatty@$TattyName"
+    if ($DryRun) { Log "would run tatty.sh install --pin from $PluginDir (the Desktop and Start menu shortcuts)"; return }
+    $script = Join-Path $PluginDir 'scripts\tatty.sh'
     $bash = Find-GitBash
-    if (-not $plugin) { throw 'the Tatty plugin was not found' }
+    if (-not (Test-Path $script)) { throw "Tatty's files were not found at $PluginDir" }
     if (-not $bash) { throw 'Git Bash was not found' }
-    $code = Run $bash @((To-Posix (Join-Path $plugin 'scripts\tatty.sh')), 'install')
+    # pinned: the launcher runs this copy, which only a new installer changes
+    $code = Run $bash @((To-Posix $script), 'install', '--pin')
     if ($code -ne 0) { throw "tatty.sh install failed (exit $code)" }
-}
-
-Step 'Your first project' {
-    if (-not $ProjectName -and -not $ProjectRoot) { Log 'no first project asked for; make one in the Hub'; return }
-    if ($DryRun) { Log "would add the project '$ProjectName' to the Hub"; return }
-    $plugin = Plugin-Path "tatty@$TattyName"
-    $bash = Find-GitBash
-    if (-not $plugin -or -not $bash) { throw 'Tatty or Git Bash was not found' }
-    $tatty = To-Posix (Join-Path $plugin 'scripts\tatty.sh')
-    $root = if ($ProjectRoot) { $ProjectRoot } else { Join-Path (Join-Path $HOME 'Tatty') $ProjectName }
-    $existing = (& $bash $tatty hub list 2>$null | Out-String).Replace('\', '/')
-    if ($existing.ToLower().Contains((To-Posix $root).ToLower())) { Log 'that project is already in the Hub'; return }
-    $a = @($tatty, 'hub', 'add', '--name', $ProjectName, '--root', (To-Posix $root))
-    if ($ProjectRepo) { $a += @('--repo', (To-Posix $ProjectRepo)) }
-    $code = Run $bash $a
-    if ($code -ne 0) { throw "tatty.sh hub add failed (exit $code)" }
 }
 
 Log ''
@@ -268,7 +171,7 @@ if ($script:failed.Count) {
     Log "Details: $LogFile"
     exit 1
 }
-Log 'Setup finished.'
+Log 'Setup finished. Open Tatty, then connect an LLM and make your first project in the Hub.'
 if (-not $NoLaunch -and -not $DryRun) {
     $exe = Join-Path $appDir 'launcher\bin\Tatty.exe'
     if (Test-Path $exe) { Start-Process $exe }

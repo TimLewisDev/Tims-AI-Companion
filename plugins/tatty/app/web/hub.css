@@ -13,5 +13,11 @@
 .hub-new .row, .hub-form .row { display: flex; gap: 8px; align-items: center; padding: 0; margin: 0; }
 .hub-new .row button, .hub-form .row button, .hub-path button { white-space: nowrap; flex: none; }
 .hub-new > button[type=submit] { align-self: stretch; }
+.hub-llm { display: flex; flex-direction: column; gap: 10px; max-width: 640px; margin-bottom: 20px; }
+.hub-llm h3, .hub-llm p { margin: 0; }
+.hub-llm-list { display: flex; flex-direction: column; gap: 8px; }
+.hub-llm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.hub-llm-row .actions { margin-left: auto; display: flex; gap: 8px; }
+.hub-llm-note { flex-basis: 100%; }
 /* The Hub is the whole window: no pages to go to until a project is open. */
 body.hub-open .pnav, body.hub-open .mode-switch { visibility: hidden; }
