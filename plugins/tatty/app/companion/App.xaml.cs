@@ -615,11 +615,11 @@ namespace TtCompanion
             };
             menu.Items.Add("Show Tatty", null, (_, _) => PopUp(activate: true));
             menu.Items.Add("Open full panel", null, (_, _) => { PopUp(activate: true); if (!bubble.IsExpanded) OnPageMessage("expand"); });
-            menu.Items.Add("Change root folder…", null, (_, _) =>
+            menu.Items.Add("Switch project…", null, (_, _) =>
             {
                 PopUp(activate: true);
                 if (!bubble.IsExpanded) OnPageMessage("expand");
-                PickRoot(null);
+                bubble.Post("hub"); // the page asks the server to show the Hub
             });
             menu.Items.Add("Hide until something happens", null, (_, _) => OnPageMessage("hide"));
             menu.Items.Add(new Forms.ToolStripSeparator());

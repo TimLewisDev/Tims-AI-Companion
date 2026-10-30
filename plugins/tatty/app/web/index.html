@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="/static/archive.css">
 <link rel="stylesheet" href="/static/commit.css">
 <link rel="stylesheet" href="/static/review-page.css">
+<link rel="stylesheet" href="/static/hub.css">
 </head>
 <body>
 <!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
@@ -42,6 +43,7 @@
   <a class="brand" href="#modes" title="All the modes you have installed"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong> <span class="dim">your TT toolbox companion</span></a>
   <div class="mode-switch" data-slot="header"></div>
   <nav class="pnav">
+    <a href="#hub" data-page="hub" title="Switch to another project">Projects</a>
     <a href="#mode" data-page="mode">Home</a>
     <a href="#home" data-page="home" data-mode="engineering">Features</a>
     <a href="#jira" data-page="jira" data-mode="production">Jira</a>
@@ -61,6 +63,8 @@
 <main>
   <!-- Modes: the discipline plugins installed, to pick one (modes.js). -->
   <section class="page" id="page-modes"></section>
+  <!-- The Hub: the projects to pick from, shown first on every launch (hub.js). -->
+  <section class="page" id="page-hub"></section>
   <!-- One mode's home page. -->
   <section class="page" id="page-mode"></section>
   <!-- Features: Tatty's root folder; one card per feature (features.js). -->
@@ -140,5 +144,6 @@
 <script src="/static/tasks.js"></script>
 <script src="/static/diff.js"></script>
 <script src="/static/ids.js"></script>
+<script src="/static/hub.js"></script>
 </body>
 </html>

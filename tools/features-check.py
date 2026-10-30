@@ -91,6 +91,25 @@ def check_usage(p, feature):
     })()""")
 
 
+def check_hub(p):
+    """The Hub page: a card for each project, the open one marked, a form to add another."""
+    p.js("location.hash = '#hub'; 1")
+    wait(p, "document.querySelectorAll('#page-hub .hub-card').length > 0 || !!document.querySelector('#page-hub .hub-new')")
+    res = p.js("""({ cards: [...document.querySelectorAll('#page-hub .hub-card')].map(c => c.querySelector('strong').textContent + (c.classList.contains('hub-active') ? ' (open)' : '')),
+                     form: !!document.querySelector('#page-hub .hub-new'), nav: !!document.querySelector('nav a[data-page=hub]'),
+                     open: document.body.classList.contains('hub-open') })""")
+    p.js("location.hash = '#home'; 1")
+    return res
+
+
+def leave_hub(p):
+    """A launch shows the Hub first: open the project that is open (Continue), as a person would."""
+    if p.js("!!document.querySelector('#page-hub .hub-card.hub-active .primary:not([disabled])') && document.body.classList.contains('hub-open')"):
+        p.js("document.querySelector('#page-hub .hub-card.hub-active .primary').click(); 1")
+        time.sleep(1)
+        p.js("location.hash = '#home'; 1")
+
+
 def check_modes(p, feature):
     """A Challenges document in View (cards) and Edit (the markdown), and a document
     of another kind in View (the plain markdown). Edits nothing on disk."""
@@ -1534,6 +1553,8 @@ def main(argv):
             p.js("location.hash = '#home'; 1")  # a window opens on its mode's home page
         else:  # the companion: open its full panel on the Features page
             p.js("document.querySelector('#expand') && document.querySelector('#expand').click(); location.hash = '#home'; 1")
+        time.sleep(0.5)
+        leave_hub(p)
         out = {}
         if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
@@ -1541,9 +1562,11 @@ def main(argv):
                                 "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
-        wait(p, "document.querySelectorAll('#page-home .fcard, #page-home .root-setup').length > 0")
+        wait(p, "document.querySelectorAll('#page-home .fcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")
+        leave_hub(p)
+        wait(p, "document.querySelectorAll('#page-home .fcard').length > 0")
         out["home"] = p.js("""({ cards: [...document.querySelectorAll('#page-home .fcard')].map(c => c.querySelector('strong').textContent + ' · ' + c.querySelector('.chip:not(.route)').textContent),
-                               setup: !!document.querySelector('#page-home .root-setup'),
+                               setup: false,
                                bars: document.querySelectorAll('#page-home .fcard .bar span').length,
                                barWidth: (document.querySelector('#page-home .fcard .bar span') || {style: {}}).style.width || '' })""")
         p.js(f"location.hash = '#feature/' + encodeURIComponent({json.dumps(feature)}); 1")
@@ -1575,6 +1598,7 @@ def main(argv):
         time.sleep(1.2)
         out["back"] = {"hash": p.js("decodeURIComponent(location.hash)"), "overview": p.js("!!document.querySelector('.overview')")}
         out["usage"] = check_usage(p, feature)
+        out["hub"] = check_hub(p)
         out["modes"] = check_modes(p, feature)
         out["breakdown"] = check_breakdown(p, feature)
         out["ids"] = check_ids(p)

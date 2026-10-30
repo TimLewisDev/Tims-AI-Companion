@@ -4,7 +4,7 @@
 // Uses app.js's $, el, api, markdown, cmdCell, say, loaded and loadStatus.
 "use strict";
 
-const pageEls = { modes: $("#page-modes"), mode: $("#page-mode"), home: $("#page-home"),
+const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
   whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard") };
@@ -129,6 +129,7 @@ function parseRoute() {
   if (parts[0] === "settings") return { page: "settings" };
   if (parts[0] === "jira") return { page: "jira" };
   if (parts[0] === "modes") return { page: "modes" };
+  if (parts[0] === "hub") return { page: "hub" };
   if (parts[0] === "home") return { page: "home" };
   // #mode, and nothing asked for: the mode's home page, or the landing page
   // when there is no mode yet to show one of.
@@ -151,6 +152,9 @@ function showPage(which) {
 async function route() {
   if (companion && !document.body.classList.contains("expanded")) return; // the bubble shows the feed only
   const r = parseRoute();
+  // The Hub waits for a project to be picked, and nothing else is shown until then.
+  document.body.classList.toggle("hub-open", hubPending);
+  if (hubPending && r.page !== "hub") { location.hash = "#hub"; return; }
   if (paneLeaveBlocked(r)) return; // (split.js: an unsaved edit in the documents pane)
   lastHash = location.hash;
   // The page is drawn again: its live panels are gone (each draws its own).
@@ -164,6 +168,11 @@ async function route() {
   // installed, because it is also where another one is added.)
   showPage(r.page);
   if (r.page === "modes") renderLanding(pageEls.modes);
+  else if (r.page === "hub") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderHub === "function") await renderHub(pageEls.hub);
+    else pageEls.hub.replaceChildren(el("p", { class: "pad st missing" }, "The Hub didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
   else if (r.page === "mode") renderModeHome(pageEls.mode);
   else if (r.page === "home" && r.tag) await renderWorkflowTab(r.tag);
   else if (r.page === "home" && r.chat) await renderChatTab(r.chat); // chat.js
@@ -316,7 +325,7 @@ async function renderHome(quiet) {
   try { data = await api("/api/features"); } catch (e) { if (mine === homeDraw) put(el("p", { class: "st missing pad" }, String(e))); return; }
   if (mine !== homeDraw) return;
   const r = data.root;
-  if (!r.isSet || !r.exists) { put(rootSetup(r)); return; }
+  if (!r.isSet || !r.exists) { location.hash = "#hub"; return; } // no project open yet: the Hub is where one is picked
   // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
   const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
     el("strong", {}, "Tatty can't find the TT toolbox. "),
@@ -325,7 +334,7 @@ async function renderHome(quiet) {
   const head = el("div", { class: "home-head" },
     el("div", {}, el("h2", {}, "Features"),
       el("div", { class: "dim small root-line" }, "Root: ", copyable(r.root),
-        el("button", { type: "button", class: "primary", title: "Choose another root folder in Explorer", onclick: () => pickRoot(r) }, "Change…"))),
+        el("button", { type: "button", class: "primary", title: "Pick another project, or make a new one", onclick: () => { location.hash = "#hub"; } }, "Switch project…"))),
     el("div", { class: "actions" },
       el("button", { type: "button", class: "primary", onclick: () => newFeatureForm.toggle() }, "New feature…"),
       el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),

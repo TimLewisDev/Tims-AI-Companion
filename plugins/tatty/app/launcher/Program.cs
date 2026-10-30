@@ -63,10 +63,10 @@ namespace TattyLauncher
 
             plugin = ChoosePlugin(plugin);
             if (!HasScript(plugin))
-                return Fail("Tatty can't find its plugin. Install it in Claude Code, then run /tatty install.");
+                return Fail("Tatty can't find its plugin. Run the Tatty installer again to repair the installation.");
             if (bash == null || !File.Exists(bash)) bash = FindBash();
             if (bash == null)
-                return Fail("Tatty needs Git Bash, which comes with Git for Windows.");
+                return Fail("Tatty needs Git for Windows (it provides Git Bash). Install it, or run the Tatty installer again to have it installed for you.");
 
             var start = new ProcessStartInfo(bash)
             {

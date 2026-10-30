@@ -17,10 +17,11 @@ log and Tatty's own settings (the root folder, the projects chosen per feature).
 usage: server.py serve  [--cwd DIR] [--bash PATH]       run in the foreground
        server.py open   [--cwd DIR] [--bash PATH] [--no-browser]
                                                         start it detached if needed, open the page
-       server.py boot   [--project DIR] [--bash PATH] [--no-browser]
+       server.py boot   [--project DIR] [--bash PATH] [--no-browser] [--no-hub]
                                                         what the Desktop shortcut runs: the server and
-                                                        the tray app
+                                                        the tray app, opening on the Hub
        server.py install [--bash PATH]                  Desktop and Start menu shortcuts (Windows)
+       server.py hub list|add|open ...                  the Hub's projects (add: --name, --root, --repo, --open)
        server.py uninstall                              take them away
        server.py status                                 attached | attached (claude mod) | not open
        server.py url                                    the page's URL
@@ -60,7 +61,7 @@ if str(HERE) not in sys.path:
 import reviewdoc  # noqa: E402  the Review Suggestions document
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
-          "models.js": "text/javascript",
+          "models.js": "text/javascript", "hub.js": "text/javascript", "hub.css": "text/css",
           "features.js": "text/javascript", "views.js": "text/javascript", "usage.js": "text/javascript",
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
@@ -238,6 +239,7 @@ class State:
         self.diff_lock = threading.Lock()  # one change to a feature's file of code changes at a time
         self.diff_runs = set()  # (feature folder, task id) pairs whose explanation is being written (see "code changes")
         self.last_activity = time.time()
+        self.hub_pending = False  # the Hub is up, waiting for a project to be picked (see "the Hub")
 
     def touch(self):
         self.last_activity = time.time()
@@ -760,7 +762,7 @@ def session_default(state):
 
 
 def feature_models_file():
-    return home() / "session-models.json"
+    return project_home() / "session-models.json"
 
 
 def feature_model(feature):
@@ -781,10 +783,7 @@ def remember_feature_model(feature, model, effort):
     if not isinstance(data, dict):
         data = {}
     data[feature] = {"model": model, "effort": effort}
-    home().mkdir(parents=True, exist_ok=True)
-    tmp = feature_models_file().with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, feature_models_file())
+    write_json(feature_models_file(), data)
 
 
 def llms_view(state):
@@ -899,6 +898,257 @@ def root_from_pick(path):
     return p.as_posix()
 
 
+# ---------------------------------------------------------------- the Hub
+# Tatty keeps several projects, each its own root folder (features, design, tasks, archive)
+# and optionally a default code repo its sessions start in. <home>/hub.json lists them:
+# {version, projects: [{id, name, root, repo, created, lastOpened}]}. The active project is
+# the one whose root <home>/root names (that file stays the one source of truth, which the
+# toolbox's skills and scripts/tatty-root.sh read). Opening a project makes its root the
+# active one. Forgetting a project only drops its entry: no folder is ever deleted. TATTY_ROOT
+# (the tests, development) overrides the setting and so bypasses the Hub's choice.
+
+HUB_LOCK = threading.RLock()
+
+
+def hub_path():
+    return home() / "hub.json"
+
+
+def hub_key(path):
+    s = Path(str(path)).as_posix().rstrip("/")
+    return s.lower() if os.name == "nt" else s
+
+
+def hub_setting_root():
+    """The root <home>/root names (not TATTY_ROOT), or ''."""
+    try:
+        return (home() / "root").read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        return ""
+
+
+def hub_new_project(root, name="", repo=""):
+    root = Path(root).as_posix().rstrip("/") or Path(root).as_posix()
+    return {"id": secrets.token_hex(4), "name": " ".join(str(name or Path(root).name or "Project").split())[:80],
+            "root": root, "repo": Path(repo).as_posix() if repo else "", "created": time.time(), "lastOpened": 0}
+
+
+def hub_load():
+    """The registry. The first time, and whenever the root setting names a folder it
+    doesn't list (the toolbox's skills can set it), that root is listed as a project."""
+    with HUB_LOCK:
+        d = read_json(hub_path(), {})
+        rows = [p for p in d.get("projects", []) if isinstance(p, dict) and p.get("id") and p.get("root")]
+        cur = hub_setting_root()
+        first = not hub_path().exists()
+        changed = first and bool(cur)
+        if cur and not any(hub_key(p["root"]) == hub_key(cur) for p in rows):
+            found = hub_new_project(cur)
+            if first:
+                found["legacy"] = True  # it was Tatty's root before the Hub: its per-project records stay where they were
+            rows.append(found)
+            changed = True
+        if changed:
+            write_json(hub_path(), {"version": 1, "projects": rows})
+        return {"version": 1, "projects": rows}
+
+
+def hub_save(d):
+    with HUB_LOCK:
+        write_json(hub_path(), {"version": 1, "projects": d["projects"]})
+
+
+def hub_find(d, ref):
+    ref = str(ref or "").strip()
+    return next((p for p in d["projects"] if p["id"] == ref), None) or \
+        next((p for p in d["projects"] if p["name"].lower() == ref.lower()), None)
+
+
+def hub_active(d):
+    """The project whose root is the active root, or None (also when TATTY_ROOT overrides)."""
+    if os.environ.get("TATTY_ROOT"):
+        root = os.environ["TATTY_ROOT"]
+    else:
+        root = hub_setting_root()
+    return next((p for p in d["projects"] if root and hub_key(p["root"]) == hub_key(root)), None)
+
+
+def project_home():
+    """Where the records kept by feature name live (branches, archive times, models): two
+    projects can have a feature of the same name, so each project but the one that was Tatty's
+    root before the Hub keeps its own, in <home>/projects/<id>. No project listed: <home>."""
+    try:
+        active = hub_active(hub_load())
+    except OSError:
+        active = None
+    if not active or active.get("legacy"):
+        return home()
+    return home() / "projects" / active["id"]
+
+
+def hub_register(root, name="", repo=""):
+    """List a root as a project (or update the one that is listed): the project."""
+    with HUB_LOCK:
+        d = hub_load()
+        found = next((p for p in d["projects"] if hub_key(p["root"]) == hub_key(root)), None)
+        if found:
+            if name:
+                found["name"] = " ".join(str(name).split())[:80]
+            if repo:
+                found["repo"] = Path(repo).as_posix()
+        else:
+            found = hub_new_project(root, name, repo)
+            d["projects"].append(found)
+        hub_save(d)
+        return found
+
+
+def hub_root_refused(path):
+    """Why a folder can't be a project's root, or ''. The same refusals as tatty-root.sh."""
+    p = str(path or "").strip()
+    if not p:
+        return "Give a folder."
+    if not (os.path.isabs(p) or re.match(r"^[A-Za-z]:[/\\]", p)):
+        return f"Give a full path, not a relative one: {p}"
+    low = hub_key(Path(p).resolve())
+    for banned in (config_dir(), Path.home() / ".claude"):
+        b = hub_key(banned.resolve())
+        if low == b or low.startswith(b + "/"):
+            return f"The root can't be inside the Claude config folder ({banned.as_posix()}); pick one of your own folders."
+    return ""
+
+
+def hub_project_view(p):
+    root = Path(p["root"])
+    features = root / "features"
+    try:
+        count = sum(1 for x in features.iterdir() if x.is_dir() and not x.name.startswith(".")) if features.is_dir() else 0
+    except OSError:
+        count = 0
+    return {**p, "exists": root.is_dir(), "features": count, "repoExists": bool(p.get("repo")) and os.path.isdir(p["repo"])}
+
+
+def hub_view(state=None):
+    d = hub_load()
+    active = hub_active(d)
+    rows = sorted(d["projects"], key=lambda p: (-(p.get("lastOpened") or 0), p["name"].lower()))
+    return {"projects": [hub_project_view(p) for p in rows], "active": active["id"] if active else "",
+            "pending": bool(getattr(state, "hub_pending", False)), "locked": bool(os.environ.get("TATTY_ROOT")),
+            "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
+
+
+def hub_clean_repo(repo):
+    """(repo as a path or '', error). A repo is optional; if given it must be a folder."""
+    repo = str(repo or "").strip()
+    if not repo:
+        return "", ""
+    if not os.path.isdir(repo):
+        return "", f"No such folder for the code repo: {repo}"
+    return Path(repo).resolve().as_posix(), ""
+
+
+def hub_add(state, b):
+    """Add a project: a name, a root (made when create, else it must exist) and an optional repo.
+    With open, it becomes the active project too. (code, answer)."""
+    name = " ".join(str(b.get("name", "")).split())
+    if name and (NAME_REFUSED.search(name) or len(name) > 80):
+        return 400, {"error": "Not a usable name (no / \\ : * ? \" < > |)."}
+    root = str(b.get("root", "")).strip()
+    if not root:
+        if not name:
+            return 400, {"error": "Give the project a name, or a folder."}
+        root = ((Path.home() / "Tatty") / name).as_posix()
+    why = hub_root_refused(root)
+    if why:
+        return 400, {"error": why}
+    repo, why = hub_clean_repo(b.get("repo"))
+    if why:
+        return 400, {"error": why}
+    p = Path(root)
+    if p.exists() and not p.is_dir():
+        return 400, {"error": f"{root} is a file, not a folder."}
+    if not p.is_dir() and not b.get("create", True):
+        return 400, {"error": f"No such folder: {root}"}
+    try:
+        (p / "features").mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return 400, {"error": f"Couldn't create {root}: {e}"}
+    got = hub_register(p.resolve().as_posix() if p.exists() else root, name, repo)
+    if b.get("open"):
+        return hub_open(state, got["id"])
+    return 200, {"project": hub_project_view(got), "hub": hub_view(state)}
+
+
+def hub_open(state, ref):
+    """Make a project the active one: its root becomes the root, and the Hub is done with. (code, answer)"""
+    with HUB_LOCK:
+        d = hub_load()
+        p = hub_find(d, ref)
+        if not p:
+            return 404, {"error": "No such project."}
+        if not Path(p["root"]).is_dir():
+            return 409, {"error": f"The folder {p['root']} is missing. Put it back, or forget this project."}
+        code, said = set_root(state, p["root"], True)
+        if code != 0:
+            return 400, {"error": said or "Couldn't open the project."}
+        p["lastOpened"] = time.time()
+        hub_save(d)
+    repo = p.get("repo") or ""
+    state.cwd = repo if repo and os.path.isdir(repo) else p["root"]
+    state.hub_pending = False
+    state.emit("hub", pending=False, active=p["id"])
+    state.emit("root", root=p["root"])
+    return 200, {"project": hub_project_view(p), "hub": hub_view(state)}
+
+
+def hub_update(state, b):
+    with HUB_LOCK:
+        d = hub_load()
+        p = hub_find(d, b.get("id"))
+        if not p:
+            return 404, {"error": "No such project."}
+        name = " ".join(str(b.get("name", p["name"])).split())
+        if not name or NAME_REFUSED.search(name) or len(name) > 80:
+            return 400, {"error": "Not a usable name (no / \\ : * ? \" < > |)."}
+        repo, why = hub_clean_repo(b.get("repo", p.get("repo")))
+        if why:
+            return 400, {"error": why}
+        p["name"], p["repo"] = name, repo
+        hub_save(d)
+    return 200, {"project": hub_project_view(p), "hub": hub_view(state)}
+
+
+def hub_forget(state, ref):
+    """Drop a project from the list. Its folders stay where they are; the active project stays listed."""
+    with HUB_LOCK:
+        d = hub_load()
+        p = hub_find(d, ref)
+        if not p:
+            return 404, {"error": "No such project."}
+        if hub_active(d) is p:
+            return 409, {"error": "That project is open. Open another one first, then forget this one."}
+        d["projects"] = [x for x in d["projects"] if x is not p]
+        hub_save(d)
+    return 200, {"hub": hub_view(state)}
+
+
+def hub_change(state, b):
+    action = str(b.get("action", ""))
+    if action == "show":
+        state.hub_pending = True
+        state.emit("hub", pending=True)
+        return 200, hub_view(state)
+    if action == "open":
+        return hub_open(state, b.get("id"))
+    if action == "add":
+        return hub_add(state, b)
+    if action == "update":
+        return hub_update(state, b)
+    if action == "forget":
+        return hub_forget(state, b.get("id"))
+    return 400, {"error": "action: show, open, add, update or forget"}
+
+
 def picker_argv(build=False):
     """How to ask for a folder in Windows' own dialog: Tatty's companion exe in
     --pick-folder mode. TATTY_PICKER names a stand-in (a bash script taking
@@ -913,7 +1163,7 @@ def picker_argv(build=False):
         return [str(COMPANION_EXE)]
     if not build:
         import shutil
-        return [str(COMPANION_EXE)] if shutil.which("dotnet") else None
+        return [str(COMPANION_EXE)] if shutil.which("dotnet") or (prebuilt_dir() / "TtCompanion.exe").is_file() else None
     return [str(COMPANION_EXE)] if companion_ready() else None
 
 
@@ -1362,7 +1612,7 @@ def branch_exists(repo, name):
 
 
 def branch_records():
-    return read_json(home() / "branches.json", {})
+    return read_json(project_home() / "branches.json", {})
 
 
 def branch_record(feature):
@@ -1374,7 +1624,7 @@ def save_branch(feature, rec):
     """Store a feature's record (the lock held by the caller when it read it first)."""
     rows = branch_records()
     rows[feature.lower()] = rec
-    write_json(home() / "branches.json", rows)
+    write_json(project_home() / "branches.json", rows)
 
 
 def branch_name(repo, feature):
@@ -2095,6 +2345,7 @@ def feature_project(folder, docs):
             pass
     if best:
         return best[0], "link"
+    hub_repo = (hub_active(hub_load()) or {}).get("repo")
     ledger = ledger_path()
     try:
         found = None
@@ -2115,6 +2366,8 @@ def feature_project(folder, docs):
         for m in re.finditer(r"Repo[^`\n]*`([A-Za-z]:[/\\][^`]+|/[^`]+)`", read_doc(folder, f) if f else ""):
             if os.path.isdir(m.group(1)):
                 return Path(m.group(1)).as_posix(), "docs"
+    if hub_repo and os.path.isdir(hub_repo):  # the project's own default repo, when nothing says otherwise
+        return hub_repo, "project"
     return None, None
 
 
@@ -5432,7 +5685,7 @@ def archive_dir(name):
 
 def archived_at():
     """feature name -> when it was archived (<home>/archived.json)."""
-    return read_json(home() / "archived.json", {})
+    return read_json(project_home() / "archived.json", {})
 
 
 def archived_set(name, when):
@@ -5443,10 +5696,7 @@ def archived_set(name, when):
             rows.pop(name, None)
         else:
             rows[name] = when
-        home().mkdir(parents=True, exist_ok=True)
-        tmp = home() / "archived.json.tmp"
-        tmp.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-        os.replace(tmp, home() / "archived.json")
+        write_json(project_home() / "archived.json", rows)
 
 
 def archived_list():
@@ -5572,7 +5822,7 @@ def forget_feature_records(name):
     with BRANCH_LOCK:
         rows = branch_records()
         if rows.pop(name.lower(), None) is not None:
-            write_json(home() / "branches.json", rows)
+            write_json(project_home() / "branches.json", rows)
     models = read_json(feature_models_file(), {})
     if isinstance(models, dict) and models.pop(name, None) is not None:
         write_json(feature_models_file(), models)
@@ -6540,7 +6790,10 @@ class Handler(BaseHTTPRequestHandler):
         st.touch()
         if path == "/api/status":
             return self.send(200, {"open": True, "mod": st.mod_attached(), "cwd": st.cwd,
-                                   "session": st.mod_session, "modes": installed_modes()})
+                                   "session": st.mod_session, "modes": installed_modes(),
+                                   "hub": {"pending": st.hub_pending}})
+        if path == "/api/hub":
+            return self.send(200, hub_view(st))
         if path == "/api/events":
             since = int(q.get("since", ["0"])[0] or 0)
             with st.cond:
@@ -6832,6 +7085,9 @@ class Handler(BaseHTTPRequestHandler):
             if code != 0:
                 return self.send(400, {"error": said or "couldn't set the root"})
             return self.send(200, root_info())
+        if path == "/api/hub":
+            code, answer = hub_change(st, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
         if path == "/api/settings":
             save_settings(b if isinstance(b, dict) else {})
             return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
@@ -7234,16 +7490,49 @@ def build_exe(sources, build, exe, what):
     return p.returncode == 0 and exe.exists()
 
 
+def prebuilt_dir():
+    """Where the installer put the exes it built (self-contained, so a machine
+    without the .NET SDK can run Tatty): %LOCALAPPDATA%\\Tatty\\prebuilt, or
+    TATTY_PREBUILT."""
+    return Path(os.environ.get("TATTY_PREBUILT") or (Path(os.environ.get("LOCALAPPDATA") or home()) / "Tatty" / "prebuilt"))
+
+
+def use_prebuilt(name, exe):
+    """Put the installer's prebuilt `name` where `exe` is expected (a copy, so it is
+    as new as the plugin version's folder). True when it is there afterwards."""
+    import shutil
+    src = prebuilt_dir() / name
+    if not src.is_file():
+        return False
+    try:
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, exe)
+    except OSError:
+        return False
+    return exe.exists()
+
+
+def build_or_prebuilt(sources, build, exe, name, what):
+    """Build from source when there is a .NET SDK, else fall back to the installer's
+    prebuilt exe. True when `exe` can run."""
+    if build_exe(sources, build, exe, what):
+        return True
+    if exe.exists():
+        return True
+    return use_prebuilt(name, exe)
+
+
 def companion_stale():
     """True when the companion isn't built, or a source is newer than the build."""
     return build_stale(COMPANION, COMPANION_EXE)
 
 
 def companion_ready():
-    """Build the companion if needed (once; quietly, into the log). True when it can run."""
+    """Build the companion if needed (once; quietly, into the log), or take the
+    installer's prebuilt one. True when it can run."""
     if not companion_stale():
         return True
-    return build_exe(COMPANION, BUILD, COMPANION_EXE, "Tatty's tray companion")
+    return build_or_prebuilt(COMPANION, BUILD, COMPANION_EXE, "TtCompanion.exe", "Tatty's tray companion")
 
 
 def companion_running():
@@ -7321,6 +7610,9 @@ def boot_project(project=None):
         if not os.path.isdir(project):
             raise ValueError(f"no such folder: {project}")
         return Path(project).resolve().as_posix()
+    repo = (hub_active(hub_load()) or {}).get("repo")
+    if repo and os.path.isdir(repo):
+        return Path(repo).as_posix()
     root, is_set = tatty_root()
     return (root if is_set and root.is_dir() else Path.home()).as_posix()
 
@@ -7417,10 +7709,12 @@ def update_at_launch(bash, cwd):
     return root if version_key(now) > version_key(plugin_version()) else None
 
 
-def boot(bash, project, no_ui, no_claude=False):
+def boot(bash, project, no_ui, no_claude=False, no_hub=False):
     """Everything the Desktop shortcut starts, in order: the server and the tray
     app (or a browser tab). Each step is skipped when it is already there, so
-    starting Tatty twice just brings it forward. 0 ok; 2 when the folder asked
+    starting Tatty twice just brings it forward. The window opens on the Hub (the
+    projects to pick from) unless a project was asked for, or no_hub, or TATTY_ROOT
+    fixes the root. 0 ok; 2 when the folder asked
     for isn't there. (no_claude is still taken, and does nothing: there is no
     Claude session of Tatty's own to start any more.)"""
     try:
@@ -7428,6 +7722,7 @@ def boot(bash, project, no_ui, no_claude=False):
     except ValueError as e:
         print(f"boot: {e}", file=sys.stderr)
         return 2
+    show_hub = not project and not no_hub and not os.environ.get("TATTY_ROOT")
     if BOOT_JSON.exists():
         write_boot_json(bash)
     pinned = bool(read_boot().get("pin"))
@@ -7436,13 +7731,18 @@ def boot(bash, project, no_ui, no_claude=False):
         newer = None if pinned else update_at_launch(bash, cwd)
         if newer:  # an update was installed: carry on from the new Tatty, so everything of this launch is its
             argv = [sys.executable, str(newer / "app" / "server.py"), "boot", "--bash", bash]
-            argv += (["--project", project] if project else []) + (["--no-browser"] if no_ui else []) + (["--no-claude"] if no_claude else [])
+            argv += (["--project", project] if project else []) + (["--no-browser"] if no_ui else []) + (["--no-claude"] if no_claude else []) + (["--no-hub"] if no_hub else [])
             return subprocess.run(argv, env={**os.environ, "TATTY_LAUNCH_UPDATED": "1"}).returncode
         info = start_detached(cwd, bash)
         greet(info, cwd, bash)
     elif not pinned and not os.environ.get("TATTY_NO_LAUNCH_UPDATE"):
         try:  # the server that is up looks for an update (and moves to it if nothing is lost): not waited for
             call(info, "POST", "/api/update", {"action": "apply" if load_settings()["autoUpdate"] else "check", "launch": True})
+        except (OSError, urllib.error.URLError, ValueError):
+            pass
+    if show_hub:
+        try:
+            call(info, "POST", "/api/hub", {"action": "show"})
         except (OSError, urllib.error.URLError, ValueError):
             pass
     print(info["url"])
@@ -7462,7 +7762,7 @@ def install(bash, pin=False):
     if os.name != "nt":
         print("install: the desktop app is Windows-only; elsewhere Tatty opens in a browser tab.", file=sys.stderr)
         return 2
-    if build_stale(LAUNCHER, LAUNCHER_EXE) and not build_exe(LAUNCHER, LAUNCHER_BUILD, LAUNCHER_EXE, "Tatty's launcher"):
+    if build_stale(LAUNCHER, LAUNCHER_EXE) and not build_or_prebuilt(LAUNCHER, LAUNCHER_BUILD, LAUNCHER_EXE, "Tatty.exe", "Tatty's launcher"):
         print(f"install: couldn't build the launcher (it needs the .NET 9 SDK); see {home() / 'server.log'}", file=sys.stderr)
         return 2
     write_boot_json(bash, pin=pin)
@@ -7521,6 +7821,39 @@ def usage():
     sys.exit(2)
 
 
+def hub_cli(args, cwd, bash):
+    """tatty.sh hub list | add | open: the Hub from a shell (the installer's first project).
+    Works with no server up; when one is up, opening goes through it so its window follows."""
+    sub = args.pop(0) if args else ""
+    if sub == "list":
+        d = hub_view()
+        for p in d["projects"]:
+            print(("* " if p["id"] == d["active"] else "  ") + f"{p['id']}\t{p['name']}\t{p['root']}\t{p.get('repo', '')}")
+        return 0
+    if sub in ("add", "open"):
+        body = {"action": sub, "name": opt(args, "--name", ""), "root": opt(args, "--root", ""), "repo": opt(args, "--repo", ""),
+                "open": flag(args, "--open"), "create": not flag(args, "--no-create")}
+        if sub == "open":
+            body["id"] = args[0] if args else ""
+        info = alive()
+        if info:
+            try:
+                got = call(info, "POST", "/api/hub", body)
+                code = 200
+            except urllib.error.HTTPError as e:
+                code, got = e.code, json.loads(e.read().decode("utf-8") or "{}")
+        else:
+            code, got = hub_change(State(cwd, bash), body)
+        if code != 200:
+            print(f"hub: {got.get('error', 'failed')}", file=sys.stderr)
+            return 2
+        print((got.get("project") or {}).get("root", ""))
+        return 0
+    print("usage: server.py hub list | add [--name N] [--root DIR] [--repo DIR] [--open] [--no-create] | open <id|name>",
+          file=sys.stderr)
+    return 2
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         usage()
@@ -7543,7 +7876,9 @@ def main(argv):
             print(f"ui={show_ui(info)}")
         return 0
     if cmd == "boot":
-        return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"))
+        return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"), flag(args, "--no-hub"))
+    if cmd == "hub":
+        return hub_cli(args, cwd, bash)
     if cmd == "install":
         return install(bash, flag(args, "--pin"))
     if cmd == "uninstall":

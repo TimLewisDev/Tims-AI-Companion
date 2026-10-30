@@ -643,6 +643,7 @@ function milestoneCard(ev) {
 }
 
 const pageOpened = Date.now();
+let hubPending = false; // the Hub is up, waiting for a project to be picked (hub.js; the server's say)
 const FESTIVE = ["#E5A32B", "#4CAF50", "#E05263", "#7D5BBD", "#3B9BD6", "#F2C94C"];
 
 // Confetti over the page, in step with Tatty's own (Effects.cs). Each piece is a
@@ -802,6 +803,9 @@ const booted = (async () => {
     $("#cwd").textContent = st.cwd;
     setMod(st.mod);
     setInstalledModes(st.modes); // which discipline plugins there are (modes.js)
+    // A launch from the shortcut opens on the Hub (hub.js): the full panel, not the bubble.
+    hubPending = !!(st.hub && st.hub.pending);
+    if (hubPending && companion) $("#expand").click();
   } catch (e) { feed.append(el("div", { class: "card notice" }, "Can't reach the window server: " + e)); }
   connect();
   setInterval(async () => {
