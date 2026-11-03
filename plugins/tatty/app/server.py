@@ -74,7 +74,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css",
-          "diff.js": "text/javascript", "diff.css": "text/css",
+          "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -1861,7 +1861,52 @@ PLAN_EVENTS = {"Familiarisation": "plan.familiarisation_closed", "Requirements":
                "Technical Design": "plan.design_closed", "Whole plan": "plan.whole_closed", "Sign-off": "plan.signed_off"}
 
 
-def stages_of(plan_text, events):
+# Which stages a feature's workflow includes: the toolbox's stages.sh keeps the profile in the
+# feature's folder (Tatty reads it with `show` and changes it only with `set`, on a person's action).
+STAGE_COLS = ("key", "label", "level", "on", "locked", "why")
+# the profile keys that are a row of the draft plan's Stages table
+STAGE_ROWS = {"explore": "Familiarisation", "scope": "Scope & Constraints", "approach": "Approach", "whole-plan": "Whole plan"}
+
+
+def stages_view(state, folder):
+    """{route, stages: [{key, label, level, on, locked, why}]} from stages.sh show --tsv, or
+    None when the toolbox has no stages.sh (an older toolbox: the page then offers no choice)."""
+    script = toolbox_script("tt-common/scripts/stages.sh")
+    if not script:
+        return None
+    try:
+        p = quiet_run(state, [state.bash, str(script), "show", "--tsv", folder.as_posix()], cwd=str(folder))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if p.returncode:
+        return None
+    rows = []
+    for line in p.stdout.splitlines():
+        c = dict(zip(STAGE_COLS, line.rstrip("\r").split("\t")))
+        if c.get("key"):
+            rows.append({"key": c["key"], "label": c.get("label", ""), "level": c.get("level", "top"), "on": c.get("on") == "on",
+                         "locked": c.get("locked") == "1", "why": c.get("why", "")})
+    plan = next((r for r in rows if r["key"] == "plan"), None)
+    return {"route": "lite" if plan and not plan["on"] else "full", "stages": rows} if rows else None
+
+
+def stages_set(state, folder, key, on):
+    """Turn one stage on or off through stages.sh set: (HTTP code, answer). The script refuses a
+    stage that has begun or must stay (exit 1, its reason on stderr): that is a 409."""
+    script = toolbox_script("tt-common/scripts/stages.sh")
+    if not script:
+        return 409, {"error": "The installed toolbox is too old to choose stages. Update its core plugin."}
+    try:
+        p = quiet_run(state, [state.bash, str(script), "set", folder.as_posix(), key, "on" if on else "off"], cwd=str(folder))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 500, {"error": str(e)}
+    if p.returncode:
+        said = (p.stderr or p.stdout).strip().splitlines()
+        return (409 if p.returncode == 1 else 400), {"error": (said[-1] if said else "stages.sh refused it").removeprefix("stages.sh: ")}
+    return 200, {"profile": stages_view(state, folder)}
+
+
+def stages_of(plan_text, events, left_out=()):
     """Planning stages: the draft plan's Stages table, or, once it is signed off
     (the table is removed then), every stage closed, dated from the ledger."""
     when = {e["event"]: e.get("ts") for e in events}
@@ -1870,7 +1915,8 @@ def stages_of(plan_text, events):
         return [{"stage": r.get("Stage", ""), "status": r.get("Status", ""), "ts": when.get(PLAN_EVENTS.get(r.get("Stage", "")))}
                 for r in rows]
     if plan_text:
-        return [{"stage": s, "status": "Closed", "ts": when.get(e)} for s, e in PLAN_EVENTS.items()]
+        return [{"stage": s, "status": "Skipped: not selected" if s in left_out else "Closed", "ts": None if s in left_out else when.get(e)}
+                for s, e in PLAN_EVENTS.items()]
     return []
 
 
@@ -1907,12 +1953,18 @@ def feature_summary(state, folder, detail=False):
         events = events_of(folder)
         plan = first_doc(docs, "Comprehensive Tech Plan")
         project, project_from = feature_project(folder, docs)
+        profile = stages_view(state, folder)
+        left_out = {STAGE_ROWS[s["key"]] for s in profile["stages"] if not s["on"] and s["key"] in STAGE_ROWS} if profile else set()
+        lite_first = out["route"] == "new" and bool(profile) and profile["route"] == "lite"
         out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
-                    "stages": stages_of(read_doc(folder, plan) if plan else "", events),
+                    "stages": stages_of(read_doc(folder, plan) if plan else "", events, left_out), "profile": profile,
                     "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder),
                     # tt-workflow is the full pipeline's entry: a small change goes in through tt-workflow-lite
-                    "workflowStep": None if out["route"] in ("lite", "bug") else workflow_row(folder),
+                    # (and a new feature whose chosen stages leave out Plan is a small change: lite first)
+                    "workflowStep": None if out["route"] in ("lite", "bug") or lite_first else workflow_row(folder), "liteFirst": lite_first,
                     "liteStep": lite_step(folder, out["route"], out["phase"], out["text"])})
+        if lite_first and out["liteStep"]:
+            out["liteStep"]["text"] = "Start this as a small change on the lite route: the stages chosen for it leave out Plan (it asks bug or feature)."
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
         out["ticket"] = next(iter(jira_for_feature(folder.name)), "")  # the Jira ticket it was started from
@@ -7669,6 +7721,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "The request's link should start with http:// or https://"})
                 return self.send(200, merge_set(st, folder, action, url))
             return self.send(400, {"error": "action is check, opened or merged"})
+        if path == "/api/stages":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            key, on = str(b.get("stage", "")), b.get("on")
+            if not re.fullmatch(r"[a-z]+(-[a-z]+)*", key) or not isinstance(on, bool):
+                return self.send(400, {"error": "stage (a stage name) and on (true or false) are required"})
+            code, answer = stages_set(st, folder, key, on)
+            return self.send(code, answer)
         if path in ("/api/start", "/api/project"):
             folder = feature_dir(str(b.get("name", "")))
             if not folder:

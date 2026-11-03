@@ -93,6 +93,16 @@ All of these are under the core plugin's `skills/` folder.
 | `tt-connections/scripts/connections.sh status <folder>` | the project's connections | the Toolbox page's Connections tab |
 | `tt-common/scripts/ids.sh index <feature folder>` | every planning ID the feature's documents define, one row each: `ID file line form gloss` (form `heading`, `item` or `row`), from the document that owns its prefix | ID links and their hover cards (below) |
 
+### Choosing a feature's stages
+
+| Script | For | Used in Tatty |
+|---|---|---|
+| `tt-common/scripts/stages.sh show --tsv <feature folder>` | the stages the feature's workflow includes, one row each: `key label level on locked why` (`level` `top` or `plan`; `locked` 1 when the stage has begun or must stay, with `why`) | a feature's page: the Stages button, the tracker, the Start panel's line |
+| `stages.sh set <feature folder> <stage> on\|off` | a person's tick in the Stages menu | the toolbox keeps the choice in `<feature>/.tt/workflow-stages.tsv` and updates a draft plan's Stages table; exit 1 (refused, its reason on stderr) is a 409 |
+
+The toolbox owns the choice and its workflow follows it: Tatty stores nothing of its own. A
+toolbox without `stages.sh` is not an error; the page just offers no Stages button.
+
 The page can't name any other command. The server runs only these (and the
 design plugin's `stories.sh`, below, and the model scripts in "Models and LLM
 connections", below), by argv, with no shell.

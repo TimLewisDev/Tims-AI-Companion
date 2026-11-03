@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --review | --commit | --suggestions | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -20,6 +20,8 @@ throwaway home whose server has a stand-in claude (TATTY_CLAUDE), or every messa
 --archive only Archive, Restore and Delete on a feature it makes itself ("Walk archive"): real mouse and
 keys on the split button, its menu, the Delete panel and the Archived section. It deletes a folder, so only ever on a
 throwaway root;
+--stages only the Stages button on a feature it makes itself ("Walk stages"): real mouse and keys on its menu,
+leaving Scope, Plan and Review out and putting them back. It writes the feature's stage profile, so a throwaway root only;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --suggestions only the Review step on the page: the tracker's chips, the link rows and the Review page (the page's api() stood in for: nothing is written);
@@ -1120,6 +1122,60 @@ def check_archive(p):
     return res
 
 
+def check_stages(p):
+    """The Stages button on a feature of its own ("Walk stages"), with real mouse and keys: the
+    menu's rows and which are locked, leaving Scope out and the menu opening again with it
+    unticked, Plan out (a new feature then starts on the lite route), Review out (the tracker
+    loses its step), and putting each back. It writes the feature's stage profile, so only ever
+    on a throwaway root."""
+    res, name = {}, "Walk stages"
+    q = json.dumps(name)
+    p.js(f"api('/api/new-feature', {{ name: {q} }}).then(() => 1); 1")
+    time.sleep(0.5)
+    p.js(f"location.hash = '#feature/' + encodeURIComponent({q}); 1")
+    wait(p, "!!document.querySelector('#feature-stages')")
+    rows = "[...document.querySelectorAll('.linkmenu-item')].map(b => b.textContent.trim() + (b.disabled ? ' (locked)' : ''))"
+
+    def open_menu():
+        click(p, *center(p, "#feature-stages"))
+        return wait(p, "!!document.querySelector('.linkmenu')")
+
+    def choose(text):  # click the menu row that has this text, then wait for the menu to come back, redrawn
+        p.js(f"[...document.querySelectorAll('.linkmenu-item')].find(b => b.textContent.includes({json.dumps(text)})).id = 'walk-item'; 1")
+        click(p, *center(p, "#walk-item"))
+        time.sleep(0.3)
+        return wait(p, "!!document.querySelector('.linkmenu') && !document.querySelector('#walk-item')", 60)
+
+    res["button"] = p.js("document.querySelector('#feature-stages').getAttribute('aria-haspopup')")
+    res["opens"] = open_menu()
+    res["menu"] = p.js(rows)
+    res["requirements"] = p.js("""(() => { const b = [...document.querySelectorAll('.linkmenu-item')].find(b => b.textContent.includes('Requirements'));
+                                           return { disabled: b.disabled, why: b.title }; })()""")
+    res["scopeOut"] = choose("Scope")
+    res["afterScope"] = p.js(rows)
+    key(p, "Escape", 27)
+    res["escCloses"] = p.js("!document.querySelector('.linkmenu')")
+    time.sleep(0.4)
+    open_menu()
+    res["scopeIn"] = choose("Scope")
+    res["planOut"] = choose("Plan")
+    res["afterPlan"] = p.js(rows)
+    key(p, "Escape", 27)
+    res["liteFirst"] = p.js("""[...document.querySelectorAll('#page-feature .stand')].map(x => x.innerText.split('\\n')[0])""")
+    time.sleep(0.4)
+    open_menu()
+    res["planIn"] = choose("Plan")
+    res["reviewOut"] = choose("Review")
+    key(p, "Escape", 27)
+    res["trackerNoReview"] = p.js("[...document.querySelectorAll('.tracker li .label')].map(l => l.textContent)")
+    time.sleep(0.4)
+    open_menu()
+    res["reviewIn"] = choose("Review")
+    key(p, "Escape", 27)
+    res["trackerBack"] = p.js("[...document.querySelectorAll('.tracker li .label')].map(l => l.textContent)")
+    return res
+
+
 def check_review(p):
     """The review step's Start panel (review.js), drawn with the page's api() stood in for: it asks which
     repo and branch rather than showing the project line, the command has no "[branch]" in it, Start is held
@@ -1556,10 +1612,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--review", "--commit", "--suggestions", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

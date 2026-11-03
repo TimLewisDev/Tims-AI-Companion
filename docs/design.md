@@ -1018,6 +1018,21 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
     archive, design or tasks folders, Tatty's or Claude's home, the user's home or the
     plugin, for a drive or top-level folder, and for a link to another feature.
     The toolbox's links and ledger are not touched.
+- **Stages** (stages.js; server.py `stages_view`/`stages_set`, "choosing a feature's stages"
+  in the contract). The feature page's header has a **Stages ▾** button: a menu (split.js's
+  `showMenu`) with a tick per stage the workflow includes, the planning stages indented under
+  Plan. The choice is the toolbox's, kept in the feature's folder by `stages.sh` and followed by
+  its workflow; Tatty keeps nothing. `GET /api/feature` carries it as `profile`
+  (`{route, stages: [{key, label, level, on, locked, why}]}`, null for a toolbox without
+  `stages.sh`, and then there is no button). `POST /api/stages {name, stage, on}` runs
+  `stages.sh set`; a stage that has begun or must stay (Requirements, Technical Design,
+  Sign-off, Build) comes back 409 with the toolbox's reason, and shows in the menu as a
+  disabled row whose tooltip says it. After a change the page redraws and the menu opens again.
+  The tracker drops Explore and Review when they are left out; the draft plan's chips show a
+  left-out stage as skipped (and, once signed off, `stages_of` takes it from the profile
+  instead of calling every stage closed). Plan out means a small change: a new feature then
+  offers the lite route first (`liteFirst`). The Start panel says how many stages it will work
+  through.
 
 ## User Stories (the design mode)
 

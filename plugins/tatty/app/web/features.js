@@ -759,7 +759,7 @@ function reviewChips(f) {
 }
 
 function tracker(f) {
-  const { steps, at, done } = pipeline(f);
+  const { steps, at, done } = withProfile(f, pipeline(f)); // stages.js
   return el("ol", { class: "tracker" }, steps.map((s, i) => {
     const state = done || i < at ? "done" : i === at ? "now" : "todo";
     const sub = s === "Plan" && f.stages.length ? el("div", { class: "substeps" },
@@ -906,6 +906,7 @@ function startPanel(f, row, index, close) {
       said ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "what is it (optional)"), said)) : "",
       el("div", { class: "small" }, "running ", preview),
       el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
+      stagesLine(f), // stages.js
       picker.node,
       el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
       result);
@@ -1319,8 +1320,10 @@ function overview(f) {
   if (openStartFor === f.name) openStartFor = null;
   // A small change or a bug fix is carried on by tt-workflow-lite (Resume, first); a new feature can go either way.
   if (f.liteStep) {
-    const lite = el("div", { class: "stand " + (f.route === "new" ? "alt" : "resume") }, el("p", {}, f.liteStep.text), stepActions(f, f.liteStep, "lite"));
-    if (f.route === "new") stand.push(lite); else stand.unshift(lite);
+    // (liteFirst: the stages chosen for a new feature leave out Plan, so the lite route is its first way in)
+    const second = f.route === "new" && !f.liteFirst;
+    const lite = el("div", { class: "stand " + (second ? "alt" : "resume") }, el("p", {}, f.liteStep.text), stepActions(f, f.liteStep, "lite"));
+    if (second) stand.push(lite); else stand.unshift(lite);
   }
   if (!f.toolbox) stand.unshift(el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."));
   const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
@@ -1383,6 +1386,7 @@ function overview(f) {
             const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
             if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
           } }, "Cancel workflow") : "",
+        stagesButton(f), // stages.js
         el("button", { type: "button", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh"),
         archiveCombo(f))), // archive.js
     el("div", { class: "dim small" }, copyable(f.folder)),

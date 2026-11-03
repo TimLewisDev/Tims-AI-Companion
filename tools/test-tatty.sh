@@ -2750,6 +2750,45 @@ get /api/settings >"$T/set"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/restart")" = 409 ] && ok "so a restart is refused" || bad "so a restart is refused"
 [ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served by the new server" || bad "settings.js served by the new server"
 
+echo "# choosing a feature's stages"
+[ "$(code "$U/static/stages.js")" = 200 ] && ok "stages.js served" || bad "stages.js served"
+STAGES_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/stages.sh"
+if [ -f "$STAGES_SH" ]; then
+	scode() { curl -s -o "$T/sj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/stages"; }
+	mkdir -p "$FX/features/Stage One"; cp -r "$FX/features/Draft" "$FX/features/Stage Draft"
+	get "/api/feature?name=Stage%20One" >"$T/j"
+	pick "$T/j" "d['profile']['route'] + ' ' + str(len(d['profile']['stages']))" >"$T/f"
+	has "a new feature includes every stage" "$T/f" "full 11"
+	pick "$T/j" "[s['why'] for s in d['profile']['stages'] if s['key'] == 'requirements'][0]" >"$T/f"
+	has "requirements say why they stay" "$T/f" "Always included"
+	[ "$(scode '{"name":"Stage One","stage":"scope","on":false}')" = 200 ] && ok "scope left out" || bad "scope left out" "$(cat "$T/sj")"
+	pick "$T/sj" "[s['on'] for s in d['profile']['stages'] if s['key'] == 'scope'][0]" >"$T/f"
+	has "and the answer shows it" "$T/f" False
+	[ -f "$FX/features/Stage One/.tt/workflow-stages.tsv" ] && ok "the choice is in the feature's folder" || bad "the choice is in the feature's folder"
+	[ "$(scode '{"name":"Stage One","stage":"requirements","on":false}')" = 409 ] && ok "requirements can't be left out" || bad "requirements can't be left out"
+	has "with the toolbox's reason" "$T/sj" "Always included"
+	[ "$(scode '{"name":"Stage One","stage":"nonsense","on":false}')" = 409 ] && ok "an unknown stage is refused" || bad "an unknown stage is refused"
+	[ "$(scode '{"name":"Stage One","stage":"Scope; rm","on":false}')" = 400 ] && ok "a stage name is checked" || bad "a stage name is checked"
+	[ "$(scode '{"name":"Stage One","stage":"scope","on":"no"}')" = 400 ] && ok "on must be true or false" || bad "on must be true or false"
+	[ "$(scode '{"name":"No Such","stage":"scope","on":true}')" = 404 ] && ok "no such feature" || bad "no such feature"
+	[ "$(scode '{"name":"Stage One","stage":"scope","on":true}')" = 200 ] && ok "scope back in" || bad "scope back in"
+	[ "$(scode '{"name":"Stage One","stage":"plan","on":false}')" = 200 ] && ok "plan left out" || bad "plan left out"
+	get "/api/feature?name=Stage%20One" >"$T/j"
+	pick "$T/j" "d['profile']['route'] + ' ' + str(d['liteFirst']) + ' ' + str(d['workflowStep'])" >"$T/f"
+	has "a new feature without Plan is a small change, lite first" "$T/f" "lite True None"
+	has "its lite step says why" "$T/j" "leave out Plan"
+	pick "$T/j" "[s['on'] for s in d['profile']['stages'] if s['key'] == 'breakdown'][0]" >"$T/f"
+	has "the breakdown goes with Plan" "$T/f" False
+	# a draft plan: a stage left out shows as skipped in the plan's stages
+	[ "$(scode '{"name":"Stage Draft","stage":"approach","on":false}')" = 200 ] && ok "approach left out of a draft" || bad "approach left out of a draft" "$(cat "$T/sj")"
+	get "/api/feature?name=Stage%20Draft" >"$T/j"
+	pick "$T/j" "' '.join(s['stage'] + '=' + s['status'] for s in d['stages'])" >"$T/f"
+	has "the plan's table follows" "$T/f" "Approach=Skipped: not selected"
+	[ "$(scode '{"name":"Stage Draft","stage":"scope","on":false}')" = 409 ] && ok "a stage in progress can't be left out" || bad "a stage in progress can't be left out"
+else
+	echo "skip  choosing stages: the toolbox checkout has no stages.sh"
+fi
+
 echo "# close"
 expect "close" 0 bash "$W" close
 sleep 1
