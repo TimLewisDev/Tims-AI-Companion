@@ -1,92 +1,21 @@
 # Tatty: a companion for the TT toolbox
 
-Tatty is a friendlier way to work with the [TT toolbox](https://github.com/TimLewisDev/Tims-AI-Toolbox),
-the Claude Code skills for planning and building features with an AI agent while
-the engineer stays in control. The toolbox runs in the terminal. Tatty sits
-beside it, in your system tray and a window of its own, and shows the same work
-visually:
+Tatty is a small companion that sits in your system tray beside Claude Code and
+the [TT toolbox](https://github.com/TimLewisDev/Tims-AI-Toolbox), so you can see
+and steer an AI-built feature without living in a terminal.
 
-- **Your modes:** the toolbox's discipline plugins you have installed
-  (engineering, design, production), each with a home page of its own and its
-  own colour, switched from the radio in the title bar. With one installed,
-  Tatty opens straight into it. The ones you haven't got are greyed on the modes
-  page with **Add**, which installs them for you.
-- **Features:** every feature you're working on, where it stands in the
-  workflow (exploring, planning, building, reviewing, done), and its progress.
-  Each workflow Tatty starts works on a branch of its own, so two don't trample
-  each other; after the build, **Review** takes the branch through a review, puts
-  each of its suggestions to you as a question with options, has the changes you
-  chose made, helps you commit them, and then walks you through pushing and
-  opening the pull / merge request, and watches for it.
-- **A feature's page:**
-  - its documents, readable in place, with `[[wikilinks]]` that open the
-    heading or item they name; View lays each kind out for reading (the
-    Challenges as cards), Edit changes and saves the markdown;
-  - a tracker of its steps, its work units and a timeline.
-- **User Stories (design mode):** pick a design document and Tatty has the
-  toolbox's `tt-user-stories` skill write its user stories in the background,
-  then lays them out as sticky notes on a board you can pan, zoom and rearrange.
-  Click a note to read it in full and edit it (the markdown document changes);
-  accept a proposed story with ✓, bin it with 🗑, or ask for changes and have it
-  rewritten. The pinned group panel colours each group, adds and removes groups,
-  and frames a group's notes when you click it. Add a story where you click
-  (written by hand, or said in a line for the skill to write), and put text,
-  comments and lines between things on the same board.
-- **Whiteboards:** the same board on its own, for any planning (design mode →
-  **Whiteboards**), and one for each feature beside its documents (the
-  feature's **Whiteboard**): text fields, comments pinned to a card or a spot,
-  and lines that join any two things and follow them when they move.
-- **Start the next step:** opens a new Claude session that runs it, then
-  watches that session live: what it's doing, how many tokens it has used,
-  and its questions, which you answer right there.
-- **Questions from any session** you join pop up in Tatty instead of the
-  terminal.
-- **Chats beside the workflow:** right-click text you've selected in a
-  workflow, or use a code block's own button, to **ask about it in a side
-  chat**: a new chat beside the workflow that starts with that piece and what
-  is around it, while the workflow carries on. The **+** on either side opens a
-  chat of its own. Chats run Claude with no terminal, and can read the project
-  and use the toolbox's skills but never change anything.
-- **Tatty tells you when he needs you:** a chime, a hop and a ring of sparks
-  while a question waits for an answer, and confetti and a flourish each time a
-  section is finished -- a work unit validated, a plan signed off, a build
-  complete. The bubble says what is calling -- the question itself, or what
-  finished -- and a click on him (or on that banner) opens the full panel on the
-  page it is about. Between the two he gets on with his own day: he fidgets, dances from
-  foot to foot, sits down, and eventually falls asleep until something happens.
-  **Right-click Tatty** (or his tray icon) for his menu: **Preview** plays any
-  one of his animations on the spot -- every performance, every pose, the
-  confetti, the pulses, each sound, and the whole reaction to a finished work
-  unit or a question arriving -- so you can see the lot without waiting for it.
-  **Animations**, **Sound**, **Effects** and **Keep Tatty on the desktop** are
-  there too. If your system is set to show less motion he keeps still until you
-  tick **Animations** yourself.
-- **Your Jira sprint, in the production mode:** your tickets in the open sprints
-  on a board, a column per status. Open one to read it, and **Start workflow**
-  makes it a feature: a folder with the ticket written into it, a Claude session
-  that starts planning from it, and the ticket moved to In Progress in Jira (and
-  to In Review once its request is open; a **Move to** row in the ticket's panel
-  takes it on to QA Ready or Done).
-  Tatty reads Jira through the Atlassian MCP server you signed in to in Claude
-  Code (`/mcp`). That spends tokens, so it keeps what it fetched and only
-  fetches again when you press **Refresh**.
-- **Your tasks, kept on disk, in the production mode:** for a project with no
-  Jira (or Trello, or Asana), **Tasks** keeps boards of its own: a backlog, a
-  board whose columns you choose, and a Completed page of everything you've
-  finished, with this week's count, your best week and your streak, to see how
-  far you've come. Drag a card between columns to change its status (or use
-  Alt+arrows), and open one to write or edit it. Each task is a markdown file
-  in your root's `tasks` folder, so you can edit it in Obsidian too, and the
-  board keeps up. **Start workflow** makes a task a feature, as a Jira ticket
-  does, and Tatty celebrates each one you finish.
-- **Planning IDs as links:** an `R12`, `CH5` or `P3` in a question, a reply or a
-  document opens the item it names, and hovering it shows the item as a card,
-  so you don't have to go and find it.
+## Contents
 
-Tatty is **optional and separate**. The toolbox never needs it and works the
-same without it. Tatty only reads the toolbox's documents (writing one only when you save it in
-Edit mode, a ticket's when you start a workflow from a Jira ticket or a task, or a User Stories
-document through the toolbox's own script when you change a story; and it moves or removes a feature's folder only when you choose Archive or Delete on that feature) and runs a few of its scripts read-only (see [docs/toolbox-contract.md](docs/toolbox-contract.md)).
+- [Install](#install)
+- [Why use Tatty](#why-use-tatty)
+  - [See where everything stands](#see-where-everything-stands)
+  - [Stay in control without watching the terminal](#stay-in-control-without-watching-the-terminal)
+  - [Think and plan, not just build](#think-and-plan-not-just-build)
+  - [Keep your tickets and tasks in one place](#keep-your-tickets-and-tasks-in-one-place)
+  - [A companion with some personality](#a-companion-with-some-personality)
+  - [Optional, and safe to ignore](#optional-and-safe-to-ignore)
+- [Quick reference](#quick-reference)
+- [In this repo](#in-this-repo)
 
 ## Install
 
@@ -110,7 +39,74 @@ which takes about a minute. See [docs/install.md](docs/install.md) for what
 Tatty needs (Python 3.8+, and on Windows the .NET SDK and WebView2), how to
 install from a local checkout, and how to work on Tatty itself.
 
-## Use
+## Why use Tatty
+
+The toolbox gives you a disciplined way to plan and build features with an AI
+agent while you stay in charge. That discipline produces a lot: plans,
+challenges, task lists, questions, reviews. In a terminal it scrolls past.
+Tatty is for when you'd rather see it laid out, and be told when it needs you.
+
+### See where everything stands
+
+- Every feature you're working on, and whether it is exploring, planning,
+  building, reviewing or done, with its progress.
+- Each feature's documents readable in one place, with links that jump straight
+  to the item they name. Hover a planning ID like `R12` or `CH5` and the item
+  appears as a card, so you don't go hunting for it.
+- No more asking "where was I?" when you come back to a feature after a day, or
+  after a week.
+
+### Stay in control without watching the terminal
+
+- Questions from the agent pop up in Tatty and wait for your answer. Walk away,
+  come back, and nothing has been guessed on your behalf.
+- Start the next step of a feature with one click, and watch that session live:
+  what it is doing, what it has used, and what it is asking.
+- Several features can run side by side. Each works on a branch of its own, so
+  they don't trample each other.
+- After a build, Tatty takes the branch through a review, puts each suggestion
+  to you as a question with options, has the changes you chose made, and helps
+  you commit, push and open the pull / merge request.
+- Want to understand something? Select text in a workflow and ask about it in a
+  side chat. The workflow carries on, and the chat can read your project but
+  never change it.
+
+### Think and plan, not just build
+
+- Turn a design document into user stories, laid out as sticky notes you can
+  rearrange, group, accept, reject or ask to have rewritten.
+- Whiteboards for planning on their own, or beside a feature's documents, with
+  text, comments and lines that join things and follow them when they move.
+- A way to see the shape of an idea before it becomes code.
+
+### Keep your tickets and tasks in one place
+
+- Your Jira sprint as a board. One click turns a ticket into a feature, with the
+  ticket written into it and Jira kept up to date as the work moves.
+- No Jira? Tatty keeps simple task boards of its own, as plain markdown files you
+  can also edit in Obsidian, and shows how far you've come: your week, your best
+  week, your streak.
+- Modes for each discipline you use (engineering, design, production), so
+  Tatty shows what's relevant to the job in hand.
+
+### A companion with some personality
+
+Tatty chimes, hops and throws sparks when he needs you, and celebrates with
+confetti when a section is finished: a work unit validated, a plan signed off,
+a build complete. Between those moments he fidgets, dances and falls asleep.
+Everything about him can be turned off, and if your system is set to show less
+motion, he keeps still.
+
+### Optional, and safe to ignore
+
+Tatty is separate from the toolbox. The toolbox never needs it and works the
+same without it. Tatty only reads the toolbox's documents. It writes one only
+when you save an edit, start a workflow from a ticket or task, or change a
+story, and it moves or removes a feature's folder only when you choose Archive or
+Delete. See [docs/toolbox-contract.md](docs/toolbox-contract.md) for exactly
+what it touches.
+
+## Quick reference
 
 | You want to | Do this |
 |---|---|
