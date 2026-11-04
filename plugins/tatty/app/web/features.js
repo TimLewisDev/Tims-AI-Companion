@@ -331,11 +331,14 @@ async function renderHome(quiet) {
     el("strong", {}, "Tatty can't find the TT toolbox. "),
     "Tatty shows the toolbox's workflow, so install the toolbox (its core and engineering plugins) and Tatty will show where each feature stands. ",
     el("span", { class: "dim" }, "For development, set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout."));
-  const head = el("div", { class: "home-head" },
-    el("div", {}, el("h2", {}, "Features"),
-      el("div", { class: "dim small root-line" }, "Root: ", copyable(r.root),
+  const live = data.features.filter(f => f.live), rest = data.features.filter(f => !f.live);
+  const n = data.features.length;
+  const head = el("div", { class: "fhead" },
+    el("div", { class: "fhead-title" }, el("h2", {}, "Features"),
+      el("p", { class: "fhead-sub dim" }, `${n} feature${n === 1 ? "" : "s"} · ${live.length} live`),
+      el("div", { class: "fhead-root dim small" }, "Root: ", copyable(r.root),
         el("button", { type: "button", class: "primary", title: "Pick another project, or make a new one", onclick: () => { location.hash = "#hub"; } }, "Switch project…"))),
-    el("div", { class: "actions" },
+    el("div", { class: "fhead-actions" },
       el("button", { type: "button", class: "primary", onclick: () => newFeatureForm.toggle() }, "New feature…"),
       el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),
     homeNote);
@@ -346,7 +349,10 @@ async function renderHome(quiet) {
       el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")), archivedSection(data.archived));
     return;
   }
-  put(missing, head, form, el("div", { class: "fgrid" }, data.features.map(featureCard)), archivedSection(data.archived)); // archive.js
+  put(missing, head, form,
+    featureSection("live", "Live Features", live, "No feature has a workflow running right now."),
+    rest.length ? featureSection("rest", "Other Features", rest) : "",
+    archivedSection(data.archived)); // archive.js
 }
 
 // ------------------------------------------------------------- workflow tabs
@@ -471,17 +477,27 @@ function focusAsk(id) {
   setTimeout(() => node.classList.remove("nudge"), 2600);
 }
 
-function featureCard(f) {
+function featureTile(f) {
   const building = f.tasks.total > 0 && f.phase !== "complete";
-  return el("a", { class: "fcard route-" + f.route, href: featureHref(f.name) },
-    el("div", { class: "fcard-top" }, el("strong", {}, f.name), chip(ROUTES[f.route] || f.route, "route")),
-    f.live ? el("div", {}, chip(`● Live: ${f.live.name}`, "live")) : "",
-    el("div", {}, chip(phaseWord(f), phaseDone(f) ? "done" : f.phase === "empty" ? "todo" : "now"),
+  return el("a", { class: "hcard hcard-" + f.route + (f.live ? " hcard-live" : ""), href: featureHref(f.name) },
+    el("span", { class: "hcard-stripe", "aria-hidden": "true" }),
+    el("div", { class: "hcard-top" }, el("strong", { class: "hcard-name" }, f.name), chip(ROUTES[f.route] || f.route, "route")),
+    f.live ? el("div", { class: "hcard-livemark" }, chip(`● Live: ${f.live.name}`, "live")) : "",
+    el("div", { class: "hcard-phase" }, chip(phaseWord(f), phaseDone(f) ? "done" : f.phase === "empty" ? "todo" : "now"),
       f.stage && f.phase !== "complete" ? el("span", { class: "dim small" }, " · " + f.stage) : ""),
-    el("p", { class: "ftext" }, f.text || ""),
+    el("p", { class: "hcard-text" }, f.text || ""),
     building ? bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} units · ${f.tasks.done} of ${f.tasks.total} tasks`) : "",
-    el("div", { class: "fcard-foot dim small" }, `${f.docs} document${f.docs === 1 ? "" : "s"} · updated ${ago(f.updated)}`),
-    f.next ? el("div", { class: "fnext" }, copyable(f.next)) : "");
+    el("div", { class: "hcard-foot dim small" }, `${f.docs} document${f.docs === 1 ? "" : "s"} · updated ${ago(f.updated)}`),
+    f.next ? el("div", { class: "hcard-next" }, copyable(f.next)) : "");
+}
+
+function featureSection(kind, title, list, emptyText) {
+  const head = el("div", { class: "fsec-head" },
+    kind === "live" ? el("span", { class: "pulse", "aria-hidden": "true" }) : "",
+    el("h3", {}, title), el("span", { class: "fsec-count" }, String(list.length)));
+  return el("section", { class: "fsec fsec-" + kind }, head,
+    list.length ? el("div", { class: "fsec-grid" }, list.map(featureTile))
+                : el("p", { class: "fsec-empty dim" }, emptyText));
 }
 
 // ------------------------------------------------------------- a new feature
@@ -515,7 +531,7 @@ const newFeatureForm = (() => {
   };
   return {
     node: () => (shown ? draw() : ""),
-    toggle() { shown = !shown; if (shown) { const head = document.querySelector("#page-home .home-head"); if (head) head.after(draw()); } else if (node) node.remove(); },
+    toggle() { shown = !shown; if (shown) { const head = document.querySelector("#page-home .fhead"); if (head) head.after(draw()); } else if (node) node.remove(); },
   };
 })();
 

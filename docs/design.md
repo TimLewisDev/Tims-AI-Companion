@@ -330,7 +330,9 @@ folders and Claude Code's own install records; see
   folder dialog) holds `features/<feature>/`. A feature folder may be a junction
   to a folder elsewhere, a vault say.
 - **The Features page** lists the features, using the toolbox's
-  `workflow-state.sh` for where each stands.
+  `workflow-state.sh` for where each stands. It has two sections: Live Features
+  (features with a running session, the same test as the card's Live chip) above
+  the other features.
 - **A feature's page** reads its documents, the toolbox ledger's events for it,
   and the tables in its Task Status and draft plan.
 - **A document** has a View | Edit toggle above it (`showDoc` in `features.js`),
@@ -1231,6 +1233,10 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   back, Alt+arrows, the task panel (Write and Preview, Cancel, Esc), the backlog
   and Completed with and without reduced motion. It leaves every task's file as
   it was (it never uses the done column).
+  `features-check.py ... --sections` draws the Features page from sample live
+  states (the page's `api()` stood in for) and checks the split into Live
+  Features and the rest, a feature moving when its live state changes, and the
+  layout with many features and in a narrow window.
   `features-check.py ... --tabs` walks only the workflow tabs, drawn from two
   sample sessions (the page's `api()` and `confirm()` stood in for): the tab on
   screen, × asking before it stops a going session and not for an ended one, and

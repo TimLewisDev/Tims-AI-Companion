@@ -7,11 +7,12 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
+--sections only the Features page's Live Features and other features sections, from sample live states (the page's api() stood in for: nothing is started);
 --split only the documents split beside a workflow tab: it starts two sessions (no terminal opens), uses real mouse input and
 writes nothing to the features, so a throwaway home is still best;
 --chats only the chats: side chats from selected text and from a code block in a workflow's reply, the "+" on
@@ -261,6 +262,82 @@ def check_ids(p, feature="Draft"):
                        "flash": p.js("(document.querySelector('.fmain .target-flash') || {}).textContent || ''"),
                        "picked": p.js("document.querySelectorAll('#feed .card.ask:last-child .opt.picked').length")}
     p.js("document.querySelector('#feed .card.ask:last-child').remove(); 1")
+    return res
+
+
+def check_sections(p):
+    """The Features page's two sections, drawn from the real feature list with
+    sample live states (the page's api() is stood in for; nothing is started):
+    which features sit under Live Features and under the rest, a feature moving
+    when its live state changes, the card's parts, the header buttons, and no
+    sideways overflow with many features or in a narrow window."""
+    res = {}
+    cards = """[...document.querySelectorAll('#page-home .hcard')]"""
+    names = lambda sel: f"[...document.querySelectorAll('#page-home {sel} .hcard strong')].map(s => s.textContent)"
+    try:
+        p.js("""(() => {
+          window.__real = { api };
+          window.__liveNames = ['Demo'];
+          window.__liveAll = false; window.__copies = 0;
+          api = async (path, body) => {
+            const d = await window.__real.api(path, body);
+            if (path !== '/api/features') return d;
+            let list = d.features;
+            if (window.__copies) {
+              list = [];
+              for (let i = 0; i < window.__copies; i++) list.push({ ...d.features[0], name: d.features[0].name + ' copy ' + i });
+              window.__liveNames = list.filter((_, i) => i % 2 === 0).map(f => f.name);
+            }
+            return { ...d, features: list.map(f => ({ ...f, live: (window.__liveAll || window.__liveNames.includes(f.name)) ? { name: f.name + ' : Workflow', status: 'running', tag: 's-' + f.name } : null })) };
+          };
+          location.hash = '#home'; renderHome(); return 1; })()""")
+        wait(p, "!!document.querySelector('#page-home .fsec')")
+        res["demoLive"] = p.js(f"""({{ live: {names('.fsec-live')}, rest: {names('.fsec-rest')},
+            both: {names('.fsec-live')}.some(n => {names('.fsec-rest')}.includes(n)),
+            liveFirst: !!(document.querySelector('.fsec-live').compareDocumentPosition(document.querySelector('.fsec-rest')) & Node.DOCUMENT_POSITION_FOLLOWING),
+            headings: [...document.querySelectorAll('#page-home .fsec-head h3')].map(h => h.textContent) }})""")
+        res["cardParts"] = p.js(f"""{cards}.map(c => {{
+            const t = s => (c.querySelector(s) || {{}}).textContent || '';
+            const chips = [...c.querySelectorAll('.chip')];
+            const phase = chips.find(x => !x.classList.contains('route') && !x.classList.contains('live'));
+            return {{ name: t('strong.hcard-name'), route: t('.chip.route'), live: t('.chip.live'), phase: phase ? phase.textContent : '',
+                      text: t('.hcard-text'), bar: !!c.querySelector('.bar'), barLabel: (c.querySelector('.bar') || {{}}).textContent || '',
+                      foot: t('.hcard-foot'), next: t('.hcard-next .copyable code') }}; }})""")
+        p.js("window.__liveNames = []; renderHome(true); 1")
+        wait(p, "document.querySelectorAll('#page-home .fsec-live .hcard').length === 0 && !!document.querySelector('#page-home .fsec-live .fsec-empty')")
+        res["noneLive"] = p.js(f"""({{ liveCards: document.querySelectorAll('#page-home .fsec-live .hcard').length,
+            empty: document.querySelector('#page-home .fsec-live .fsec-empty').textContent,
+            rest: {names('.fsec-rest')}.length, all: {cards}.length }})""")
+        p.js("window.__liveAll = true; renderHome(true); 1")
+        wait(p, "document.querySelectorAll('#page-home .fsec-rest').length === 0 && document.querySelectorAll('#page-home .fsec-live .hcard').length > 0")
+        res["allLive"] = {"rest": p.js("document.querySelectorAll('#page-home .fsec-rest').length")}
+        p.js("window.__liveAll = false; window.__liveNames = ['Demo']; renderHome(true); 1")
+        wait(p, "document.querySelectorAll('#page-home .fsec-rest').length > 0")
+        p.js("window.__liveNames = ['Draft']; renderHome(true); 1")
+        wait(p, f"{names('.fsec-live')}.includes('Draft')")
+        res["move"] = p.js(f"({{ live: {names('.fsec-live')}, rest: {names('.fsec-rest')} }})")
+        res["buttons"] = p.js("""(() => {
+          const texts = [...document.querySelectorAll('#page-home .fhead button')].map(b => b.textContent);
+          const btn = [...document.querySelectorAll('#page-home .fhead button')].find(b => b.textContent.startsWith('New feature'));
+          btn.click();
+          const opened = !!document.querySelector('#page-home .fhead + .new-feature');
+          btn.click();
+          return { texts, opened, closed: !document.querySelector('#page-home .new-feature') }; })()""")
+        p.js("window.__copies = 40; renderHome(true); 1")
+        wait(p, "document.querySelectorAll('#page-home .hcard').length >= 40")
+        fit = """(() => { const h = document.querySelector('#page-home');
+          return { overflow: h.scrollWidth > h.clientWidth, wide: [...h.querySelectorAll('.hcard')].filter(c => c.getBoundingClientRect().width > h.clientWidth).length }; })()"""
+        res["many"] = {"normal": p.js(fit)}
+        p.call("Emulation.setDeviceMetricsOverride", width=480, height=900, deviceScaleFactor=1, mobile=False)
+        time.sleep(0.5)
+        res["many"]["narrow"] = p.js(fit)
+        p.call("Emulation.clearDeviceMetricsOverride")
+    finally:
+        try:
+            p.call("Emulation.clearDeviceMetricsOverride")
+        except Exception:
+            pass
+        p.js("if (window.__real) { api = window.__real.api; } location.hash = '#home'; 1")
     return res
 
 
@@ -1102,13 +1179,13 @@ def check_archive(p):
     res["section"] = p.js(f"""({{ summary: document.querySelector('#archived-section summary').innerText.replace(/\\s+/g, ' ').trim(),
                                  open: document.querySelector('#archived-section').open,
                                  row: !!document.querySelector('.arow[data-name=' + JSON.stringify({q}) + ']'),
-                                 card: [...document.querySelectorAll('#page-home .fcard strong')].some(s => s.textContent === {q}),
+                                 card: [...document.querySelectorAll('#page-home .hcard strong')].some(s => s.textContent === {q}),
                                  note: document.querySelector('.home-note').textContent }})""")
     click(p, *center(p, "#archived-section summary"))
     res["opens"] = wait(p, "document.querySelector('#archived-section').open")
     # Restore
     click(p, *center(p, ".arow .restore-btn"))
-    res["restored"] = wait(p, f"[...document.querySelectorAll('#page-home .fcard strong')].some(s => s.textContent === {q}) && !document.querySelector('#archived-section')")
+    res["restored"] = wait(p, f"[...document.querySelectorAll('#page-home .hcard strong')].some(s => s.textContent === {q}) && !document.querySelector('#archived-section')")
     # Archive again, then Delete from the section
     p.js(f"location.hash = '#feature/' + encodeURIComponent({q}); 1")
     wait(p, "!!document.querySelector('#feature-archive')")
@@ -1739,19 +1816,19 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
-                                "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
+                                "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--sections": check_sections, "--split": check_split,
                                 "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
-        wait(p, "document.querySelectorAll('#page-home .fcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")
+        wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")
         leave_hub(p)
-        wait(p, "document.querySelectorAll('#page-home .fcard').length > 0")
-        out["home"] = p.js("""({ cards: [...document.querySelectorAll('#page-home .fcard')].map(c => c.querySelector('strong').textContent + ' · ' + c.querySelector('.chip:not(.route)').textContent),
+        wait(p, "document.querySelectorAll('#page-home .hcard').length > 0")
+        out["home"] = p.js("""({ cards: [...document.querySelectorAll('#page-home .hcard')].map(c => c.querySelector('strong').textContent + ' · ' + c.querySelector('.chip:not(.route)').textContent),
                                setup: false,
-                               bars: document.querySelectorAll('#page-home .fcard .bar span').length,
-                               barWidth: (document.querySelector('#page-home .fcard .bar span') || {style: {}}).style.width || '' })""")
+                               bars: document.querySelectorAll('#page-home .hcard .bar span').length,
+                               barWidth: (document.querySelector('#page-home .hcard .bar span') || {style: {}}).style.width || '' })""")
         p.js(f"location.hash = '#feature/' + encodeURIComponent({json.dumps(feature)}); 1")
         wait(p, "!!document.querySelector('#page-feature .tracker')")
         out["feature"] = p.js("""({ tracker: [...document.querySelectorAll('.tracker li')].map(li => li.querySelector('.label').textContent + ':' + li.className),
