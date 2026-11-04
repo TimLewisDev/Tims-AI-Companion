@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -24,6 +24,7 @@ throwaway root;
 leaving Scope, Plan and Review out and putting them back. It writes the feature's stage profile, so a throwaway root only;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
+--decide      only the Decide page and its overview line (the page's api() stood in for: nothing is written);
 --suggestions only the Review step on the page: the tracker's chips, the link rows and the Review page (the page's api() stood in for: nothing is written);
 --diff only the Code Diff section: it puts T03 In Progress in the Demo feature's Task Status (and puts it back), starts a
 session (no terminal opens) that reports one edit, and reports the rail item, the red and green cells, the progress bar
@@ -1346,6 +1347,98 @@ def check_suggestions(p):
     return res
 
 
+def check_decide(p):
+    """The Decide page, drawn with the page's api() stood in for: two challenges taken one at a time (the
+    planner's take, the options with the recommended one marked, a rebuttal needing a reason, what each answer
+    sends), the label on the last one, and the page saying the open session was told to carry on. The
+    overview's "questions wait" line and the rail item. Nothing is written."""
+    res = {}
+    p.js("""window.__real = { api: window.api }; window.__sent = [];
+            window.__items = [
+              { doc: 'Demo - Challenges.md', kind: 'challenge', id: 'CH1', state: 'open', group: 'Requirements', severity: 'blocking', title: 'A repeated trigger' },
+              { doc: 'Demo - Challenges.md', kind: 'challenge', id: 'CH2', state: 'open', group: 'Requirements', severity: 'minor', title: 'Wording of R1' },
+              { doc: 'Demo - Tech Proposals.md', kind: 'proposal', id: 'P2', state: 'open', group: 'Blocking decision', severity: 'blocking', title: 'Where does a failed save go?' },
+              { doc: '.tt/Demo - Questions/validation-WU3.md', kind: 'question', id: 'Q1', state: 'open', group: 'Demo: WU3 engineer checks', severity: 'WU3 check 2', title: 'The panel shows a toast' }];
+            window.__show = {
+              CH1: { doc: 'Demo - Challenges.md', fields: { id: 'CH1', target: '[R2](<Demo - Comprehensive Tech Plan.md#requirements>)', assumption: 'Once per change.', why: 'Registered twice.', evidence: '`a.sh:2`',
+                     question: 'Must a second save be a no-op?', take: 'The handler is registered on every open.', recommended: 'accept', state: 'open' },
+                     options: [{ key: 'accept', title: 'Accept & change', detail: 'The plan changes.', recommended: true, needsNote: false },
+                               { key: 'rebut', title: 'Rebut', detail: 'The plan stands.', recommended: false, needsNote: true },
+                               { key: 'defer', title: 'Defer', detail: 'Not now.', recommended: false, needsNote: false }] },
+              CH2: { doc: 'Demo - Challenges.md', fields: { id: 'CH2', target: '[[Demo - Comprehensive Tech Plan#^r1|R1]]', question: 'Is there a limit?', state: 'open' },
+                     options: [{ key: 'accept', title: 'Accept & change', detail: '', recommended: false, needsNote: false },
+                               { key: 'dismiss', title: 'Dismiss', detail: 'Minor.', recommended: false, needsNote: false }] },
+              P2: { doc: 'Demo - Tech Proposals.md', fields: { id: 'P2', question: 'Where does a failed save go?', type: 'Blocking decision', status: 'Open', decides: 'CD1',
+                     context: 'A save can fail on a full disk.', recommendation: 'Option A, because the panel shows toasts.', chosen: '', state: 'open' },
+                     options: [{ key: 'A', title: 'Show the error', detail: 'A toast', recommended: true, needsNote: false },
+                               { key: 'B', title: 'Retry quietly', detail: 'Every 5 s', recommended: false, needsNote: false },
+                               { key: 'other', title: 'Something else', detail: 'Say what', recommended: false, needsNote: true }] },
+              Q1: { doc: '.tt/Demo - Questions/validation-WU3.md', fields: { id: 'Q1', title: 'The panel shows a toast', ref: 'WU3 check 2',
+                     context: 'Fill the disk, then save. / You should see: a toast.', take: '', decision: '', state: 'open' },
+                     options: [{ key: 'passed', title: 'Passed', detail: 'It showed', recommended: true, needsNote: false },
+                               { key: 'failed', title: 'Failed', detail: 'Say what you saw', recommended: false, needsNote: true }] } };
+            window.api = async (path, body) => {
+              if (path.startsWith('/api/decide/item')) { const id = new URLSearchParams(path.split('?')[1]).get('id'); return window.__show[id]; }
+              if (path.startsWith('/api/decide?')) return { items: window.__items };
+              if (path === '/api/decide') {
+                window.__sent.push(body);
+                const left = window.__sent.length < 4 ? 1 : 0;
+                return { open: left, apply: 1, nudged: left ? null : { tag: 's-test9999', name: 'Demo : Planning' } };
+              }
+              return window.__real.api(path, body);
+            };
+            1""")
+    p.js("""(() => { const m = document.createElement('div'); m.id = 'dc-main'; document.body.append(m); decidePage({ name: 'Demo' }, m); })(); 1""")
+    wait(p, "!!document.querySelector('#dc-item')")
+    res["first"] = p.js("""({ id: document.querySelector('#dc-item').dataset.id, h3: document.querySelector('#dc-item h3').textContent,
+                             facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()),
+                             take: (document.querySelector('.dc-take') || {}).innerText, ask: (document.querySelector('#dc-item .ask-line') || {}).innerText,
+                             opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()),
+                             go: document.querySelector('#dc-go').textContent, disabled: document.querySelector('#dc-go').disabled,
+                             dots: document.querySelectorAll('.rv-dot').length })""")
+    p.js("document.querySelector('.rv-opt[data-key=\"rebut\"] input').click(); 1")
+    res["rebutNeedsReason"] = p.js("({ disabled: document.querySelector('#dc-go').disabled, placeholder: document.querySelector('#dc-note').placeholder })")
+    p.js("(() => { const t = document.querySelector('#dc-note'); t.value = 'a toast shows it'; t.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["rebutWithReason"] = p.js("document.querySelector('#dc-go').disabled")
+    p.js("document.querySelector('#dc-go').click(); 1")
+    wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'CH2'")
+    res["sent1"] = p.js("window.__sent[0]")
+    res["second"] = p.js("""({ facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()), go: document.querySelector('#dc-go').textContent,
+                              opts: [...document.querySelectorAll('.rv-opt')].map(o => o.dataset.key) })""")
+    p.js("document.querySelector('.rv-opt[data-key=\"dismiss\"] input').click(); document.querySelector('#dc-go').click(); 1")
+    wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'P2'")
+    res["sent2"] = p.js("window.__sent[1]")
+    res["proposal"] = p.js("""({ context: (document.querySelector('.dc-context') || {}).innerText, facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()),
+                                take: (document.querySelector('.dc-take') || {}).innerText, doc: (document.querySelector('#dc-doc') || {}).innerText,
+                                opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()), go: document.querySelector('#dc-go').textContent })""")
+    p.js("document.querySelector('.rv-opt[data-key=\"B\"] input').click(); document.querySelector('#dc-go').click(); 1")
+    wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'Q1'")
+    res["sent3"] = p.js("window.__sent[2]")
+    res["question"] = p.js("""({ chips: document.querySelector('#dc-item .rv-chips').innerText.replace(/\\s+/g, ' ').trim(),
+                                context: [...document.querySelectorAll('.dc-context > div')].map(x => x.innerText),
+                                opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()) })""")
+    p.js("document.querySelector('.rv-opt[data-key=\"failed\"] input').click(); 1")
+    res["failedNeedsWords"] = p.js("({ disabled: document.querySelector('#dc-go').disabled, placeholder: document.querySelector('#dc-note').placeholder })")
+    p.js("(() => { const t = document.querySelector('#dc-note'); t.value = 'a beep, no toast'; t.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#dc-go').click(); })()")
+    wait(p, "!document.querySelector('#dc-item')")
+    res["sent4"] = p.js("window.__sent[3]")
+    res["finished"] = p.js("""(() => { const a = document.querySelector('#dc-main a[href^="#workflows/"]');
+                                return { text: document.querySelector('#dc-main').innerText.replace(/\\s+/g, ' ').trim().slice(0, 200), link: a ? a.getAttribute('href') : null }; })()""")
+    # the overview line and the rail item
+    res["overview"] = p.js("""(() => {
+        const f = { name: "Demo", phase: "planning", route: "full", stages: [], merge: {}, review: {}, rows: [], sessions: [], toolbox: true, unitList: [], events: [], docList: [], notes: [], tasks: { done: 0, total: 0 }, units: { done: 0, total: 0 },
+                    decide: { open: 2, apply: 0, kinds: ['challenge'] } };
+        let o; try { o = overview(f); } catch (e) { return 'overview threw: ' + e.stack; }
+        const w = o.querySelector('#decide-waiting');
+        const nav = featureNav(f, null, false, {});
+        const item = [...nav.querySelectorAll('.fnav-item')].find(a => a.textContent.startsWith('Decisions'));
+        return { line: w ? w.innerText.replace(/\\s+/g, ' ').trim() : null, href: w ? w.querySelector('a').getAttribute('href') : null,
+                 rail: item ? item.innerText.replace(/\\s+/g, ' ').trim() : null };
+      })()""")
+    p.js("window.api = window.__real.api; document.querySelector('#dc-main').remove(); location.hash = '#home'; 1")
+    return res
+
+
 def check_new_panel(p, page, button, form):
     """The list page's "create new": no form on the page, the cards first, and the
     form in a panel from the right that Esc, x and the dimmed page each close."""
@@ -1612,10 +1705,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .fcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

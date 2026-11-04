@@ -18,3 +18,7 @@
 #rv-other, #rv-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
 .rv-row { padding: 5px 0; border-top: 1px solid var(--line); }
 .rv-row:first-child { border-top: none; }
+/* The Decide page reuses the Review page's layout (decide-page.js). */
+.dc-facts { margin: 6px 0; }
+.dc-take { margin: 8px 0; }
+#dc-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }

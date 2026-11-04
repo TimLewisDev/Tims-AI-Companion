@@ -714,6 +714,7 @@ has "session named feature : stage" "$T/j" '"name": "Demo : Build"'
 has "with the next command" "$T/j" '/tt-execute \"'
 has "Tatty's own launcher" "$T/j" "Prompt: /tt-execute"
 has "the session carries its tag" "$T/j" "TATTY_SESSION="
+has "and records its questions for Tatty to ask" "$T/j" "TT_DECIDE=elsewhere"
 has "and, from a checkout, loads this plugin" "$T/j" "--plugin-dir"
 mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
 printf '{"version":2,"plugins":{"tatty@tims-ai-companion":[{"scope":"user","installPath":"x"}]}}' >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
@@ -2787,6 +2788,87 @@ if [ -f "$STAGES_SH" ]; then
 	[ "$(scode '{"name":"Stage Draft","stage":"scope","on":false}')" = 409 ] && ok "a stage in progress can't be left out" || bad "a stage in progress can't be left out"
 else
 	echo "skip  choosing stages: the toolbox checkout has no stages.sh"
+fi
+
+echo "# deciding a workflow's questions in Tatty"
+[ "$(code "$U/static/decide-page.js")" = 200 ] && ok "decide-page.js served" || bad "decide-page.js served"
+DECIDE_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/decide.sh"
+if [ -f "$DECIDE_SH" ]; then
+	dpost() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/decide"; }
+	DDIR="$FX/features/Decide Draft"; cp -r "$FX/features/Draft" "$DDIR"
+	for f in "$DDIR"/"Draft - "*; do mv "$f" "$DDIR/Decide Draft - ${f##*/Draft - }"; done
+	get "/api/feature?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "(d['decide']['open'], d['decide']['apply'], d['decide']['kinds'])" >"$T/f"
+	has "the feature says a challenge waits" "$T/f" "(1, 0, ['challenge'])"
+	get "/api/decide?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "[(i['id'], i['state'], i['group'], i['doc']) for i in d['items']]" >"$T/f"
+	has "the waiting challenge, with its stage and document" "$T/f" "[('CH3', 'open', 'Scope & Constraints', 'Decide Draft - Challenges.md')]"
+	get "/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Challenges.md&id=CH3" >"$T/j"
+	pick "$T/j" "[o['key'] for o in d['options']]" >"$T/f"
+	has "its options" "$T/f" "['accept', 'rebut', 'defer']"
+	pick "$T/j" "[o['needsNote'] for o in d['options'] if o['key'] == 'rebut'][0]" >"$T/f"
+	has "a rebuttal needs a reason" "$T/f" "True"
+	has "and its question" "$T/j" "Does the tray app need a build?"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=..%2FDemo%2FDemo%20-%20Task%20Status.md&id=CH3")" = 404 ] && ok "only a decision document in the feature's folder" || bad "only a decision document in the feature's folder"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Challenges.md&id=CH3%3Brm")" = 400 ] && ok "an id is checked" || bad "an id is checked"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Challenges.md&id=CH9")" = 404 ] && ok "no such challenge" || bad "no such challenge"
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"rebut"}')" = 409 ] && ok "a rebuttal without a reason is refused" || bad "a rebuttal without a reason is refused" "$(cat "$T/dj")"
+	has "with the toolbox's reason" "$T/dj" "rebut needs --note"
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"dismiss"}')" = 409 ] && ok "a significant one can't be dismissed" || bad "a significant one can't be dismissed"
+	[ "$(dpost '{"name":"No Such","doc":"x - Challenges.md","id":"CH3","choice":"accept"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+	# a session open for the feature is told to carry on once the last one is decided
+	post /api/project "{\"name\":\"Decide Draft\",\"path\":\"$HERE\"}" >/dev/null
+	post /api/start '{"name":"Decide Draft","row":0}' >"$T/j"
+	DTAG=$(pick "$T/j" "d['tag']")
+	has "the session records its questions for Tatty" "$T/j" "TT_DECIDE=elsewhere"
+	get "/api/inbox?wait=0&tag=$DTAG&client=claude-mod" >/dev/null
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"accept","note":"build the tray app too"}')" = 200 ] && ok "accept" || bad "accept" "$(cat "$T/dj")"
+	pick "$T/dj" "(d['open'], d['apply'], d['nudged']['tag'] if d['nudged'] else None)" >"$T/f"
+	has "none left; the session is told" "$T/f" "(0, 1, '$DTAG')"
+	has "the document records it, to apply" "$DDIR/Decide Draft - Challenges.md" "- **Resolution:** To apply: build the tray app too"
+	get "/api/inbox?wait=1&tag=$DTAG&client=claude-mod" >"$T/j"
+	has "the session's inbox has the nudge" "$T/j" "I've decided the challenges in Tatty"
+	get "/api/feature?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "(d['decide']['open'], d['decide']['apply'])" >"$T/f"
+	has "the feature now waits for the session" "$T/f" "(0, 1)"
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"defer"}')" = 200 ] && ok "a decision can change until it is applied" || bad "a decision can change until it is applied" "$(cat "$T/dj")"
+	# a proposal, decided by its letter
+	PRSH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/proposals.sh"
+	if [ -f "$PRSH" ]; then
+		cp "$TATTY_TOOLBOX/tools/fixtures/proposals/Pr - Tech Proposals.md" "$DDIR/Decide Draft - Tech Proposals.md"
+		bash "$PRSH" add "$DDIR/Decide Draft - Tech Proposals.md" "$TATTY_TOOLBOX/tools/fixtures/proposals/P2.md" >/dev/null
+		get "/api/decide?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "[(i['kind'], i['id'], i['state'], i['severity']) for i in d['items'] if i['kind'] == 'proposal']" >"$T/f"
+		has "a proposal waits too" "$T/f" "[('proposal', 'P2', 'open', 'blocking')]"
+		get "/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Tech%20Proposals.md&id=P2" >"$T/j"
+		pick "$T/j" "[o['key'] for o in d['options']]" >"$T/f"
+		has "its options are its letters, and something else" "$T/f" "['A', 'B', 'C', 'other']"
+		[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Tech Proposals.md","id":"P2","choice":"B","note":"less noise"}')" = 200 ] && ok "decide a proposal" || bad "decide a proposal" "$(cat "$T/dj")"
+		has "the proposal records it" "$DDIR/Decide Draft - Tech Proposals.md" "- **Chosen:** Option B: Retry quietly"
+	fi
+	# a question list, in the feature's .tt folder
+	QSH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/questions.sh"
+	if [ -f "$QSH" ]; then
+		QLIST="$DDIR/.tt/Decide Draft - Questions/validation-WU1.md"
+		bash "$QSH" init "$QLIST" --title "Decide Draft: WU1 engineer checks" >/dev/null
+		printf 'title: The toast shows\nref: WU1 check 1\ncontext: Save on a full disk.\n  You should see a toast.\noption: passed | Passed | It showed | recommended\noption: failed | Failed | Say what you saw | note\n' | bash "$QSH" add "$QLIST" >/dev/null
+		get "/api/decide?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "[(i['doc'], i['id'], i['severity'], i['group']) for i in d['items'] if i['kind'] == 'question']" >"$T/f"
+		has "a question list's question, by its path in the folder" "$T/f" "[('.tt/Decide Draft - Questions/validation-WU1.md', 'Q1', 'WU1 check 1', 'Decide Draft: WU1 engineer checks')]"
+		QDOC=$($PY -c "import urllib.parse; print(urllib.parse.quote('.tt/Decide Draft - Questions/validation-WU1.md'))")
+		get "/api/decide/item?name=Decide%20Draft&doc=$QDOC&id=Q1" >"$T/j"
+		pick "$T/j" "(d['fields']['context'], [o['key'] for o in d['options']])" >"$T/f"
+		has "its context and options" "$T/f" "('Save on a full disk. / You should see a toast.', ['passed', 'failed'])"
+		BADQ=$($PY -c "import urllib.parse; print(urllib.parse.quote('.tt/../../Demo/Demo - Task Status.md'))")
+		[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=$BADQ&id=Q1")" = 404 ] && ok "a path out of the folder is refused" || bad "a path out of the folder is refused"
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed"}')" = 409 ] && ok "an option that needs words, without them" || bad "an option that needs words, without them" "$(cat "$T/dj")"
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed","note":"a beep"}')" = 200 ] && ok "answer a question" || bad "answer a question" "$(cat "$T/dj")"
+		has "the list records it" "$QLIST" "- **Note:** a beep"
+	fi
+	post /api/bye "{\"tag\":\"$DTAG\"}" >/dev/null
+	rm -rf "$DDIR"
+else
+	echo "skip  deciding in Tatty: the toolbox checkout has no decide.sh"
 fi
 
 echo "# close"

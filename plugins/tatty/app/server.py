@@ -73,7 +73,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
-          "review-page.js": "text/javascript", "review-page.css": "text/css",
+          "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
@@ -1906,6 +1906,160 @@ def stages_set(state, folder, key, on):
     return 200, {"profile": stages_view(state, folder)}
 
 
+# Decisions a feature's folder is waiting on (challenges, for now): the toolbox's decide.sh lists them, shows
+# one with its options and records a choice through the document's own writer. Tatty only calls it, on a
+# person's action. Sessions Tatty starts carry TT_DECIDE=elsewhere (see launch), so the toolbox's skills
+# record the questions and wait instead of asking them in the terminal; when the last one is decided, the
+# feature's open session is told to carry on (decide_set).
+DECIDE_COLS = ("doc", "kind", "id", "state", "group", "severity", "title")
+DECIDE_DOCS = (" - Challenges.md", " - Tech Proposals.md")  # the documents decide.sh reads (a cheap look first)
+DECIDE_NUDGE = "Continue: I've decided the {what} in Tatty (every answer is recorded)."
+decide_cache = {}  # folder -> (the decision documents' mtimes, pending items)
+
+
+def decide_run(state, folder, *args):
+    """decide.sh <args> in the folder: the finished process, or None when the toolbox has no decide.sh."""
+    script = toolbox_script("tt-common/scripts/decide.sh")
+    if not script:
+        return None
+    try:
+        return quiet_run(state, [state.bash, str(script), *args], cwd=str(folder))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def decide_docs(folder):
+    try:
+        docs = [p for p in folder.iterdir() if p.is_file() and p.name.endswith(DECIDE_DOCS)]
+        tt = folder / ".tt"
+        if tt.is_dir():  # question lists: .tt/<Prefix> - Questions/<list>.md
+            docs += [p for d in tt.iterdir() if d.is_dir() and d.name.endswith(" - Questions") for p in d.glob("*.md") if p.is_file()]
+        return sorted(docs)
+    except OSError:
+        return []
+
+
+# a question list's place, relative to the feature's folder
+DECIDE_LIST = re.compile(r"\.tt/[^/\\]+ - Questions/[^/\\]+\.md")
+
+
+def decide_rel(folder, doc):
+    """The path decide.sh printed, relative to the feature's folder (a document's name, or .tt/… for a list)."""
+    base = folder.as_posix().rstrip("/") + "/"
+    d = doc.replace("\\", "/")
+    return d[len(base):] if d.startswith(base) else Path(d).name
+
+
+def decide_pending(state, folder):
+    """[{doc (relative to the folder), kind, id, state (open | apply), group, severity, title}], [] when nothing
+    waits, or None when the toolbox can't say (no decide.sh). Cached on the documents' mtimes."""
+    docs = decide_docs(folder)
+    if not docs:
+        return []
+    stamp = tuple((d.as_posix(), d.stat().st_mtime_ns) for d in docs)
+    hit = decide_cache.get(str(folder))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    p = decide_run(state, folder, "pending", "--tsv", folder.as_posix())
+    if p is None or p.returncode:
+        return None
+    items = []
+    for line in p.stdout.splitlines():
+        c = dict(zip(DECIDE_COLS, line.rstrip("\r").split("\t")))
+        if c.get("id"):
+            c["doc"] = decide_rel(folder, c["doc"])
+            items.append(c)
+    decide_cache[str(folder)] = (stamp, items)
+    return items
+
+
+def decide_view(state, folder):
+    """{open, apply} for the feature's page and card, or None (nothing to decide, or no decide.sh)."""
+    items = decide_pending(state, folder)
+    if not items:
+        return None
+    return {"open": sum(i["state"] == "open" for i in items), "apply": sum(i["state"] == "apply" for i in items),
+            "kinds": sorted({i["kind"] for i in items})}
+
+
+def decide_doc(folder, name):
+    """The decision document called name, directly in the folder, or the question list at that .tt path; or None."""
+    if not name:
+        return None
+    if DECIDE_LIST.fullmatch(name):
+        doc = folder / name
+        try:
+            doc.resolve().relative_to(folder.resolve())  # (a junction for a .tt folder would lead out)
+        except (ValueError, OSError):
+            return None
+        return doc if doc.is_file() else None
+    if "/" in name or "\\" in name or not name.endswith(DECIDE_DOCS):
+        return None
+    doc = folder / name
+    return doc if doc.is_file() else None
+
+
+def decide_item(state, folder, name, item):
+    """(code, {fields, options}) for one item, from decide.sh show."""
+    doc = decide_doc(folder, name)
+    if not doc:
+        return 404, {"error": "no such decision document"}
+    if not re.fullmatch(r"[A-Za-z]{1,4}\d+", item):
+        return 400, {"error": "id: an item id such as CH3"}
+    p = decide_run(state, folder, "show", doc.as_posix(), item)
+    if p is None:
+        return 409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."}
+    if p.returncode:
+        said = (p.stderr or p.stdout).strip().splitlines()
+        return 404 if p.returncode == 1 else 400, {"error": (said[-1] if said else "decide.sh refused it").removeprefix("decide.sh: ")}
+    fields, options = {}, []
+    for line in p.stdout.splitlines():
+        c = line.rstrip("\r").split("\t")
+        if c[0] == "option" and len(c) >= 6:
+            options.append({"key": c[1], "title": c[2], "detail": c[3], "recommended": c[4] == "1", "needsNote": c[5] == "1"})
+        elif len(c) >= 2:
+            fields[c[0]] = c[1]
+    return 200, {"doc": name, "fields": fields, "options": options}
+
+
+def decide_set(state, folder, body):
+    """Record one choice through decide.sh set: (code, {open, apply, nudged}). With the folder's last open item
+    decided, the feature's running session (if one is open) is told to carry on."""
+    doc = decide_doc(folder, str(body.get("doc", "")))
+    if not doc:
+        return 404, {"error": "no such decision document"}
+    item, choice = str(body.get("id", "")), str(body.get("choice", ""))
+    note = str(body.get("note", "")).strip()[:2000]
+    if not re.fullmatch(r"[A-Za-z]{1,4}\d+", item) or not re.fullmatch(r"[A-Za-z]+(-[a-z]+)*", choice):
+        return 400, {"error": "id (such as CH3) and choice (an option key) are required"}
+    args = ["set", doc.as_posix(), item, choice] + (["--note", note] if note else [])
+    p = decide_run(state, folder, *args)
+    if p is None:
+        return 409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."}
+    if p.returncode:
+        said = (p.stderr or p.stdout).strip().splitlines()
+        msg = (said[-1] if said else "decide.sh refused it")
+        for pre in ("decide.sh: ", "challenges.sh: "):
+            msg = msg.removeprefix(pre)
+        return (409 if p.returncode == 1 else 400), {"error": msg}
+    items = decide_pending(state, folder) or []
+    left = sum(i["state"] == "open" for i in items)
+    nudged = None
+    if not left:
+        live = next((s for s in sessions_of(state, folder) if s["status"] == "running"), None)
+        if live:
+            kinds = sorted({i["kind"] for i in items}) or [
+                "question" if DECIDE_LIST.fullmatch(str(body.get("doc", ""))) else
+                "proposal" if doc.name.endswith(" - Tech Proposals.md") else "challenge"]
+            text = DECIDE_NUDGE.format(what=" and ".join(k + "s" for k in kinds))
+            with state.cond:
+                state.inbox[live["tag"]].append(text)
+                state.cond.notify_all()
+            state.emit("say", text=text, tag=live["tag"])
+            nudged = {"tag": live["tag"], "name": live.get("name", "")}
+    return 200, {"said": p.stdout.strip(), "open": left, "apply": sum(i["state"] == "apply" for i in items), "nudged": nudged}
+
+
 def stages_of(plan_text, events, left_out=()):
     """Planning stages: the draft plan's Stages table, or, once it is signed off
     (the table is removed then), every stage closed, dated from the ledger."""
@@ -1946,7 +2100,7 @@ def feature_summary(state, folder, detail=False):
            "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
-           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder),
+           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder), "decide": decide_view(state, folder),
            "live": next(({"name": x["name"], "status": x["status"], "tag": x["tag"]} for x in sessions_of(state, folder)
                          if x["status"] in ("starting", "running", "lost")), None)}
     if detail:
@@ -2857,7 +3011,9 @@ def launch(state, project, name, prompt, tag, workdir="", flags=()):
     args = [*flags] + ([] if installed() else ["--plugin-dir", PLUGIN.as_posix()]) + managed_plugin_dirs()
     if workdir:
         args += ["--add-dir", Path(workdir).as_posix()]
-    exports = {"TATTY_SESSION": tag}
+    # TT_DECIDE=elsewhere: the toolbox's skills record their pre-written questions (challenges) and end the
+    # turn, for the person to answer on the feature's Decide page instead of in the terminal (see decide_set).
+    exports = {"TATTY_SESSION": tag, "TT_DECIDE": "elsewhere"}
     if os.environ.get("TATTY_HOME"):
         exports["TATTY_HOME"] = Path(os.environ["TATTY_HOME"]).as_posix()
     run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, "-n", name, prompt])
@@ -7340,6 +7496,17 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             return self.send(200, commit_info(folder))
+        if path in ("/api/decide", "/api/decide/item"):
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            if path == "/api/decide/item":
+                code, answer = decide_item(st, folder, q.get("doc", [""])[0], q.get("id", [""])[0])
+                return self.send(code, answer)
+            items = decide_pending(st, folder)
+            if items is None and decide_docs(folder) and not toolbox_script("tt-common/scripts/decide.sh"):
+                return self.send(409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."})
+            return self.send(200, {"items": items or []})
         if path == "/api/review/suggestions":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -7721,6 +7888,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "The request's link should start with http:// or https://"})
                 return self.send(200, merge_set(st, folder, action, url))
             return self.send(400, {"error": "action is check, opened or merged"})
+        if path == "/api/decide":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = decide_set(st, folder, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
         if path == "/api/stages":
             folder = feature_dir(str(b.get("name", "")))
             if not folder:

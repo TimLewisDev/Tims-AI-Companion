@@ -103,8 +103,24 @@ All of these are under the core plugin's `skills/` folder.
 The toolbox owns the choice and its workflow follows it: Tatty stores nothing of its own. A
 toolbox without `stages.sh` is not an error; the page just offers no Stages button.
 
+### Deciding a workflow's questions
+
+| Script | For | Used in Tatty |
+|---|---|---|
+| `tt-common/scripts/decide.sh pending --tsv <feature folder>` | the items the folder's script-owned documents are waiting on, one row each: `doc kind id state group severity title` (`kind` `challenge` from the Challenges doc, `proposal` from the Tech Proposals doc, `question` from a question list in `.tt/<Prefix> - Questions/`; `state` `open`, or `apply` once decided and waiting for the session). Tatty passes `doc` back relative to the feature's folder: a document's name, or the list's `.tt/…` path (nothing else is accepted) | a feature's page: the "questions wait" line, the Decisions rail item and the Decide page |
+| `decide.sh show <doc> <id>` | one item's fields (`<field><TAB><value>`) and its options (`option key title detail recommended needs-note`) | the Decide page, one item at a time |
+| `decide.sh set <doc> <id> <option> [--note <text>]` | a person's choice on the Decide page | the document's own writer records it (`challenges.sh`, `proposals.sh` or `questions.sh`); exit 1 (refused, its reason on stderr) is a 409 |
+
+Sessions Tatty starts carry `TT_DECIDE=elsewhere` (beside `TATTY_SESSION`). The toolbox reads it
+through `decide.sh mode`: its skills then write the questions down and end the turn instead of asking
+them in the terminal. When the folder's last open item is decided, Tatty puts "Continue: I've decided
+the challenges in Tatty …" in the inbox of the feature's running session, which applies them; with
+no session open, the feature's next Start resumes and applies them. The toolbox knows nothing of
+Tatty: `TT_DECIDE` is its own setting, and a session without it asks in the chat as before. A toolbox
+without `decide.sh` is not an error; the page just offers no Decide page.
+
 The page can't name any other command. The server runs only these (and the
-design plugin's `stories.sh`, below, and the model scripts in "Models and LLM
+design plugin's `stories.sh`, below, `decide.sh` above, and the model scripts in "Models and LLM
 connections", below), by argv, with no shell.
 
 ## Files Tatty reads

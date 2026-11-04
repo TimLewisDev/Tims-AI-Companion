@@ -111,7 +111,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide" };
   }
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
@@ -179,7 +179,7 @@ async function route() {
   else if (r.page === "home") {
     await renderHome();
     homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -583,7 +583,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, commit, suggestions, diff) {
+async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -602,8 +602,9 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff) {
     }
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit, suggestions, diff }), f.name), main));
-  if (suggestions) await reviewPage(f, main); // review-page.js
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit, suggestions, diff, decide }), f.name), main));
+  if (decide) await decidePage(f, main); // decide-page.js
+  else if (suggestions) await reviewPage(f, main); // review-page.js
   else if (commit) await commitPage(f, main); // commit.js
   else if (board) await featureBoard(f, main);
   else if (diff) {
@@ -635,11 +636,12 @@ function featureNav(f, current, board, opts = {}) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
-    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
     f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
+    f.decide && f.decide.open ? item("Decisions", featureDecideHref(f.name), !!opts.decide, `${f.decide.open} to decide`) : "", // decide-page.js
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -1326,6 +1328,9 @@ function overview(f) {
     if (second) stand.push(lite); else stand.unshift(lite);
   }
   if (!f.toolbox) stand.unshift(el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."));
+  if (f.decide && f.decide.open) stand.unshift(el("div", { class: "stand primary", id: "decide-waiting" },
+    el("p", {}, `${f.decide.open} ${f.decide.open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).`),
+    el("div", { class: "start-actions" }, el("a", { class: "go-btn", href: featureDecideHref(f.name) }, "Decide →")))); // decide-page.js
   const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
     bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
     el("table", { class: "units" }, el("tbody", {}, f.unitList.map(u => el("tr", {},
