@@ -15,9 +15,21 @@
 .tproblems li { margin: 2px 0; }
 .task-board-card .chip { margin-right: 4px; }
 
+/* ---------------------------------------------------------------- the type icon */
+.ttype { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--type-task); }
+.ttype svg { width: 16px; height: 16px; }
+.ttype-bug { color: var(--type-bug); }
+.ttype-story { color: var(--type-story); }
+.ttype-epic { color: var(--type-epic); }
+.ttype-id { display: inline-flex; align-items: center; gap: 4px; }
+.ttype-pick { display: flex; align-items: center; gap: 8px; }
+
 /* ---------------------------------------------------------------- the lists */
 .tlist-page, .tdone-page { padding: 4px 20px 24px; max-width: 980px; }
-.tlist-page > .tquick { margin: 4px 0 10px; }
+.tlist-page > .tquick-row { margin: 4px 0 10px; }
+.tquick-row { display: flex; align-items: center; gap: 6px; }
+.tquick-row .tquick { flex: 1 1 auto; min-width: 0; width: auto; }
+.tquick-row .tquick-type { flex: 0 0 auto; font-size: 12px; }
 .tlist { overflow: visible; }
 .trow { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .trow .tcard-top { flex: 0 0 auto; }

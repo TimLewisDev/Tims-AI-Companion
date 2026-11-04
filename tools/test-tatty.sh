@@ -136,6 +136,7 @@ has "a fresh window greets" "$T/ev" '"title": "Tatty"'
 [ "$(code "$U/static/../server.py")" = 404 ] && ok "only the page's files" || bad "only the page's files"
 [ "$(code "$U/static/features.js")" = 200 ] && ok "features.js served" || bad "features.js served"
 [ "$(code "$U/static/modes.js")" = 200 ] && ok "modes.js served" || bad "modes.js served"
+[ "$(code "$U/static/tasktype.js")" = 200 ] && ok "tasktype.js served" || bad "tasktype.js served"
 [ "$(code "$U/static/split.js")" = 200 ] && ok "split.js served" || bad "split.js served"
 [ "$(code "$U/static/split.css")" = 200 ] && ok "split.css served" || bad "split.css served"
 [ "$(code "$U/static/chat.js")" = 200 ] && ok "chat.js served" || bad "chat.js served"
@@ -245,6 +246,11 @@ src = ("---\r\ntags: [game]\r\n---\r\n# t-0007 - Hand made\r\n\r\n* **status**: 
 text, bom, crlf = m.task_decode(src)
 s = m.task_summary("t-0007 - Hand made.md", text)
 print("summary:", s["id"], "|", s["title"], "|", s["status"], "|", s["problems"])
+print("type of a file with none:", s["type"])
+print("type names:", [m.task_summary("T-0001 - a.md", "# T-0001: a\n\n- **Type:** %s\n" % v)["type"] for v in ("bug", "EPIC", " Story ", "Defect", "")])
+e = m.task_edit("# T-0001: a\n\n- **Type:** Task\n- **Status:** Backlog\n", {"Type": "Bug"})
+print("type edited in place:", e.count("**Type:**"), "- **Type:** Bug\n- **Status:** Backlog" in e)
+print("type strict:", [m.task_type(v, strict=True) for v in ("bug", "", "nonsense")], m.task_type("nonsense"))
 new = m.task_edit(text, {"Status": "Done"})
 a, b = text.split("\n"), new.split("\n")
 print("changed lines:", [i for i in range(max(len(a), len(b))) if a[i:i + 1] != b[i:i + 1]], repr(b[5]))
@@ -263,6 +269,10 @@ print("no ID:", m.task_summary("Untitled.md", "")["problems"])
 print("file name:", m.task_file_name("T-0003", 'What? A "quick" one: #2 / [draft]'))
 EOF
 has "a hand-made file is read" "$T/tf" "summary: T-0007 | Hand made | in review | []"
+has "type: a file with no Type line reads as a task" "$T/tf" "type of a file with none: Task"
+has "type: any case is a type; blank or unknown reads as a task" "$T/tf" "type names: ['Bug', 'Epic', 'Story', 'Task', 'Task']"
+has "type: an edit changes the Type line in place" "$T/tf" "type edited in place: 1 True"
+has "type: strict refuses only a name that isn't one" "$T/tf" "type strict: ['Bug', 'Task', None] Task"
 has "a change touches one line" "$T/tf" "changed lines: [5] '* **status**: Done'"
 has "keeping its key as written" "$T/tf" "'* **status**: Done'"
 has "its line ends and everything else" "$T/tf" "crlf kept: True rest kept: True"
@@ -1905,7 +1915,7 @@ for i in 1 2 3 4 5; do post /api/tasks/create "{\"name\":\"Game\",\"title\":\"Ta
 [ "$(tk create '{"name":"Game","title":"  "}')" = 400 ] && ok "a task needs a title" || bad "a task needs a title"
 [ "$(tk create '{"name":"Game","title":"Pause: menu?","priority":"High","description":"Esc opens it."}')" = 200 ] && ok "a task with a description" || bad "a task with a description"
 [ "$(pick "$T/tk" "d['task']['file']")" = "T-0006 - Pause menu.md" ] && ok "named for its ID and title" || bad "named for its ID and title" "$(cat "$T/tk")"
-printf '# T-0006: Pause: menu?\n\n- **Status:** Backlog\n- **Priority:** High\n- **Labels:**\n- **Created:** %s\n- **Done:**\n\n## Description\n\nEsc opens it.\n' "$(date +%F)" >"$T/want"
+printf '# T-0006: Pause: menu?\n\n- **Status:** Backlog\n- **Priority:** High\n- **Type:** Task\n- **Labels:**\n- **Created:** %s\n- **Done:**\n\n## Description\n\nEsc opens it.\n' "$(date +%F)" >"$T/want"
 cmp -s "$T/want" "$(taskfile T-0006)" && ok "the file is the task's template" || bad "the file is the task's template" "$(cat "$(taskfile T-0006)")"
 has "labels once each" "$(taskfile T-0001)" "- **Labels:** ui, input"
 get "/api/tasks/board?name=Game" >"$T/j"
@@ -1997,6 +2007,7 @@ TK="$FX/features/T-0006 - Pause menu/T-0006 - Pause menu - Ticket.md"
 [ -f "$TK" ] && ok "the task is written into its folder" || bad "the task is written into its folder"
 has "as its ticket" "$TK" "# T-0006: Pause: menu?"
 has "with where it came from" "$TK" '- **Task:** T-0006 on the Tasks board "Game"'
+has "type: the ticket carries the task's type" "$TK" "- **Type:** Task"
 has "the workflow's own first step, on the task" "$T/tk" "Prompt: /tt-adversarial-plan the task T-0006 in"
 has "the task moves on" "$T/tk" '"moved": "Doing"'
 has "its file says so" "$(taskfile T-0006)" "- **Status:** Doing"
@@ -2069,6 +2080,36 @@ hasnt "the task is no longer linked to it" "$(taskfile T-0006)" "- **Feature:** 
 get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(pick "$T/j" "('T-0006' in d['started'], 'T-0006' in d['begun'])")" = "(False, False)" ] && ok "and the board forgets the start" || bad "and the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
 rm -rf "$FX/archive/T-0006 - Pause menu"  # the archive tests below expect only theirs
+# a task's type: kept in its file, a missing or unknown one reads as a task (a board of its own, so the counts above stand)
+[ "$(tk new-board '{"name":"Kinds","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "type: a board to try types on" || bad "type: a board to try types on" "$(cat "$T/tk")"
+KB="$FX/tasks/Kinds"
+kfile() { ls "$KB/items/$1"*.md 2>/dev/null | head -1; }
+kget() { get "/api/tasks/task?name=Kinds&id=$1" >"$T/j"; }
+[ "$(tk create '{"name":"Kinds","title":"Crash on pause","type":"Bug"}')" = 200 ] && [ "$(pick "$T/tk" "d['task']['type']")" = Bug ] &&
+	grep -qxF -- '- **Type:** Bug' "$(kfile T-0001)" && ok "type: a bug is created with its line" || bad "type: a bug is created with its line" "$(cat "$T/tk")"
+[ "$(tk create '{"name":"Kinds","title":"No type given"}')" = 200 ] && [ "$(pick "$T/tk" "d['task']['type']")" = Task ] &&
+	grep -qxF -- '- **Type:** Task' "$(kfile T-0002)" && ok "type: a task made with none is a task" || bad "type: a task made with none is a task" "$(cat "$T/tk")"
+kn=$(ls "$KB/items" | wc -l | tr -d ' ')
+[ "$(tk create '{"name":"Kinds","title":"Odd one","type":"nonsense"}')" = 400 ] && [ "$(ls "$KB/items" | wc -l | tr -d ' ')" = "$kn" ] &&
+	ok "type: a name that isn't a type is refused and makes no file" || bad "type: a name that isn't a type is refused and makes no file" "$(cat "$T/tk")"
+kget T-0001; REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0001\",\"rev\":\"$REV\",\"type\":\"Story\"}")" = 200 ] &&
+	[ "$(grep -c -- '- \*\*Type:\*\*' "$(kfile T-0001)")" = 1 ] && has "type: a save changes the one Type line" "$(kfile T-0001)" "- **Type:** Story" || bad "type: a save changes the one Type line" "$(cat "$(kfile T-0001)")"
+kget T-0001
+[ "$(pick "$T/j" "d['type']")" = Story ] && ok "type: and the task reads as that type" || bad "type: and the task reads as that type" "$(head -c 300 "$T/j")"
+REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0001\",\"rev\":\"$REV\",\"type\":\"nonsense\"}")" = 400 ] && has "type: a save with an unknown type is refused, the file left alone" "$(kfile T-0001)" "- **Type:** Story" || bad "type: a save with an unknown type is refused, the file left alone"
+printf '# T-0050: By hand\n\n- **Status:** Backlog\n- **Priority:** Low\n\n## Description\n\nBy hand.\n' >"$KB/items/T-0050 - By hand.md"
+kget T-0050
+[ "$(pick "$T/j" "d['type']")" = Task ] && ok "type: a file with no Type line reads as a task" || bad "type: a file with no Type line reads as a task" "$(head -c 300 "$T/j")"
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0050\",\"rev\":\"$(pick "$T/j" "d['rev']")\",\"priority\":\"High\"}")" = 200 ] &&
+	printf '# T-0050: By hand\n\n- **Status:** Backlog\n- **Priority:** High\n\n## Description\n\nBy hand.\n' >"$T/want" && cmp -s "$T/want" "$(kfile T-0050)" &&
+	ok "type: saving another field changes only that line and adds no Type line" || bad "type: saving another field changes only that line and adds no Type line" "$(cat "$(kfile T-0050)")"
+printf '# T-0051: Odd type\n\n- **Status:** Backlog\n- **Type:** Defect\n\n## Description\n\nBy hand.\n' >"$KB/items/T-0051 - Odd type.md"
+kget T-0051
+[ "$(pick "$T/j" "d['type']")" = Task ] && ok "type: a name that isn't one of the four reads as a task" || bad "type: a name that isn't one of the four reads as a task" "$(head -c 300 "$T/j")"
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0051\",\"rev\":\"$(pick "$T/j" "d['rev']")\",\"type\":\"Bug\"}")" = 200 ] &&
+	[ "$(grep -c -- '- \*\*Type:\*\*' "$(kfile T-0051)")" = 1 ] && has "type: saving a type over an unknown one leaves one Type line" "$(kfile T-0051)" "- **Type:** Bug" || bad "type: saving a type over an unknown one leaves one Type line" "$(cat "$(kfile T-0051)")"
 # a board.json that won't read is never written over
 cp "$GB/board.json" "$T/board.json"; printf '{ nope' >"$GB/board.json"
 [ "$(tk create '{"name":"Game","title":"x"}')" = 409 ] && ok "a broken board.json refuses changes" || bad "a broken board.json refuses changes"
@@ -2119,13 +2160,14 @@ twlast() { pick "$T/ev" "(lambda e: ${1:-e})([e for e in d if e['type'] == 'task
 [ "$(tw '{"name":"Game","runId":"run-proj-2","title":"A","context":"project","folder":"/no/such/folder"}')" = 400 ] && ok "write: and one that exists" || bad "write: and one that exists"
 [ "$(tw '{"name":"Nope","runId":"run-none-1","title":"A"}')" = 404 ] && ok "write: no such board" || bad "write: no such board"
 cp "$(taskfile T-0003)" "$T/t3.before"
-[ "$(tw '{"name":"Game","runId":"run-aaaa-1","id":"T-0003","title":"Task 3","note":"rough line","shape":"both","context":"board"}')" = 202 ] &&
+[ "$(tw '{"name":"Game","runId":"run-aaaa-1","id":"T-0003","title":"Task 3","type":"Bug","note":"rough line","shape":"both","context":"board"}')" = 202 ] &&
 	ok "write: a run starts" || bad "write: a run starts" "$(cat "$T/tw")"
 tw_done 1 && ok "write: it finishes" || bad "write: it finishes"
 [ "$(twlast "(e['ok'], e['text'].startswith('A fuller description.'), e['text'].endswith('It works'), e['cost'])")" = "(True, True, True, 0.0123)" ] &&
 	ok "write: the answer comes as an event, its fence taken off, with the cost" || bad "write: the answer comes as an event, its fence taken off, with the cost" "$(twlast "")"
 has "write: the prompt names the task" "$T/tw-prompt" "Task title: Task 3"
 has "write: and carries the person's line" "$T/tw-prompt" "rough line"
+has "type: write: the prompt names the type the page sends" "$T/tw-prompt" "Type: Bug"
 has "write: and the other tasks' titles" "$T/tw-prompt" "- T-0001: Task 1"
 hasnt "write: but not the task itself" "$T/tw-prompt" "T-0003:"
 has "write: and asks for the criteria" "$T/tw-prompt" "### Acceptance criteria"

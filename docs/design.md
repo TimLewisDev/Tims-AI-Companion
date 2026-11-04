@@ -836,7 +836,8 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
     the feature each started task became. Unknown keys are kept.
   - `items/<ID> - <title>.md`: a markdown file per task, in the bullet style of
     the toolbox's documents: the H1 (`# T-0042: Title`), a header of
-    `- **Status:**`, `Priority`, `Labels`, `Created` and `Done` (and `Feature`,
+    `- **Status:**`, `Priority`, `Type` (Task, Bug, Story or Epic; a missing or
+    unknown one reads as a task), `Labels`, `Created` and `Done` (and `Feature`,
     once a workflow is started), then `## Description` and any other sections.
     A task exported from a User Stories board also has `- **Story:**` (which
     story, on which design board) and an `## Acceptance criteria` section.
@@ -1170,7 +1171,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
 ## Tests
 
 - `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
-  782 checks against a real toolbox (the User Stories board's with a stand-in
+  799 checks against a real toolbox (the User Stories board's with a stand-in
   `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
   toolbox. The milestones are among them: a row appended to the ledger is
   announced with its label and tier, once per key, unknown events are ignored,

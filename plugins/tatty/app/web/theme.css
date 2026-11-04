@@ -25,6 +25,7 @@
   --bg: #f7f6f3; --panel: #fff; --ink: #1f2328; --dim: #6a737d; --line: #e1e0dc;
   --ok: #2e7d32; --warn: #b26a00; --bad: #c62828;
   --on-accent: #fff; /* text on a filled accent */
+  --type-task: #1a6fd1; --type-bug: #c62828; --type-story: #2e7d32; --type-epic: #7b3fc4; /* a task's type icon */
   --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -32,6 +33,7 @@
     --bg: #16181b; --panel: #1e2125; --ink: #e6e6e6; --dim: #9aa3ad; --line: #2e3238;
     --ok: #6cc070; --warn: #e0a64a; --bad: #ef6b6b;
     --on-accent: #16181b; /* the dark accents are light: dark text on them */
+    --type-task: #6fb0f5; --type-bug: #ef6b6b; --type-story: #6cc070; --type-epic: #b890f0;
     --accent-engineering: #7aa7da;
     --accent-design: #e0a86a;
     --accent-production: #b49ae6;
