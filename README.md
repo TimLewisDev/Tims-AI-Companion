@@ -9,6 +9,7 @@ and steer an AI-built feature without living in a terminal.
 - [Install](#install)
   - [The installer (Windows, recommended)](#the-installer-windows-recommended)
   - [From inside Claude Code](#from-inside-claude-code)
+
 - [Why use Tatty](#why-use-tatty)
   - [See where everything stands](#see-where-everything-stands)
   - [Stay in control without watching the terminal](#stay-in-control-without-watching-the-terminal)
@@ -17,6 +18,7 @@ and steer an AI-built feature without living in a terminal.
   - [A companion with some personality](#a-companion-with-some-personality)
   - [Optional, and safe to ignore](#optional-and-safe-to-ignore)
 - [Projects and the Hub](#projects-and-the-hub)
+
 - [Quick reference](#quick-reference)
 - [In this repo](#in-this-repo)
 
@@ -141,6 +143,7 @@ projects: **Open** one and Tatty works in it. **New project** makes another;
 | change project | the tray menu → **Switch project…** |
 | rename a project, or set its code repository | the Hub → its **Edit…** |
 | take a project off the list | the Hub → its **Forget** (its files stay) |
+
 
 ## Quick reference
 
