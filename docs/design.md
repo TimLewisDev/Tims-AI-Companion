@@ -906,7 +906,10 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   Detail, Acceptance criteria or Both; *what it may read* is **Task + board**
   (no tools: the title, the typed line and the titles of up to 15 other tasks;
   a small model, about a cent) or **Also read the project** (Read, Glob and
-  Grep over the board's work folder, else its project; about 10 to 30 cents).
+  Grep over a folder chosen per run, for a task that is for another repo than
+  the one Claude is in; Browse… or a typed path, with the last six kept in the
+  browser per board, starting from the last one used, else the board's work
+  folder or project; about 10 to 30 cents).
   The run is a headless `claude -p` on a thread of its own, at most two at once.
   **The answer is sent to the page as a `taskwrite` event and is never written
   to the task's file**: it replaces the Description box's text (Undo puts back

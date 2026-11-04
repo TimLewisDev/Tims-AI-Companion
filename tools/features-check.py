@@ -1573,6 +1573,20 @@ def check_tasks(p):
             document.querySelector('#task-write').click(); document.querySelector('#task-desc').value = 'Esc opens it'; 1""")
     p.js("document.querySelector('#task-ai-shape-criteria').click(); 1")
     res["aiShapePicked"] = p.js("document.querySelector('#task-ai-shape-criteria').classList.contains('on') && !document.querySelector('#task-ai-shape-both').classList.contains('on')")
+    # reading the project: the folder is the person's to choose (empty here: the fixture board has none), kept for next time
+    p.js("document.querySelector('#task-ai-context-project').click(); 1")
+    res["aiFolderRow"] = p.js("""({ row: !!document.querySelector('#task-ai-where'), input: document.querySelector('#task-ai-folder').value,
+                                    browse: !!document.querySelector('#task-ai-browse'), tip: document.querySelector('#task-ai-folder').title.length > 20 })""")
+    p.js("document.querySelector('#task-write-ai').click(); 1")
+    res["aiNoFolder"] = p.js("document.querySelector('#task-ai-note').textContent")
+    p.js("""const f = document.querySelector('#task-ai-folder'); f.value = 'C:/Windows'; f.dispatchEvent(new Event('input', { bubbles: true }));
+            document.querySelector('#task-write-ai').click(); 1""")
+    wait(p, "document.querySelector('#task-desc').value.includes('A fuller description.')", 150)
+    res["aiProjectDone"] = p.js("""({ desc: document.querySelector('#task-desc').value.slice(0, 22),
+                                     remembered: JSON.stringify(Object.entries(localStorage).filter(([k]) => k.startsWith('tt-task-read:')).map(([, v]) => v)),
+                                     folderKept: document.querySelector('#task-ai-folder').value })""")
+    p.js("document.querySelector('#task-write-undo').click(); document.querySelector('#task-ai-context-board').click(); 1")
+    res["aiBoardAgain"] = p.js("({ row: !!document.querySelector('#task-ai-where'), desc: document.querySelector('#task-desc').value })")
     p.js("document.querySelector('#task-write-ai').click(); 1")
     res["aiRunning"] = p.js("({ button: document.querySelector('#task-write-ai').disabled, stop: !!document.querySelector('#task-write-stop') })")
     wait(p, "document.querySelector('#task-desc').value.includes('A fuller description.')", 150)

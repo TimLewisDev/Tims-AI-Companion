@@ -414,8 +414,14 @@ const { renderTasks, renderTaskBoard } = (() => {
   // The panel's "Write it for me": a headless Claude writes the Description from the
   // title and the line typed. The answer fills the box (Undo puts back what was
   // there) and is saved only when the person presses Create or Save.
-  const newAi = () => ({ context: "board", shape: "both", runId: "", step: "", undo: null, note: "" });
-  const aiFolder = () => data().options.workdir || data().options.project || "";
+  // The folder it reads is the person's choice per run: the task may be for another repo than the one
+  // Claude is in (a package, Tatty itself). It starts as the last one used on this board, else the board's
+  // work folder or project; the last few are kept in this browser, per board.
+  const recentKey = () => `tt-task-read:${t.name}`;
+  const recent = () => { try { const r = JSON.parse(localStorage.getItem(recentKey()) || "[]"); return Array.isArray(r) ? r.filter(x => typeof x === "string") : []; } catch { return []; } };
+  const remember = f => { try { localStorage.setItem(recentKey(), JSON.stringify([f, ...recent().filter(x => x !== f)].slice(0, 6))); } catch { /* not remembered */ } };
+  const newAi = () => ({ context: "board", shape: "both", runId: "", step: "", undo: null, note: "",
+    folder: recent()[0] || data().options.workdir || data().options.project || "" });
 
   function stopWrite(o) {
     const ai = o && o.ai;
@@ -427,12 +433,15 @@ const { renderTasks, renderTaskBoard } = (() => {
     if (ai.runId) return;
     const title = f.title.value.trim(), note = f.desc.value.trim();
     if (!title && !note) { ai.note = "Give it a title or a line first."; o.drawAi(); return; }
+    const folder = ai.folder.trim();
+    if (ai.context === "project" && !folder) { ai.note = "Choose the folder to read first."; o.drawAi(); return; }
     const runId = "w" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     ai.runId = runId; ai.step = "Starting"; ai.note = ""; o.drawAi();
     try {
       await send("/api/tasks/write", { name: t.name, runId, title, note, shape: ai.shape, context: ai.context,
-        folder: ai.context === "project" ? aiFolder() : "", id: o.id === "new" ? "" : o.id,
+        folder: ai.context === "project" ? folder : "", id: o.id === "new" ? "" : o.id,
         priority: f.priority.value, labels: f.labels.value });
+      if (ai.context === "project") remember(folder);
     } catch (e) {
       if (ai.runId === runId) { ai.runId = ""; ai.note = String(e.message || e); o.drawAi(); }
     }
@@ -517,8 +526,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     preview.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); show(true); f.desc.focus(); } });
 
     // Write it for me: what it may read, and what to write, then the button.
-    const ai = o.ai, folder = aiFolder(), aiBox = el("div", { class: "twrite", id: "task-ai" });
-    if (!folder) ai.context = "board";
+    const ai = o.ai, aiBox = el("div", { class: "twrite", id: "task-ai" });
     o.show = show;
     o.drawAi = () => {
       const running = !!ai.runId;
@@ -543,8 +551,17 @@ const { renderTasks, renderTaskBoard } = (() => {
           seg("context", [
             ["board", "Task + board", "Uses only the title, your line and the other task titles on this board. No files are read. Fast and cheap (about a cent)."],
             ["project", "Also read the project",
-              folder ? `Lets Claude read files in ${folder} (Read, Glob, Grep; it can't change anything) to ground the text in real code and docs. Slower and dearer (about 10 to 30 cents).`
-                : "Needs a folder to read: set the project in Start workflow's \"Works in\" first.", !folder]])),
+              "Lets Claude read files in the folder you choose (Read, Glob, Grep; it can't change anything) to ground the text in real code and docs. Slower and dearer (about 10 to 30 cents)."]])),
+        ai.context === "project" ? el("div", { class: "twrite-row", id: "task-ai-where" },
+          el("span", { class: "dim small" }, "Folder to read"),
+          el("input", { id: "task-ai-folder", class: "twrite-folder", value: ai.folder, disabled: running, spellcheck: "false", list: "task-ai-recent",
+            placeholder: "the project this task is for", "aria-label": "Folder to read",
+            title: "The project this task is for. It can be a different repo from the one Claude is working in: type or paste a path, pick a recent one, or Browse.",
+            oninput: e => { ai.folder = e.target.value; } }),
+          el("datalist", { id: "task-ai-recent" }, recent().map(r => el("option", { value: r }))),
+          el("button", { type: "button", id: "task-ai-browse", disabled: running, title: "Choose the folder in a dialog", onclick: async () => {
+            try { const p = await pickFolder(`Choose the project this task is for`, ai.folder.trim()); if (p) { ai.folder = p; o.drawAi(); } } catch (e) { ai.note = String(e.message || e); o.drawAi(); }
+          } }, "Browse…")) : "",
         running || ai.note || ai.undo ? el("div", { class: "twrite-row small" },
           running ? el("span", { class: "spinner" }) : "",
           running ? el("span", { class: "dim", id: "task-ai-step" }, `${ai.step}…`) : "",
