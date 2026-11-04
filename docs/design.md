@@ -901,6 +901,22 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   other fields and sections as they are; **Edit whole file** for the raw
   markdown; Save (Ctrl+Enter) and Delete. The panel's frame is the shared
   board's (`.tpanel`).
+- **Write it for me** (`/api/tasks/write`, server.py "write it for me"): under
+  the description, a button with two choices beside it. *What to write* is
+  Detail, Acceptance criteria or Both; *what it may read* is **Task + board**
+  (no tools: the title, the typed line and the titles of up to 15 other tasks;
+  a small model, about a cent) or **Also read the project** (Read, Glob and
+  Grep over the board's work folder, else its project; about 10 to 30 cents).
+  The run is a headless `claude -p` on a thread of its own, at most two at once.
+  **The answer is sent to the page as a `taskwrite` event and is never written
+  to the task's file**: it replaces the Description box's text (Undo puts back
+  what was there) and is saved only by Create or Save, so it works for a task
+  that doesn't exist yet and a hand edit during the run is the usual rev
+  conflict. Criteria are written under a `###` heading inside the Description,
+  since the Description ends at the next `##` and the form edits only it. Stop,
+  closing the panel and leaving the page end the run. `TATTY_TASKS_MODEL`,
+  `TATTY_TASKS_BUDGET`, `TATTY_TASKS_BUDGET_PROJECT` and `TATTY_TASKS_TIMEOUT`
+  tune it.
 - **Completed:** the total, this week, this month, the best week and the streak
   of weeks; a bar for each of the last 12 weeks; a line that says how it's
   going, whatever the motion setting; and the tasks by week, then by month, each

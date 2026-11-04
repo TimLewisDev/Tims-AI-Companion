@@ -393,7 +393,8 @@ const { renderTasks, renderTaskBoard } = (() => {
     if (!id) { closePanel(true); return; }
     if (t.open && t.open.id === id && t.tb.hasPanel()) return;
     if (id === "new") {
-      t.open = { id: "new", d: { id: "", title: "", status: "", priority: "", labels: [], description: "", extra: [], sections: [] }, write: true };
+      t.open = { id: "new", d: { id: "", title: "", status: "", priority: "", labels: [], description: "", extra: [], sections: [] }, write: true,
+        ai: newAi() };
       drawPanel();
       return;
     }
@@ -404,13 +405,60 @@ const { renderTasks, renderTaskBoard } = (() => {
       return;
     }
     if (!t) return;
-    t.open = { id: d.id, d, write: !d.description };
+    t.open = { id: d.id, d, write: !d.description, ai: newAi() };
     drawPanel();
   }
 
+  // ----------------------------------------------------------- write it for me
+
+  // The panel's "Write it for me": a headless Claude writes the Description from the
+  // title and the line typed. The answer fills the box (Undo puts back what was
+  // there) and is saved only when the person presses Create or Save.
+  const newAi = () => ({ context: "board", shape: "both", runId: "", step: "", undo: null, note: "" });
+  const aiFolder = () => data().options.workdir || data().options.project || "";
+
+  function stopWrite(o) {
+    const ai = o && o.ai;
+    if (ai && ai.runId) { const runId = ai.runId; ai.runId = ""; send("/api/tasks/write-cancel", { name: t.name, runId }).catch(() => {}); }
+  }
+
+  async function writeIt() {
+    const o = t.open, f = o.f, ai = o.ai;
+    if (ai.runId) return;
+    const title = f.title.value.trim(), note = f.desc.value.trim();
+    if (!title && !note) { ai.note = "Give it a title or a line first."; o.drawAi(); return; }
+    const runId = "w" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    ai.runId = runId; ai.step = "Starting"; ai.note = ""; o.drawAi();
+    try {
+      await send("/api/tasks/write", { name: t.name, runId, title, note, shape: ai.shape, context: ai.context,
+        folder: ai.context === "project" ? aiFolder() : "", id: o.id === "new" ? "" : o.id,
+        priority: f.priority.value, labels: f.labels.value });
+    } catch (e) {
+      if (ai.runId === runId) { ai.runId = ""; ai.note = String(e.message || e); o.drawAi(); }
+    }
+  }
+
+  // The run's progress and its end, from the server's "taskwrite" events.
+  document.addEventListener("tt-event", e => {
+    const ev = e.detail, o = t && t.open;
+    if (ev.type !== "taskwrite" || !o || !o.ai || ev.name !== t.name) return;
+    const ai = o.ai;
+    if (!ai.runId || (ev.run ? ev.run.runId : ev.runId) !== ai.runId) return;
+    if (!ev.done) { ai.step = ev.run.step || ai.step; o.drawAi(); return; }
+    ai.runId = "";
+    if (!ev.ok) { ai.note = ev.error === "Stopped." ? "Stopped." : `Couldn't write it: ${ev.error}`; o.drawAi(); return; }
+    ai.undo = o.f.desc.value;
+    o.f.desc.value = ev.text;
+    ai.note = `Written${ev.cost ? ` for $${ev.cost.toFixed(2)}` : ""}. Read it, edit it, then ${o.id === "new" ? "Create task" : "Save"}.`;
+    o.show(false);
+    o.drawAi();
+  });
+
   function closePanel(force) {
     if (!t || !t.open) { removePanel(); return true; }
-    if (!force && dirty() && !confirm("Discard your changes to this task?")) return false;
+    if (!force && (dirty() || t.open.ai.runId) && !confirm(t.open.ai.runId && !dirty()
+      ? "It is still being written. Stop it and close?" : "Discard your changes to this task?")) return false;
+    stopWrite(t.open);
     t.open = null;
     removePanel();
     if (location.hash.includes("/task/")) history.replaceState(null, "", tasksHref(t.name, st().view));
@@ -468,6 +516,45 @@ const { renderTasks, renderTaskBoard } = (() => {
     preview.addEventListener("click", e => { if (!e.target.closest("a")) { show(true); f.desc.focus(); } });
     preview.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); show(true); f.desc.focus(); } });
 
+    // Write it for me: what it may read, and what to write, then the button.
+    const ai = o.ai, folder = aiFolder(), aiBox = el("div", { class: "twrite", id: "task-ai" });
+    if (!folder) ai.context = "board";
+    o.show = show;
+    o.drawAi = () => {
+      const running = !!ai.runId;
+      const seg = (key, opts) => {
+        const box = el("div", { class: "tseg", role: "radiogroup", id: `task-ai-${key}` });
+        for (const [v, label, tip, off] of opts) {
+          const b = el("button", { type: "button", role: "radio", id: `task-ai-${key}-${v}`, class: ai[key] === v ? "on" : "",
+            "aria-checked": String(ai[key] === v), title: tip, disabled: running || !!off }, label);
+          b.addEventListener("click", () => { ai[key] = v; o.drawAi(); });
+          box.append(b);
+        }
+        return box;
+      };
+      aiBox.replaceChildren(
+        el("div", { class: "twrite-row" },
+          el("button", { type: "button", id: "task-write-ai", disabled: running, onclick: writeIt,
+            title: "Have Claude write the description from the title and what you've typed. It only fills the box: nothing is saved until you press " + (isNew ? "Create task." : "Save.") }, "Write it for me"),
+          seg("shape", [
+            ["detail", "Detail", "Expands the description: what it is, why, and what is in and out of it."],
+            ["criteria", "Acceptance criteria", "Adds a checklist of things someone else could check to say it's done."],
+            ["both", "Both", "A fuller description followed by the acceptance criteria."]]),
+          seg("context", [
+            ["board", "Task + board", "Uses only the title, your line and the other task titles on this board. No files are read. Fast and cheap (about a cent)."],
+            ["project", "Also read the project",
+              folder ? `Lets Claude read files in ${folder} (Read, Glob, Grep; it can't change anything) to ground the text in real code and docs. Slower and dearer (about 10 to 30 cents).`
+                : "Needs a folder to read: set the project in Start workflow's \"Works in\" first.", !folder]])),
+        running || ai.note || ai.undo ? el("div", { class: "twrite-row small" },
+          running ? el("span", { class: "spinner" }) : "",
+          running ? el("span", { class: "dim", id: "task-ai-step" }, `${ai.step}…`) : "",
+          running ? el("button", { type: "button", id: "task-write-stop", onclick: () => { stopWrite(o); ai.note = "Stopped."; o.drawAi(); } }, "Stop") : "",
+          !running && ai.note ? el("span", { class: ai.note.startsWith("Written") ? "ok" : "dim", id: "task-ai-note" }, ai.note) : "",
+          !running && ai.undo !== null ? el("button", { type: "button", id: "task-write-undo", title: "Put back what was in the box before",
+            onclick: () => { f.desc.value = ai.undo; ai.undo = null; ai.note = ""; o.show(o.write); o.drawAi(); } }, "Undo") : "") : "");
+    };
+    o.drawAi();
+
     const facts = isNew ? [] : [["Created", d.created], ["Done", d.done], ...d.extra, ["File", d.file]].filter(x => x[1]);
     const form = el("div", { class: "tform" },
       el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Title"), f.title),
@@ -476,7 +563,7 @@ const { renderTasks, renderTaskBoard } = (() => {
         el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Priority"), f.priority)),
       el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Labels"), f.labels),
       el("div", { class: "tfield" }, el("div", { class: "tdesc-head" }, el("span", { class: "dim small" }, "Description"),
-        el("div", { class: "tdesc-tabs", role: "tablist" }, wbtn, pbtn)), f.desc, preview),
+        el("div", { class: "tdesc-tabs", role: "tablist" }, wbtn, pbtn)), f.desc, preview, aiBox),
       facts.length ? el("dl", { class: "jfacts small" }, facts.flatMap(([k, v]) => [el("dt", { class: "dim" }, k), el("dd", {}, v)])) : "",
       ...(d.sections || []).map(s => el("div", { class: "tsection" }, el("h4", {}, s.heading),
         el("div", { class: "dim small" }, "Kept as it is in the file; Edit whole file changes it."), mdNode(s.text || "*(empty)*"))));
@@ -637,7 +724,7 @@ const { renderTasks, renderTaskBoard } = (() => {
 
   // Leaving the board for another page closes the panel without asking: the
   // hash has gone already, so there is nothing to stay on.
-  window.addEventListener("hashchange", () => { if (t && !location.hash.startsWith("#tasks/")) { t.open = null; removePanel(); } });
+  window.addEventListener("hashchange", () => { if (t && !location.hash.startsWith("#tasks/")) { stopWrite(t.open); t.open = null; removePanel(); } });
 
   return { renderTasks, renderTaskBoard };
 })();

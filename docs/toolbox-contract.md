@@ -371,6 +371,13 @@ has no part in it:
 - **The files are a person's too.** They can be edited by hand (in Obsidian,
   say) and Tatty keeps up. A change Tatty makes rewrites only the field or the
   section it is changing.
+- **"Write it for me" needs nothing of the toolbox.** The panel can have a
+  headless `claude -p` write a task's Description from its title and a rough
+  line (`--tools ""`, or `Read,Glob,Grep` with `--add-dir <folder>` when the
+  person lets it read the project; `--setting-sources user`, no session kept).
+  The answer goes to the page, not to the file. Env: `TATTY_TASKS_MODEL` (default
+  haiku for the no-tools run), `TATTY_TASKS_BUDGET` (default 1),
+  `TATTY_TASKS_BUDGET_PROJECT` (default 2) and `TATTY_TASKS_TIMEOUT`.
 - **One document written for the toolbox.** **Start workflow** makes
   `<root>/features/<ID> - <title>` (refused if it exists and isn't empty) and
   writes `<name> - Ticket.md` in it: the task's fields, its description and its

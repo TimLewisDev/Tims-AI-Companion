@@ -58,3 +58,13 @@
 .tbanner button { margin-left: 4px; }
 .tactions { flex-wrap: wrap; }
 button.tdanger:hover { border-color: var(--bad); color: var(--bad); }
+
+/* write it for me: the button, what to write, what it may read, and how it went */
+.twrite { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.twrite-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.tseg { display: flex; }
+.tseg button { padding: 1px 9px; font-size: 12px; border-radius: 0; margin-left: -1px; }
+.tseg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.tseg button:last-child { border-radius: 0 6px 6px 0; }
+.tseg button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); position: relative; }
+.tseg button:disabled { opacity: 0.55; cursor: not-allowed; }

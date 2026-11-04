@@ -1562,6 +1562,26 @@ def check_tasks(p):
     p.js("location.hash = location.hash + '/task/new'; 1")
     wait(p, "!!document.querySelector('.tpanel #task-title')")
     res["new"] = p.js("({ save: document.querySelector('#task-save').textContent, focus: document.activeElement.id })")
+    # Write it for me: the choices and their tooltips, a run (the server's stand-in model answers), the answer in
+    # the box and in Preview, Undo, and nothing saved. Closing it unsaved leaves the board's files as they were.
+    res["ai"] = p.js("""({ button: !!document.querySelector('#task-write-ai'),
+                           shape: [...document.querySelectorAll('#task-ai-shape button')].map(b => [b.textContent, b.title.length > 20, b.classList.contains('on')]),
+                           context: [...document.querySelectorAll('#task-ai-context button')].map(b => [b.textContent, b.title.length > 20, b.disabled]) })""")
+    p.js("document.querySelector('#task-write-ai').click(); 1")
+    res["aiEmpty"] = p.js("document.querySelector('#task-ai-note').textContent")
+    p.js("""const t = document.querySelector('#task-title'); t.value = 'Pause menu'; t.dispatchEvent(new Event('input', { bubbles: true }));
+            document.querySelector('#task-write').click(); document.querySelector('#task-desc').value = 'Esc opens it'; 1""")
+    p.js("document.querySelector('#task-ai-shape-criteria').click(); 1")
+    res["aiShapePicked"] = p.js("document.querySelector('#task-ai-shape-criteria').classList.contains('on') && !document.querySelector('#task-ai-shape-both').classList.contains('on')")
+    p.js("document.querySelector('#task-write-ai').click(); 1")
+    res["aiRunning"] = p.js("({ button: document.querySelector('#task-write-ai').disabled, stop: !!document.querySelector('#task-write-stop') })")
+    wait(p, "document.querySelector('#task-desc').value.includes('A fuller description.')", 150)
+    res["aiDone"] = p.js("""({ desc: document.querySelector('#task-desc').value, preview: !document.querySelector('#task-preview').hidden,
+                             previewHead: !!document.querySelector('#task-preview h3, #task-preview h4'), note: document.querySelector('#task-ai-note').textContent,
+                             undo: !!document.querySelector('#task-write-undo'), button: document.querySelector('#task-write-ai').disabled })""")
+    p.js("document.querySelector('#task-write-undo').click(); 1")
+    res["aiUndone"] = p.js("({ desc: document.querySelector('#task-desc').value, undo: !!document.querySelector('#task-write-undo') })")
+    p.js("window.confirm = () => true; 1")
     p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
     res["closedByEsc"] = p.js("!document.querySelector('.tpanel') && !document.querySelector('.tshade')")
 

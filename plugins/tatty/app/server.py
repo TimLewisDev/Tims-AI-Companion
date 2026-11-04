@@ -259,6 +259,7 @@ class State:
         self.httpd = None  # the listening server, so a restart can stop it (see "restarting")
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
+        self.task_writes = {}  # run id -> the "Write it for me" run on a task's description (see "tasks: write it for me")
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
         self.chat_lock = threading.Lock()  # one change to a chat's file at a time
         self.compact = compact_chat.CompactChat(self, compact_hooks(self))  # see "the compact chat"
@@ -527,7 +528,7 @@ def restart_needs(state):
                 going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
                               "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
         asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
-        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0)
+        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes)
     return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
             "busy": busy, "cached": sessions_cache_file().exists()}
 
@@ -6552,9 +6553,201 @@ def tasks_get(st, path, q):
     return 404, {"error": "not found"}
 
 
+# -- write it for me
+# The Description box can ask a headless `claude -p` to write the task up properly
+# from its title and the person's rough line. The answer goes to the page only (a
+# "taskwrite" event), never to the task's file: the person reads it, edits it and
+# presses Create or Save, so a task that doesn't exist yet works, a hand edit during
+# the run is the usual rev conflict, and a run nobody wants leaves nothing behind.
+# Two contexts: "board" (no tools: the title, the line and the other tasks' titles)
+# and "project" (Read, Glob and Grep over a folder, to ground the text in real files).
+
+TASK_WRITE_SHAPES = {
+    "detail": "Write a fuller description: what the task is, why it matters, and what is in and out of it. "
+              "Short paragraphs or bullets. No acceptance criteria section.",
+    "criteria": "Write only an acceptance criteria checklist: a line `### Acceptance criteria`, then 3 to 8 items "
+                "of the form `- [ ] ...`, each one checkable by someone who is not the author.",
+    "both": "Write a fuller description (what the task is, why it matters, what is in and out of it, in short "
+            "paragraphs or bullets), then a line `### Acceptance criteria` and 3 to 8 items of the form `- [ ] ...`, "
+            "each one checkable by someone who is not the author.",
+}
+TASK_WRITE_SYSTEM = (
+    "You write up a task for a task board from its title and a rough note. Reply with the markdown for the "
+    "task's Description section and nothing else: no preamble, no title line, no closing remarks, and no code "
+    "fence around it. Use `###` for any heading, never `#` or `##`. Keep the person's own wording where it is "
+    "already specific. Do not invent facts, names or numbers you cannot ground in what you were given or, when "
+    "you may read files, in the files; where something is unknown, say so in one short line instead of guessing. "
+    "You cannot ask questions: write the best version you can.")
+TASK_WRITE_TIMEOUT = float(os.environ.get("TATTY_TASKS_TIMEOUT", "600"))  # seconds, project runs; board runs get 120
+TASK_WRITE_RUN = re.compile(r"^[A-Za-z0-9_-]{6,40}$")
+TASK_WRITE_MAX = 2  # runs at once, all boards
+
+
+def task_write_prompt(folder, b, shape, context):
+    """The prompt on stdin: the task as typed, the shape asked for, and (board context)
+    the other tasks' titles, so the text suits the board and doesn't repeat a neighbour."""
+    lines = [f"Task title: {str(b.get('title', '')).strip() or '(none yet)'}"]
+    for key, label in (("priority", "Priority"), ("labels", "Labels")):
+        v = b.get(key)
+        v = ", ".join(str(x) for x in v) if isinstance(v, list) else str(v or "")
+        if v.strip():
+            lines.append(f"{label}: {v.strip()}")
+    note = str(b.get("note", "")).strip()
+    lines += ["", "The person's note (rough; may be empty):", note or "(empty)", ""]
+    me = str(b.get("id", ""))
+    with task_store(folder)["lock"]:
+        rows = [v[2] for v in task_index(folder).values()]
+    rows = [t for t in rows if t["id"] and t["id"] != me and t["title"]]
+    rows.sort(key=lambda t: (bool(t["done"]), t["id"]))
+    if rows:
+        lines.append("Other tasks on this board (titles only, for context; do not repeat them):")
+        lines += [f"- {t['id']}: {t['title']}" + (f" [{t['status']}]" if t["status"] else "") for t in rows[:15]]
+        lines.append("")
+    if context == "project":
+        lines += ["You may read files in the current folder (Read, Glob, Grep) to ground the text in what is really there. "
+                  "Look briefly, only for what this task touches.", ""]
+    lines.append(TASK_WRITE_SHAPES[shape])
+    return "\n".join(lines) + "\n"
+
+
+def task_write_clean(text):
+    """The model's reply as the Description's markdown: trimmed, with a fence around the
+    whole of it taken off."""
+    text = str(text or "").replace("\r\n", "\n").strip()
+    m = re.match(r"^```[A-Za-z]*\n(.*)\n```$", text, re.S)
+    return (m.group(1) if m else text).strip()
+
+
+def task_write_view(r):
+    return {k: r[k] for k in ("runId", "status", "step", "steps", "started")}
+
+
+def task_write_start(state, folder, b, client):
+    """Start a "Write it for me" run for the task being typed: (http code, answer). The
+    answer is a "taskwrite" event; the task's file is not touched."""
+    run_id, shape, context = str(b.get("runId", "")), str(b.get("shape", "both")), str(b.get("context", "board"))
+    if not TASK_WRITE_RUN.match(run_id):
+        return 400, {"error": "runId: 6 to 40 letters, digits, - or _"}
+    if shape not in TASK_WRITE_SHAPES:
+        return 400, {"error": "shape: detail, criteria or both"}
+    if context not in ("board", "project"):
+        return 400, {"error": "context: board or project"}
+    if not str(b.get("title", "")).strip() and not str(b.get("note", "")).strip():
+        return 400, {"error": "Give it a title or a line first."}
+    if len(str(b.get("note", ""))) > MAX_NOTE or len(str(b.get("title", ""))) > 300:
+        return 400, {"error": f"Keep the title under 300 characters and the description under {MAX_NOTE}."}
+    claude = claude_path()
+    if not claude:
+        return 501, {"error": NO_CLAUDE}
+    where = str(b.get("folder", "")).strip()
+    if context == "project" and (not where or not os.path.isdir(where)):
+        return 400, {"error": "Choose a folder that exists for Claude to read."}
+    prompt = task_write_prompt(folder, b, shape, context)
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    argv += ["-p", "--output-format", "stream-json", "--verbose", "--system-prompt", TASK_WRITE_SYSTEM,
+             "--setting-sources", "user", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
+    model = os.environ.get("TATTY_TASKS_MODEL", "")
+    if context == "project":
+        argv += ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--permission-mode", "dontAsk",
+                 "--max-budget-usd", os.environ.get("TATTY_TASKS_BUDGET_PROJECT", "2"), "--add-dir", Path(where).as_posix()]
+        timeout, cwd = TASK_WRITE_TIMEOUT, where
+    else:
+        argv += ["--tools", "", "--max-budget-usd", os.environ.get("TATTY_TASKS_BUDGET", "1")]
+        model, timeout, cwd = model or "haiku", min(TASK_WRITE_TIMEOUT, 120.0), str(folder)
+    if model:
+        argv += ["--model", model]
+    with state.cond:
+        if run_id in state.task_writes:
+            return 409, {"error": "That one is already being written."}
+        if len(state.task_writes) >= TASK_WRITE_MAX:
+            return 409, {"error": "Two are being written already: wait for one to finish."}
+        r = state.task_writes[run_id] = {"runId": run_id, "status": "running", "step": "Starting", "steps": 0,
+                                         "started": time.time(), "proc": None, "cancelled": False}
+    threading.Thread(target=task_write_work, args=(state, folder.name, client, r, argv, prompt, cwd, timeout),
+                     daemon=True).start()
+    state.emit("taskwrite", name=folder.name, client=client, run=task_write_view(r))
+    return 202, {"run": task_write_view(r)}
+
+
+def task_write_work(state, name, client, r, argv, prompt, cwd, timeout):
+    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
+    final, error, text = None, "", ""
+    try:
+        with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as errf:
+            p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf,
+                                 encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW,
+                                 start_new_session=os.name != "nt")
+            r["proc"] = p
+            if r.get("cancelled"):
+                kill_tree(p)
+            timer = threading.Timer(timeout, lambda: (r.update(timedOut=True), kill_tree(p)))
+            timer.start()
+            try:
+                p.stdin.write(prompt)
+                p.stdin.close()
+            except OSError:
+                pass
+            for line in p.stdout:
+                state.touch()  # a long run is activity: the idle watchdog leaves the server up
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "assistant":
+                    for block in (msg.get("message") or {}).get("content") or []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            inp = block.get("input") or {}
+                            what = Path(str(inp.get("file_path") or inp.get("path") or "")).name
+                            r["step"] = {"Read": f"Reading {what or 'a file'}", "Glob": "Looking for files",
+                                         "Grep": "Searching the files"}.get(block.get("name", ""), "Working")
+                            r["steps"] += 1
+                            state.emit("taskwrite", name=name, client=client, run=task_write_view(r))
+                elif msg.get("type") == "result":
+                    final = msg
+            p.wait()
+            timer.cancel()
+            errf.seek(0)
+            said = [ln.strip() for ln in errf.read().splitlines() if ln.strip()]
+        if r.get("cancelled"):
+            error = "Stopped."
+        elif r.get("timedOut"):
+            error = f"It took longer than {max(1, int(timeout // 60))} minute(s) and was stopped."
+        elif final is None:
+            error = said[-1] if said else f"claude exited {p.returncode} saying nothing"
+        elif final.get("is_error") or final.get("subtype") != "success":
+            error = str(final.get("result") or final.get("subtype") or "the run failed")[:400]
+        else:
+            text = task_write_clean(final.get("result"))
+            if not text:
+                error = "The model wrote nothing."
+    except OSError as e:
+        error = f"couldn't run claude: {e}"
+    finally:
+        with state.cond:
+            state.task_writes.pop(r["runId"], None)
+    cost = float(final.get("total_cost_usd") or 0) if final else 0.0
+    state.emit("taskwrite", name=name, client=client, runId=r["runId"], done=True, ok=not error, error=error,
+               text="" if error else text, cost=round(cost, 4))
+
+
+def task_write_cancel(state, folder, b, client):
+    r = state.task_writes.get(str(b.get("runId", "")))
+    if not r:
+        return 200, {"ok": False}
+    r["cancelled"] = True
+    if r.get("proc"):
+        kill_tree(r["proc"])
+    return 200, {"ok": True}
+
+
 TASK_POSTS = {"/api/tasks/create": task_create, "/api/tasks/save": task_save, "/api/tasks/move": task_move,
               "/api/tasks/columns": task_columns, "/api/tasks/clear": task_clear, "/api/tasks/delete": task_delete,
-              "/api/tasks/adopt": task_adopt, "/api/tasks/start": task_start}
+              "/api/tasks/adopt": task_adopt, "/api/tasks/start": task_start,
+              "/api/tasks/write": task_write_start, "/api/tasks/write-cancel": task_write_cancel}
 
 
 def tasks_post(st, path, b):

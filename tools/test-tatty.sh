@@ -46,6 +46,8 @@ cat >"$T/claude.sh" <<'EOS'
 #!/usr/bin/env bash
 # a User Stories headless run (it may run stories.sh): the stand-in is claude-p.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
+# the task panel's "Write it for me" (it names its job in the system prompt): the stand-in is claude-tw.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"You write up a task"*) exec bash "$(dirname "$0")/claude-tw.sh" "$@" ;; esac
 # a chat's turn (it names its conversation): the stand-in is claude-chat.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *--session-id*|*--resume*) exec bash "$(dirname "$0")/claude-chat.sh" "$@" ;; esac
 # the summary a small model writes of a side chat's context
@@ -2070,6 +2072,83 @@ if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/elsewhere/Linked/items" && cp 
 else
 	echo "skip  a board through a junction: no mklink here"
 fi
+echo "# task boards: write it for me"
+# The stand-in model keeps its arguments (one a line) and the prompt it was given, and answers with a fenced
+# description and criteria. tw-fail: the model errors; tw-empty: it writes nothing; tw-slow: it takes a while.
+cat >"$T/claude-tw.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+printf '%s\n' "$@" >"$d/tw-args"
+cat >"$d/tw-prompt"
+[ -f "$d/tw-slow" ] && sleep 20 >/dev/null
+if [ -f "$d/tw-fail" ]; then echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model is down"}'; exit 0; fi
+case "$*" in *Read,Glob,Grep*) echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/Inventory.cs"}}]}}' ;; esac
+if [ -f "$d/tw-empty" ]; then echo '{"type":"result","subtype":"success","is_error":false,"result":"  ","total_cost_usd":0.002}'; exit 0; fi
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"```markdown\nA fuller description.\n\n### Acceptance criteria\n- [ ] It works\n```","total_cost_usd":0.0123}'
+EOS
+tw() { curl -s -o "$T/tw" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/tasks/write"; }
+twc() { curl -s -o "$T/tw" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/tasks/write-cancel"; }
+# tw_done <n>: wait for the n-th finished run; twlast <expr>: a part of the latest finished one
+tw_done() {
+	for _ in $(seq 1 100); do
+		get /api/events >"$T/ev"
+		[ "$(pick "$T/ev" "sum(1 for e in d if e['type'] == 'taskwrite' and e.get('done'))")" -ge "$1" ] && return 0
+		sleep 0.2
+	done
+	return 1
+}
+twlast() { pick "$T/ev" "(lambda e: ${1:-e})([e for e in d if e['type'] == 'taskwrite' and e.get('done')][-1])"; }
+[ "$(tw '{"name":"Game","runId":"run-empty-1","title":" ","note":""}')" = 400 ] && ok "write: nothing typed is refused" || bad "write: nothing typed is refused" "$(cat "$T/tw")"
+[ "$(tw '{"name":"Game","runId":"x","title":"A"}')" = 400 ] && ok "write: a run id of 6 to 40 characters" || bad "write: a run id of 6 to 40 characters"
+[ "$(tw '{"name":"Game","runId":"run-shape-1","title":"A","shape":"long"}')" = 400 ] && ok "write: an unknown shape is refused" || bad "write: an unknown shape is refused"
+[ "$(tw '{"name":"Game","runId":"run-ctx-1","title":"A","context":"web"}')" = 400 ] && ok "write: an unknown context is refused" || bad "write: an unknown context is refused"
+[ "$(tw '{"name":"Game","runId":"run-proj-1","title":"A","context":"project"}')" = 400 ] && ok "write: reading the project needs a folder" || bad "write: reading the project needs a folder"
+[ "$(tw '{"name":"Game","runId":"run-proj-2","title":"A","context":"project","folder":"/no/such/folder"}')" = 400 ] && ok "write: and one that exists" || bad "write: and one that exists"
+[ "$(tw '{"name":"Nope","runId":"run-none-1","title":"A"}')" = 404 ] && ok "write: no such board" || bad "write: no such board"
+cp "$(taskfile T-0003)" "$T/t3.before"
+[ "$(tw '{"name":"Game","runId":"run-aaaa-1","id":"T-0003","title":"Task 3","note":"rough line","shape":"both","context":"board"}')" = 202 ] &&
+	ok "write: a run starts" || bad "write: a run starts" "$(cat "$T/tw")"
+tw_done 1 && ok "write: it finishes" || bad "write: it finishes"
+[ "$(twlast "(e['ok'], e['text'].startswith('A fuller description.'), e['text'].endswith('It works'), e['cost'])")" = "(True, True, True, 0.0123)" ] &&
+	ok "write: the answer comes as an event, its fence taken off, with the cost" || bad "write: the answer comes as an event, its fence taken off, with the cost" "$(twlast "")"
+has "write: the prompt names the task" "$T/tw-prompt" "Task title: Task 3"
+has "write: and carries the person's line" "$T/tw-prompt" "rough line"
+has "write: and the other tasks' titles" "$T/tw-prompt" "- T-0001: Task 1"
+hasnt "write: but not the task itself" "$T/tw-prompt" "T-0003:"
+has "write: and asks for the criteria" "$T/tw-prompt" "### Acceptance criteria"
+has "write: no tools without the project" "$T/tw-args" "--tools"
+hasnt "write: no folder is added" "$T/tw-args" "--add-dir"
+has "write: a small model by default" "$T/tw-args" "haiku"
+cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: the task's file is not touched" || bad "write: the task's file is not touched"
+[ "$(tw "{\"name\":\"Game\",\"runId\":\"run-proj-3\",\"title\":\"Task 3\",\"shape\":\"detail\",\"context\":\"project\",\"folder\":\"$GRW\"}")" = 202 ] &&
+	ok "write: a run that reads the project starts" || bad "write: a run that reads the project starts" "$(cat "$T/tw")"
+tw_done 2 && ok "write: and finishes" || bad "write: and finishes"
+has "write: it may only read" "$T/tw-args" "Read,Glob,Grep"
+has "write: in the folder given" "$T/tw-args" "--add-dir"
+hasnt "write: shape detail doesn't ask for criteria" "$T/tw-prompt" "3 to 8 items"
+[ "$(pick "$T/ev" "any(e['type'] == 'taskwrite' and e.get('run', {}).get('step') == 'Reading Inventory.cs' for e in d)")" = True ] &&
+	ok "write: its steps are reported" || bad "write: its steps are reported"
+touch "$T/tw-fail"
+tw '{"name":"Game","runId":"run-fail-1","title":"Task 3"}' >/dev/null
+tw_done 3 && [ "$(twlast "(e['ok'], e['error'], e['text'])")" = "(False, 'model is down', '')" ] && ok "write: a model error is reported" || bad "write: a model error is reported" "$(twlast "")"
+rm -f "$T/tw-fail"
+touch "$T/tw-empty"
+tw '{"name":"Game","runId":"run-empty-2","title":"Task 3"}' >/dev/null
+tw_done 4 && [ "$(twlast "(e['ok'], e['error'])")" = "(False, 'The model wrote nothing.')" ] && ok "write: an empty answer is an error" || bad "write: an empty answer is an error" "$(twlast "")"
+rm -f "$T/tw-empty"
+# a slow run: the same run id twice is refused, and two at once is the most
+touch "$T/tw-slow"
+[ "$(tw '{"name":"Game","runId":"run-slow-1","title":"Task 3"}')" = 202 ] && ok "write: a slow run starts" || bad "write: a slow run starts"
+[ "$(tw '{"name":"Game","runId":"run-slow-1","title":"Task 3"}')" = 409 ] && ok "write: the same run twice is refused" || bad "write: the same run twice is refused"
+[ "$(tw '{"name":"Game","runId":"run-slow-2","title":"Task 3"}')" = 202 ] && ok "write: a second at once" || bad "write: a second at once"
+[ "$(tw '{"name":"Game","runId":"run-slow-3","title":"Task 3"}')" = 409 ] && ok "write: a third is refused" || bad "write: a third is refused" "$(cat "$T/tw")"
+[ "$(twc '{"name":"Game","runId":"run-slow-1"}')" = 200 ] && has "write: stopping one" "$T/tw" '"ok": true'
+twc '{"name":"Game","runId":"run-slow-2"}' >/dev/null
+tw_done 6 && [ "$(twlast "e['error']")" = "Stopped." ] && ok "write: a stopped run says so" || bad "write: a stopped run says so" "$(twlast "")"
+rm -f "$T/tw-slow"
+[ "$(twc '{"name":"Game","runId":"run-gone-1"}')" = 200 ] && has "write: stopping one that isn't running is harmless" "$T/tw" '"ok": false'
+cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: still no task file touched" || bad "write: still no task file touched"
+
 echo "# merging: the task board"
 [ "$(tk new-board '{"name":"Rev"}')" = 200 ] && ok "a board with the default columns" || bad "a board with the default columns" "$(cat "$T/tk")"
 get "/api/tasks/board?name=Rev" >"$T/j"
