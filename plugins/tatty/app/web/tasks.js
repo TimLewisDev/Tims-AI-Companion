@@ -127,7 +127,7 @@ const { renderTasks, renderTaskBoard } = (() => {
       box, id: "tasks", item: "task", noun: "task", client,
       load: () => api("/api/tasks/board?name=" + enc(name)),
       cardBody: x => [
-        el("div", { class: "tcard-top" }, el("span", { class: "jkey" }, x.id), x.priority ? chip(x.priority, prioClass(x.priority)) : ""),
+        el("div", { class: "tcard-top" }, el("span", { class: "ttype-id" }, taskTypeIcon(x.type), el("span", { class: "jkey" }, x.id)), x.priority ? chip(x.priority, prioClass(x.priority)) : ""),
         el("div", { class: "tsum" }, x.title),
         x.labels.length ? el("div", { class: "tlabels" }, x.labels.map(l => el("span", { class: "tlabel" }, l))) : ""],
       cardFoot: x => x.problems.length ? el("div", { class: "small st missing" }, x.problems[0]) : "",
@@ -225,21 +225,29 @@ const { renderTasks, renderTaskBoard } = (() => {
 
   // "+ Add a task" at the foot of a list: Enter makes it there, and the box is
   // ready for the next one.
+  // The type chosen in each list's box, kept so a redraw while someone is typing
+  // puts it back; cleared once a task is added, so the next one starts on Task.
+  const quickTypes = {};
+
   function quickAdd(to) {
     const input = el("input", { class: "tquick", "data-list": to, placeholder: "+ Add a task", "aria-label": `Add a task to ${listName(to)}` });
+    const type = el("select", { class: "tquick-type", "aria-label": "Type of the new task" },
+      TASK_TYPES.map(n => el("option", { value: n, selected: n === (quickTypes[to] || "Task") }, n)));
+    type.addEventListener("change", () => { quickTypes[to] = type.value; });
     input.addEventListener("keydown", async e => {
       if (e.key === "Escape") { input.value = ""; input.blur(); return; }
       if (e.key !== "Enter" || !input.value.trim()) return;
       e.preventDefault();
       input.disabled = true;
       try {
-        const r = await send("/api/tasks/create", { name: t.name, title: input.value, to });
+        const r = await send("/api/tasks/create", { name: t.name, title: input.value, to, type: type.value });
+        delete quickTypes[to];
         say(`${r.task.id} added to ${listName(to)}`);
         st().refocusAdd = to;
       } catch (err) { stripSay(String(err.message || err), true); }
       await refresh();
     });
-    return input;
+    return el("div", { class: "tquick-row" }, input, type);
   }
 
   async function clearDone() {
@@ -393,7 +401,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     if (!id) { closePanel(true); return; }
     if (t.open && t.open.id === id && t.tb.hasPanel()) return;
     if (id === "new") {
-      t.open = { id: "new", d: { id: "", title: "", status: "", priority: "", labels: [], description: "", extra: [], sections: [] }, write: true,
+      t.open = { id: "new", d: { id: "", title: "", status: "", type: "Task", priority: "", labels: [], description: "", extra: [], sections: [] }, write: true,
         ai: newAi() };
       drawPanel();
       return;
@@ -440,7 +448,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     try {
       await send("/api/tasks/write", { name: t.name, runId, title, note, shape: ai.shape, context: ai.context,
         folder: ai.context === "project" ? folder : "", id: o.id === "new" ? "" : o.id,
-        priority: f.priority.value, labels: f.labels.value });
+        type: f.type.value, priority: f.priority.value, labels: f.labels.value });
       if (ai.context === "project") remember(folder);
     } catch (e) {
       if (ai.runId === runId) { ai.runId = ""; ai.note = String(e.message || e); o.drawAi(); }
@@ -481,7 +489,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     if (!o || !o.f) return false;
     if (o.raw) return o.rawBox.value.replace(/\r/g, "") !== o.d.text;
     const f = o.f, d = o.d;
-    return f.title.value.trim() !== d.title || f.priority.value !== d.priority || labelsText(f.labels.value) !== d.labels.join(", ")
+    return f.title.value.trim() !== d.title || f.type.value !== taskTypeName(d.type) || f.priority.value !== d.priority || labelsText(f.labels.value) !== d.labels.join(", ")
       || f.desc.value.trim() !== (d.description || "").trim() || f.status.value !== o.place;
   }
 
@@ -496,6 +504,8 @@ const { renderTasks, renderTaskBoard } = (() => {
         [["backlog", "Backlog"], ...data().columns.map(c => [c.id, c.name]), ["completed", "Completed"]]
           .map(([v, n]) => el("option", { value: v, selected: v === o.place }, n)),
         o.place === "unsorted" ? el("option", { value: "unsorted", selected: true, disabled: true }, `${d.status} (no such column)`) : ""),
+      type: el("select", { id: "task-type", "aria-label": "Type" },
+        TASK_TYPES.map(n => el("option", { value: n, selected: n === taskTypeName(d.type) }, n))),
       priority: el("select", { id: "task-priority", "aria-label": "Priority" },
         ["", ...prios].map(p => el("option", { value: p, selected: p === d.priority }, p || "None")),
         d.priority && !prios.includes(d.priority) ? el("option", { value: d.priority, selected: true }, d.priority) : ""),
@@ -573,8 +583,11 @@ const { renderTasks, renderTaskBoard } = (() => {
     o.drawAi();
 
     const facts = isNew ? [] : [["Created", d.created], ["Done", d.done], ...d.extra, ["File", d.file]].filter(x => x[1]);
+    const typeIcon = el("span", { class: "ttype-pick" }, taskTypeIcon(d.type), f.type);
+    f.type.addEventListener("change", () => typeIcon.firstChild.replaceWith(taskTypeIcon(f.type.value)));
     const form = el("div", { class: "tform" },
       el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Title"), f.title),
+      el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Type"), typeIcon),
       el("div", { class: "trow2" },
         el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Status"), f.status),
         el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Priority"), f.priority)),
@@ -631,7 +644,7 @@ const { renderTasks, renderTaskBoard } = (() => {
       const title = f.title.value.trim();
       if (!title) { o.msg.className = "small st missing"; o.msg.textContent = "A task needs a title."; f.title.focus(); return; }
       try {
-        const r = await send("/api/tasks/create", { name: t.name, title, to: f.status.value, priority: f.priority.value,
+        const r = await send("/api/tasks/create", { name: t.name, title, to: f.status.value, type: f.type.value, priority: f.priority.value,
           labels: f.labels.value, description: f.desc.value });
         t.open = null;
         removePanel();
@@ -645,6 +658,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     if (o.raw) body.text = o.rawBox.value;
     else {
       if (f.title.value.trim() !== o.d.title) body.title = f.title.value;
+      if (f.type.value !== taskTypeName(o.d.type)) body.type = f.type.value;
       if (f.priority.value !== o.d.priority) body.priority = f.priority.value;
       if (labelsText(f.labels.value) !== o.d.labels.join(", ")) body.labels = f.labels.value;
       if (f.desc.value.trim() !== (o.d.description || "").trim()) body.description = f.desc.value;

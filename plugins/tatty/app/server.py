@@ -68,7 +68,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
           "taskboard.js": "text/javascript", "taskboard.css": "text/css",
-          "tasks.js": "text/javascript", "tasks.css": "text/css",
+          "tasks.js": "text/javascript", "tasks.css": "text/css", "tasktype.js": "text/javascript",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
@@ -5061,13 +5061,14 @@ TASK_ID = re.compile(r"^([A-Z][A-Z0-9]*)-(\d+)$")
 TASK_NAME_ID = re.compile(r"^([A-Za-z][A-Za-z0-9]*-\d+)(?![A-Za-z0-9])")
 TASK_H1 = re.compile(r"^#\s+(?:([A-Za-z][A-Za-z0-9]*-\d+)(?![A-Za-z0-9])\s*[:–—-]?\s*)?(.*?)\s*$")
 TASK_FIELD = re.compile(r"^(\s*[-*]\s+\*\*)([^*\n]+?)(:\*\*|\*\*:)(.*)$")
-TASK_FIELDS = ("Status", "Priority", "Labels", "Created", "Done", "Feature")
+TASK_FIELDS = ("Status", "Priority", "Type", "Labels", "Created", "Done", "Feature")
+TASK_TYPES = ("Task", "Bug", "Story", "Epic")
 TASK_COLUMNS = ("To Do", "In Progress", "In Review", "QA Ready", "Done")
 TASK_PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"]
 TASK_RESERVED = ("backlog", "completed", "not on a column")
 TASK_HEAD = 16384  # bytes of a file the index reads: its header is all a card needs
 TASK_PAGE = 100
-TASK_INDEX_VERSION = 1
+TASK_INDEX_VERSION = 2
 _TASKS = {}  # a board's resolved folder -> its store: lock, index, what changed on disk
 _TASKS_GUARD = threading.Lock()
 
@@ -5110,6 +5111,16 @@ def task_labels(v):
             seen.add(p.lower())
             out.append(p)
     return out
+
+
+def task_type(value, strict=False):
+    """One of TASK_TYPES for a header value, in any case. Blank or unknown reads as "Task"; with strict, a
+    non-blank name that isn't one of the four gives None (the caller refuses it)."""
+    v = str(value or "").strip()
+    for name in TASK_TYPES:
+        if v.lower() == name.lower():
+            return name
+    return None if strict and v else "Task"
 
 
 def task_today():
@@ -5241,11 +5252,12 @@ def task_edit(text, fields=None, title=None, tid="", description=None):
     return "\n".join(lines) + ("\n" if p["trail"] or not text else "")
 
 
-def task_new_text(tid, title, status, priority, labels, created, done, description, extra=(), sections=()):
+def task_new_text(tid, title, status, priority, labels, created, done, description, extra=(), sections=(),
+                  kind="Task"):
     """A new task's file. extra: (key, value) fields after the known ones;
     sections: (heading, text) sections after the Description."""
-    fields = [("Status", status), ("Priority", priority), ("Labels", ", ".join(labels)), ("Created", created),
-              ("Done", done)] + [(k, task_line(v, 300)) for k, v in extra]
+    fields = [("Status", status), ("Priority", priority), ("Type", task_type(kind)), ("Labels", ", ".join(labels)),
+              ("Created", created), ("Done", done)] + [(k, task_line(v, 300)) for k, v in extra]
     out = [f"# {tid}: {title}", ""] + [f"- **{k}:**" + (f" {v}" if v else "") for k, v in fields]
     out += ["", "## Description"] + (["", description] if description else [])
     for heading, text in sections:
@@ -5269,7 +5281,7 @@ def task_summary(name, text):
     stem = name[:-3] if name.lower().endswith(".md") else name
     title = p["title"] or stem[len(fid):].strip(" -–—:") or stem
     return {"id": tid, "title": title, "status": f.get("status", ""), "priority": f.get("priority", ""),
-            "labels": task_labels(f.get("labels", "")), "created": f.get("created", ""), "done": f.get("done", ""),
+            "type": task_type(f.get("type")), "labels": task_labels(f.get("labels", "")), "created": f.get("created", ""), "done": f.get("done", ""),
             "feature": f.get("feature", ""), "file": name, "problems": problems}
 
 
@@ -5723,6 +5735,9 @@ def task_create(state, folder, body, client):
     title = task_line(body.get("title"))
     if not title:
         return 400, {"error": "A task needs a title."}
+    kind = task_type(body.get("type"), strict=True)
+    if kind is None:
+        return 400, {"error": "A task's type is Task, Bug, Story or Epic."}
     with task_store(folder)["lock"]:
         b = task_board(folder, strict=True)
         by, _ = task_ids(task_index(folder))
@@ -5730,13 +5745,14 @@ def task_create(state, folder, body, client):
         if to not in task_targets(b):
             return 400, {"error": "Put it in the backlog, a column or Completed."}
         t = task_create_locked(folder, b, by, title, to, body.get("priority"), body.get("labels"),
-                               body.get("description"), before=body.get("before"))
+                               body.get("description"), before=body.get("before"), kind=kind)
         task_board_save(folder, b)
     task_said(state, folder, client, [t["id"]])
     return 200, {"task": t}
 
 
-def task_create_locked(folder, b, by, title, to, priority, labels, description, extra=(), sections=(), before=None):
+def task_create_locked(folder, b, by, title, to, priority, labels, description, extra=(), sections=(), before=None,
+                       kind="Task"):
     """Write a new task into list `to` (the store's lock held): its file, the next
     free ID, and its place in b's order. by gains it too, so several can be made
     in a row; the caller saves board.json. Returns its summary."""
@@ -5751,7 +5767,8 @@ def task_create_locked(folder, b, by, title, to, priority, labels, description, 
             continue
         path = folder / "items" / task_file_name(tid, title)
         text = task_new_text(tid, title, fields.get("Status", "Backlog"), task_line(priority, 40),
-                             task_labels(labels), task_today(), fields.get("Done", ""), desc, extra, sections)
+                             task_labels(labels), task_today(), fields.get("Done", ""), desc, extra, sections,
+                             kind=kind)
         try:
             task_write(path, text, new=True)
             break
@@ -5823,6 +5840,11 @@ def task_save(state, folder, body, client):
             fields = {}
             if "priority" in body:
                 fields["Priority"] = task_line(body["priority"], 40)
+            if "type" in body:
+                kind = task_type(body["type"], strict=True)
+                if kind is None:
+                    return 400, {"error": "A task's type is Task, Bug, Story or Epic."}
+                fields["Type"] = kind
             if "labels" in body:
                 fields["Labels"] = ", ".join(task_labels(body["labels"]))
             if "title" in body:
@@ -6094,8 +6116,8 @@ def card_start_session(state, feature, name, doc, said, note, project, workdir, 
 def task_ticket_md(board, d, work=""):
     """The task as a feature's Ticket document: what the workflow plans from. `work`
     is the work-folder note, when the work is done in another folder."""
-    meta = [("Status", d["status"] or "Backlog"), ("Priority", d["priority"]), ("Labels", ", ".join(d["labels"])),
-            ("Created", d["created"])] + [tuple(x) for x in d["extra"]] + \
+    meta = [("Status", d["status"] or "Backlog"), ("Priority", d["priority"]), ("Type", d["type"]),
+            ("Labels", ", ".join(d["labels"])), ("Created", d["created"])] + [tuple(x) for x in d["extra"]] + \
         [("Task", f'{d["id"]} on the Tasks board "{board}"'),
          ("Copied from Tatty Tasks", time.strftime("%Y-%m-%d %H:%M"))]
     out = [f"# {d['id']}: {d['title']}", ""] + [f"- **{k}:** {v}" for k, v in meta if v]
@@ -6601,7 +6623,7 @@ def task_write_prompt(folder, b, shape, context):
     """The prompt on stdin: the task as typed, the shape asked for, and (board context)
     the other tasks' titles, so the text suits the board and doesn't repeat a neighbour."""
     lines = [f"Task title: {str(b.get('title', '')).strip() or '(none yet)'}"]
-    for key, label in (("priority", "Priority"), ("labels", "Labels")):
+    for key, label in (("type", "Type"), ("priority", "Priority"), ("labels", "Labels")):
         v = b.get(key)
         v = ", ".join(str(x) for x in v) if isinstance(v, list) else str(v or "")
         if v.strip():
