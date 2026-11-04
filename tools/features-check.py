@@ -277,11 +277,13 @@ def check_sections(p):
     try:
         p.js("""(() => {
           window.__real = { api };
-          window.__liveNames = ['Demo'];
+          window.__liveNames = null; // the first listed feature, once the list is known
           window.__liveAll = false; window.__copies = 0;
           api = async (path, body) => {
             const d = await window.__real.api(path, body);
             if (path !== '/api/features') return d;
+            window.__names = d.features.map(f => f.name);
+            if (!window.__liveNames) window.__liveNames = window.__names.slice(0, 1);
             let list = d.features;
             if (window.__copies) {
               list = [];
@@ -311,10 +313,10 @@ def check_sections(p):
         p.js("window.__liveAll = true; renderHome(true); 1")
         wait(p, "document.querySelectorAll('#page-home .fsec-rest').length === 0 && document.querySelectorAll('#page-home .fsec-live .hcard').length > 0")
         res["allLive"] = {"rest": p.js("document.querySelectorAll('#page-home .fsec-rest').length")}
-        p.js("window.__liveAll = false; window.__liveNames = ['Demo']; renderHome(true); 1")
+        p.js("window.__liveAll = false; window.__liveNames = [window.__names[0]]; renderHome(true); 1")
         wait(p, "document.querySelectorAll('#page-home .fsec-rest').length > 0")
-        p.js("window.__liveNames = ['Draft']; renderHome(true); 1")
-        wait(p, f"{names('.fsec-live')}.includes('Draft')")
+        p.js("window.__liveNames = [window.__names[1]]; renderHome(true); 1")
+        wait(p, f"{names('.fsec-live')}.includes(window.__names[1])")
         res["move"] = p.js(f"({{ live: {names('.fsec-live')}, rest: {names('.fsec-rest')} }})")
         res["buttons"] = p.js("""(() => {
           const texts = [...document.querySelectorAll('#page-home .fhead button')].map(b => b.textContent);

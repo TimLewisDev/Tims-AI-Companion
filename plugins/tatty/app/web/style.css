@@ -282,7 +282,6 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .hcard-lite .hcard-stripe { background: var(--ok); }
 .hcard-bug .hcard-stripe { background: var(--warn); }
 .hcard-new .hcard-stripe { background: var(--line); }
-.hcard-full .hcard-stripe { background: var(--accent); }
 .hcard-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; min-width: 0; }
 .hcard-name { font-size: 15px; min-width: 0; overflow-wrap: anywhere; }
 .hcard-top .chip { flex: none; }
@@ -293,6 +292,7 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .hcard-next .copyable { flex-wrap: wrap; }
 .hcard-next .copyable code { white-space: normal; overflow-wrap: anywhere; }
 .hcard-live { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
+.hcard-live:hover, .hcard-live:focus-visible { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok), 0 3px 12px rgba(0,0,0,.14); }
 .hcard-livemark { display: flex; align-items: center; gap: 6px; }
 .hcard .chip.live { font-weight: 700; }
 @media (max-width: 520px) {

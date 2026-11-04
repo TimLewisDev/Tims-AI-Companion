@@ -494,8 +494,8 @@ function featureTile(f) {
 function featureSection(kind, title, list, emptyText) {
   const head = el("div", { class: "fsec-head" },
     kind === "live" ? el("span", { class: "pulse", "aria-hidden": "true" }) : "",
-    el("h3", {}, title), el("span", { class: "fsec-count" }, String(list.length)));
-  return el("section", { class: "fsec fsec-" + kind }, head,
+    el("h3", { id: "fsec-title-" + kind }, title), el("span", { class: "fsec-count" }, String(list.length)));
+  return el("section", { class: "fsec fsec-" + kind, "aria-labelledby": "fsec-title-" + kind }, head,
     list.length ? el("div", { class: "fsec-grid" }, list.map(featureTile))
                 : el("p", { class: "fsec-empty dim" }, emptyText));
 }
