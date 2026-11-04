@@ -260,7 +260,7 @@ function startSection(i) {
     // No terminal could be opened: the command to run, and the move by hand.
     more: () => el("button", { type: "button", onclick: () => moveTicket(i.key, "In Progress") }, `Move ${i.key} to In Progress`),
     cancelled: r => jiraTb.stripSay(`Workflow cancelled. ${i.key} stays where it is in Jira. ${r.folder === "removed"
-      ? "The empty feature folder was moved to features/.deleted." : "The feature folder was kept."}`),
+      ? "The empty feature folder was moved to features/.deleted." : r.folder === "archived" ? "The feature stays in Archived." : "The feature folder was kept."}`),
   });
 }
 

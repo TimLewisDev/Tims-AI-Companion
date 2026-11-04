@@ -386,7 +386,7 @@ has no part in it:
   this ticket to `<root>/features/.deleted` (a folder with any other file is
   left alone). A person's **Archive** moves a feature folder to
   `<root>/archive`, and **Delete** removes it (the real folder, when it is a link
-  into a vault) after its name is typed back. The task's own file names the feature (`- **Feature:**`) until
+  into a vault) after "I understand" is typed. The task's own file names the feature (`- **Feature:**`) until
   then. Cancel also ends the sessions Tatty started for the feature, through
   the process id in Claude's own `sessions/<pid>.json` registry.
 

@@ -717,7 +717,7 @@ const { renderTasks, renderTaskBoard } = (() => {
       after: () => refresh(),
       cancelled: r => {
         const moved = r.movedTo ? `${d.id} is back in ${r.movedTo}. ` : "";
-        stripSay(`Workflow cancelled. ${moved}${r.folder === "removed" ? "The empty feature folder was moved to features/.deleted." : "The feature folder was kept."}`);
+        stripSay(`Workflow cancelled. ${moved}${r.folder === "removed" ? "The empty feature folder was moved to features/.deleted." : r.folder === "archived" ? "The feature stays in Archived." : "The feature folder was kept."}`);
       },
     });
   }

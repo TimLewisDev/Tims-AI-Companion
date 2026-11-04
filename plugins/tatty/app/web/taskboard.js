@@ -511,7 +511,7 @@ function makeTaskBoard(o) {
       const cancel = el("button", { type: "button", id: o.item + "-cancel-workflow", onclick: async () => {
         cancel.disabled = true;
         const r = await cancelWorkflow(c.feature, cancelWorkflowText(c.feature, { id: c.id, stays: !!c.stays },
-          w ? w.ticketOnly : false, !!sess && sess.status !== "ended"), o.client);
+          w ? w.ticketOnly : false, !!sess && sess.status !== "ended", !!(w && w.archived)), o.client);
         if (!r) { cancel.disabled = false; return; }
         await refresh();
         c.cancelled(r);
@@ -521,7 +521,7 @@ function makeTaskBoard(o) {
         words ? el("div", { id: o.item + "-workflow-state" }, chip(words[0], "route"), " ", chip(words[1], "now"), " ",
           sess ? el("a", { href: "#workflows/" + encodeURIComponent(sess.tag), onclick: () => c.close(true), title: sess.name }, words[2])
             : el("span", { class: "dim" }, words[2]))
-          : el("div", { class: "dim small" }, w && w.missing ? (w.archived ? "Its feature is archived: restore it on the Features page." : "Its feature folder is gone.") : "Where it stands shows once the board has been read."),
+          : el("div", { class: "dim small" }, w && w.missing ? (w.archived ? "Its feature is archived: restore it on the Features page, or cancel the workflow." : "Its feature folder is gone.") : "Where it stands shows once the board has been read."),
         el("div", { class: "start-actions" },
           el("a", { href: featureHref(c.feature), onclick: () => c.close(true) }, c.feature + " →"), " ", cancel));
     };

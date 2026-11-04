@@ -968,6 +968,9 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   A feature folder holding nothing but the Ticket is moved to
   `features/.deleted` (never deleted); one with any other file stays, with the
   task unlinked. A feature no task started only has its sessions ended.
+  An **archived** feature (its link to the task survives Archive) is cancelled
+  too: the task is unlinked and returned, and the folder stays in Archived
+  (`"folder": "archived"`).
   Cancelling after a failed launch works the same, so the task can be started
   again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
   are left alone; it asks again when its folder is missing.
@@ -1027,8 +1030,8 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   - **Delete** is for good, and the one thing in Tatty that is. The side panel
     (`deleteFeaturePanel`) first reads `GET /api/feature/delete-preview` (the real
     path, whether it's a link, how many files and bytes) and asks for the feature's
-    name to be typed; `POST /api/feature/delete {name, archived, confirm}` is a 400
-    without it. It ends the sessions and chats, undoes a task's Start
+    "I understand" to be typed (any case, spacing trimmed; not the feature's name);
+    `POST /api/feature/delete {name, archived, confirm}` is a 400 without it. It ends the sessions and chats, undoes a task's Start
     (`task_unstart`, as Cancel workflow does), removes the folder (for a link: the
     real folder it points at, then the link) and forgets the project choice,
     whiteboard and Jira "started" row. A link met *inside* the folder is removed,
@@ -1262,7 +1265,7 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   back to a sharp drawing (`crisp`, `settledAfterEase`, `layer`).
   `features-check.py ... --archive` makes a feature of its own ("Walk archive") and walks
   the split button with real mouse and keys: the caret's menu (Esc, the caret again), the
-  Delete panel (the name typed, case matters, Esc), Archive into the Archived section,
+  Delete panel ("I understand" typed, any case, Esc), Archive into the Archived section,
   Restore, and Delete from the section. It deletes a folder, so run it only on a
   throwaway root.
   `features-check.py ... --export` clicks through Export to Tasks on the first

@@ -6207,10 +6207,24 @@ def workflow_cancel(state, name, client=""):
     started from a task, undo that Start (see task_unstart); and if the folder
     holds nothing but the Ticket Tatty wrote, move it to features/.deleted (never
     deleted). Anything more in the folder is the person's planning: it stays.
+    An archived feature (its sessions were ended when it was archived) is
+    cancelled the same way, except that its folder stays where it is.
     (http code, answer)"""
     folder = feature_dir(name)
+    archived = False
+    if not folder:
+        folder, archived = archive_dir(name), True
     if not folder:
         return 404, {"error": "no such feature"}
+    if archived:
+        found = task_for_feature(folder.name)
+        tickets = jira_unstart(folder.name)
+        answer = {"ok": True, "feature": folder.name, "archived": True, "stopped": 0, "said": "", "task": None,
+                  "ticket": tickets[0] if tickets else "", "movedTo": "", "folder": "archived"}
+        if found:
+            answer["task"] = {"board": found[0].name, "id": found[1]}
+            answer["movedTo"] = task_unstart(state, found[0], found[1], client)
+        return 200, answer
     with state.cond:
         tags = [s["tag"] for s in state.sessions.values() if s.get("feature") and is_folder(s["folder"], folder) and not s.get("closed")]
     stopped, said = [], []
@@ -6482,13 +6496,13 @@ def feature_delete_preview(state, name, archived):
 
 def feature_delete(state, name, archived, confirm, client=""):
     """Delete a feature and its folder for good. For a link into a vault that is the
-    real folder it points at (and the link). The name must be typed back as the
-    confirmation. (http code, answer)"""
+    real folder it points at (and the link). "I understand" must be typed as the
+    confirmation (any case, any spacing). (http code, answer)"""
     folder = delete_target(name, archived)
     if not folder:
         return 404, {"error": "no such feature"}
-    if confirm != folder.name:
-        return 400, {"error": "Type the feature's name to confirm."}
+    if " ".join(str(confirm).split()).lower() != "i understand":
+        return 400, {"error": 'Type "I understand" to confirm.'}
     why = delete_refused(folder)
     if why:
         return 409, {"error": f"Won't delete it: {why}."}

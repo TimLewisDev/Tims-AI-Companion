@@ -1808,7 +1808,7 @@ hasnt "begun.json too" "$TATTY_HOME/jira/begun.json" "ABC-2"
 post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"mode\":\"lite\"}" >"$T/js"
 has "the ticket can be started again" "$T/js" '"ok": true'
 # delete unlinks too
-post /api/feature/delete '{"name":"ABC-3 - Done one","confirm":"ABC-3 - Done one"}' >"$T/j"
+post /api/feature/delete '{"name":"ABC-3 - Done one","confirm":"I understand"}' >"$T/j"
 has "a started ticket's feature is deleted" "$T/j" '"ok": true'
 hasnt "and the ticket is unlinked" "$TATTY_HOME/jira/started.tsv" "ABC-3"
 hasnt "and forgotten in begun.json" "$TATTY_HOME/jira/begun.json" "ABC-3"
@@ -2056,6 +2056,19 @@ printf '# Notes\n' >"$F5/Notes.md"
 has "its folder was kept" "$T/wc" '"folder": "kept"'
 [ -f "$F5/Notes.md" ] && ok "with its documents" || bad "with its documents"
 hasnt "but the task is no longer linked to it" "$(taskfile T-0005)" "- **Feature:** T-0005"
+# an archived feature's workflow can be cancelled too: the task is freed, the feature stays archived
+post /api/feature/archive '{"name":"T-0006 - Pause menu"}' >/dev/null
+[ -d "$FX/archive/T-0006 - Pause menu" ] && has "the task still names its archived feature" "$(taskfile T-0006)" "- **Feature:** T-0006 - Pause menu" || bad "an archived feature keeps its task link"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "(d['workflows']['T-0006']['missing'], d['workflows']['T-0006']['archived'])")" = "(True, True)" ] && ok "the board says its feature is archived" || bad "the board says its feature is archived" "$(pick "$T/j" "d['workflows']")"
+[ "$(wcancel '{"name":"T-0006 - Pause menu"}')" = 200 ] && ok "an archived feature's workflow is cancelled" || bad "an archived feature's workflow is cancelled" "$(cat "$T/wc")"
+has "its folder is reported as archived" "$T/wc" '"folder": "archived"'
+has "and the task went back" "$T/wc" '"movedTo": "Backlog"'
+[ -f "$FX/archive/T-0006 - Pause menu/T-0006 - Pause menu - Ticket.md" ] && ok "the feature stays in the archive, ticket and all" || bad "the feature stays in the archive"
+hasnt "the task is no longer linked to it" "$(taskfile T-0006)" "- **Feature:** T-0006"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "('T-0006' in d['started'], 'T-0006' in d['begun'])")" = "(False, False)" ] && ok "and the board forgets the start" || bad "and the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
+rm -rf "$FX/archive/T-0006 - Pause menu"  # the archive tests below expect only theirs
 # a board.json that won't read is never written over
 cp "$GB/board.json" "$T/board.json"; printf '{ nope' >"$GB/board.json"
 [ "$(tk create '{"name":"Game","title":"x"}')" = 409 ] && ok "a broken board.json refuses changes" || bad "a broken board.json refuses changes"
@@ -2731,21 +2744,21 @@ has "its project choice came back with it" "$T/j" '"projectFrom": "chosen"'
 get "/api/whiteboard?kind=feature&ref=Arch%20One" >"$T/j"
 has "and its whiteboard" "$T/j" '"nq1"'
 # delete
-[ "$(afp delete '{"name":"Arch Two"}')" = 400 ] && ok "delete wants the name typed" || bad "delete wants the name typed"
-[ "$(afp delete '{"name":"Arch Two","confirm":"arch two"}')" = 400 ] && ok "exactly" || bad "exactly"
+[ "$(afp delete '{"name":"Arch Two"}')" = 400 ] && ok "delete wants I understand typed" || bad "delete wants I understand typed"
+[ "$(afp delete '{"name":"Arch Two","confirm":"Arch Two"}')" = 400 ] && ok "the feature's name is not enough" || bad "the feature's name is not enough"
 [ -f "$FX/features/Arch Two/Notes.md" ] && ok "and nothing is deleted without it" || bad "and nothing is deleted without it"
 [ "$(afp delete '{"name":"Nope","confirm":"Nope"}')" = 404 ] && ok "deleting a feature there isn't is a 404" || bad "deleting a feature there isn't is a 404"
 get "/api/feature/delete-preview?name=Arch%20Two" >"$T/j"
 has "the preview counts the files" "$T/j" '"files": 1'
 has "and says it is not a link" "$T/j" '"link": false'
 $PY -c "import json,os,sys; h=sys.argv[1]; [json.dump(dict(json.load(open(p)) if os.path.exists(p) else {}, **{k: v}), open(p, 'w')) for p, k, v in ((h + '/session-models.json', 'Arch Two', {'model': 'm', 'effort': 'e'}), (h + '/branches.json', 'arch two', {'repo': 'r', 'branch': 'b'}))]" "$TATTY_HOME"
-[ "$(afp delete '{"name":"Arch Two","confirm":"Arch Two"}')" = 200 ] && [ ! -e "$FX/features/Arch Two" ] && ok "a feature is deleted for good" || bad "a feature is deleted for good" "$(cat "$T/fa")"
+[ "$(afp delete '{"name":"Arch Two","confirm":"  i UNDERSTAND "}')" = 200 ] && [ ! -e "$FX/features/Arch Two" ] && ok "a feature is deleted for good" || bad "a feature is deleted for good" "$(cat "$T/fa")"
 has "and says how many files" "$T/fa" '"removed": 1'
 [ ! -e "$FX/features/.deleted/Arch Two" ] && ok "not moved to .deleted" || bad "not moved to .deleted"
 [ "$($PY -c "import json,sys; print('Arch Two' in json.load(open(sys.argv[1])))" "$TATTY_HOME/session-models.json")" = False ] && ok "its model and effort are forgotten" || bad "its model and effort are forgotten"
 [ "$($PY -c "import json,sys; print('arch two' in json.load(open(sys.argv[1])))" "$TATTY_HOME/branches.json")" = False ] && ok "and its branch record" || bad "and its branch record"
 [ "$(afp archive '{"name":"Arch One"}')" = 200 ] && ok "archived again" || bad "archived again"
-[ "$(afp delete '{"name":"Arch One","archived":true,"confirm":"Arch One"}')" = 200 ] && [ ! -e "$FX/archive/Arch One" ] && ok "an archived feature is deleted" || bad "an archived feature is deleted" "$(cat "$T/fa")"
+[ "$(afp delete '{"name":"Arch One","archived":true,"confirm":"I understand"}')" = 200 ] && [ ! -e "$FX/archive/Arch One" ] && ok "an archived feature is deleted" || bad "an archived feature is deleted" "$(cat "$T/fa")"
 get /api/features >"$T/j"
 [ "$(pick "$T/j" "[a['name'] for a in d['archived']]")" = "[]" ] && ok "and leaves the Archived section" || bad "and leaves the Archived section"
 hasnt "its project choice is forgotten" "$TATTY_HOME/projects.tsv" "arch one"
@@ -2753,7 +2766,7 @@ hasnt "its project choice is forgotten" "$TATTY_HOME/projects.tsv" "arch one"
 rm -rf "$FX/features/Arch One (2)"
 # a feature started from a task: deleting it undoes the start
 [ -d "$FX/features/T-0007 - Some idea" ] && {
-	[ "$(afp delete '{"name":"T-0007 - Some idea","confirm":"T-0007 - Some idea"}')" = 200 ] && ok "a feature started from a task is deleted" || bad "a feature started from a task is deleted" "$(cat "$T/fa")"
+	[ "$(afp delete '{"name":"T-0007 - Some idea","confirm":"I understand"}')" = 200 ] && ok "a feature started from a task is deleted" || bad "a feature started from a task is deleted" "$(cat "$T/fa")"
 	has "the task is named" "$T/fa" '"id": "T-0007"'
 	[ ! -e "$FX/features/T-0007 - Some idea" ] && ok "its folder is gone" || bad "its folder is gone"
 	hasnt "the task names no feature" "$(taskfile T-0007)" "T-0007 - Some idea"
@@ -2770,14 +2783,14 @@ if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/vault/Arch Link/sub" "$T/decoy
 	[ "$(afp archive '{"name":"Arch Link"}')" = 200 ] && [ ! -e "$FX/features/Arch Link" ] && [ -f "$FX/archive/Arch Link/a.md" ] && ok "a link is archived" || bad "a link is archived" "$(cat "$T/fa")"
 	[ -f "$T/vault/Arch Link/a.md" ] && [ -f "$T/vault/Arch Link/sub/b.md" ] && ok "and the folder it points at stays where it is" || bad "and the folder it points at stays where it is"
 	[ "$(afp restore '{"name":"Arch Link"}')" = 200 ] && [ -f "$FX/features/Arch Link/a.md" ] && ok "and is restored" || bad "and is restored" "$(cat "$T/fa")"
-	[ "$(afp delete '{"name":"Arch Link","confirm":"Arch Link"}')" = 200 ] && ok "a link is deleted" || bad "a link is deleted" "$(cat "$T/fa")"
+	[ "$(afp delete '{"name":"Arch Link","confirm":"I understand"}')" = 200 ] && ok "a link is deleted" || bad "a link is deleted" "$(cat "$T/fa")"
 	has "with the files of the real folder" "$T/fa" '"removed": 2'
 	[ ! -e "$T/vault/Arch Link" ] && [ ! -e "$FX/features/Arch Link" ] && ok "the real folder and the link are both gone" || bad "the real folder and the link are both gone"
 	[ -f "$T/decoy/keep.txt" ] && [ -d "$T/vault" ] && ok "but not what a link inside it points at, or the folder around it" || bad "but not what a link inside it points at, or the folder around it"
 	# never a folder Tatty or the person depends on: the root itself, or a folder holding it
 	for target in "$FX" "$T"; do
 		MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$FX/features/Arch Root")" "$(cygpath -w "$target")" >/dev/null 2>&1
-		[ "$(afp delete '{"name":"Arch Root","confirm":"Arch Root"}')" = 409 ] && ok "delete refuses a link to $(basename "$target")" || bad "delete refuses a link to $(basename "$target")" "$(cat "$T/fa")"
+		[ "$(afp delete '{"name":"Arch Root","confirm":"I understand"}')" = 409 ] && ok "delete refuses a link to $(basename "$target")" || bad "delete refuses a link to $(basename "$target")" "$(cat "$T/fa")"
 		MSYS_NO_PATHCONV=1 cmd /c rmdir "$(cygpath -w "$FX/features/Arch Root")" >/dev/null 2>&1
 	done
 	[ -d "$FX/features" ] && [ -d "$T/decoy" ] && ok "and nothing was removed" || bad "and nothing was removed"

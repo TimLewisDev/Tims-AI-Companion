@@ -799,7 +799,10 @@ function projectLine(f, onChange) {
 // Cancelling a workflow (the server's workflow_cancel): its sessions are ended and,
 // if it was started from a task, that Start is undone. What the person is told first
 // says what will happen to the task and the folder.
-function cancelWorkflowText(name, task, ticketOnly, running) {
+function cancelWorkflowText(name, task, ticketOnly, running, archived) {
+  if (archived) return [`Cancel the workflow ${name}?`,
+    task ? `${task.id} goes back to where it was, and can be started again.` : "",
+    "The feature is archived, and stays in Archived."].filter(Boolean).join("\n\n");
   return [`Cancel the workflow ${name}?`,
     running ? "Its Claude session is ended, and anything it is in the middle of is lost." : "",
     task ? (task.stays ? `${task.id} stays where it is in Jira, and can be started again.` : `${task.id} goes back to where it was, and can be started again.`) : "",

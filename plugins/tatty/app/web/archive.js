@@ -2,7 +2,7 @@
 // A feature's page has one split button: Archive (moves it to <root>/archive, and the
 // Features page lists it under Archived, where Restore brings it back) with Delete… behind
 // its caret. Delete removes the folder for good, the real one when the feature is a link
-// into a vault, so it asks first and wants the feature's name typed.
+// into a vault, so it asks first and wants "I understand" typed (any case).
 
 // What leaves with a feature, wherever it was open.
 function featureGone(name) {
@@ -27,11 +27,11 @@ const bytesText = n => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixe
 function deleteFeaturePanel(name, archived) {
   openSidePanel(`Delete ${name}`, msg => {
     const facts = el("div", { class: "del-facts small" }, el("p", { class: "dim" }, "Looking at what is in it…"));
-    const typed = el("input", { id: "delete-confirm", placeholder: name, "aria-label": `Type ${name} to confirm`, autocomplete: "off" });
+    const typed = el("input", { id: "delete-confirm", placeholder: "I understand", "aria-label": 'Type "I understand" to confirm', autocomplete: "off" });
     const go = el("button", { type: "button", class: "danger", id: "delete-go" }, "Delete forever");
     go.disabled = true;
     let ready = false;
-    const check = () => { go.disabled = !(ready && typed.value === name); };
+    const check = () => { go.disabled = !(ready && typed.value.trim().split(/\s+/).join(" ").toLowerCase() === "i understand"); };
     typed.addEventListener("input", check);
     api(`/api/feature/delete-preview?name=${encodeURIComponent(name)}&archived=${archived ? 1 : 0}`).then(p => {
       ready = !p.refused;
@@ -61,7 +61,7 @@ function deleteFeaturePanel(name, archived) {
       }
     });
     return el("div", { class: "del-panel" }, facts,
-      el("label", { class: "small" }, `Type ${name} to confirm`, typed),
+      el("label", { class: "small" }, 'Type "I understand" to confirm', typed),
       el("div", { class: "del-acts" }, go, el("button", { type: "button", onclick: closeSidePanel }, "Keep it")));
   });
 }

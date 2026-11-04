@@ -1055,7 +1055,7 @@ def center(p, sel):
 
 def check_archive(p):
     """Archive and Delete on a feature of its own, with real mouse and keys: the split
-    button and its menu, the Delete panel (the name must be typed), Archive into the
+    button and its menu, the Delete panel ("I understand" must be typed), Archive into the
     Archived section, Restore, and Delete from the section. It makes and removes a
     feature, so only ever on a throwaway root."""
     res, name = {}, "Walk archive"
@@ -1090,10 +1090,10 @@ def check_archive(p):
     res["panel"] = p.js("""({ facts: document.querySelector('.del-facts').innerText.replace(/\\s+/g, ' ').trim(),
                              disabled: document.querySelector('#delete-go').disabled,
                              focusInPanel: document.activeElement.closest('.spanel') !== null })""")
-    p.js("(() => { const i = document.querySelector('#delete-confirm'); i.value = 'walk archive'; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
-    res["wrongCaseStaysDisabled"] = p.js("document.querySelector('#delete-go').disabled")
     p.js(f"(() => {{ const i = document.querySelector('#delete-confirm'); i.value = {q}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); }})()")
-    res["rightNameEnables"] = p.js("!document.querySelector('#delete-go').disabled")
+    res["theNameStaysDisabled"] = p.js("document.querySelector('#delete-go').disabled")
+    p.js("(() => { const i = document.querySelector('#delete-confirm'); i.value = '  i UNDERSTAND '; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["iUnderstandEnablesInAnyCase"] = p.js("!document.querySelector('#delete-go').disabled")
     p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1")
     res["escClosesPanel"] = p.js("!document.querySelector('.spanel')")
     # Archive
@@ -1117,7 +1117,7 @@ def check_archive(p):
     res["staysOpen"] = p.js("document.querySelector('#archived-section').open")
     click(p, *center(p, ".arow .delete-btn"))
     wait(p, "!!document.querySelector('#delete-confirm') && !!document.querySelector('.del-facts strong')")
-    p.js(f"(() => {{ const i = document.querySelector('#delete-confirm'); i.value = {q}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); }})()")
+    p.js("(() => { const i = document.querySelector('#delete-confirm'); i.value = 'I understand'; i.dispatchEvent(new Event('input', { bubbles: true })); })()")
     click(p, *center(p, "#delete-go"))
     res["deleted"] = wait(p, "!document.querySelector('#archived-section') && !document.querySelector('.spanel')")
     return res
