@@ -2235,6 +2235,74 @@ def branch_repo(feature, project, workdir=""):
     return repo_of(project, workdir)
 
 
+PROTECTED_BRANCHES = ("main", "master", "develop", "trunk")
+
+
+def default_branch(repo):
+    """The branch origin's HEAD points at (main, develop ...), or "" when unknown."""
+    code, out = git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    return out.split("/", 1)[1] if code == 0 and "/" in out else ""
+
+
+def is_protected(repo, branch):
+    """A shared integration branch: never one feature's own branch in a worktree."""
+    return branch in PROTECTED_BRANCHES or (bool(branch) and branch == default_branch(repo))
+
+
+def worktrees_of(repo):
+    """[{path, branch}] of every worktree of the repo (the main checkout first); branch is "" when detached."""
+    code, out = git(repo, "worktree", "list", "--porcelain")
+    rows, cur = [], None
+    for line in (out.splitlines() if code == 0 else []):
+        if line.startswith("worktree "):
+            cur = {"path": Path(line[9:]).as_posix(), "branch": ""}
+            rows.append(cur)
+        elif line.startswith("branch ") and cur is not None:
+            cur["branch"] = line[7:].removeprefix("refs/heads/")
+    return rows
+
+
+def worktree_holding(repo, branch):
+    """The path of the worktree that has `branch` checked out, or ""."""
+    return next((w["path"] for w in worktrees_of(repo) if w["branch"] == branch), "")
+
+
+def worktree_path(repo, branch):
+    """Where a feature's worktree goes: <repo parent>/<repo name>.worktrees/<branch made safe for a folder>,
+    -2, -3 ... if that folder is taken."""
+    top = Path(repo)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", branch).strip("-.")[:60].strip("-.") or "work"
+    base = top.parent / f"{top.name}.worktrees"
+    path, n = base / slug, 2
+    while path.exists():
+        path, n = base / f"{slug}-{n}", n + 1
+    return path.as_posix()
+
+
+def work_repo(rec):
+    """The folder a feature's git work happens in: its worktree if it has one and it is there, else its repo."""
+    wt = str(rec.get("worktree") or "")
+    return wt if wt and os.path.isdir(wt) else str(rec.get("repo") or "")
+
+
+def work_project(project, rec):
+    """`project` (a folder in the feature's repo) as it is in the feature's worktree; unchanged without one."""
+    wt = work_repo(rec)
+    if not wt or same_folder(wt, rec.get("repo", "")) or not rec.get("repo"):
+        return project
+    try:
+        rel = Path(project).resolve().relative_to(Path(rec["repo"]).resolve())
+    except ValueError:
+        return project
+    mapped = (Path(wt) / rel).as_posix()
+    return mapped if os.path.isdir(mapped) else wt
+
+
+def worktree_owner(path):
+    """The feature whose record claims this worktree folder, or ""."""
+    return next((k for k, r in branch_records().items() if isinstance(r, dict) and r.get("worktree") and same_folder(r["worktree"], path)), "")
+
+
 def known_repos(folder, *first):
     """Git repositories to pick from: those named first, the feature's own, every other
     feature's, and the projects chosen for features. Existing ones only, each once."""
@@ -2272,10 +2340,21 @@ def branch_info(state, folder, project, workdir="", pick=""):
         out.update(branch=rec["branch"], base=rec.get("base", ""))
     elif fresh:
         out["create"] = branch_name(repo, folder.name)
-    out["others"] = sorted(k for k, r in branch_records().items()
-                           if k != folder.name.lower() and isinstance(r, dict) and same_folder(r.get("repo", ""), repo)
-                           and r.get("branch") != (out["branch"] or out["create"])
-                           and (r.get("merge") or {}).get("state") != "merged")
+    # Worktrees: a feature with one is isolated; one without can get one (a new branch from its own, or from the base picked).
+    # "others" are the features that share this repo's working tree, so run one at a time.
+    has_wt = bool(rec.get("worktree")) and same_folder(rec.get("repo", ""), repo)
+    out["worktree"] = work_repo(rec) if has_wt and os.path.isdir(rec["worktree"]) else ""
+    out["isolated"] = has_wt
+    out["canIsolate"] = not has_wt
+    out["isolate"] = not has_wt and fresh and not out["branch"]  # what the box starts as
+    if not has_wt:
+        newbranch = branch_name(repo, folder.name)
+        out.update(newBranch=newbranch, newPath=worktree_path(repo, newbranch), baseDefault=out["branch"] or here,
+                   protected=is_protected(repo, out["branch"] or here))
+    out["others"] = [] if has_wt else sorted(k for k, r in branch_records().items()
+                                             if k != folder.name.lower() and isinstance(r, dict) and same_folder(r.get("repo", ""), repo)
+                                             and not r.get("worktree") and r.get("branch") != (out["branch"] or out["create"])
+                                             and (r.get("merge") or {}).get("state") != "merged")
     return out
 
 
@@ -2390,7 +2469,7 @@ def commit_info(folder):
     marked as the workflow's own or not. {repo: ""} when the feature has no repository to look in."""
     rec = branch_record(folder.name)
     project = feature_project(folder, docs_of(folder))[0] or ""
-    recorded = rec.get("repo", "") if os.path.isdir(rec.get("repo", "")) else ""
+    recorded = work_repo(rec) if os.path.isdir(work_repo(rec)) else ""  # its worktree, when it has one
     repo = repo_of(recorded or project)
     if not repo:
         return {"repo": "", "note": "No repository is known for this feature yet: choose its project on the feature's page."}
@@ -2470,7 +2549,7 @@ def review_info(folder, repo=""):
     else the one checked out."""
     rec = branch_record(folder.name)
     project = feature_project(folder, docs_of(folder))[0] or ""
-    recorded = rec.get("repo", "") if os.path.isdir(rec.get("repo", "")) else ""
+    recorded = work_repo(rec) if os.path.isdir(work_repo(rec)) else ""  # its worktree, when it has one
     default = repo_of(recorded or project)
     where = repo_of(repo) if repo else default
     out = {"repo": where, "default": default, "project": project, "current": "", "branch": ""}
@@ -2478,7 +2557,7 @@ def review_info(folder, repo=""):
         out["note"] = "That folder isn't in a git repository." if repo else "No repository is known for this feature yet: choose one."
         return out
     here = current_branch(where)
-    mine = rec.get("branch", "") if same_folder(rec.get("repo", ""), where) else ""
+    mine = rec.get("branch", "") if same_folder(rec.get("repo", ""), where) or same_folder(work_repo(rec), where) else ""
     out.update(current=here, branch=mine if mine and branch_exists(where, mine) else here)
     return out
 
@@ -2660,10 +2739,67 @@ def review_done(folder):
     return 200, {"ok": True}
 
 
-def ensure_branch(folder, project, workdir, fresh):
-    """Put the repo on the feature's branch before a session starts in it. (ok, info):
-    the first Start of an unstarted feature makes the branch from where the repo
-    is; a later Start switches back to it; a feature already under way with no
+def worktree_info(repo, rec, path, note):
+    return {"repo": repo, "work": path, "worktree": path, "branch": rec["branch"], "base": rec.get("base", ""), "note": note}
+
+
+def attach_worktree(feature, repo, rec):
+    """Make sure a feature's recorded worktree is there and on its branch. (ok, info); BRANCH_LOCK held."""
+    want, wt = rec["branch"], rec["worktree"]
+    if os.path.isdir(wt) and current_branch(wt) == want:
+        return True, worktree_info(repo, rec, wt, f"On {want} in {wt}.")
+    git(repo, "worktree", "prune")  # a folder deleted by hand would otherwise still hold its branch
+    if branch_exists(repo, want):
+        if os.path.isdir(wt) and any(same_folder(w["path"], wt) for w in worktrees_of(repo)):  # switched inside it
+            code, out = git(wt, "switch", want)
+            if code != 0:
+                return False, {"error": f"Couldn't switch the worktree {wt} to {want}: {out}"}
+            return True, worktree_info(repo, rec, wt, f"Switched {wt} back to {want}.")
+        holder = worktree_holding(repo, want)
+        if holder:  # the branch is checked out elsewhere: use that folder, unless it isn't ours to use
+            if is_protected(repo, want) or worktree_owner(holder) not in ("", feature.lower()):
+                return False, {"error": f"{want} is checked out in {holder}, which isn't this feature's to use. Tick Own worktree on the Start panel to give the feature a branch and worktree of its own."}
+            rec = {**rec, "worktree": holder}
+            save_branch(feature, rec)
+            return True, worktree_info(repo, rec, holder, f"Using {holder}, where {want} is checked out.")
+        args = ["worktree", "add", wt, want]
+    else:  # the branch was deleted: made again from where it began
+        args = ["worktree", "add", "-b", want, wt] + ([rec["base"]] if branch_exists(repo, rec.get("base", "")) else [])
+    Path(wt).parent.mkdir(parents=True, exist_ok=True)
+    code, out = git(repo, *args, timeout=900)
+    if code != 0:
+        return False, {"error": f"Couldn't make the worktree {wt} for {want}: {out}"}
+    return True, worktree_info(repo, rec, wt, f"Made the worktree {wt} on {want}.")
+
+
+def make_worktree(feature, repo, here, base, old):
+    """Give a feature a new branch in a new worktree, from `base` (else the branch the repo is on).
+    The repo's own checkout is not touched. (ok, info); BRANCH_LOCK held."""
+    base = (base or here or "").strip()
+    if base and (base.startswith("-") or not REF_NAME.match(base) or git(repo, "rev-parse", "--verify", "--quiet", base + "^{commit}")[0] != 0):
+        return False, {"error": f"{base or '(none)'} isn't a branch or commit of {repo}."}
+    name = branch_name(repo, feature)
+    path = worktree_path(repo, name)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    left = len([l for l in git(repo, "status", "--porcelain", "--untracked-files=no")[1].splitlines() if l.strip()])
+    code, out = git(repo, "worktree", "add", "-b", name, path, *([base] if base else []), timeout=900)  # a big checkout takes minutes
+    if code != 0:
+        return False, {"error": f"Couldn't make the branch {name} in a worktree at {path}: {out}"}
+    rec = {"repo": repo, "branch": name, "base": base, "worktree": path, "created": time.time(), "merge": {},
+           **({"pinned": True} if old.get("pinned") else {})}
+    save_branch(feature, rec)
+    note = f"Made {name} in {path} from {base or 'a detached HEAD'}." + (f" The {left} changed file(s) in {repo} stay there." if left else "")
+    return True, {**worktree_info(repo, rec, path, note), "created": True}
+
+
+def ensure_branch(folder, project, workdir, fresh, isolate=None, base=""):
+    """Give a feature its branch, and its own worktree, before a session starts. (ok, info):
+    the first Start of an unstarted feature makes a branch in a worktree of its own, from `base`
+    (else where the repo is), leaving the repo's checkout alone; a later Start finds that
+    worktree again (re-making it if it was removed). isolate False keeps the older way: the
+    branch is made in the repo's own checkout (and a later Start switches it back); isolate True
+    gives a feature already under way a new worktree; None = a worktree for an unstarted
+    feature, otherwise whatever the feature already has. A feature under way with no
     record adopts the branch the repo is on. Not a git repo: nothing to do."""
     repo = branch_repo(folder.name, project, workdir)
     if not repo:
@@ -2672,10 +2808,21 @@ def ensure_branch(folder, project, workdir, fresh):
     with BRANCH_LOCK:
         rec = branch_record(feature)
         here = current_branch(repo)
-        if rec.get("branch") and same_folder(rec.get("repo", ""), repo):
+        mine = bool(rec.get("branch")) and same_folder(rec.get("repo", ""), repo)
+        if mine and rec.get("worktree"):
+            return attach_worktree(feature, repo, rec)
+        if isolate is True or (isolate is None and fresh and not mine):
+            return make_worktree(feature, repo, here, base or (rec["branch"] if mine else ""), rec)
+        if mine:
             want = rec["branch"]
             if here == want:
                 return True, {"repo": repo, "branch": want, "base": rec.get("base", ""), "note": f"On {want}."}
+            holder = worktree_holding(repo, want) if branch_exists(repo, want) else ""
+            if holder and not same_folder(holder, repo):  # the branch is checked out in another worktree
+                if is_protected(repo, want) or worktree_owner(holder):
+                    return False, {"error": f"{want} is checked out in {holder}, so {repo} can't switch to it. Tick Own worktree on the Start panel to give this feature a branch and worktree of its own."}
+                save_branch(feature, {**rec, "worktree": holder})
+                return True, worktree_info(repo, {**rec, "worktree": holder}, holder, f"Using {holder}, where {want} is checked out.")
             if branch_exists(repo, want):
                 args = ["switch", want]
             else:  # deleted since: made again from where it began
@@ -2774,6 +2921,7 @@ def merge_view(feature):
     rec = branch_record(feature)
     m = rec.get("merge") if isinstance(rec.get("merge"), dict) else {}
     return {"branch": rec.get("branch", ""), "base": rec.get("base", ""), "repo": rec.get("repo", ""),
+            "worktree": rec.get("worktree", "") if rec.get("worktree") and os.path.isdir(rec["worktree"]) else "",
             "state": m.get("state", ""), "url": m.get("url", ""), "number": m.get("number", 0),
             "host": m.get("host", ""), "checked": m.get("checked", 0), "note": m.get("note", "")}
 
@@ -2869,7 +3017,7 @@ def merge_row(folder):
     what a person fills in)."""
     v = merge_view(folder.name)
     ctx = "\n".join(["Context from Tatty:", f"Feature: {folder.name}", f"Folder: {folder.as_posix()}",
-                     f"Repository: {v['repo']}", f"Branch: {v['branch']}", f"Base: {v['base']}",
+                     f"Repository: {v['worktree'] or v['repo']}", f"Branch: {v['branch']}", f"Base: {v['base']}",
                      f"Host: {v['host'] or (merge_host(v['repo']) if v['repo'] else '')}", f"Request: {v['url']}"])
     return {"prefix": "", "kind": "primary", "phase": "merge", "skill": "tatty:merge", "verb": "", "arg": "",
             "text": "Get the work into a pull / merge request: review, commit, push and open it.",
@@ -3189,11 +3337,16 @@ def start_session(state, folder, body):
         return 400, {"error": why}
     # The work goes on a branch of the feature's own (see "branches and merging"), made on its first Start.
     # A review only reads: it never makes or switches a branch, nor records one for the feature.
-    ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty")
+    # The branch is in a worktree of its own unless the person opted out (body "isolate": false); "base" is what a new branch starts from.
+    isolate = body["isolate"] if isinstance(body.get("isolate"), bool) else None
+    ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty",
+                                                                 isolate, str(body.get("base") or "").strip())
     if not ok_branch:
         return 400, {"error": branch["error"]}
+    if branch.get("worktree"):  # the session runs in the feature's worktree: the project's folder as it is there
+        project = work_project(project, branch_record(folder.name))
     # A branch in a repo other than the project's: the session is given that repo too.
-    on = branch.get("repo", "")
+    on = branch.get("work") or branch.get("repo", "")
     add = on if on and not workdir and not same_folder(on, project) and not Path(on).as_posix().lower().startswith(Path(project).as_posix().rstrip("/").lower() + "/") else ""
     if row.get("phase") == "merge":  # its context names the branch, which may have just been recorded
         row = merge_row(folder)
@@ -3209,7 +3362,8 @@ def start_session(state, folder, body):
     ok, said = launch(state, project, name, cmd, tag, workdir or add, flags)
     answer = {"ok": ok, "name": name, "command": cmd, "project": project, "workdir": workdir, "said": said, "tag": tag,
               "model": model, "effort": effort,
-              "branch": branch.get("branch", ""), "base": branch.get("base", ""), "branchNote": branch.get("note", "")}
+              "branch": branch.get("branch", ""), "base": branch.get("base", ""), "branchNote": branch.get("note", ""),
+              "worktree": branch.get("worktree", "")}
     if ok:
         remember_feature_model(folder.name, model, effort)  # its chats use the same choice
         with state.cond:
@@ -6194,7 +6348,8 @@ def card_start_session(state, feature, name, doc, said, note, project, workdir, 
         first = rows[0] if rows and rows[0].get("phase") == "empty" and command(rows[0]) else None
         values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
         go = {"row": 0 if first else "workflow", "values": values}
-    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body)})
+    code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body),
+                                                  **({"isolate": body["isolate"]} if isinstance(body.get("isolate"), bool) else {})})
     return code, {**answer, "feature": name, "ticket": doc.name}
 
 
@@ -6527,6 +6682,28 @@ def forget_feature_records(name):
         write_json(feature_models_file(), models)
 
 
+def remove_feature_worktree(name):
+    """Take away the worktree Tatty made for a feature, when nothing in it is uncommitted or untracked
+    (never forced); its branch is left. Returns a sentence for the person, "" when there was none to remove."""
+    with BRANCH_LOCK:
+        rec = branch_record(name)
+        wt, repo = str(rec.get("worktree") or ""), str(rec.get("repo") or "")
+        if not wt or not repo or not os.path.isdir(repo):
+            return ""
+        git(repo, "worktree", "prune")
+        if not os.path.isdir(wt):
+            return ""
+        if not any(same_folder(w["path"], wt) for w in worktrees_of(repo)):
+            return f"{wt} isn't a worktree of {repo} any more: left alone."
+        code, out = git(wt, "status", "--porcelain")
+        if code != 0 or out.strip():
+            return f"The worktree {wt} has uncommitted or untracked files: left in place."
+        code, out = git(repo, "worktree", "remove", wt, timeout=300)
+        if code != 0:
+            return f"Couldn't remove the worktree {wt}: {out}"
+        return f"Removed the worktree {wt} (the branch {rec.get('branch', '')} is kept)."
+
+
 def end_feature_work(state, folder, name):
     """End what is running for a feature: the sessions Start opened and its open chats.
     Returns (stopped sessions, what they said)."""
@@ -6553,6 +6730,7 @@ def feature_archive(state, name):
     if not folder:
         return 404, {"error": "no such feature"}
     stopped, said = end_feature_work(state, folder, folder.name)
+    wt_note = remove_feature_worktree(folder.name)  # a Start after Restore makes it again from the branch
     base = tatty_root()[0] / "archive"
     dest, n = base / folder.name, 1
     while dest.exists() or is_link(dest):
@@ -6563,7 +6741,7 @@ def feature_archive(state, name):
     os.replace(folder, dest)
     rekey_feature(folder, dest, old_board)
     archived_set(dest.name, time.time())
-    return 200, {"ok": True, "feature": folder.name, "archived": dest.name, "stopped": stopped, "said": said}
+    return 200, {"ok": True, "feature": folder.name, "archived": dest.name, "stopped": stopped, "said": said, "worktree": wt_note}
 
 
 def feature_restore(state, name):
@@ -6641,6 +6819,7 @@ def feature_delete(state, name, archived, confirm, client=""):
     except OSError:
         pass
     if not other:
+        answer["worktree"] = remove_feature_worktree(folder.name)
         forget_feature_records(folder.name)
         jira_unstart(folder.name)
     archived_set(folder.name, None)

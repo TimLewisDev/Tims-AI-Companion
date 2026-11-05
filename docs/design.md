@@ -413,21 +413,38 @@ folders and Claude Code's own install records; see
   each other's files, and finished work mustn't sit uncommitted and forgotten.
   Neither is the toolbox's business (its skills never create a branch or commit),
   so both are Tatty's, and the toolbox is unchanged.
-  - **A branch per workflow.** `start_session` calls `ensure_branch` before it
-    launches. The first Start of a feature that has no documents yet (New
-    feature, a Jira ticket, a task, a lite start) makes the branch with `git
-    switch -c` from the branch the repo is on (`<branchPrefix><feature name>`,
-    prefix `feature/` by default, a setting; `-2`, `-3` when the name is taken)
-    and records it in `<tatty home>/branches.json`. A later Start switches the
-    repo back to it; a feature already under way with no record adopts the
-    branch the repo is on, and is never moved. The repo is the work folder's
-    when a task has one, else the project's; outside a git repository nothing is
-    done. Tatty only ever runs `git switch`: it never stages, commits or pushes,
-    and a switch git refuses (changes in the way) stops the Start with git's
-    words. The branch is switched in place, not in a worktree, so two workflows
-    in one checkout share its working tree: the Start panel (`GET
-    /api/branch`) names the branch it will make or use and warns when another
-    workflow has a branch in the same repo.
+  - **A branch and a worktree per workflow.** `start_session` calls
+    `ensure_branch` before it launches. The first Start of a feature that has no
+    documents yet (New feature, a Jira ticket, a task, a lite start) makes a
+    branch (`<branchPrefix><feature name>`, prefix `feature/` by default, a
+    setting; `-2`, `-3` when the name is taken) **in a worktree of its own**,
+    `git worktree add -b <branch> <path> <base>`, from the base picked on the
+    Start panel (default: the branch the repo is on). The worktree is
+    `<repo parent>/<repo name>.worktrees/<branch made safe for a folder>`. The
+    repo's own checkout is not touched (its uncommitted files stay there), so
+    features run side by side without trampling each other, and no branch is
+    ever "already checked out" in the way of a Start. `branches.json` keeps
+    `repo` (the main repo) and `worktree`; `work_repo` is where git work
+    (commit, review, merge, the session's own folder) happens, and `work_project`
+    maps the project folder into it. A later Start finds the worktree again
+    (`attach_worktree`): it re-makes the folder if it was removed, or the branch
+    from its base if that was deleted; a branch that another worktree already
+    holds is used where it is, unless it is a shared branch (`main`, `master`,
+    `develop`, `trunk` or origin's HEAD, `PROTECTED_BRANCHES`) or another
+    feature's. The Start panel's **Own worktree** box opts out (`isolate:
+    false`: the branch is made and switched in the repo's checkout, as before,
+    with git's own words if a switch is refused), and it is also how a feature
+    under way (or one recorded on a shared branch) gets a worktree: a new branch
+    from its own. A feature under way with no record adopts the branch the repo
+    is on, and is never moved. A worktree is a full second checkout (a Unity
+    project re-imports its Library there), which the panel says. Archive and
+    Delete remove the feature's worktree with plain `git worktree remove`, only
+    when nothing in it is uncommitted or untracked, and say so when they leave
+    it; the branch is always kept. The repo is the work folder's when a task has
+    one, else the project's; outside a git repository nothing is done. Tatty
+    never stages, commits or pushes here. `GET /api/branch` names what a Start
+    would do, and warns about other workflows only for features that still share
+    a checkout.
   - **The Review step.** The toolbox's last phase is `complete` (built and
     validated). Tatty adds one more step after it, Review, on all three routes
     (the tracker reads Explore, Plan, Breakdown, Build, Review, Done), and the

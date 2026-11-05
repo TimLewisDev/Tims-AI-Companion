@@ -84,8 +84,11 @@ Tatty is for when you'd rather see it laid out, and be told when it needs you.
   come back, and nothing has been guessed on your behalf.
 - Start the next step of a feature with one click, and watch that session live:
   what it is doing, what it has used, and what it is asking.
-- Several features can run side by side. Each works on a branch of its own, so
-  they don't trample each other.
+- Several features can run side by side. Each gets a branch and a worktree (a
+  folder of its own, next to your repo) on its first Start, so they don't
+  trample each other or your checkout. Untick Own worktree on the Start panel
+  to work in the checkout as it is; a worktree is a full second checkout, which
+  is heavy for a big project.
 - After a build, Tatty takes the branch through a review, puts each suggestion
   to you as a question with options, has the changes you chose made, and helps
   you commit, push and open the pull / merge request.

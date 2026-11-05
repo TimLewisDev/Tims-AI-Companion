@@ -933,8 +933,11 @@ function startPanel(f, row, index, close, begin) {
   for (const { input } of inputs) input.addEventListener("input", refresh);
   if (idea) idea.addEventListener("input", refresh);
   const panel = el("div", { class: "start-panel" });
-  // The branch the work will be on: Tatty makes one on a feature's first Start, and switches the repo back to it later.
+  // The branch the work will be on. By default a feature gets a branch in a worktree of its own (a separate folder,
+  // so features run side by side without touching each other or the repo's checkout) on its first Start; the box
+  // opts out, and a feature under way can take one too. Without a worktree the repo is switched to the branch.
   const branchLine = el("div", { class: "small branch-line" });
+  const wt = { on: null, base: "" }; // what the person chose on this panel; null = the server's suggestion
   const showBranch = async () => {
     branchLine.replaceChildren();
     if (!f.project) return;
@@ -942,12 +945,41 @@ function startPanel(f, row, index, close, begin) {
       const b = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(f.project));
       const code = t => el("code", {}, t);
       if (!b.repo) { branchLine.replaceChildren(el("span", { class: "dim" }, b.note || "")); return; }
-      branchLine.replaceChildren(el("span", {},
-        b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
-          : b.create ? ["A new branch ", code(b.create), " is made from ", code(b.current || "the detached HEAD")]
-            : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
-        branchPicker(f, b, f.project, showBranch),
-        b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "");
+      if (b.isolated) {
+        branchLine.replaceChildren(el("span", {}, "On branch ", code(b.branch), b.worktree ? [" in its own worktree ", code(b.worktree)] : " in its own worktree (the folder is made again at Start)"));
+        wt.fields = () => ({});
+        return;
+      }
+      const suggest = b.isolate || (b.protected && !!b.branch);
+      const on = () => (wt.on === null ? suggest : wt.on);
+      const box = el("input", { type: "checkbox", id: "own-worktree", "aria-label": "own worktree" });
+      box.checked = on();
+      const base = el("select", { class: "branch-select", "aria-label": "base branch", title: "The new branch starts from this" });
+      const bases = b.branches || [];
+      const start = wt.base || b.baseDefault || b.current || "";
+      for (const n of start && !bases.includes(start) ? [start, ...bases] : bases) base.append(el("option", { value: n }, n));
+      base.value = start;
+      base.addEventListener("change", () => { wt.base = base.value; });
+      wt.fields = () => (on() ? { isolate: true, ...(base.value ? { base: base.value } : {}) } : (b.canIsolate ? { isolate: false } : {}));
+      const detail = el("div", {});
+      const paint = () => {
+        const shared = b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "";
+        if (on()) {
+          detail.replaceChildren(
+            el("div", {}, "A new branch ", code(b.newBranch), " is made in ", code(b.newPath), " from ", base, ". The repo's own checkout is left as it is."),
+            el("div", { class: "dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files."),
+            b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch; the feature gets one of its own.`) : "");
+        } else {
+          detail.replaceChildren(el("span", {},
+            b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
+              : b.create ? ["A new branch ", code(b.create), " is made in the repo's own checkout from ", code(b.current || "the detached HEAD")]
+                : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
+            branchPicker(f, b, f.project, showBranch), shared);
+        }
+      };
+      box.addEventListener("change", () => { wt.on = box.checked; paint(); });
+      branchLine.replaceChildren(el("label", { class: "own-worktree" }, box, " Own worktree (a branch and a folder of its own, so other workflows can run at the same time)"), detail);
+      paint();
     } catch { /* the server says so at Start */ }
   };
   const draw = () => {
@@ -972,7 +1004,7 @@ function startPanel(f, row, index, close, begin) {
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
       const what = begin ? { begin, idea: idea.value.trim(), ...(kinds ? { kind: kinds.value() } : {}) } : { row: index, values };
-      const r = await api("/api/start", { name: f.name, ...what, ...picker.fields(), ...(review ? review.fields() : {}) });
+      const r = await api("/api/start", { name: f.name, ...what, ...picker.fields(), ...(review ? {} : (wt.fields ? wt.fields() : {})), ...(review ? review.fields() : {}) });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
