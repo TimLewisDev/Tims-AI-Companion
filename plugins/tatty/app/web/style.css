@@ -379,6 +379,20 @@ table.units td { padding: 3px 8px; }
 .start-result .ok { color: var(--ok); margin: 0; }
 .start-result pre { white-space: pre-wrap; background: var(--panel); padding: 6px; border-radius: 4px; }
 .stand .cmd button.primary { padding: 1px 10px; }
+/* The one thing a feature's page offers first (actionBar): large, so it is the obvious thing to press. */
+.action { margin: 4px 0 10px; }
+.action-said { margin: 0 0 8px; }
+.action-bar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+button.action-main, a.go-btn.action-main { box-sizing: border-box; min-height: 40px; padding: 8px 22px; font-size: 15px; font-weight: 600; line-height: 22px;
+  border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; cursor: pointer; }
+button.action-main:not(.primary) { background: var(--panel); }
+.live-link .go-btn.action-main { margin-left: auto; }
+.start-inputs textarea { width: 100%; box-sizing: border-box; font: inherit; resize: vertical; }
+.kind-toggle { display: flex; gap: 16px; }
+.kind-opt { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 6px !important; cursor: pointer; }
+.more-options { margin-top: 8px; }
+.more-options > summary { cursor: pointer; color: var(--dim); font-size: 13px; padding: 4px 0; }
+.more-options[open] > summary { margin-bottom: 4px; }
 
 /* a started session, live on its feature page */
 .card.live { border-color: var(--accent); border-width: 2px; display: flex; flex-direction: column; gap: 8px; }

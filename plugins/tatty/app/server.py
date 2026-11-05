@@ -2117,15 +2117,15 @@ def feature_summary(state, folder, detail=False):
         profile = stages_view(state, folder)
         left_out = {STAGE_ROWS[s["key"]] for s in profile["stages"] if not s["on"] and s["key"] in STAGE_ROWS} if profile else set()
         lite_first = out["route"] == "new" and bool(profile) and profile["route"] == "lite"
+        sessions = sessions_of(state, folder)
+        # A new feature whose chosen stages leave out Plan is a small change: lite first.
+        action = primary_action(folder, rows, out["decide"], sessions, lite_first)
+        if lite_first and action["kind"] == "start":
+            action["note"] = "The stages chosen for this feature leave out Plan, so it starts as a small change on the lite route."
         out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
                     "stages": stages_of(read_doc(folder, plan) if plan else "", events, left_out), "profile": profile,
-                    "project": project, "projectFrom": project_from, "sessions": sessions_of(state, folder),
-                    # tt-workflow is the full pipeline's entry: a small change goes in through tt-workflow-lite
-                    # (and a new feature whose chosen stages leave out Plan is a small change: lite first)
-                    "workflowStep": None if out["route"] in ("lite", "bug") or lite_first else workflow_row(folder), "liteFirst": lite_first,
-                    "liteStep": lite_step(folder, out["route"], out["phase"], out["text"])})
-        if lite_first and out["liteStep"]:
-            out["liteStep"]["text"] = "Start this as a small change on the lite route: the stages chosen for it leave out Plan (it asks bug or feature)."
+                    "project": project, "projectFrom": project_from, "sessions": sessions,
+                    "liteFirst": lite_first, "action": action})
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
         out["ticket"] = next(iter(jira_for_feature(folder.name)), "")  # the Jira ticket it was started from
@@ -2973,15 +2973,82 @@ def lite_row(folder, hint="", text="Start a small change on the lite route."):
             "hint": hint, "stage": "Lite"}
 
 
-def lite_step(folder, route, phase, said):
-    """The lite entry the feature page offers: Resume on a small change or a bug
-    fix (said is the state script's own sentence on where it stands), a second way
-    in on a new feature, and none on a full-route feature or a finished one."""
-    if route == "new":
-        return lite_row(folder, text="Or start a small change on the lite route (it asks bug or feature).")
-    if route in ("lite", "bug") and phase != "complete":
-        return lite_row(folder, text="Resume this small change: " + said)
-    return None
+LIVE_SESSION = ("starting", "running", "lost")
+
+
+def primary_action(folder, rows, decide, sessions, lite_first):
+    """The one thing a feature's page offers first, from where the feature stands:
+      start    -- nothing is written yet: Start Workflow and Start Workflow Lite (Lite only
+                  when the chosen stages leave out Plan)
+      decide   -- Decisions Needed: questions wait on the Decide page, or the review's
+                  suggestions are to be decided
+      commit   -- Commit: the review's changes are made
+      session  -- Open session: a Claude session for it is going
+      continue -- Continue: the state script's own next command (`row` is its index)
+      none     -- nothing left to do
+    The rest of the rows stay in the page's More options."""
+    href = "#feature/" + urllib.parse.quote(folder.name, safe="")
+    first = rows[0] if rows else {}
+    if first.get("phase") == "empty" and command(first):
+        return {"kind": "start", "modes": ["lite"] if lite_first else ["full", "lite"]}
+    link = next((r for r in rows if r.get("link")), {})
+    waiting = (decide or {}).get("open", 0)
+    if waiting:
+        return {"kind": "decide", "label": "Decisions Needed", "count": waiting, "href": href + "/decide"}
+    if link.get("phase") == "decide":
+        return {"kind": "decide", "label": "Decisions Needed", "href": link["link"]}
+    if link.get("phase") == "commit":
+        return {"kind": "commit", "label": "Commit", "href": link["link"]}
+    live = next((s for s in sessions if s["status"] in LIVE_SESSION), None)
+    if live:
+        return {"kind": "session", "label": "Open session", "tag": live["tag"]}
+    nxt = next((i for i, r in enumerate(rows) if r.get("kind") == "primary" and not r.get("link") and command(r)), None)
+    if nxt is not None:
+        return {"kind": "continue", "label": "Continue", "row": nxt}
+    return {"kind": "none"}
+
+
+def reconcile_ledger(state, folder, project):
+    """Record the stage completions the feature's documents prove (the toolbox's tt-event.sh
+    reconcile). tt-workflow did this on every read of the state; Tatty reads the state itself, so
+    it does it before a Start. It runs in the feature's project: the ledger names the project as the git
+    root it runs in, and Tatty reads that back (feature_project), so run anywhere else and it would
+    name the wrong one. Best effort: a toolbox without the script, or a slow one, is no reason not to start."""
+    script = toolbox_script("tt-common/scripts/tt-event.sh")
+    if not script or not project or not os.path.isdir(project):
+        return
+    try:
+        quiet_run(state, [state.bash, str(script), "reconcile", folder.as_posix()], cwd=str(project), timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def begin_row(folder, rows, body):
+    """(row, values, error) for a first Start of a feature that has nothing written yet, which the person
+    chose as Start Workflow (body begin "full") or Start Workflow Lite ("lite", with kind "bug" or
+    "feature"), and described in body idea. The folder and prefix are handed over the way tt-workflow
+    and tt-workflow-lite hand a new folder to their first skill, so neither is needed to start."""
+    if not rows:
+        return None, {}, "Tatty can't find the TT toolbox, so it can't start the workflow."
+    first = rows[0]
+    if first.get("phase") != "empty" or not command(first):
+        return None, {}, "This feature has been started already: use Continue."
+    idea = " ".join(str(body.get("idea") or "").split())[:1500]
+    if not idea:
+        return None, {}, "Say what it is: an idea, a spec or a ticket."
+    lead = idea if idea[-1] in ".!?" else idea + "."
+    where = f"Folder: {folder.as_posix()}. Prefix: {folder.name}"
+    if body.get("begin") == "full":
+        return first, {ph: f"{lead} {where}" for ph in PLACEHOLDER.findall(command(first))}, ""
+    kind = body.get("kind")
+    if kind == "feature":
+        skill, hint = "tt-familiarise", f"lite {lead} Mode: lite. {where}."
+    elif kind == "bug":
+        skill, hint = "tt-debug", f"{lead} {where}."
+    else:
+        return None, {}, "Say whether it is a bug or a feature."
+    return {"prefix": "", "kind": "primary", "phase": "lite", "skill": skill, "verb": "", "arg": "", "hint": hint,
+            "text": "Start a small change on the lite route.", "stage": "Lite"}, {}, ""
 
 
 def session_name(base):
@@ -3060,8 +3127,13 @@ def start_session(state, folder, body):
     """Open a new Claude session in the feature's project, started with one of
     its next commands (Tatty's own launcher). Returns (http code, answer)."""
     rows = workflow_rows(state, folder)
+    begun = {}
     try:
-        if body.get("row") == "workflow":
+        if body.get("begin") in ("full", "lite"):  # Start Workflow / Start Workflow Lite on a feature with nothing written yet
+            row, begun, why = begin_row(folder, rows, body)
+            if why:
+                return 400, {"error": why}
+        elif body.get("row") == "workflow":  # (the Tasks and Jira boards, when the state has no first step to fill)
             row = workflow_row(folder)
         elif body.get("row") == "lite":
             row = lite_row(folder, " ".join(str(body.get("hint") or "").split())[:2000])
@@ -3083,7 +3155,7 @@ def start_session(state, folder, body):
         cmd, review_repo, why = apply_session(folder)
     if why:
         return 400, {"error": why}
-    values = body.get("values") or {}
+    values = begun or body.get("values") or {}
     for ph in ([] if row.get("phase") == "lite" else PLACEHOLDER.findall(cmd)):  # a lite hint is free text
         v = " ".join(str(values.get(ph, "")).split())[:2000]
         if not v:
@@ -3103,6 +3175,8 @@ def start_session(state, folder, body):
     workdir = str(body.get("workdir") or "").strip()
     if workdir and not os.path.isdir(workdir):
         return 400, {"error": f"no such folder: {workdir}"}
+    if not review:  # (what tt-workflow did whenever it read the state; a review only reads, in a repo that may not be the feature's)
+        reconcile_ledger(state, folder, project)
     # The model and effort the session starts on: what the page sent (blank = Claude
     # Code's own), else the toolbox's `session` setting.
     if "model" in body or "effort" in body:
@@ -3152,7 +3226,7 @@ NAME_REFUSED = re.compile(r'^\.{1,2}$|[/\\:*?"<>|]')  # the names workflow.sh ne
 
 def new_feature(name):
     """Make <root>/features/<name> for a new feature: (http code, answer). The
-    workflow takes it from there (Start runs /tt-workflow "<folder>")."""
+    workflow takes it from there (Start Workflow or Start Workflow Lite, see begin_row)."""
     name = " ".join(str(name).split())
     if not name or NAME_REFUSED.search(name):
         return 400, {"error": "Not a usable folder name (no / \\ : * ? \" < > |)."}

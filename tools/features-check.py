@@ -7,11 +7,13 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
+--actions only the one thing a feature's page offers first (Start Workflow / Start Workflow Lite, Continue, Decisions Needed,
+Commit, Open session) and More options, from stand-in features (the page's api() stood in for: nothing is started);
 --sections only the Features page's Live Features and other features sections, from sample live states (the page's api() stood in for: nothing is started);
 --split only the documents split beside a workflow tab: it starts two sessions (no terminal opens), uses real mouse input and
 writes nothing to the features, so a throwaway home is still best;
@@ -1267,7 +1269,7 @@ def check_stages(p):
     res["planOut"] = choose("Plan")
     res["afterPlan"] = p.js(rows)
     key(p, "Escape", 27)
-    res["liteFirst"] = p.js("""[...document.querySelectorAll('#page-feature .stand')].map(x => x.innerText.split('\\n')[0])""")
+    res["liteFirst"] = p.js("""[...document.querySelectorAll('#page-feature .action-main')].map(x => x.textContent)""")
     time.sleep(0.4)
     open_menu()
     res["planIn"] = choose("Plan")
@@ -1279,6 +1281,106 @@ def check_stages(p):
     res["reviewIn"] = choose("Review")
     key(p, "Escape", 27)
     res["trackerBack"] = p.js("[...document.querySelectorAll('.tracker li .label')].map(l => l.textContent)")
+    return res
+
+
+def check_actions(p):
+    """The one thing a feature's page offers first (actionBar), drawn from stand-in features with the page's api()
+    stood in for (nothing is started): Start Workflow and Start Workflow Lite on a feature with nothing written
+    (the panel asks what it is, and for Lite a bug or a feature; Start is held until it is said; what is sent), only
+    Lite when the stages leave out Plan, Continue with the other steps folded under More options, Decisions Needed,
+    Commit, and Open session while one is going (Continue then folded away); the buttons are large."""
+    res = {}
+    p.js("""(() => {
+      window.__real = { api: window.api }; window.__sent = [];
+      window.api = async (path, body) => {
+        if (path === '/api/start') { window.__sent.push(body); return { ok: false, said: 'stand-in' }; }
+        if (path.startsWith('/api/branch')) return { repo: '', note: 'stand-in' };
+        return window.__real.api(path, body);
+      };
+      window.__base = { name: 'Demo', folder: 'C:/f/Demo', project: 'C:/work/proj', projectFrom: 'chosen', phase: 'planning', route: 'full', stages: [], merge: {}, review: {},
+                        sessions: [], toolbox: true, unitList: [], events: [], docList: [], notes: [], tasks: { done: 0, total: 0 }, units: { done: 0, total: 0 }, updated: Date.now() / 1000, decide: null };
+      window.__empty = { kind: 'primary', phase: 'empty', skill: 'tt-adversarial-plan', verb: '', arg: '', text: 'No tt documents in C:/f/Demo.', hint: '<idea, spec or ticket>', stage: 'Planning', prefix: '' };
+      window.__next = { kind: 'primary', phase: 'building', skill: 'tt-execute', verb: '', arg: 'C:/f/Demo/Demo - Task Status.md', text: 'building (1 of 2 units Done).', hint: '', stage: 'Build', prefix: 'Demo' };
+      window.__alt = { kind: 'alt', phase: 'building', skill: 'tt-lite-brief', verb: '', arg: '', text: 'or write a lite brief:', hint: '', stage: 'Build', prefix: 'Demo' };
+      window.__draw = f => {
+        document.querySelectorAll('.overview').forEach(n => n.remove());
+        const o = overview({ ...window.__base, ...f }); document.body.append(o); return o; };
+      window.__bar = () => { const o = document.querySelector('.overview');
+        return { buttons: [...o.querySelectorAll('.action-main')].map(b => b.textContent + (b.id ? ' #' + b.id : '') + (b.disabled ? ' (disabled)' : '')),
+                 said: (o.querySelector('.action-said') || {}).textContent || null,
+                 more: o.querySelector('.more-options') ? { open: o.querySelector('.more-options').open, steps: [...o.querySelectorAll('.more-options .stand p')].map(x => x.textContent) } : null }; };
+      window.__type = (el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); };
+      return 1; })()""")
+
+    # nothing written yet: both ways in, and nothing else
+    p.js("window.__draw({ phase: 'empty', route: 'new', rows: [window.__empty], action: { kind: 'start', modes: ['full', 'lite'] } }); 1")
+    res["new"] = p.js("window.__bar()")
+    res["size"] = p.js("""(() => { const b = document.querySelector('#start-full'), r = b.getBoundingClientRect(), c = getComputedStyle(b);
+                              return { height: Math.round(r.height), font: c.fontSize, tall: r.height >= 40 }; })()""")
+    p.js("document.querySelector('#start-full').click(); 1")
+    res["fullPanel"] = p.js("""({ title: document.querySelector('.start-panel .start-title').textContent,
+                               idea: !!document.querySelector('.start-panel textarea.start-idea'), kinds: !!document.querySelector('.start-panel .kind-toggle'),
+                               startHeld: document.querySelector('.start-panel .start-actions button.primary').disabled,
+                               buttons: window.__bar().buttons })""")
+    p.js("window.__type(document.querySelector('.start-panel textarea.start-idea'), 'Add dark mode')")
+    res["fullSaid"] = p.js("""({ startHeld: document.querySelector('.start-panel .start-actions button.primary').disabled,
+                              running: [...document.querySelectorAll('.start-panel code')].pop().textContent })""")
+    p.js("document.querySelector('.start-panel .start-actions button.primary').click(); 1")
+    wait(p, "window.__sent.length === 1")
+    res["fullSent"] = p.js("(({ name, begin, idea, kind, row }) => ({ name, begin, idea, kind, row }))(window.__sent[0])")
+    p.js("[...document.querySelectorAll('.start-panel .start-actions button')].find(b => b.textContent === 'Cancel').click(); 1")
+    res["closedBack"] = p.js("window.__bar().buttons")
+
+    p.js("document.querySelector('#start-lite').click(); 1")
+    res["litePanel"] = p.js("""({ title: document.querySelector('.start-panel .start-title').textContent, kinds: !!document.querySelector('.start-panel .kind-toggle'),
+                                 chosen: document.querySelector('.start-panel .kind-toggle input:checked').value })""")
+    p.js("window.__type(document.querySelector('.start-panel textarea.start-idea'), 'It crashes')")
+    p.js("document.querySelector('.start-panel .kind-toggle input[value=bug]').click(); 1")
+    res["liteBug"] = [p.js("[...document.querySelectorAll('.start-panel code')].pop().textContent")]
+    p.js("document.querySelector('.start-panel .kind-toggle input[value=feature]').click(); 1")
+    res["liteBug"].append(p.js("[...document.querySelectorAll('.start-panel code')].pop().textContent"))
+    p.js("document.querySelector('.start-panel .kind-toggle input[value=bug]').click(); document.querySelector('.start-panel .start-actions button.primary').click(); 1")
+    wait(p, "window.__sent.length === 2")
+    res["liteSent"] = p.js("(({ name, begin, idea, kind }) => ({ name, begin, idea, kind }))(window.__sent[1])")
+
+    # the stages leave out Plan: only the small-change way in
+    p.js("window.__draw({ phase: 'empty', route: 'new', rows: [window.__empty], liteFirst: true, action: { kind: 'start', modes: ['lite'], note: 'The stages chosen for this feature leave out Plan.' } }); 1")
+    res["liteFirst"] = p.js("window.__bar()")
+
+    # under way: Continue, and the other steps folded away
+    p.js("window.__draw({ rows: [window.__next, window.__alt], action: { kind: 'continue', label: 'Continue', row: 0 } }); 1")
+    res["continue"] = p.js("window.__bar()")
+    p.js("document.querySelector('#step-continue').click(); 1")
+    res["continuePanel"] = p.js("""({ running: [...document.querySelectorAll('.start-panel code')].pop().textContent, idea: !!document.querySelector('.start-panel textarea.start-idea') })""")
+    p.js("document.querySelector('.start-panel .start-actions button.primary').click(); 1")
+    wait(p, "window.__sent.length === 3")
+    res["continueSent"] = p.js("(({ name, row, begin }) => ({ name, row, begin }))(window.__sent[2])")
+
+    # questions wait, or the review's suggestions: Decisions Needed (the Continue step is under More options)
+    p.js("""window.__draw({ rows: [window.__next], decide: { open: 2, apply: 0, kinds: ['challenge'] },
+                          action: { kind: 'decide', label: 'Decisions Needed', count: 2, href: '#feature/Demo/decide' } }); 1""")
+    res["decide"] = p.js("""(() => { const a = document.querySelector('.action-main'); return { ...window.__bar(), href: a.getAttribute('href'), id: a.id }; })()""")
+
+    # the review's changes are made: Commit
+    p.js("""window.__draw({ phase: 'complete', rows: [{ kind: 'primary', phase: 'commit', skill: '-', verb: '', arg: '', hint: '', stage: 'Review', prefix: '', link: '#feature/Demo/commit',
+                                                  text: 'The changes are made (2 applied, 0 skipped, 0 blocked). Commit them.' }],
+                          action: { kind: 'commit', label: 'Commit', href: '#feature/Demo/commit' } }); 1""")
+    res["commit"] = p.js("""(() => { const a = document.querySelector('.action-main'); return { ...window.__bar(), href: a.getAttribute('href') }; })()""")
+
+    # a session is going: its card has the button, and Continue is folded away
+    p.js("""window.__draw({ rows: [window.__next], sessions: [{ tag: 's-act', name: 'Demo : Build', status: 'running', started: Date.now() / 1000 - 30, feature: 'Demo', project: 'p', command: '/tt-execute', usage: null }],
+                          action: { kind: 'session', label: 'Open session', tag: 's-act' } }); 1""")
+    res["session"] = p.js("""(() => { const g = document.querySelector('.live-link .go-btn'); return { ...window.__bar(), card: g ? g.textContent : null,
+                              large: g ? g.classList.contains('action-main') : null, href: g ? g.getAttribute('href') : null,
+                              continueButton: !!document.querySelector('#step-continue') }; })()""")
+
+    # nothing left to do
+    p.js("window.__draw({ phase: 'complete', rows: [], action: { kind: 'none' } }); 1")
+    res["none"] = p.js("""({ ...window.__bar(), where: [...document.querySelectorAll('.overview .card')].find(c => c.querySelector('h4') && c.querySelector('h4').textContent === 'Where it stands')
+                                                      .innerText.replace(/\\s+/g, ' ').trim() })""")
+
+    p.js("window.api = window.__real.api; document.querySelectorAll('.overview').forEach(n => n.remove()); 1")
     return res
 
 
@@ -1532,12 +1634,13 @@ def check_decide(p):
     # the overview line and the rail item
     res["overview"] = p.js("""(() => {
         const f = { name: "Demo", phase: "planning", route: "full", stages: [], merge: {}, review: {}, rows: [], sessions: [], toolbox: true, unitList: [], events: [], docList: [], notes: [], tasks: { done: 0, total: 0 }, units: { done: 0, total: 0 },
-                    decide: { open: 2, apply: 0, kinds: ['challenge'] } };
+                    decide: { open: 2, apply: 0, kinds: ['challenge'] },
+                    action: { kind: 'decide', label: 'Decisions Needed', count: 2, href: '#feature/Demo/decide' } };
         let o; try { o = overview(f); } catch (e) { return 'overview threw: ' + e.stack; }
         const w = o.querySelector('#decide-waiting');
         const nav = featureNav(f, null, false, {});
         const item = [...nav.querySelectorAll('.fnav-item')].find(a => a.textContent.startsWith('Decisions'));
-        return { line: w ? w.innerText.replace(/\\s+/g, ' ').trim() : null, href: w ? w.querySelector('a').getAttribute('href') : null,
+        return { line: w ? w.closest('.action').innerText.replace(/\\s+/g, ' ').trim() : null, href: w ? w.getAttribute('href') : null,
                  rail: item ? item.innerText.replace(/\\s+/g, ' ').trim() : null };
       })()""")
     p.js("window.api = window.__real.api; document.querySelector('#dc-main').remove(); location.hash = '#home'; 1")
@@ -1852,9 +1955,9 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
-                                "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--sections": check_sections, "--split": check_split,
+                                "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
                                 "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
@@ -1873,6 +1976,7 @@ def main(argv):
                                   notes: document.querySelectorAll('.fnav-notes .fnav-item').length,
                                   units: [...document.querySelectorAll('table.units tr')].map(tr => tr.innerText.replace(/\\s+/g, ' ').trim()),
                                   timeline: [...document.querySelectorAll('.timeline li')].map(li => li.innerText.replace(/\\s+/g, ' ').trim()),
+                                  action: [...document.querySelectorAll('#page-feature .action-main')].map(x => x.textContent),
                                   stand: (document.querySelector('.stand') || {}).innerText || '',
                                   steps: [...document.querySelectorAll('#page-feature .stand')].map(x => x.innerText.split('\\n')[0]),
                                   merge: ((document.querySelector('.merge-card') || {}).innerText || '').replace(/\\s+/g, ' ').trim(),

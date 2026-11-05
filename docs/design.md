@@ -356,13 +356,24 @@ folders and Claude Code's own install records; see
   that names an ID (an ID link, or a wikilink to `^r12` or `CH3 — …`) shows the
   card, positioned from JS because the CSP refuses inline styles; `findId`
   focuses the item when the link is followed.
-- **New feature…** makes the folder. **Start** then runs the workflow's own
-  `/tt-workflow "<folder>"`, so the toolbox links and starts the feature.
-  Tatty never changes the workflow's records. A new feature is also offered
-  `/tt-workflow-lite "<folder>"` (with an optional sentence on what the task is),
-  and a feature already on the lite route (a bug fix included) shows **Resume
-  this small change** first, which runs the same command; its own next-step rows
-  stay below it and the `/tt-workflow` row is left off.
+- **New feature…** makes the folder. A feature page then offers one thing
+  first, chosen by `primary_action` in `server.py` from where the feature stands,
+  as large buttons: **Start Workflow** and **Start Workflow Lite** while nothing
+  is written (only Lite when the chosen stages leave out Plan); **Decisions
+  Needed** while questions wait on the Decide page or the review's suggestions
+  are to be decided; **Commit** once the review's changes are made; **Open
+  session** while a session for it is going; otherwise **Continue**, which runs
+  the command `workflow-state.sh` names. Everything else (the toolbox's "or …"
+  steps, Continue while a session is going) is folded under **More options**;
+  warnings stay in sight. Tatty does not run `/tt-workflow` or
+  `/tt-workflow-lite`: it reads the state with the same script and is itself the
+  loop that asks again after each step. Start Workflow asks what the feature is
+  and starts the state script's first step with the folder and prefix handed over
+  as `tt-workflow` hands them (`begin_row`); Start Workflow Lite also asks bug or
+  feature and starts `/tt-debug` or `/tt-familiarise lite` the way
+  `tt-workflow-lite` does. Before a Start it runs the toolbox's
+  `tt-event.sh reconcile` in the feature's project, which `tt-workflow` did on
+  every read of the state. Tatty never changes the workflow's records.
 - **Start session:**
   - It opens a terminal with `claude [--model <m>] [--effort <e>] -n
     "<Feature> : <Stage>" "<command>"` in the feature's project. The project

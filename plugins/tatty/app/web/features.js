@@ -513,11 +513,9 @@ function featureSection(kind, title, list, emptyText) {
 }
 
 // ------------------------------------------------------------- a new feature
-// New feature… makes <root>/features/<name>, then opens it with the Start panel
-// on "let tt-workflow carry on": the workflow links the folder and starts the
-// feature itself. Tatty asks nothing of the workflow but its usual command.
+// New feature… makes <root>/features/<name> and opens its page, where Start Workflow
+// and Start Workflow Lite are the two ways to begin it.
 
-let openStartFor = null; // a feature just made: open its Start panel
 const newFeatureForm = (() => {
   let shown = false, node = null;
   const draw = () => {
@@ -528,7 +526,6 @@ const newFeatureForm = (() => {
       try {
         const r = await api("/api/new-feature", { name: input.value });
         shown = false;
-        openStartFor = r.name;
         featureCache.delete(r.name);
         location.hash = featureHref(r.name);
       } catch (err) { msg.textContent = String(err.message || err); }
@@ -536,7 +533,7 @@ const newFeatureForm = (() => {
       el("strong", {}, "New feature"),
       el("div", { class: "row" }, input, el("button", { type: "submit", class: "primary" }, "Create"),
         el("button", { type: "button", onclick: () => { shown = false; node.remove(); } }, "Cancel")),
-      el("p", { class: "dim small" }, "Makes a folder for it in Tatty's features folder, then starts it with tt-workflow in a new session."),
+      el("p", { class: "dim small" }, "Makes a folder for it in Tatty's features folder. Then Start Workflow or Start Workflow Lite begins it."),
       msg);
     setTimeout(() => input.focus(), 0);
     return node;
@@ -892,27 +889,49 @@ function branchPicker(f, b0, project, done) {
   return box;
 }
 
-function startPanel(f, row, index, close) {
-  const cmd = command(row);
-  const inputs = placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
-  // A new feature's lite entry may say what the task is (tt-workflow-lite then needn't ask); a resume has no use for it.
-  const said = row.phase === "lite" && f.route === "new" ? el("input", { placeholder: "what is it (optional)", "aria-label": "what is it (optional)" }) : null;
+// What the server (begin_row) starts a feature with when Start Workflow / Start Workflow Lite is chosen: the
+// idea, then the folder and prefix, the way tt-workflow and tt-workflow-lite hand a new folder to their first skill.
+function beginCommand(f, begin, kind, idea) {
+  const text = idea.trim() || "<what is it>";
+  const lead = /[.!?]$/.test(text) ? text : text + ".";
+  const where = `Folder: ${f.folder}. Prefix: ${f.name}`;
+  if (begin === "full") return `/${f.rows[0].skill} ${lead} ${where}`;
+  return kind === "bug" ? `/tt-debug ${lead} ${where}.` : `/tt-familiarise lite ${lead} Mode: lite. ${where}.`;
+}
+
+// Bug | Feature, for Start Workflow Lite. value() is "bug" or "feature".
+function kindToggle(onChange) {
+  const group = "kind-" + Math.random().toString(36).slice(2, 8);
+  const opt = (value, text, on) => el("label", { class: "kind-opt" },
+    el("input", { type: "radio", name: group, value, ...(on ? { checked: true } : {}), onchange: onChange }), text);
+  const node = el("div", { class: "kind-toggle", role: "radiogroup", "aria-label": "Is it a bug or a feature?" },
+    opt("feature", "Feature", true), opt("bug", "Bug", false));
+  return { node, value: () => (node.querySelector("input:checked") || {}).value || "feature" };
+}
+
+// begin: "full" or "lite" for the first Start of a feature with nothing written yet (the Start Workflow and
+// Start Workflow Lite buttons): the person says what it is, and for Lite whether it is a bug or a feature.
+function startPanel(f, row, index, close, begin) {
+  const cmd = begin ? "" : command(row);
+  const inputs = begin ? [] : placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
+  const idea = begin ? el("textarea", { class: "start-idea", rows: "3", placeholder: "an idea, a spec or a ticket", "aria-label": "What is it? An idea, a spec or a ticket" }) : null;
+  const kinds = begin === "lite" ? kindToggle(() => refresh()) : null;
   const preview = el("code", {});
-  const name = row.phase === "empty" ? `${f.name} : Start` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
+  const name = begin ? `${f.name} : ${begin === "full" ? "Start" : "Lite"}` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
   const result = el("div", { class: "start-result" });
-  const picker = modelPicker("start-" + index);
+  const picker = modelPicker("start-" + (begin || index));
   const go = el("button", { type: "button", class: "primary" }, "Start session");
   // The review step asks which repo and branch (review.js) instead of using the project line.
   const review = row.skill === "tt-branch-review" || row.skill === "tatty:review" ? reviewStart(f, () => refresh(), row.skill === "tatty:review" ? "/tatty:review" : "/tt-branch-review") : null;
   const refresh = () => {
     let c = review ? review.cmd() : cmd;
     for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
-    if (said && said.value.trim()) c += " " + said.value.trim();
+    if (begin) c = beginCommand(f, begin, kinds ? kinds.value() : "", idea.value);
     preview.textContent = c;
-    go.disabled = (review ? !review.ready() : !f.project) || inputs.some(i => !i.input.value.trim());
+    go.disabled = (review ? !review.ready() : !f.project) || inputs.some(i => !i.input.value.trim()) || (!!idea && !idea.value.trim());
   };
   for (const { input } of inputs) input.addEventListener("input", refresh);
-  if (said) said.addEventListener("input", refresh);
+  if (idea) idea.addEventListener("input", refresh);
   const panel = el("div", { class: "start-panel" });
   // The branch the work will be on: Tatty makes one on a feature's first Start, and switches the repo back to it later.
   const branchLine = el("div", { class: "small branch-line" });
@@ -933,10 +952,11 @@ function startPanel(f, row, index, close) {
   };
   const draw = () => {
     panel.replaceChildren(
-      el("div", { class: "start-title" }, "Start a new Claude session"),
+      el("div", { class: "start-title" }, begin ? (begin === "full" ? "Start Workflow" : "Start Workflow Lite") : "Start a new Claude session"),
       ...(review ? [review.node] : [projectLine(f, () => { draw(); refresh(); }), branchLine]),
       inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
-      said ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "what is it (optional)"), said)) : "",
+      idea ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "What is it?"), idea)) : "",
+      kinds ? el("div", { class: "start-inputs" }, el("span", { class: "dim small" }, "It is a"), kinds.node) : "",
       el("div", { class: "small" }, "running ", preview),
       el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
       stagesLine(f), // stages.js
@@ -951,7 +971,8 @@ function startPanel(f, row, index, close) {
     tell("allow-foreground");
     const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
     try {
-      const r = await api("/api/start", { name: f.name, row: index, values, ...picker.fields(), ...(review ? review.fields() : {}), ...(said && said.value.trim() ? { hint: said.value.trim() } : {}) });
+      const what = begin ? { begin, idea: idea.value.trim(), ...(kinds ? { kind: kinds.value() } : {}) } : { row: index, values };
+      const r = await api("/api/start", { name: f.name, ...what, ...picker.fields(), ...(review ? review.fields() : {}) });
       if (r.ok) {
         // its tab opens straight away: the panel fills in as the session reports
         sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
@@ -1360,26 +1381,59 @@ function mergeCard(f) {
       el("button", { type: "button", id: "merge-merged", onclick: () => act("merged") }, "Mark merged")) : "");
 }
 
-function overview(f) {
-  const stand = (f.rows || []).map((r, i) => r.kind ? el("div", { class: "stand " + r.kind },
-    el("p", {}, r.kind === "warn" ? "⚠ " : r.kind === "alt" ? "Or: " : "", r.text),
-    stepActions(f, r, i)) : "");
-  // Every feature can also be handed to tt-workflow, which works out its next step
-  // (and starts a new one): the workflow's own entry point, nothing of Tatty's.
-  if (f.workflowStep) stand.push(el("div", { class: "stand alt" }, el("p", {}, f.workflowStep.text),
-    stepActions(f, f.workflowStep, "workflow", openStartFor === f.name)));
-  if (openStartFor === f.name) openStartFor = null;
-  // A small change or a bug fix is carried on by tt-workflow-lite (Resume, first); a new feature can go either way.
-  if (f.liteStep) {
-    // (liteFirst: the stages chosen for a new feature leave out Plan, so the lite route is its first way in)
-    const second = f.route === "new" && !f.liteFirst;
-    const lite = el("div", { class: "stand " + (second ? "alt" : "resume") }, el("p", {}, f.liteStep.text), stepActions(f, f.liteStep, "lite"));
-    if (second) stand.push(lite); else stand.unshift(lite);
+// The one thing a feature's page offers first (the server's primary_action), as large buttons:
+//   start     Start Workflow and Start Workflow Lite, for a feature with nothing written yet
+//   decide    Decisions Needed        commit    Commit        continue  Continue (the state's next command)
+//   session   nothing here: the running session's card below has the button (Open session)
+// covered is the index of the row it stands for, so that row is not offered again under More options.
+function actionBar(f) {
+  const a = f.action || { kind: "none" };
+  const rows = f.rows || [];
+  const node = el("div", { class: "action-bar" });
+  const slot = el("div", { class: "action-slot" });
+  const buttons = [];
+  const closePanel = () => { slot.replaceChildren(); for (const b of buttons) b.disabled = false; };
+  const opener = (id, label, make) => {
+    const b = el("button", { type: "button", id, class: "primary action-main" }, label);
+    b.addEventListener("click", () => { for (const x of buttons) x.disabled = true; slot.replaceChildren(make(closePanel)); });
+    buttons.push(b); node.append(b);
+  };
+  const link = (id, label, href) => node.append(el("a", { id, class: "go-btn action-main", href }, label));
+  let covered = -1, said = "";
+  if (a.kind === "start") {
+    covered = 0;
+    said = a.note || "";
+    for (const m of a.modes) opener("start-" + m, m === "full" ? "Start Workflow" : "Start Workflow Lite",
+      close => startPanel(f, m === "full" ? rows[0] : { phase: "lite", stage: "Lite" }, m, close, m));
+  } else if (a.kind === "continue") {
+    covered = a.row;
+    said = rows[a.row].text;
+    opener("step-continue", "Continue", close => startPanel(f, rows[a.row], a.row, close));
+  } else if (a.kind === "decide" || a.kind === "commit") {
+    const open = f.decide && f.decide.open;
+    covered = rows.findIndex(r => r.link);
+    said = open ? `${open} ${open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).` : rows[covered].text;
+    link(open ? "decide-waiting" : "step-" + a.kind, a.label + (a.count ? ` (${a.count})` : ""), a.href);
+    if (open) covered = -1; // (the review's own row, if any, is offered under More options)
   }
-  if (!f.toolbox) stand.unshift(el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."));
-  if (f.decide && f.decide.open) stand.unshift(el("div", { class: "stand primary", id: "decide-waiting" },
-    el("p", {}, `${f.decide.open} ${f.decide.open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).`),
-    el("div", { class: "start-actions" }, el("a", { class: "go-btn", href: featureDecideHref(f.name) }, "Decide →")))); // decide-page.js
+  if (!node.childElementCount) return { node: "", covered };
+  return { covered, node: el("div", { class: "action" + (a.kind === "start" ? " action-start" : "") },
+    said ? el("p", { class: "action-said" }, said) : "", node, slot) };
+}
+
+function overview(f) {
+  const act = actionBar(f);
+  const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
+  const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind },
+    el("p", {}, r.kind === "warn" ? "⚠ " : "", r.text), // (the toolbox's own "or …" rows say so themselves)
+    stepActions(f, r, i));
+  // A warning is a problem, not an option: it stays in sight. The other steps are folded away.
+  const more = rest.filter(x => x.r.kind !== "warn").map(stand1);
+  const stand = [
+    f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
+    act.node,
+    ...rest.filter(x => x.r.kind === "warn").map(stand1),
+    more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : ""];
   const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
     bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
     el("table", { class: "units" }, el("tbody", {}, f.unitList.map(u => el("tr", {},
@@ -1403,12 +1457,12 @@ function overview(f) {
     const bar = stateBar();
     // The way to its tab: straight to the question when one waits, with the button
     // calling for it; else just the tab.
-    const go = el("a", { class: "go-btn right" });
+    const go = el("a", { class: "go-btn right" + (f.action && f.action.kind === "session" ? " action-main" : "") });
     const paint = () => {
       paintStatus(status, bar, sessionStatus(sessionInfo.get(s.tag) || s, sessionEvents.get(s.tag) || []));
       const open = (sessionEvents.get(s.tag) || []).filter(ev => ev.type === "ask" && !answers.has(ev.id)).pop();
       go.href = "#workflows/" + encodeURIComponent(s.tag) + (open ? "/ask/" + encodeURIComponent(open.id) : "");
-      go.textContent = open ? "Go to the question" : "Open its tab";
+      go.textContent = open ? "Go to the question" : "Open session";
       go.classList.toggle("waiting", !!open);
     };
     paint();

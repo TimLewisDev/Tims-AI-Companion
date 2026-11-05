@@ -272,10 +272,10 @@ rewritten and what the run cost.
 (Besides the User Stories runs above.)
 
 **Start session** opens a new Claude session that runs one of the feature's
-next commands. That is the command `workflow-state.sh` names, or
-`/tt-workflow "<folder>"`, so a new feature is linked and started by the
-workflow itself. Those are the toolbox's own skills, run as a person would run
-them. Tatty's launcher (`launch()` in `server.py`) only opens the terminal: it
+next commands. That is the command `workflow-state.sh` names, which names the
+document it works from, so it needs no folder argument; for a new feature,
+**Start Workflow** and **Start Workflow Lite** (below). Those are the toolbox's own
+skills, run as a person would run them. Tatty's launcher (`launch()` in `server.py`) only opens the terminal: it
 names the session, sets `TATTY_SESSION`, and starts `claude` in the project. A
 Start may also choose the model and effort the session runs on, which the
 launcher forces with `claude --model <m> --effort <e>` before `-n`: a running
@@ -285,15 +285,28 @@ session no flag is added. The same two fields are accepted by Start workflow on
 a Jira ticket and on a task (full and lite). The choice is kept per feature
 (`session-models.json`) so the feature's chats answer on the same model.
 
-A feature on the lite route (`workflow-state.sh` says `lite-focus`, `lite-brief`,
-`debugging`, `debug-done` or `debugged`, or the documents show a Lite Brief or a
-Debug Log) also gets **Resume this small change** at the top of its page: Start
-runs `/tt-workflow-lite "<folder>"`, which re-links the folder in its own file
-(`lite-links.tsv`), reads the same state and asks its one confirmation. The
-"let tt-workflow work out the next step" row is left off such a feature (it is
-the full pipeline's entry). A new, empty feature is offered both entries, the
-lite one with an optional sentence saying what the task is. Tatty does not run
-`lite.sh`; the state still comes from `workflow-state.sh --tsv`.
+A feature page offers one thing first (see `primary_action` in `server.py`), and
+Tatty does not run `/tt-workflow` or `/tt-workflow-lite` or their scripts for a
+feature that has begun: the state comes from `workflow-state.sh --tsv`, and
+**Continue** runs the command it names, on the full pipeline and the lite route
+alike. A feature with nothing written offers **Start Workflow** and **Start
+Workflow Lite**, and the person says what it is:
+
+- **Start Workflow** starts the state script's first step (`/tt-adversarial-plan
+  <idea, spec or ticket>`) with the placeholder filled the way `tt-workflow` hands a
+  new folder to planning: `<idea>. Folder: <folder>. Prefix: <name>`.
+- **Start Workflow Lite** also asks bug or feature, and starts what
+  `tt-workflow-lite` starts for a new task: for a feature `/tt-familiarise lite <idea>.
+  Mode: lite. Folder: <folder>. Prefix: <name>.`, for a bug `/tt-debug <idea>.
+  Folder: <folder>. Prefix: <name>.` These two lines copy `tt-workflow-lite`'s
+  step 2, so a change to them there is a change here (the tests pin the text).
+
+Neither links the folder (`links.tsv`, `lite-links.tsv`) as the toolbox's workflow
+skills do; Tatty keeps the project it was told in its own `projects.tsv`, which
+wins over a link. Before a Start Tatty runs `tt-event.sh reconcile <folder>` with
+the feature's project as the working directory (`tt-workflow` ran it on every read
+of the state; the ledger names the project as the git root it runs in, so the
+directory matters), except for a review, which only reads.
 
 **Start workflow** on a Jira ticket (below) starts the toolbox's own first step
 for a new folder, the command `workflow-state.sh` names for it
