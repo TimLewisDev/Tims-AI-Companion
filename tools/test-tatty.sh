@@ -34,6 +34,7 @@ export TATTY_DRYRUN=1
 # these tests keep theirs in the throwaway one, with a stand-in copilot and codex
 # when the toolbox checkout has them.
 export TT_CONFIG_DIR="$T/ttconfig" TT_LLMS_HOME="$T/llms"
+export CLAUDE_CODE_USE_BEDROCK=0 # the toolbox lists first-party model ids, whatever this machine's settings.json says
 LLMS_FX="${TATTY_TOOLBOX:-/none}/tools/fixtures/llms"
 if [ -f "$LLMS_FX/fake-copilot.sh" ]; then export TT_COPILOT_BIN="$LLMS_FX/fake-copilot.sh" TT_CODEX_BIN="$LLMS_FX/fake-codex.sh"; fi
 # The host's command-line tools for the merge step: glab answers with what $T/glab-answer holds, gh isn't there.
@@ -1211,6 +1212,11 @@ post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"
 get "/api/sessions?name=Demo" >"$T/j"
 [ "$(pick "$T/j" "[s['turn'] for s in d if s['tag'] == '$TAG'][0]")" = "False" ] && ok "and the turn ends while a subagent goes on" || bad "and the turn ends while a subagent goes on"
 [ "$(pick "$T/j" "[a['since'] for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]][0]")" = "$SINCE" ] && ok "a subagent keeps the time it was first seen" || bad "a subagent keeps the time it was first seen"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\",\"model\":\"us.anthropic.claude-opus-5-5\",\"asked\":\"opus\"},{\"id\":\"a2\",\"type\":\"Explore\",\"description\":\"no model\",\"status\":\"running\",\"asked\":\"haiku\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(a['id'], a.get('model'), a.get('asked')) for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]]")" = "[('a1', 'us.anthropic.claude-opus-5-5', 'opus'), ('a2', None, None)]" ] &&
+	ok "a subagent says the model it was asked for and the one it runs on" || bad "a subagent's models" "$(pick "$T/j" "[s['agents'] for s in d if s['tag'] == '$TAG'][0]")"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\"}]}" >/dev/null
 get /api/events >"$T/j"
 pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] in ('turn', 'agents')])" >"$T/f"
 has "neither is a row in the feed" "$T/f" "0"
@@ -2554,7 +2560,19 @@ if [ -n "$HAVE_LLMS" ]; then
 	has "a Start that chooses nothing uses the session setting" "$T/j" "--model sonnet"
 	post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >"$T/j"
 	hasnt "choosing Claude Code's own beats the setting" "$T/j" "--model"
+	post /api/start '{"name":"Demo","row":0,"model":"claude-sonnet-5-5","effort":"high"}' >"$T/j"
+	has "a Start can choose a specific version" "$T/j" "--model claude-sonnet-5-5 --effort high"
+	post /api/model-config '{"action":"set","role":"session","model":"claude-sonnet-5","effort":"-"}' >"$T/j"
+	has "the session setting can hold a version" "$T/j" '"mode": "recommended"'
+	post /api/start '{"name":"Demo","row":0}' >"$T/j"
+	has "and a Start that chooses nothing uses it" "$T/j" "--model claude-sonnet-5"
+	get /api/model-config >"$T/j"
+	[ "$(pick "$T/j" "any(m['scope'] == 'session' for m in d['models'])")" = False ] && ok "the step table is offered the aliases only" || bad "the step table is offered the aliases only"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"set","role":"coder","model":"claude-sonnet-5-5","effort":"-"}' "$U/api/model-config")" = 400 ] && ok "a step refuses a version" || bad "a step refuses a version"
+	post /api/model-config '{"action":"set","role":"coder","model":"claude-sonnet-5-5","effort":"-"}' >"$T/j"
+	has "and says only the session can use it" "$T/j" "only the session can use"
 	post /api/model-config '{"action":"set","role":"session","model":"-","effort":"-"}' >/dev/null
+	post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >/dev/null # what the chats below expect the feature to be on
 	has "what a feature was started on is remembered for its chats" "$TATTY_HOME/session-models.json" '"Demo"'
 fi
 [ "$(code "$U/static/models.js")" = 200 ] && ok "models.js served" || bad "models.js served"
@@ -2564,7 +2582,9 @@ if [ -n "$HAVE_LLMS" ]; then
 	get /api/llms >"$T/j"
 	[ "$(pick "$T/j" "[p['provider'] + ':' + p['state'] for p in d['providers']]")" = "['claude:connected', 'copilot:available', 'codex:available']" ] &&
 		ok "claude is connected; copilot and codex are installed but not" || bad "connections" "$(head -c 400 "$T/j")"
-	[ "$(pick "$T/j" "sorted(m['id'] for m in d['models'] if m['runnable'])")" = "['fable', 'haiku', 'opus', 'sonnet']" ] && ok "claude's models are runnable" || bad "claude's models" "$(head -c 400 "$T/j")"
+	[ "$(pick "$T/j" "sorted(m['id'] for m in d['models'] if m['runnable'] and m['scope'] == 'any')")" = "['fable', 'haiku', 'opus', 'sonnet']" ] && ok "claude's aliases are runnable" || bad "claude's models" "$(head -c 400 "$T/j")"
+		[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'claude'][:3]")" = "['sonnet', 'claude-sonnet-5-5', 'claude-sonnet-5']" ] && ok "an alias comes first, then its versions" || bad "an alias comes first, then its versions" "$(head -c 400 "$T/j")"
+		[ "$(pick "$T/j" "all(m['runnable'] and m['scope'] == 'session' for m in d['models'] if m['id'].startswith('claude-'))")" = True ] && ok "a version is runnable, for a session" || bad "a version is runnable, for a session"
 	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"connect","provider":"gemini"}' "$U/api/llms")" = 400 ] && ok "an unknown tool is refused" || bad "an unknown tool is refused"
 	post /api/llms '{"action":"connect","provider":"copilot"}' >"$T/j"
 	[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'copilot']")" = "['gpt-5', 'claude-sonnet-4.5', 'o4-mini']" ] && ok "connecting lists the tool's models" || bad "connect copilot" "$(head -c 400 "$T/j")"

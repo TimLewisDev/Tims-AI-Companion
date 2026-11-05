@@ -217,7 +217,7 @@ function llmSettings() {
 // (the toolbox's `session` setting in its tt-config), which the Start panels offer first.
 function sessionSettings() {
   const box = el("section", { id: "session-settings" }, el("h3", {}, "Workflow session"),
-    el("p", { class: "dim small" }, "The model and effort Start launches the main Claude session with, for /tt-workflow and /tt-workflow-lite. A running session can't be switched, so this is set when it starts; each Start can still choose its own."));
+    el("p", { class: "dim small" }, "The model and effort Start launches the main Claude session with, for /tt-workflow and /tt-workflow-lite. A running session can't be switched, so this is set when it starts; each Start can still choose its own. A family name (sonnet) follows its latest model; the versions listed under it pin one."));
   loadModels(true).then(d => {
     if (!d || !d.models) { box.append(el("p", { class: "dim small" }, "Can't read the models.")); return; }
     const model = el("select", { id: "set-sessionModel", "aria-label": "Model" }, modelOptions(d.models));
@@ -251,7 +251,7 @@ function sessionSettings() {
 // own session is advisory (the session's model is the one above).
 function stepSettings() {
   const box = el("section", { id: "step-settings" }, el("h3", {}, "Step models"),
-    el("p", { class: "dim small" }, "Which model and effort each step of the workflow uses for its subagents, in the active mode. Steps marked advisory run in your own session, which the toolbox can only recommend a model for."));
+    el("p", { class: "dim small" }, "Which model and effort each step of the workflow uses for its subagents, in the active mode. Steps marked advisory run in your own session, which the toolbox can only recommend a model for. A step takes the model families only (sonnet, opus, haiku, fable); a specific version can be chosen for the session above."));
   const body = el("div", {});
   const note = el("p", { class: "dim small", id: "step-note" });
   box.append(body, note);

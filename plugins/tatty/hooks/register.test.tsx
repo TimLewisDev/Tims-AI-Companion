@@ -323,6 +323,29 @@ test('a started session reports when its main turn begins and ends, and its suba
   expect(acts.filter(a => a.kind === 'turn').map(a => a.state)).toEqual(['start', 'end'])
 })
 
+test('a started session reports the model each subagent was asked for and the one it runs on', async ($, on) => {
+  const seen: string[] = []
+  const bodies: any[] = []
+  engine(on, true, {}, seen, 's-1', bodies)
+  const roster = [
+    { id: 'a1', type: 'general-purpose', description: 'adversary', status: 'running' },
+    { id: 'a2', type: 'Explore', description: 'map it', status: 'running' },
+  ]
+  on('agent.list', () => ({ value: roster }))
+  // the engine's own spawn: the first asked for opus and got it, the second asked for haiku and got the session's model
+  on('agent.spawn', (_: unknown, e: { model?: string }) =>
+    e.model === 'opus' ? { model: 'us.anthropic.claude-opus-5-5', agentId: 'a1' } : { model: 'us.anthropic.claude-sonnet-5-5', agentId: 'a2' })
+  await $.session.start(START)
+
+  await $.agent.spawn({ prompt: 'attack it', description: 'adversary', model: 'opus' } as any)
+  await $.agent.spawn({ prompt: 'map it', description: 'map it', model: 'haiku' } as any)
+  await new Promise(r => setTimeout(r, 50))
+  const agents = bodies.filter(b => b.path === '/api/activity' && b.kind === 'agents').map(b => b.agents)
+  const last = agents[agents.length - 1]
+  expect(last[0]).toEqual(expect.objectContaining({ id: 'a1', model: 'us.anthropic.claude-opus-5-5', asked: 'opus' }))
+  expect(last[1]).toEqual(expect.objectContaining({ id: 'a2', model: 'us.anthropic.claude-sonnet-5-5', asked: 'haiku' }))
+})
+
 test('a session Tatty did not start reports no turns or subagents', async ($, on) => {
   const seen: string[] = []
   engine(on, true, {}, seen)

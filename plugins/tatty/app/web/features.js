@@ -1088,14 +1088,32 @@ function paintStatus(chip, bar, st) {
 }
 
 // The subagents that are going, one chip each with the time it has been at it.
+// The model a subagent runs on, short, and whether it is the one it was asked for. An
+// alias it was asked for (sonnet) is met by an id of that family (...claude-sonnet-5-5);
+// it is off only when the id names another family. A blank ask left the choice to the
+// session, so there is nothing to compare, and an id we can't place in a family is let be.
+const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
+const modelFamily = m => MODEL_FAMILIES.find(f => String(m || "").toLowerCase().includes(f));
+const agentModelShort = m => String(m || "").replace(/^[a-z]+\.anthropic\./, "").replace(/^claude-/, "");
+const agentModelMismatch = a => {
+  if (!a.model || !a.asked) return false;
+  const want = MODEL_FAMILIES.includes(a.asked) ? a.asked : modelFamily(a.asked), got = modelFamily(a.model);
+  return Boolean(want && got && want !== got);
+};
+
 function paintAgents(box, s) {
   const list = activeAgents(s);
-  const key = list.map(a => [a.id, a.status, a.description].join("|")).join("\n");
+  const key = list.map(a => [a.id, a.status, a.description, a.model, a.asked].join("|")).join("\n");
   if (box._key === key) return;
   box._key = key;
-  box.replaceChildren(...list.map(a => el("span", { class: "agent-chip", title: `${a.type}: ${a.description}` },
-    el("i", { class: "spin", "aria-hidden": "true" }), el("strong", {}, a.type || "agent"), a.description ? " · " + a.description : "", " ",
-    timeNode((a.since || 0) * 1000))));
+  box.replaceChildren(...list.map(a => {
+    const off = agentModelMismatch(a);
+    const title = `${a.type}: ${a.description}` + (a.model ? `\nRuns on ${a.model}` + (a.asked ? `; asked for ${a.asked}` : "; the session's choice") : "");
+    return el("span", { class: "agent-chip" + (off ? " warn" : ""), title },
+      el("i", { class: "spin", "aria-hidden": "true" }), el("strong", {}, a.type || "agent"), a.description ? " · " + a.description : "", " ",
+      a.model ? el("span", { class: "dim small mono agent-model" }, (off ? "⚠ " : "") + agentModelShort(a.model) + " ") : "",
+      timeNode((a.since || 0) * 1000));
+  }));
   box.hidden = !list.length;
 }
 

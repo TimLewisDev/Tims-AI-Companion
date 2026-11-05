@@ -426,6 +426,14 @@ The Start panels offer the connected, runnable models, starting from the
 four aliases (sonnet, opus, haiku, fable) and nothing else; one without
 `model-config.sh list --tsv` shows no step table.
 
+`llms.sh models --tsv` may carry a sixth column, the scope: `any` for an alias,
+`session` for a specific version (Sonnet 5.5, Sonnet 4.5, ...), which `claude
+--model` takes but the Agent tool behind a step does not. Tatty lists a version
+under its alias in the Start panels and the Workflow session setting, and leaves
+it out of the Step models table (`model-config.sh` refuses it for any role but
+`session` as well). A row with five columns is `any`, so an older toolbox shows
+the aliases only.
+
 ## Branches and merging
 
 Neither the toolbox's skills nor its scripts create a branch, commit, push or

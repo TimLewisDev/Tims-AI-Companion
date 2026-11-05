@@ -24,6 +24,9 @@ let session = ''
 let tag = '' // set when Tatty started this session from a feature page
 let joined = false // this session works with Tatty (tagged, TATTY_JOIN, or /tatty open|attach)
 let lastRoster = '' // the subagent roster last reported (see reportAgents)
+// What each subagent was asked to run on and what it runs on, by its id (see the
+// agent.spawn hook): so the window can say when a subagent isn't on the model it was given.
+const agentModels = new Map<string, { asked: string; ran: string }>()
 // What a started session has used so far, summed over its turns (the engine
 // answers per turn; the window and cost it has as a whole, see reportUsage).
 const spent = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -113,9 +116,13 @@ async function reportUsage($: EngineInterface, turn: { input_tokens: number; out
 async function reportAgents($: EngineInterface) {
   if (!tag || !attached) return
   try {
-    const agents = (await $.agent.list()).map(a => ({
-      id: a.id, type: a.type, description: String(a.description || '').slice(0, 120), status: a.status,
-    }))
+    const agents = (await $.agent.list()).map(a => {
+      const m = agentModels.get(a.id)
+      return {
+        id: a.id, type: a.type, description: String(a.description || '').slice(0, 120), status: a.status,
+        ...(m ? { model: m.ran, asked: m.asked } : {}),
+      }
+    })
     const key = JSON.stringify(agents)
     if (key === lastRoster) return
     lastRoster = key
@@ -372,6 +379,19 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (tag) report($, { kind: 'prompt', text: String(e.text || '').slice(0, 400) })
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // A started session: the model each subagent was asked to run on (the Agent call's
+  // `model`, blank when it left the choice) and the one it runs on, which the engine
+  // resolves. They differ when an alias doesn't resolve as expected, or a setting
+  // forces one model on every subagent.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (tag && started && 'agentId' in started && started.agentId) {
+      agentModels.set(started.agentId, { asked: String(e.model || '').slice(0, 80), ran: String(started.model || '').slice(0, 80) })
+      void reportAgents($)
+    }
+    return started
   }).catch(($, e, next) => next(e))
 
   // A started session: its own turns begin and end (the main loop's say whether it

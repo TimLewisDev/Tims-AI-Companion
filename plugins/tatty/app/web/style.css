@@ -486,6 +486,9 @@ ol.activity { list-style: none; margin: 0; padding: 0; max-height: 420px; overfl
   border: 1px solid color-mix(in srgb, #8b5cf6 55%, transparent); background: color-mix(in srgb, #8b5cf6 9%, transparent); }
 .agent-chip .spin { flex: none; width: 9px; height: 9px; border-radius: 50%; border: 2px solid color-mix(in srgb, #8b5cf6 30%, transparent);
   border-top-color: #8b5cf6; animation: st-spin .9s linear infinite; }
+/* a subagent that isn't on the model it was asked for */
+.agent-chip.warn { border-color: color-mix(in srgb, #d97706 70%, transparent); background: color-mix(in srgb, #d97706 12%, transparent); }
+.agent-chip .agent-model { flex: none; }
 @keyframes st-spin { to { transform: rotate(360deg); } }
 .wdot.m-thinking, .wdot.m-tool, .wdot.m-agents, .wdot.m-starting { animation: st-blink 1.4s ease-in-out infinite; }
 .wdot.m-tool { background: #14a39a; }

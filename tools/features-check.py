@@ -1752,6 +1752,9 @@ def check_settings(p):
     res["sessionModels"] = p.js("""[...document.querySelectorAll('#set-sessionModel option')].map(o => o.value + (o.disabled ? ' (disabled)' : ''))""")
     res["steps"] = p.js("document.querySelectorAll('#step-table tr[id]').length")
     res["noSessionRow"] = p.js("!document.querySelector('#step-session')")
+    # a step is offered the model families only; a specific version is for the session (the setting above)
+    res["stepModels"] = p.js("[...document.querySelectorAll('#step-coder-model option')].map(o => o.value)")
+    res["sessionVersionsListed"] = p.js("[...document.querySelectorAll('#set-sessionModel option')].some(o => /^claude-/.test(o.value))")
     # change one step's model, as a person would, and wait for the table to redraw with it marked
     p.js("""(() => { const s = document.querySelector('#step-coder-model'); s.value = 'haiku'; s.dispatchEvent(new Event('change')); return 1; })()""")
     res["changed"] = wait(p, "document.querySelector('#step-coder.current') && document.querySelector('#step-coder-model').value === 'haiku'")
@@ -1765,6 +1768,11 @@ def check_settings(p):
                               fields: document.querySelector('#zz-holder') ? 1 : 0 })""")
     p.js("""(() => { const s = document.querySelector('#zz-model'); s.value = 'opus'; s.dispatchEvent(new Event('change')); return 1; })()""")
     res["opusEfforts"] = p.js("[...document.querySelectorAll('#zz-effort option')].map(o => o.value)")
+    # a specific version can be picked, and shows indented under its alias
+    p.js("""(() => { const s = document.querySelector('#zz-model'); s.value = 'claude-sonnet-5-5'; s.dispatchEvent(new Event('change')); return 1; })()""")
+    res["versionPicked"] = p.js("""({ value: document.querySelector('#zz-model').value,
+                                     label: (document.querySelector('#zz-model option:checked') || {}).textContent || '',
+                                     efforts: [...document.querySelectorAll('#zz-effort option')].map(o => o.value) })""")
     p.js("document.querySelector('#zz-holder').remove(); 1")
     # the panel an update leaves, from sample answers: the server to restart with a session going,
     # and sessions only (a toolbox update): no button then

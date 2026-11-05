@@ -20,10 +20,14 @@ function loadModels(fresh) {
 }
 
 // The options for a model select: Claude Code's own, then each provider's models.
+// A specific version (scope "session": sonnet 5.5, ...) is listed under its alias,
+// which comes first and follows the latest model; indented so they read as a group.
 function modelOptions(models, first = OWN) {
   const groups = [...new Set(models.map(m => m.provider))].map(p =>
-    el("optgroup", { label: p }, models.filter(m => m.provider === p).map(m =>
-      el("option", { value: m.id, disabled: !m.runnable }, m.runnable ? m.label : `${m.label} (not yet runnable)`))));
+    el("optgroup", { label: p }, models.filter(m => m.provider === p).map(m => {
+      const label = m.runnable ? m.label : `${m.label} (not yet runnable)`;
+      return el("option", { value: m.id, disabled: !m.runnable }, m.scope === "session" ? `   ${label}` : label); // no-break spaces: a normal one is dropped
+    })));
   return [el("option", { value: "" }, first), ...groups];
 }
 

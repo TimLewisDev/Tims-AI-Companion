@@ -864,7 +864,7 @@ MODEL_CONFIG = "tt-common/scripts/model-config.sh"
 PROVIDERS = ("claude", "copilot", "codex")
 DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 # What claude offers when the toolbox has no llms.sh (an older install).
-BUILTIN_MODELS = [{"provider": "claude", "id": a, "label": a, "efforts": DEFAULT_EFFORTS, "runnable": True}
+BUILTIN_MODELS = [{"provider": "claude", "id": a, "label": a, "efforts": DEFAULT_EFFORTS, "runnable": True, "scope": "any"}
                   for a in ("sonnet", "opus", "haiku", "fable")]
 MODEL_WORD = re.compile(r"[A-Za-z0-9._:/-]+\Z")
 _models = {"at": 0.0, "rows": None}
@@ -890,7 +890,10 @@ def tsv_rows(text, n):
 
 def llm_models(state, fresh=False):
     """The models of the connected LLMs: dicts of provider, id, label, efforts (a
-    list, empty when none is offered) and runnable (a skill or session can use it).
+    list, empty when none is offered), runnable (a skill or session can use it) and
+    scope: "any", or "session" for a specific version (sonnet 5.5, ...) that only a
+    session can use, as the Agent tool behind a step takes the aliases only. A
+    toolbox from before versions has five columns, all "any".
     Cached for a few seconds, as a Start asks for them."""
     if not fresh and _models["rows"] is not None and time.time() - _models["at"] < 15:
         return _models["rows"]
@@ -898,7 +901,8 @@ def llm_models(state, fresh=False):
     rows = []
     if got and got[0] == 0:
         rows = [{"provider": r[0], "id": r[1], "label": r[2], "efforts": [] if r[3] in ("", "-") else r[3].split(","),
-                 "runnable": r[4].strip() == "yes"} for r in tsv_rows(got[1], 5)]
+                 "runnable": r[4].strip() == "yes", "scope": "session" if len(r) > 5 and r[5].strip() == "session" else "any"}
+                for r in tsv_rows(got[1], 5)]
     _models.update(at=time.time(), rows=rows or BUILTIN_MODELS)
     return _models["rows"]
 
@@ -1190,7 +1194,9 @@ def model_config_view(state):
             modes.append({"name": m.group(2), "kind": m.group(3)})
             if m.group(1) == "*":
                 active = m.group(2)
-    return {"available": bool(roles), "mode": active, "modes": modes, "roles": roles, "models": llm_models(state)}
+    # A step's model is an alias: a specific version is for the session alone.
+    return {"available": bool(roles), "mode": active, "modes": modes, "roles": roles,
+            "models": [m for m in llm_models(state) if m["scope"] != "session"]}
 
 
 def model_config_change(state, b):
@@ -4044,8 +4050,9 @@ AGENT_STATUSES = ("pending", "running", "waiting", "idle", "completed", "failed"
 
 def clean_agents(agents, before=()):
     """A session's subagents as the mod reports them, made safe to keep and show:
-    id, type, description and status, and `since`: when this was first told of the
-    agent (from `before`, the list it replaces, else now)."""
+    id, type, description and status, `model` and `asked` (the model it runs on and the
+    one it was asked for, when the mod says), and `since`: when this was first told of
+    the agent (from `before`, the list it replaces, else now)."""
     first = {a.get("id"): a.get("since") for a in before if isinstance(a, dict)}
     now = time.time()
     out = []
@@ -4054,8 +4061,12 @@ def clean_agents(agents, before=()):
             continue
         aid = str(a["id"])[:80]
         status = str(a.get("status", ""))
-        out.append({"id": aid, "type": str(a.get("type", ""))[:60], "description": " ".join(str(a.get("description", "")).split())[:120],
-                    "status": status if status in AGENT_STATUSES else "running", "since": first.get(aid) or now})
+        row = {"id": aid, "type": str(a.get("type", ""))[:60], "description": " ".join(str(a.get("description", "")).split())[:120],
+               "status": status if status in AGENT_STATUSES else "running", "since": first.get(aid) or now}
+        if a.get("model"):
+            row["model"] = str(a["model"])[:80]
+            row["asked"] = str(a.get("asked", ""))[:80]
+        out.append(row)
     return out
 
 
