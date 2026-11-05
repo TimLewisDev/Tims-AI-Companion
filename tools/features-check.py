@@ -419,6 +419,32 @@ def check_tabs(p):
     p.js("location.hash = '#workflows/s-nope'; 1")
     wait(p, "!!document.querySelector('#page-home .wtabs') && /isn.t here/.test(document.querySelector('#page-home').innerText)")
     res["gone"] = p.js("document.querySelector('#page-home').innerText.replace(/\\s+/g, ' ').trim()")
+    # A tab clicked while the list of features is still loading must not have the list drawn
+    # over it later (the list's 30s refresh timer must not be armed by the stale route), and
+    # the tab's own link must redraw it if the page is ever out of step with the hash.
+    p.js("""(() => {
+      window.__sample = [{ tag: 's-t1', feature: 'Demo', name: 'Demo : Workflow', status: 'running', started: Date.now() / 1000 - 60, project: 'p', command: '/tt-workflow', usage: null }];
+      window.__log = []; window.__timers = []; window.__realSI = window.setInterval;
+      window.setInterval = (f, ms, ...a) => { if (ms === 30000) window.__timers.push(f); return window.__realSI(f, ms, ...a); };
+      const was = api;
+      window.__beforeSlow = was;
+      api = async (path, body) => {
+        if (path !== '/api/features') return was(path, body);
+        await new Promise(r => setTimeout(r, 1500));  // the list is slow to load
+        const got = await was(path, body); window.__log.push('features-loaded'); return got; };
+      location.hash = '#home'; return 1; })()""")
+    time.sleep(0.3)
+    p.js("location.hash = '#workflows/s-t1'; 1")
+    wait(p, "!!document.querySelector('#page-home .live-head')")
+    wait(p, "window.__log.includes('features-loaded')")
+    time.sleep(0.5)  # the stale route's next lines have run by now
+    res["staleList"] = {"timersArmed": p.js("window.__timers.length"), "stillOnTab": p.js("!!document.querySelector('#page-home .live-head')"),
+                        "hash": p.js("location.hash")}
+    p.js("document.querySelector('#page-home .wf-body').replaceChildren(); 1")  # out of step with the hash
+    p.js("document.querySelector('#page-home .wtab[data-tag=\"s-t1\"] a').click(); 1")
+    wait(p, "!!document.querySelector('#page-home .live-head')")
+    res["tabLinkRedraws"] = p.js("!!document.querySelector('#page-home .live-head')")
+    p.js("window.setInterval = window.__realSI; api = window.__beforeSlow; 1")
     p.js("api = window.__real.api; window.confirm = window.__real.confirm; location.hash = '#home'; 1")
     return res
 

@@ -135,6 +135,8 @@ function parseRoute() {
   // when there is no mode yet to show one of.
   return { page: currentMode ? "mode" : "modes" };
 }
+// Whether the route is the list of features (not a workflow's or a chat's tab, which share its page).
+const onFeatureList = () => { const r = parseRoute(); return r.page === "home" && !r.tag && !r.chat; };
 // #feature/<name>[/doc/<file>[/at/<heading, or ^block>]], each part encoded
 const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
   (doc ? "/doc/" + encodeURIComponent(doc) + (at ? "/at/" + encodeURIComponent(at) : "") : "");
@@ -177,8 +179,14 @@ async function route() {
   else if (r.page === "home" && r.tag) await renderWorkflowTab(r.tag);
   else if (r.page === "home" && r.chat) await renderChatTab(r.chat); // chat.js
   else if (r.page === "home") {
+    const before = homeDraw;
     await renderHome();
-    homeTimer = setInterval(() => { if (!document.hidden) renderHome(true); }, 30000);
+    // Only if this is still the page on show: a tab clicked while the list was loading has
+    // already drawn itself, and a timer armed now would draw the list over it.
+    if (homeDraw === before + 1 && onFeatureList()) {
+      clearInterval(homeTimer);
+      homeTimer = setInterval(() => { if (!document.hidden && onFeatureList()) renderHome(true); }, 30000);
+    }
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "jira") {
@@ -322,8 +330,8 @@ async function renderHome(quiet) {
   const put = (...nodes) => box.replaceChildren(workflowTabs(""), ...nodes);
   if (!quiet) put(el("p", { class: "dim pad" }, "Looking for features…"));
   let data;
-  try { data = await api("/api/features"); } catch (e) { if (mine === homeDraw) put(el("p", { class: "st missing pad" }, String(e))); return; }
-  if (mine !== homeDraw) return;
+  try { data = await api("/api/features"); } catch (e) { if (mine === homeDraw && onFeatureList()) put(el("p", { class: "st missing pad" }, String(e))); return; }
+  if (mine !== homeDraw || !onFeatureList()) return; // (the person has moved on: a tab, a chat or another page)
   const r = data.root;
   if (!r.isSet || !r.exists) { location.hash = "#hub"; return; } // no project open yet: the Hub is where one is picked
   // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
@@ -376,22 +384,26 @@ function workflowTabs(active, reload = true) {
   return tabsNode;
 }
 
+// A link to the hash already showing fires no hashchange, so it would do nothing even when
+// the page on screen isn't that tab's: draw the route again instead.
+const redrawIfHere = e => { if (location.hash === new URL(e.currentTarget.href).hash) route(); };
+
 function drawTabs() {
   if (!tabsNode) return;
   tabsNode.replaceChildren(
-    el("a", { class: "wtab features" + (tabsActive ? "" : " on"), href: "#home" }, "Features"),
+    el("a", { class: "wtab features" + (tabsActive ? "" : " on"), href: "#home", onclick: redrawIfHere }, "Features"),
     ...[...tabList.values()].map(s => {
       const info = sessionInfo.get(s.tag) || s;
       const [text, cls, mode] = sessionStatus(info, sessionEvents.get(s.tag) || []);
       return el("span", { class: "wtab" + (s.tag === tabsActive ? " on" : ""), "data-tag": s.tag, ...closeOnMiddle(() => closeTab(s.tag)) },
-        el("a", { href: "#workflows/" + encodeURIComponent(s.tag), title: `${info.feature}: ${text}` },
+        el("a", { href: "#workflows/" + encodeURIComponent(s.tag), title: `${info.feature}: ${text}`, onclick: redrawIfHere },
           el("span", { class: "wdot " + cls + " m-" + mode }), info.name),
         el("button", { type: "button", class: "x", title: LIVE.has(info.status) ? "Stop this workflow and close the tab" : "Close the tab",
           "aria-label": "Close " + info.name, onclick: () => closeTab(s.tag) }, "×"));
     }),
     ...[...chatList.values()].filter(c => !paneTabs.some(t => t.key === "chat/" + c.id) || tabsActive === "chat:" + c.id).map(c =>
       el("span", { class: "wtab chat" + (tabsActive === "chat:" + c.id ? " on" : ""), "data-chat": c.id, ...closeOnMiddle(() => closeChatTab(c.id)) },
-        el("a", { href: "#chats/" + encodeURIComponent(c.id), title: `${c.kind === "side" ? "Side chat" : "Chat"} in ${c.project}` },
+        el("a", { href: "#chats/" + encodeURIComponent(c.id), title: `${c.kind === "side" ? "Side chat" : "Chat"} in ${c.project}`, onclick: redrawIfHere },
           el("span", { class: "chat-mark", "aria-hidden": "true" }, "💬"), c.title || "Chat"),
         el("button", { type: "button", class: "x", title: "Close this chat", "aria-label": "Close " + (c.title || "the chat"),
           onclick: () => closeChatTab(c.id) }, "×"))),
