@@ -237,6 +237,26 @@ claude plugin validate plugins/tatty
 claude plugin test plugins/tatty
 ```
 
+`tools/test-tatty.sh` takes about twenty minutes in one piece, most of it process
+starts. It is split into sections (`--list` shows them, each with the ones it
+needs), and these run part of it, or all of it side by side:
+
+```
+bash tools/test-tatty.sh --changed          # only what your changes since origin/main could affect, and why
+bash tools/test-tatty.sh --only jira,chats  # these sections, and the ones they need
+bash tools/test-tatty.sh --parallel 4       # everything, in 4 groups at once
+bash tools/test-tatty.sh --changed --parallel -n   # show the plan and run nothing
+```
+
+Every run first does the same short base (the server and the `tatty.sh` checks).
+`--changed` reads `tools/test-tatty.areas`: which sections a changed file, or a
+region of `server.py` (found from its `# ---- name` comments), can affect; a file
+with no rule runs everything, and a web file the suite never fetches is reported
+as not exercised. `tools/test-tatty.sections` holds what a section needs besides
+the shell variables and functions it uses from an earlier one (those are found by
+reading the script) and about how long it takes; `--check` tests both tables
+against the script. Before a release, run it with no option.
+
 The page can be driven in headless Edge or Chrome with `tools/page-check.py` and
 `tools/features-check.py`. Use `attach <port>` for the tray app's own page,
 started with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>`.

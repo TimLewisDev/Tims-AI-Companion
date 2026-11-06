@@ -9,6 +9,13 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+# Choosing what to run: --only, --changed, --parallel, --list and --help go to tools/test-tatty-plan.py (TATTY_ONLY=a,b
+# is --only a,b), which starts this script again for each group of sections with TATTY_SECTIONS set to the exact list.
+# With neither, everything runs, one section after the other.
+if [ -z "${TATTY_SECTIONS:-}" ] && { [ $# -gt 0 ] || [ -n "${TATTY_ONLY:-}" ]; }; then
+	PLAN_PY=python; command -v python3 >/dev/null 2>&1 && python3 -c 1 2>/dev/null && PLAN_PY=python3
+	exec "$PLAN_PY" "$root/tools/test-tatty-plan.py" "$@"
+fi
 W="$root/plugins/tatty/scripts/tatty.sh"
 TR="$root/plugins/tatty/scripts/tatty-root.sh"
 SRV="$root/plugins/tatty/app/server.py"
@@ -90,7 +97,9 @@ EOS
 # whichever are installed on this machine. installed_modes() itself is checked
 # against real pointer folders further down.
 export TATTY_MODES=engineering,design
-trap 'bash "$W" close >/dev/null 2>&1; rm -rf "$T"' EXIT
+# (the server holds its log open until it has shut down: try again a few times rather than leave the folder behind)
+cleanup() { bash "$W" close >/dev/null 2>&1; local i; for i in 1 2 3 4 5 6 7 8; do rm -rf "$T" 2>/dev/null; [ -e "$T" ] || return 0; sleep 1; done; }
+trap cleanup EXIT
 pass=0; fail=0
 
 ok() { pass=$((pass + 1)); echo "ok    $1"; }
@@ -100,6 +109,34 @@ expect() { local n=$1 want=$2; shift 2; "$@" >"$T/out" 2>&1; local rc=$?; [ "$rc
 has() { grep -qF -- "$3" "$2" && ok "$1" || bad "$1" "missing: $3"; }
 hasnt() { grep -qF -- "$3" "$2" && bad "$1" "unexpected: $3" || ok "$1"; }
 finish() { bash "$W" close >/dev/null 2>&1; echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]; exit; }
+
+# Helpers more than one section uses, here so that a section run without the one that first used them still has them
+# (a section's own state, such as a feature or a repository, is made by the section, and named in tools/test-tatty.sections).
+HAVE_LLMS=""
+[ -n "${TATTY_TOOLBOX:-}" ] && [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-connections/scripts/llms.sh" ] && HAVE_LLMS=1
+save() { post /api/doc/save "{\"name\":\"Draft\",\"file\":\"$1\",\"expected\":$2,\"text\":$3}"; }
+milestone() {
+	$PY -c "import json, sys
+events = [e for e in json.load(open(sys.argv[1], encoding='utf-8')) if e['type'] == 'milestone' and e.get('prefix') == sys.argv[2]]
+sys.exit(0 if len(events) == 1 and ($3) else 1)" "$T/ev" "$2" && ok "$1" || bad "$1" "$(grep -c milestone "$T/ev") milestone events"
+}
+tk() { curl -s -o "$T/tk" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/tasks/$1"; }
+wbc() { curl -s -o "$T/wb" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/$1"; }
+taskfile() { ls "$GB/items/$1"*.md 2>/dev/null | head -1; }
+scode() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/start"; }
+after() { $PY -c "import sys; a = open(sys.argv[1], encoding='utf-8').read().split('\n'); print(a[a.index(sys.argv[2]) + 1] if sys.argv[2] in a else '')" "$T/chat.args" "$1"; }
+upd_wait() { for _ in $(seq 1 50); do get /api/settings >"$T/set"; case $(pick "$T/set" "d['update']['status']") in checking|updating) sleep 0.2 ;; *) return 0 ;; esac; done; return 1; }
+write_installed() { printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}],"core@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}],"engineering@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"; }
+
+# A section is guarded by `if section <slug>; then ... fi`. The base (the server and the checks of tatty.sh, above) and
+# the close at the end always run. Which sections need which others is in tools/test-tatty.sections.
+# (TATTY_TIMES=<file> logs when each section began, for the seconds column of that table.)
+section() {
+	[ -n "${TATTY_TIMES:-}" ] && printf '%s %s
+' "$1" "$SECONDS" >>"$TATTY_TIMES"
+	case " ${TATTY_SECTIONS:-all} " in *" all "*|*" $1 "*) return 0;; esac
+	return 1
+}
 
 echo "# tatty.sh"
 expect "no Python: exit 3" 3 env TATTY_PYTHON=no-such-python bash "$W" status
@@ -198,6 +235,7 @@ post /api/hello '{"session":"s1"}' >/dev/null
 expect "status with a session" 0 bash "$W" status
 has "a session works with Tatty" "$T/out" "attached (claude mod)"
 
+if section root; then
 echo "# tatty-root.sh"
 expect "no root set: exit 1" 1 env TATTY_HOME="$T/tr" bash "$TR"
 has "prints the default" "$T/out" "/Tatty"
@@ -209,6 +247,8 @@ expect "set --create" 0 env TATTY_HOME="$T/tr" bash "$TR" set "$T/myroot" --crea
 expect "features folder" 0 env TATTY_HOME="$T/tr" bash "$TR" features
 has "is under the root" "$T/out" "myroot/features"
 
+fi
+if section modes; then
 echo "# modes"
 # Each toolbox plugin points <pointer home>/<plugin> at its install, so the
 # pointers say which disciplines are installed; core is the base, not a mode.
@@ -251,6 +291,8 @@ has "a failed add says what claude said" "$T/mi" "network is down"
 has "and what to run by hand" "$T/mi" "/plugin install production@tims-ai-toolbox"
 rm -f "$T/claude-fail"
 
+fi
+if section taskfiles; then
 echo "# task files"
 # A task's file is a person's too (they may edit it in Obsidian): Tatty changes
 # only the line or the section it means to, and keeps the rest byte for byte.
@@ -301,6 +343,8 @@ has "a name and title that disagree are a problem" "$T/tf" "its name says T-0001
 has "so is a file with no ID" "$T/tf" "no ID: ['has no task ID in its name or its title']"
 has "a title makes a file name" "$T/tf" "file name: T-0003 - What A quick one 2 draft.md"
 
+fi
+if section hub; then
 echo "# the Hub"
 # Several projects, each its own Tatty root; its own TATTY_HOME so the checks below keep the root unset.
 HH="$T/hubhome"; mkdir -p "$HH"
@@ -462,6 +506,8 @@ has "it doesn't see the first one's record" "$T/f" "not seen: None"
 has "the first keeps its record" "$T/f" "first keeps its own: one {}"
 has "the second keeps its own" "$T/f" "second keeps its own: two {'Same': 5.0}"
 
+fi
+if section prebuilt; then
 echo "# the installer's prebuilt exes"
 mkdir -p "$T/prebuilt" "$T/pbout"
 echo "exe" >"$T/prebuilt/TtCompanion.exe"
@@ -479,6 +525,8 @@ has "the prebuilt folder is found" "$T/f" "found: True"
 has "a prebuilt exe is put where it is expected" "$T/f" "copied: True True"
 has "a missing prebuilt exe is refused" "$T/f" "missing one: False"
 
+fi
+if section notoolbox; then
 echo "# without the toolbox"
 $PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
 import importlib.util, os, sys
@@ -492,6 +540,8 @@ EOF
 has "no toolbox found" "$T/f" "core: None"
 has "a view says so" "$T/f" "can't find the TT toolbox"
 
+fi
+if section clone; then
 echo "# the installer's toolbox clone and the Hub's LLM setup"
 mkdir -p "$T/mt" "$T/mtapp"
 BASHW=$(cygpath -w "$(command -v bash)" 2>/dev/null || command -v bash)
@@ -592,6 +642,8 @@ has "connect goes through the toolbox" "$T/f" "connect: 200 connected copilot"
 has "connecting needs the toolbox" "$T/f" "connect without toolbox: 501"
 has "a failed install says what happened" "$T/f" "failed install: error True"
 
+fi
+if section selfupdate; then
 echo "# the installer's Tatty updates itself from a release"
 mkdir -p "$T/su" "$T/suapp"
 $PY - "$SRV" "$T/su" "$T/suapp" "$BASHW" >"$T/f" 2>&1 <<'EOF'
@@ -648,8 +700,10 @@ has "the same version is current" "$T/f" "current: current"
 has "no network is an error, not a crash" "$T/f" "offline: error"
 has "a checkout is not updated that way" "$T/f" "a checkout isn't the installer's copy: False"
 
+fi
 [ "$TOOLBOX" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
 
+if section views; then
 echo "# toolbox views"
 FX="$T/fxroot"; cp -r "$root/tools/fixtures/tatty-root" "$FX"
 FX=$(cd "$FX" && { pwd -W 2>/dev/null || pwd; })
@@ -659,6 +713,8 @@ has "where view runs workflow-state" "$T/view" 'Demo\tprimary\t'
 get "/api/view/hello" >"$T/view"
 has "hello view runs the toolbox's banner" "$T/view" '"exit": 0'
 
+fi
+if section features; then
 echo "# features pages"
 DEMO=$($PY -c "import sys, pathlib; print(pathlib.Path(sys.argv[1]).resolve().as_posix())" "$FX/features/Demo")
 mkdir -p "$TT_EVENTS_HOME"
@@ -742,13 +798,14 @@ get "/api/resolve?name=Demo&target=step-log" >"$T/j"
 has "a link to a working note" "$T/j" '"file": ".tt/Demo - Task Status/step-log.md"'
 [ "$(code -H "X-TT-Token: $K" "$U/api/resolve?name=Draft&target=No%20Such%20Doc")" = 404 ] && ok "a link to nothing: 404" || bad "a link to nothing: 404"
 
+fi
+if section editdoc; then
 echo "# editing a document"
 CH="$FX/features/Draft/Draft - Challenges.md"
 CHF="Draft%20-%20Challenges.md"
 get "/api/doc?name=Draft&file=$CHF" >"$T/j"
 STAMP=$(pick "$T/j" "d['updated']")
 # save <file> <expected mtime> <text, as a JSON string>
-save() { post /api/doc/save "{\"name\":\"Draft\",\"file\":\"$1\",\"expected\":$2,\"text\":$3}"; }
 save "Draft - Challenges.md" "$STAMP" '"# Draft: Challenges\n\nedited\n"' >"$T/j"
 has "a saved document answers with its new mtime" "$T/j" '"updated"'
 has "and is written to the file" "$CH" "edited"
@@ -786,6 +843,8 @@ BIG="$T/big.json"; $PY -c "import json, sys; print(json.dumps({'name': 'Draft', 
 [ "$(code "$U/static/views.js")" = 200 ] && ok "views.js is served" || bad "views.js is served"
 [ "$(code "$U/static/usage.js")" = 200 ] && ok "usage.js is served" || bad "usage.js is served"
 
+fi
+if section newfeature; then
 echo "# a new feature"
 post /api/new-feature '{"name":"Shiny Thing"}' >"$T/j"
 has "made" "$T/j" '"name": "Shiny Thing"'
@@ -797,7 +856,9 @@ for n in "a/b" "" ".." "what?"; do
 		ok "refused name: '$n'" || bad "refused name: '$n'"
 done
 
-echo "# starting the next step"
+fi
+if section project; then
+echo "# the project a feature is started in"
 # a throwaway git repository, not the one these tests run from: a first Start makes a branch in it
 GITID="-c user.name=t -c user.email=t@example.com"
 mkdir -p "$T/proj/plugins/tatty" && git -C "$T/proj" init -q -b main && : >"$T/proj/plugins/tatty/x" &&
@@ -811,6 +872,10 @@ mkdir -p "$TT_WORKFLOW_HOME"
 printf '%s\t%s\t2026-10-20\n' "$HERE" "$FX/features/Demo" >"$TT_WORKFLOW_HOME/links.tsv"
 get "/api/feature?name=Demo" >"$T/j"
 has "project from the tt-workflow link" "$T/j" '"projectFrom": "link"'
+post /api/project "{\"name\":\"Draft\",\"path\":\"$HERE\"}" >/dev/null # (the other feature the sections below start is in the same project)
+fi
+if section startstep; then
+echo "# starting the next step"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
 has "starts" "$T/j" '"ok": true'
 has "session named feature : stage" "$T/j" '"name": "Demo : Build"'
@@ -877,6 +942,8 @@ has "a project can be chosen" "$T/j" '"projectFrom": "chosen"'
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","row":0}' "$U/api/start")" = 404 ] &&
 	ok "no such feature" || bad "start: no such feature"
 
+fi
+if section branches; then
 echo "# branches and merging"
 GR="$T/gitrepo"
 mkdir -p "$GR" && git -C "$GR" init -q -b main && : >"$GR/a" && git -C "$GR" add -A && git -C "$GR" $GITID commit -q -m first
@@ -974,6 +1041,8 @@ post /api/start "{\"name\":\"Zed\",\"row\":0,\"project\":\"$GRW\",\"values\":{\"
 has "new branches take the prefix" "$T/j" '"branch": "work/Zed"'
 post /api/settings '{"branchPrefix":"feature/"}' >/dev/null
 
+fi
+if section worktrees; then
 echo "# worktrees"
 # a feature's first Start makes a branch in a worktree of its own, beside the repo; the repo's checkout is left alone
 WR="$T/wtrepo"
@@ -1059,6 +1128,8 @@ post /api/feature/delete '{"name":"Wt Two","archived":true,"confirm":"I understa
 has "deleting a feature leaves a worktree with work in it too" "$T/j" "has uncommitted or untracked files"
 [ -d "$WR.worktrees/feature-Wt-Two" ] && ok "and its folder is still there" || bad "and its folder is still there"
 
+fi
+if section mergestep; then
 echo "# the merge step"
 # A finished build: the Demo feature's documents with the status Complete, as the toolbox writes it.
 SH="$FX/features/Shipped"
@@ -1118,6 +1189,8 @@ has "never back from merged" "$T/j" '"state": "merged"'
 [ -f "$root/plugins/tatty/skills/merge/SKILL.md" ] && ok "the merge skill is in the plugin" || bad "the merge skill is in the plugin"
 head -n 2 "$root/plugins/tatty/skills/merge/SKILL.md" | tail -n 1 | grep -q '^name: merge' && ok "named merge" || bad "named merge"
 
+fi
+if section reviewrepo; then
 echo "# reviewing a branch, in the repo it is in"
 [ "$(code "$U/static/review.js")" = 200 ] && ok "review.js served" || bad "review.js served"
 RVD="$FX/features/Reviewing"; mkdir -p "$RVD"
@@ -1162,6 +1235,8 @@ hasnt "started without the panel, the placeholder still isn't sent" "$T/j" "[bra
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$T\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't a repo is refused" || bad "a folder that isn't a repo is refused"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$T/nowhere\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't there is refused" || bad "a folder that isn't there is refused"
 
+fi
+if section commit; then
 echo "# committing what the workflow left"
 [ "$(code "$U/static/commit.js")" = 200 ] && ok "commit.js served" || bad "commit.js served"
 [ "$(code "$U/static/commit.css")" = 200 ] && ok "commit.css served" || bad "commit.css served"
@@ -1211,6 +1286,8 @@ git -C "$CR" status --porcelain >"$T/st"
 get "/api/commit?name=Commit%20Demo" >"$T/j"
 [ "$(pick "$T/j" "[f['path'] for f in d['files']]")" = "['.env']" ] && ok "the page then lists only that" || bad "the page then lists only that"
 
+fi
+if section reviewstep; then
 echo "# the Review step: suggestions, decisions, the changes, the commit"
 [ "$(code "$U/static/review-page.js")" = 200 ] && ok "review-page.js served" || bad "review-page.js served"
 [ "$(code "$U/static/review-page.css")" = 200 ] && ok "review-page.css served" || bad "review-page.css served"
@@ -1353,6 +1430,8 @@ has "a broken document is a warning row" "$T/j" '"phase": "review-broken"'
 has "and the page is told" "$T/j" '"phase": "broken"'
 rm -rf "$BF"
 
+fi
+if section live; then
 echo "# a started session, live"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
 TAG=$(pick "$T/j" "d['tag']")
@@ -1553,6 +1632,8 @@ get /api/events >"$T/j"
 pick "$T/j" "[e['feature'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
 has "a started session's question is about its feature" "$T/f" "Demo"
 
+fi
+if section tabs; then
 echo "# workflow tabs: several sessions, one stopped"
 # Real processes stand in for the claudes; claude lists each in <config>/sessions/<pid>.json.
 winpid() { cat "/proc/$1/winpid" 2>/dev/null || echo "$1"; }
@@ -1605,6 +1686,8 @@ get /api/sessions >"$T/j"
 hasnt "and its tab goes" "$T/j" "\"tag\": \"$TA\""
 kill "$PA" 2>/dev/null; rm -f "$CLAUDE_CONFIG_DIR"/sessions/tab-*.json
 
+fi
+if section planids; then
 echo "# planning IDs"
 # (the Challenges as the fixture has them, not as the editing checks left them: a changed file is read again)
 cp "$root/tools/fixtures/tatty-root/features/Draft/Draft - Challenges.md" "$FX/features/Draft/"
@@ -1652,6 +1735,8 @@ pick "$T/j" "' '.join([repr(e['link']) for e in d if e['type'] == 'card' and e['
 has "a reply's link is its feature's page, or none" "$T/f" "'#feature/Demo' ''"
 rm -f "$CLAUDE_CONFIG_DIR/sessions/2.json"
 
+fi
+if section desktop; then
 echo "# the desktop app"
 # boot is what the Desktop shortcut runs: it reuses the open window. Tatty keeps
 # no Claude session of its own in a terminal any more (its chats are headless).
@@ -1667,6 +1752,8 @@ expect "boot still takes --no-claude" 0 bash "$W" boot --no-browser --no-claude
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/claude/show")" = 404 ] &&
 	ok "there's no Claude terminal to show" || bad "there's no Claude terminal to show"
 
+fi
+if section milestones; then
 echo "# milestones"
 # The toolbox records a feature's progress in its own ledger as it happens, and
 # knows nothing of Tatty. Tatty follows the file and celebrates what it says.
@@ -1687,11 +1774,6 @@ waitfor() {
 	return 1
 }
 # milestone <name> <python test over the one milestone event with that prefix>
-milestone() {
-	$PY -c "import json, sys
-events = [e for e in json.load(open(sys.argv[1], encoding='utf-8')) if e['type'] == 'milestone' and e.get('prefix') == sys.argv[2]]
-sys.exit(0 if len(events) == 1 and ($3) else 1)" "$T/ev" "$2" && ok "$1" || bad "$1" "$(grep -c milestone "$T/ev") milestone events"
-}
 
 ledger build.unit_validated WU7 Wunit
 waitfor '"qualifier": "WU7"' && ok "a work unit validated is announced" || bad "a work unit validated is announced"
@@ -1737,6 +1819,8 @@ hasnt "the ledger's history isn't celebrated" "$T/ev" '"type": "milestone"'
 ledger build.complete "" Fresh
 waitfor '"prefix": "Fresh"' && ok "but the next milestone is" || bad "but the next milestone is"
 
+fi
+if section settings; then
 echo "# settings and updates"
 get /api/settings >"$T/set"
 [ "$(pick "$T/set" "d['autoUpdate']")" = True ] && ok "auto-update is on by default" || bad "auto-update is on by default" "$(head -c 200 "$T/set")"
@@ -1751,7 +1835,6 @@ has "the choice is kept in Tatty's home" "$TATTY_HOME/settings.json" '"autoUpdat
 [ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served" || bad "settings.js served"
 
 # Run from a checkout (no install record), there is nothing to update.
-upd_wait() { for _ in $(seq 1 50); do get /api/settings >"$T/set"; case $(pick "$T/set" "d['update']['status']") in checking|updating) sleep 0.2 ;; *) return 0 ;; esac; done; return 1; }
 post /api/update '{"action":"check"}' >/dev/null; upd_wait
 [ "$(pick "$T/set" "d['update']['status']")" = checkout ] && ok "a checkout has nothing to update" || bad "a checkout has nothing to update" "$(head -c 300 "$T/set")"
 
@@ -1759,7 +1842,6 @@ post /api/update '{"action":"check"}' >/dev/null; upd_wait
 # toolbox's core and engineering, of which the marketplace offers a newer core only.
 HAVE=$($PY -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$root/plugins/tatty/.claude-plugin/plugin.json")
 mkdir -p "$CLAUDE_CONFIG_DIR/plugins" "$T/market/.claude-plugin" "$T/market/plugins/tatty/.claude-plugin" "$T/tbox/.claude-plugin"
-write_installed() { printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}],"core@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}],"engineering@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"; }
 write_installed
 printf '{"fake-market":{"installLocation":"%s"},"tims-ai-toolbox":{"installLocation":"%s"}}' "$(cygpath -m "$T/market" 2>/dev/null || echo "$T/market")" "$(cygpath -m "$T/tbox" 2>/dev/null || echo "$T/tbox")" >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
 printf '{"name":"tims-ai-toolbox","plugins":[{"name":"core","version":"99.0.0"},{"name":"engineering","version":"0.1.0"}]}' >"$T/tbox/.claude-plugin/marketplace.json"
@@ -1794,6 +1876,8 @@ post /api/update '{"action":"check"}' >/dev/null; upd_wait
 has "with claude's words" "$T/set" "network is down"
 rm -f "$T/claude-fail"
 
+fi
+if section launching; then
 echo "# launching: the installed Tatty, and a look for updates"
 # The launcher's folder is the tests' own: a boot or an install run from a checkout must not repoint the real one.
 case "$LOCALAPPDATA" in "$T"*) ok "the launcher's folder is the tests' own" ;; *) bad "the launcher's folder is the tests' own" "$LOCALAPPDATA" ;; esac
@@ -1867,6 +1951,8 @@ has "nor when the install is this very copy" "$T/m" "same: None"
 has "with no install, the checkout is all there is to name" "$T/m" "no install: True"
 write_installed
 
+fi
+if section jira; then
 echo "# the Jira board"
 # The claude stand-in answers the headless runs (see claude.sh above): a board of
 # three good tickets and one with no proper key, a ticket's detail, and a move.
@@ -2096,15 +2182,14 @@ get /api/jira >"$T/jb"
 [ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "in progress,qa,closed,won't fix/../x <b>" ] && ok "the columns are then the tickets' own, by category" || bad "the tickets' own columns" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
 rm -f "$TATTY_HOME/jira/layout.json"
 
+fi
+if section tasks; then
 echo "# task boards"
 [ "$(code "$U/static/tasks.js")" = 200 ] && ok "tasks.js served" || bad "tasks.js served"
 [ "$(code "$U/static/tasks.css")" = 200 ] && ok "tasks.css served" || bad "tasks.css served"
 # wbc <what> <body>: POST /api/<what> (a whiteboard's); the answer in $T/wb, the HTTP code printed
-wbc() { curl -s -o "$T/wb" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/$1"; }
 # tk <what> <body>: POST /api/tasks/<what>; the answer in $T/tk, the HTTP code printed
-tk() { curl -s -o "$T/tk" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/tasks/$1"; }
 # taskfile <ID>: the task's file on the Game board
-taskfile() { ls "$GB/items/$1"*.md 2>/dev/null | head -1; }
 get /api/tasks >"$T/j"
 has "boards live in the root's tasks folder" "$T/j" "fxroot/tasks"
 [ "$(pick "$T/j" "[(b['name'], b['board'], b['backlog'], b['completed']) for b in d['boards']]")" = "[('Sample', 4, 2, 1)]" ] &&
@@ -2333,6 +2418,8 @@ if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/elsewhere/Linked/items" && cp 
 else
 	echo "skip  a board through a junction: no mklink here"
 fi
+fi
+if section taskwrite; then
 echo "# task boards: write it for me"
 # The stand-in model keeps its arguments (one a line) and the prompt it was given, and answers with a fenced
 # description and criteria. tw-fail: the model errors; tw-empty: it writes nothing; tw-slow: it takes a while.
@@ -2411,6 +2498,8 @@ rm -f "$T/tw-slow"
 [ "$(twc '{"name":"Game","runId":"run-gone-1"}')" = 200 ] && has "write: stopping one that isn't running is harmless" "$T/tw" '"ok": false'
 cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: still no task file touched" || bad "write: still no task file touched"
 
+fi
+if section taskmerge; then
 echo "# merging: the task board"
 [ "$(tk new-board '{"name":"Rev"}')" = 200 ] && ok "a board with the default columns" || bad "a board with the default columns" "$(cat "$T/tk")"
 get "/api/tasks/board?name=Rev" >"$T/j"
@@ -2429,6 +2518,8 @@ post /api/merge '{"name":"T-0001 - Ship it","action":"merged"}' >"$T/j"
 has "merged" "$T/j" '"state": "merged"'
 has "a card you moved on stays where you put it" "$RF" "- **Status:** QA Ready"
 
+fi
+if section stories; then
 echo "# user stories"
 if [ ! -f "$TATTY_TOOLBOX/plugins/design/skills/tt-user-stories/scripts/stories.sh" ] && [ ! -f "$TATTY_TOOLBOX/../design/skills/tt-user-stories/scripts/stories.sh" ]; then
 	echo "skip  the User Stories board: the toolbox has no design plugin with tt-user-stories"
@@ -2686,6 +2777,8 @@ has "the skill rewrites it" "$T/claude-prompt" "/design:tt-user-stories alter \"
 has "from the person's line" "$T/claude-note" "Write this story properly from the designer's note: players can juggle items"
 fi
 
+fi
+if section whiteboards; then
 echo "# whiteboards"
 for f in whiteboard.js whiteboard.css whiteboards.js; do [ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"; done
 get /api/whiteboards >"$T/j"
@@ -2735,10 +2828,9 @@ ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in <home>/boards" || bad "
 [ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=feature&ref=Nope")" = 404 ] && ok "an unknown feature" || bad "an unknown feature"
 
 
+fi
+if section models; then
 echo "# model and effort at start"
-HAVE_LLMS=""
-[ -n "${TATTY_TOOLBOX:-}" ] && [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-connections/scripts/llms.sh" ] && HAVE_LLMS=1
-scode() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/start"; }
 post /api/start '{"name":"Demo","row":0}' >"$T/j"
 hasnt "nothing is forced when nothing is chosen" "$T/j" "--model"
 if [ -n "$HAVE_LLMS" ]; then
@@ -2778,6 +2870,8 @@ if [ -n "$HAVE_LLMS" ]; then
 fi
 [ "$(code "$U/static/models.js")" = 200 ] && ok "models.js served" || bad "models.js served"
 
+fi
+if section llms; then
 echo "# LLM connections and step models"
 if [ -n "$HAVE_LLMS" ]; then
 	get /api/llms >"$T/j"
@@ -2833,6 +2927,8 @@ if [ -n "$HAVE_LLMS" ]; then
 else
 	ok "the LLM connection checks need a toolbox checkout (TATTY_TOOLBOX) with llms.sh (skipped)"
 fi
+fi
+if section chats; then
 echo "# chats"
 # A chat is a headless claude of its own, one run a turn: the first names its
 # conversation (--session-id), the rest go on with it (--resume). It only reads.
@@ -2867,7 +2963,6 @@ chat_done() {
 	return 1
 }
 # after <flag>: what the last turn was given after that flag
-after() { $PY -c "import sys; a = open(sys.argv[1], encoding='utf-8').read().split('\n'); print(a[a.index(sys.argv[2]) + 1] if sys.argv[2] in a else '')" "$T/chat.args" "$1"; }
 [ "$(cpost /api/chat/new '{"kind":"main"}')" = 400 ] && ok "a chat needs a folder to work in" || bad "a chat needs a folder to work in" "$(cat "$T/j")"
 [ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\"}")" = 400 ] && ok "a side chat needs what it is about" || bad "a side chat needs what it is about"
 [ "$(cpost /api/chat/new '{"kind":"other"}')" = 400 ] && ok "main or side" || bad "main or side"
@@ -2979,6 +3074,8 @@ hasnt "it leaves the tabs" "$T/c" "$C1"
 [ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Hello?\"}")" = 404 ] && ok "a closed chat takes no message" || bad "a closed chat takes no message"
 post /api/bye '{"tag":"s-chatwf"}' >/dev/null
 
+fi
+if section compactchat; then
 echo "# the compact chat and its questions"
 # tools/test-compact-chat.py prints a line a check in this script's own format; they are counted here.
 $PY "$root/tools/test-compact-chat.py" --project "$CP" >"$T/cc.out" 2>&1; cc_rc=$?
@@ -2991,6 +3088,8 @@ while IFS= read -r line; do
 done <"$T/cc.out"
 [ "$cc_rc" = 0 ] && ok "the compact chat's tests ran to the end" || bad "the compact chat's tests ran to the end" "exit $cc_rc: $(tail -n 3 "$T/cc.out")"
 
+fi
+if section archive; then
 echo "# archiving and deleting a feature"
 [ "$(code "$U/static/archive.js")" = 200 ] && ok "archive.js served" || bad "archive.js served"
 [ "$(code "$U/static/archive.css")" = 200 ] && ok "archive.css served" || bad "archive.css served"
@@ -3080,7 +3179,24 @@ if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/vault/Arch Link/sub" "$T/decoy
 else
 	echo "skip  features that are junctions: no mklink here"
 fi
+fi
+if section restart; then
 echo "# restarting after an update, keeping the sessions"
+# (a question another section left open would count below: close them first, so this section stands on its own)
+$PY - "$U" "$K" <<'PYEOF'
+import json, sys, urllib.request
+u, k = sys.argv[1:3]
+def call(path, body=None):
+    r = urllib.request.Request(u + path, data=None if body is None else json.dumps(body).encode(),
+                               headers={"X-TT-Token": k, "Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(r, timeout=10))
+for e in call("/api/events"):
+    if e["type"] == "ask":
+        try:
+            call("/api/reply", {"id": e["id"], "declined": True})
+        except Exception:
+            pass
+PYEOF
 # A session Start opened, heard from: the one a restart has to keep.
 post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >"$T/j"
 RT=$(pick "$T/j" "d['tag']")
@@ -3126,6 +3242,8 @@ get /api/settings >"$T/set"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/restart")" = 409 ] && ok "so a restart is refused" || bad "so a restart is refused"
 [ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served by the new server" || bad "settings.js served by the new server"
 
+fi
+if section stages; then
 echo "# choosing a feature's stages"
 [ "$(code "$U/static/stages.js")" = 200 ] && ok "stages.js served" || bad "stages.js served"
 STAGES_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/stages.sh"
@@ -3165,6 +3283,8 @@ else
 	echo "skip  choosing stages: the toolbox checkout has no stages.sh"
 fi
 
+fi
+if section decide; then
 echo "# deciding a workflow's questions in Tatty"
 [ "$(code "$U/static/decide-page.js")" = 200 ] && ok "decide-page.js served" || bad "decide-page.js served"
 DECIDE_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/decide.sh"
@@ -3246,6 +3366,8 @@ else
 	echo "skip  deciding in Tatty: the toolbox checkout has no decide.sh"
 fi
 
+fi
+section end # (a mark for TATTY_TIMES)
 echo "# close"
 expect "close" 0 bash "$W" close
 sleep 1

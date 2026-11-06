@@ -100,7 +100,14 @@ class CompactChat:
         self.dir().mkdir(parents=True, exist_ok=True)
         tmp = self.dir() / f"{c['key']}.json.tmp"
         tmp.write_text(json.dumps(c, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path(c["key"]))
+        for attempt in range(20):  # Windows refuses to replace a file that something else has open (a reader, a scanner)
+            try:
+                os.replace(tmp, self.path(c["key"]))
+                return
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
     def change(self, project, change):
         """Read the project's conversation, change(c) it and write it back: the conversation."""

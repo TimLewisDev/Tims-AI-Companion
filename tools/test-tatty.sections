@@ -1,0 +1,46 @@
+# One row a section of test-tatty.sh, in the order it has there (bash tools/test-tatty.sh --list).
+# slug, extra needs, seconds. A section already needs the nearest earlier section that defines a shell variable or
+# function it uses (test-tatty-plan.py reads the script for that); the extra needs are the ones from state instead: a
+# feature or board an earlier section made, a file it wrote. Seconds are about what the section takes alone, to balance
+# the groups of a parallel run; time one with TATTY_TIMES=<file> (test-tatty.sh writes when each section began).
+root	-	10
+modes	-	4
+taskfiles	-	4
+hub	-	50
+prebuilt	-	2
+notoolbox	-	2
+clone	-	13
+selfupdate	-	3
+views	-	7
+features	-	90
+editdoc	-	8
+newfeature	-	2
+project	features	27
+startstep	-	204
+branches	-	131
+worktrees	-	70
+mergestep	-	57
+reviewrepo	worktrees,mergestep	31
+commit	features,project	24
+reviewstep	-	115
+live	-	91
+tabs	features,project	55
+planids	-	11
+desktop	-	5
+milestones	-	34
+settings	milestones	15
+launching	settings	11
+jira	-	114
+tasks	-	80
+taskwrite	tasks	19
+taskmerge	tasks	16
+stories	tasks	196
+whiteboards	features,project	7
+models	features,project	324
+llms	features,project	289
+chats	-	33
+compactchat	-	3
+archive	tasks	25
+restart	features,project,settings	34
+stages	-	96
+decide	planids,project	114

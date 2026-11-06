@@ -1232,30 +1232,43 @@ FAMILY_VAR = re.compile(r"ANTHROPIC_DEFAULT_[A-Z]+_MODEL\Z")
 def family_view(state):
     """Which version each alias (sonnet, opus, haiku, fable) means, from the toolbox's `model-config.sh family list`:
     dicts of family, chosen ("" = none pinned), effective, label, source (chosen, own or newest) and versions
-    (id and label, newest first). None when this toolbox can't say (an older one)."""
+    (id and label, newest first). None when this toolbox can't say (an older one). The sixth column of a row is
+    the versions, `id=label;id=label`."""
     got = toolbox_run(state, MODEL_CONFIG, ["family", "list", "--tsv"])
     if not got or got[0] != 0:
         return None
-    asked = toolbox_run(state, LLMS, ["versions", "--tsv"])
-    versions = {}
-    for r in tsv_rows(asked[1], 3) if asked and asked[0] == 0 else []:
-        versions.setdefault(r[0], []).append({"id": r[2].strip(), "label": r[1]})
-    return [{"family": r[0], "chosen": "" if r[1] in ("", "-") else r[1], "effective": "" if r[2] == "-" else r[2],
-             "label": "" if r[3] == "-" else r[3], "source": r[4].strip(), "versions": versions.get(r[0], [])}
-            for r in tsv_rows(got[1], 5) if r[0] in FAMILY_NAMES]
+    out = []
+    for r in tsv_rows(got[1], 5):
+        if r[0] not in FAMILY_NAMES:
+            continue
+        versions = []
+        for part in (r[5].strip().split(";") if len(r) > 5 and r[5].strip() else []):
+            vid, _, label = part.partition("=")
+            versions.append({"id": vid.strip(), "label": label.strip() or vid.strip()})
+        out.append({"family": r[0], "chosen": "" if r[1] in ("", "-") else r[1], "effective": "" if r[2] == "-" else r[2],
+                    "label": "" if r[3] == "-" else r[3], "source": r[4].strip(), "versions": versions})
+    return out
+
+
+_family_env = {"at": 0.0, "env": None}
 
 
 def family_exports(state):
     """The ANTHROPIC_DEFAULT_<FAMILY>_MODEL variables a session should start with, so that the alias a subagent is
     given (sonnet) means the version chosen for it, else the newest. Claude Code started from somewhere that doesn't
-    set them falls back to an older model (Sonnet 4.5 on Bedrock). {} when the toolbox can't say."""
+    set them falls back to an older model (Sonnet 4.5 on Bedrock). {} when the toolbox can't say.
+    Asked of the toolbox at most every ten seconds (a script run costs a second or more where processes are slow),
+    and again at once after a version is chosen here."""
+    if _family_env["env"] is not None and time.time() - _family_env["at"] < 10:
+        return dict(_family_env["env"])
     got = toolbox_run(state, MODEL_CONFIG, ["family", "env"])
     out = {}
     for line in (got[1].splitlines() if got and got[0] == 0 else []):
         k, _, v = line.strip().partition("=")
         if FAMILY_VAR.match(k) and MODEL_WORD.match(v):
             out[k] = v
-    return out
+    _family_env.update(at=time.time(), env=out)
+    return dict(out)
 
 
 def claude_child_env(state):
@@ -1321,6 +1334,7 @@ def model_config_change(state, b):
     got = toolbox_run(state, MODEL_CONFIG, args)
     if got[0] != 0:
         return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
+    _family_env["env"] = None  # (a version chosen applies to the next session started)
     return 200, {**model_config_view(state), "said": got[1].strip()}
 
 

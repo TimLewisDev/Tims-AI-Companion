@@ -1,0 +1,64 @@
+# What a change can affect: the sections of tools/test-tatty.sh to run for a changed file (bash tools/test-tatty.sh --changed).
+# kind: ignore (no tests), file (a path pattern, fnmatch), banner (a region of server.py, a regex on the name in its
+# '# ------ name' comment). targets: section slugs, comma separated; * is every section, - is none; route (banner only) is the
+# sections that call the /api/ routes the changed lines name. First match wins. A web file, or a fixture, that no rule
+# names runs the sections that fetch or copy it (found in the script); one nothing fetches is not exercised here.
+# A changed file with no rule at all runs everything.
+ignore	docs/*	-
+ignore	*.md	-
+ignore	.github/*	-
+ignore	LICENSE	-
+ignore	plugins/tatty/assets/*	-
+ignore	plugins/tatty/tsconfig.json	-
+ignore	tools/features-check.py	-
+ignore	tools/page-check.py	-
+ignore	tools/window-check.py	-
+ignore	tools/whiteboard-perf.py	-
+ignore	tools/test-compact-chat-browser.py	-
+ignore	tools/test-companion.sh	-
+ignore	tools/test-installer.ps1	-
+ignore	tools/make-icon/*	-
+ignore	tools/test-tatty-plan.py	-
+file	tools/test-tatty.sections	*
+file	tools/test-tatty.areas	*
+file	tools/test-compact-chat.py	compactchat
+file	tools/build-installer.ps1	prebuilt,desktop
+file	plugins/tatty/scripts/tatty.sh	*
+file	plugins/tatty/scripts/tatty-root.sh	root,features,newfeature
+file	plugins/tatty/scripts/suggestions.sh	reviewstep
+file	plugins/tatty/skills/*	reviewstep,mergestep,chats
+file	plugins/tatty/hooks/*	live,tabs,milestones
+file	plugins/tatty/app/compact_chat.py	compactchat,chats
+file	plugins/tatty/app/reviewdoc.py	reviewstep,reviewrepo
+file	plugins/tatty/app/launcher/*	desktop,prebuilt,launching
+file	plugins/tatty/app/companion/*	desktop,prebuilt,launching
+file	plugins/tatty/.claude-plugin/*	settings,launching,selfupdate,hub,clone
+file	.claude-plugin/*	selfupdate,hub,clone
+banner	^the toolbox	*
+banner	^state	*
+banner	^views	*
+banner	^settings	settings,launching,selfupdate,restart
+banner	^updates	selfupdate,settings,launching,restart,hub,clone
+banner	^restarting	restart,settings,launching,selfupdate
+banner	^models	models,llms,settings,chats
+banner	^setting up LLM	clone,hub,llms
+banner	^features	features,newfeature,editdoc,startstep,views,root,milestones
+banner	^the Hub	hub,clone
+banner	^milestones	milestones
+banner	^branches	branches,worktrees,mergestep,startstep,archive
+banner	^committing	commit
+banner	^the Review step	reviewstep,reviewrepo,mergestep
+banner	^starting a session	startstep,newfeature,models,live,tabs,branches,worktrees,reviewrepo,reviewstep,jira,tasks,stories,decide,planids
+banner	^Jira	jira,tasks
+banner	^planning IDs	planids
+banner	^questions	decide
+banner	^design \(user stories\)	stories,whiteboards
+banner	^whiteboards	whiteboards,stories
+banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
+banner	^archiving	archive
+banner	^code changes	commit,reviewstep,reviewrepo
+banner	^chats	chats,compactchat
+banner	^the compact chat	compactchat,chats
+banner	^HTTP	route
+banner	^client	launching,restart,settings,selfupdate
+banner	^the desktop app	desktop,launching,prebuilt
