@@ -1968,10 +1968,27 @@ def md_table(text, marker):
     return rows
 
 
+def lp(p):
+    """p as a path Windows will open even past the 260-character limit (LongPathsEnabled
+    is off on many machines, so Python's stat fails with WinError 3 on a file that is
+    there): the `\\\\?\\` form. Only for opening, listing and stat -- never show or
+    store it; use plain() for that. Short paths and other systems come back as given."""
+    if os.name != "nt":
+        return p
+    s = os.path.abspath(str(p))
+    return Path("\\\\?\\" + s) if len(s) >= 240 and not s.startswith("\\\\?\\") else Path(p)
+
+
+def plain(p):
+    """lp() undone, for a path that is shown or stored."""
+    s = str(p)
+    return Path(s[4:]) if s.startswith("\\\\?\\") else Path(p)
+
+
 def docs_of(folder):
     """The feature's documents, in workflow order: <Prefix> - <Doc>.md first, then other .md files."""
     out = []
-    for f in folder.iterdir():
+    for f in lp(folder).iterdir():
         if f.is_file() and f.suffix.lower() == ".md":
             prefix, _, doc = f.stem.rpartition(" - ")
             out.append({"file": f.name, "prefix": prefix, "doc": doc if prefix else f.stem,
@@ -1987,16 +2004,19 @@ def notes_of(folder):
     out = []
     if tt.is_dir():
         for f in sorted(tt.rglob("*.md")):
-            rel = f.relative_to(folder).as_posix()
+            rel = ".tt/" + f.relative_to(tt).as_posix()
             if rel.count("/") <= 4 and len(out) < 200:
-                out.append({"file": rel, "group": f.relative_to(tt).parts[0], "name": f.stem,
-                            "updated": f.stat().st_mtime})
+                try:
+                    when = lp(f).stat().st_mtime
+                except OSError:  # gone since the walk (a document being rewritten): leave it out
+                    continue
+                out.append({"file": rel, "group": f.relative_to(tt).parts[0], "name": f.stem, "updated": when})
     return out
 
 
 def read_doc(folder, name):
     try:
-        return (folder / name).read_text(encoding="utf-8", errors="replace")
+        return lp(folder / name).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
 
@@ -2254,7 +2274,10 @@ def decide_pending(state, folder):
     docs = decide_docs(folder)
     if not docs:
         return []
-    stamp = tuple((d.as_posix(), d.stat().st_mtime_ns) for d in docs)
+    try:
+        stamp = tuple((d.as_posix(), lp(d).stat().st_mtime_ns) for d in docs)
+    except OSError:  # one went away between the listing and now
+        return []
     hit = decide_cache.get(str(folder))
     if hit and hit[0] == stamp:
         return hit[1]
@@ -2393,7 +2416,7 @@ def feature_summary(state, folder, detail=False):
     notes = notes_of(folder)
     status = first_doc(docs, "Task Status")
     units, tasks = progress_of(read_doc(folder, status)) if status else ([], {"done": 0, "total": 0})
-    stamps = [d["updated"] for d in docs + notes] or [folder.stat().st_mtime]
+    stamps = [d["updated"] for d in docs + notes] or [lp(folder).stat().st_mtime]
     out = {"name": folder.name, "folder": folder.as_posix(), "phase": primary.get("phase", ""),
            "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
@@ -2705,7 +2728,7 @@ def workflow_results(folder):
     tt = folder / ".tt"
     for f in sorted(tt.rglob("results/*.md")) if tt.is_dir() else []:
         try:
-            text = f.read_text(encoding="utf-8", errors="replace")
+            text = lp(f).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         head = re.match(r"#\s*Result:\s*[A-Za-z0-9._-]+\s*[—–-]\s*(.+)", text)
@@ -3772,7 +3795,7 @@ def doc_path(folder, file):
     real = folder.resolve()
     p = (real / file).resolve()
     inside = p.parent == real or (real / ".tt").resolve() in p.parents
-    return p if inside and p.is_file() else None
+    return lp(p) if inside and lp(p).is_file() else None
 
 
 def save_doc(p, text, expected):
@@ -7532,12 +7555,12 @@ def result_files(folder):
     found = {}
     for p in tt.rglob("results/*.md") if tt.is_dir() else []:
         try:
-            when = p.stat().st_mtime
+            when = lp(p).stat().st_mtime
         except OSError:
             continue
         if p.stem not in found or when > found[p.stem][0]:
             found[p.stem] = (when, p)
-    return {tid: p for tid, (_, p) in found.items()}
+    return {tid: lp(p) for tid, (_, p) in found.items()}
 
 
 def task_result(folder, tid, files=None):
@@ -8268,7 +8291,7 @@ class Handler(BaseHTTPRequestHandler):
             p = doc_path(folder, file)
             if not p:
                 return self.send(403, {"error": "not a document of this feature"})
-            return self.send(200, {"file": file, "path": p.as_posix(), "updated": p.stat().st_mtime,
+            return self.send(200, {"file": file, "path": plain(p).as_posix(), "updated": p.stat().st_mtime,
                                    "text": p.read_text(encoding="utf-8", errors="replace")})
         if path == "/api/diffs":
             folder = feature_dir(q.get("name", [""])[0])
