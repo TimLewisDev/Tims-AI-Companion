@@ -891,11 +891,11 @@ git -C "$WR" switch -q -c scratch  # main is free for a worktree below
 printf 'dirty' >>"$WR/a"
 post /api/new-feature '{"name":"Wt One"}' >/dev/null
 get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
-has "a first Start would make a worktree" "$T/j" '"isolate": true'
+has "a first Start can be given a worktree" "$T/j" '"canIsolate": true'
 has "and says where" "$T/j" 'wtrepo.worktrees/feature-Wt-One'
 has "from the branch the repo is on" "$T/j" '"baseDefault": "scratch"'
 [ ! -d "$WR.worktrees" ] && ok "looking makes nothing" || bad "looking makes nothing"
-post /api/start "{\"name\":\"Wt One\",\"row\":0,\"project\":\"$WRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+post /api/start "{\"name\":\"Wt One\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
 has "the Start makes the branch" "$T/j" '"branch": "feature/Wt-One"'
 has "from the branch the repo was on" "$T/j" '"base": "scratch"'
 has "in a worktree of its own" "$T/j" 'wtrepo.worktrees/feature-Wt-One"'
@@ -908,7 +908,7 @@ has "the record keeps the worktree" "$TATTY_HOME/branches.json" '"worktree"'
 get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
 has "the Start panel then says it is isolated" "$T/j" '"isolated": true'
 post /api/new-feature '{"name":"Wt Two"}' >/dev/null
-post /api/start "{\"name\":\"Wt Two\",\"row\":0,\"project\":\"$WRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+post /api/start "{\"name\":\"Wt Two\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
 has "a second feature gets a worktree of its own" "$T/j" 'wtrepo.worktrees/feature-Wt-Two"'
 [ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "the first is not disturbed" || bad "the first is not disturbed"
 get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
@@ -944,10 +944,10 @@ post /api/branch "{\"name\":\"Wt Hand\",\"project\":\"$WRW\",\"branch\":\"hand-m
 post /api/start "{\"name\":\"Wt Hand\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
 has "a branch another worktree holds is used" "$T/j" "where hand-made is checked out"
 has "and the session runs there" "$T/j" 'handwt && TATTY_SESSION'
-# the opt-out keeps the older way
+# a worktree is opt-in: without it the branch is made in the repo's own checkout
 post /api/new-feature '{"name":"Wt Plain"}' >/dev/null
-post /api/start "{\"name\":\"Wt Plain\",\"row\":0,\"project\":\"$WRW\",\"isolate\":false,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
-has "Use the checkout as it is: the branch is made in the repo" "$T/j" '"branchNote": "Made feature/Wt-Plain from scratch.'
+post /api/start "{\"name\":\"Wt Plain\",\"row\":0,\"project\":\"$WRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "by default the branch is made in the repo's own checkout" "$T/j" '"branchNote": "Made feature/Wt-Plain from scratch.'
 hasnt "with no worktree" "$T/j" 'wtrepo.worktrees/feature-Wt-Plain'
 [ "$(git -C "$WR" branch --show-current)" = feature/Wt-Plain ] && ok "the repo is on it" || bad "the repo is on it"
 git -C "$WR" checkout -q -- a; git -C "$WR" switch -q scratch
@@ -1908,7 +1908,7 @@ has "a second start is refused, naming the feature" "$T/js" '"feature": "ABC-2 -
 has "and why" "$T/js" "A workflow was started from this ticket already."
 post /api/jira/start "{\"key\":\"ABC-3\",\"project\":\"$HERE\",\"workdir\":\"$HERE\",\"name\":\"ABC-3 - Done one\"}" >"$T/js"
 has "a start with only the name asked for (the old field) still works" "$T/js" '"feature": "ABC-3 - Done one"'
-has "a card start gets a branch in a worktree of its own" "$T/js" '.worktrees/feature-ABC-3---Done-one'
+hasnt "a card start makes no worktree unless asked" "$T/js" '.worktrees/'
 hasnt "a work folder that is the project isn't a split" "$T/js" "--add-dir"
 hasnt "and the ticket has no work-folder section" "$FX/features/ABC-3 - Done one/ABC-3 - Done one - Ticket.md" "## Working folder"
 jira_wait

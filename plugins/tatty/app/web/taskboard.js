@@ -546,10 +546,10 @@ function makeTaskBoard(o) {
     const goLite = el("button", { type: "button", id: o.item + "-start-lite" }, "Start lite");
     const result = el("div", { class: "start-result" });
     const picker = modelPicker(o.item + "-start-" + c.id);
-    // Each workflow gets a branch in a worktree of its own (see the Start panel on a feature's page); unticked, the branch
-    // is made in the repo's own checkout as before. Ignored when the project isn't in a git repository.
+    // Ticked, the workflow gets a branch in a worktree of its own (see the Start panel on a feature's page); unticked, the branch
+    // is made in the repo's own checkout. Off by default: a worktree is a whole second checkout. Ignored when the project isn't in a git repository.
     const own = el("input", { type: "checkbox", id: o.item + "-worktree", "aria-label": "own worktree" });
-    own.checked = true;
+    own.checked = false;
     const drawWhere = () => {
       where.replaceChildren(project ? copyable(project) : el("strong", { class: "st missing" }, "no project chosen yet"));
       whereWork.replaceChildren(workdir ? copyable(workdir) : el("span", { class: "dim" }, "the project itself"));
@@ -570,7 +570,7 @@ function makeTaskBoard(o) {
       result.replaceChildren(el("span", { class: "dim small" }, "Making the feature and opening a session…"));
       tell("allow-foreground");
       try {
-        const r = await c.send({ id: c.id, project, workdir, mode, feature: name.value.trim(), ...(own.checked ? {} : { isolate: false }), ...picker.fields() });
+        const r = await c.send({ id: c.id, project, workdir, mode, feature: name.value.trim(), ...(own.checked ? { isolate: true } : {}), ...picker.fields() });
         if (r.ok) {
           c.close(true);
           location.hash = featureHref(r.feature); // its page shows the session as it runs
@@ -593,7 +593,7 @@ function makeTaskBoard(o) {
       el("div", { class: "project-line small" }, "Linked project (the session runs here) ", where, " ", choose),
       el("div", { class: "project-line small" }, "Works in ", whereWork, " ", chooseWork, " ", clearWork),
       el("label", { class: "own-worktree small" }, own, " Own worktree (a branch and a folder of its own beside the repo, so other workflows can run at the same time)"),
-      el("div", { class: "small dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files. Untick to work in the checkout as it is."),
+      el("div", { class: "small dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files, so it is off unless you tick it. Unticked, the branch is made in the checkout as it is."),
       picker.node,
       el("div", { class: "small dim" }, `Writes the ${o.noun} into the feature's folder as its Ticket and opens a new Claude session. `,
         "Start workflow plans it in full; Start lite writes a one-page brief for a small change. ",

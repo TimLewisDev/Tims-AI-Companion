@@ -413,11 +413,16 @@ folders and Claude Code's own install records; see
   each other's files, and finished work mustn't sit uncommitted and forgotten.
   Neither is the toolbox's business (its skills never create a branch or commit),
   so both are Tatty's, and the toolbox is unchanged.
-  - **A branch and a worktree per workflow.** `start_session` calls
+  - **A branch per workflow, in a worktree if asked.** `start_session` calls
     `ensure_branch` before it launches. The first Start of a feature that has no
     documents yet (New feature, a Jira ticket, a task, a lite start) makes a
     branch (`<branchPrefix><feature name>`, prefix `feature/` by default, a
-    setting; `-2`, `-3` when the name is taken) **in a worktree of its own**,
+    setting; `-2`, `-3` when the name is taken) in the repo's own checkout with
+    `git switch -c`, which a later Start switches back to. **A worktree is
+    opt-in** (the **Own worktree** box on the Start panel and on the Tasks and
+    Jira Start section sends `isolate: true`), because it is a whole second
+    checkout and a Unity project's is huge. Ticked, the branch is made
+    **in a worktree of its own**,
     `git worktree add -b <branch> <path> <base>`, from the base picked on the
     Start panel (default: the branch the repo is on). The worktree is
     `<repo parent>/<repo name>.worktrees/<branch made safe for a folder>`. The
@@ -431,13 +436,14 @@ folders and Claude Code's own install records; see
     from its base if that was deleted; a branch that another worktree already
     holds is used where it is, unless it is a shared branch (`main`, `master`,
     `develop`, `trunk` or origin's HEAD, `PROTECTED_BRANCHES`) or another
-    feature's. The Start panel's **Own worktree** box opts out (`isolate:
-    false`: the branch is made and switched in the repo's checkout, as before,
-    with git's own words if a switch is refused), and it is also how a feature
-    under way (or one recorded on a shared branch) gets a worktree: a new branch
-    from its own. A feature under way with no record adopts the branch the repo
+    feature's. Without the box ticked the branch is made and switched in the
+    repo's checkout (with git's own words if a switch is refused, and a refusal
+    because another folder holds the branch says to tick Own worktree); the box
+    is also how a feature under way (or one recorded on a shared branch) gets a
+    worktree: a new branch from its own. A feature under way with no record adopts the branch the repo
     is on, and is never moved. A worktree is a full second checkout (a Unity
-    project re-imports its Library there), which the panel says. Archive and
+    project re-imports its Library there), which the panel says; a worktree
+    stays with its feature once made, whatever the box says later. Archive and
     Delete remove the feature's worktree with plain `git worktree remove`, only
     when nothing in it is uncommitted or untracked, and say so when they leave
     it; the branch is always kept. The repo is the work folder's when a task has

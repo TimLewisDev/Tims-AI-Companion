@@ -950,8 +950,7 @@ function startPanel(f, row, index, close, begin) {
         wt.fields = () => ({});
         return;
       }
-      const suggest = b.isolate || (b.protected && !!b.branch);
-      const on = () => (wt.on === null ? suggest : wt.on);
+      const on = () => wt.on === true; // opt in: a worktree is a whole second checkout
       const box = el("input", { type: "checkbox", id: "own-worktree", "aria-label": "own worktree" });
       box.checked = on();
       const base = el("select", { class: "branch-select", "aria-label": "base branch", title: "The new branch starts from this" });
@@ -960,7 +959,7 @@ function startPanel(f, row, index, close, begin) {
       for (const n of start && !bases.includes(start) ? [start, ...bases] : bases) base.append(el("option", { value: n }, n));
       base.value = start;
       base.addEventListener("change", () => { wt.base = base.value; });
-      wt.fields = () => (on() ? { isolate: true, ...(base.value ? { base: base.value } : {}) } : (b.canIsolate ? { isolate: false } : {}));
+      wt.fields = () => (on() ? { isolate: true, ...(base.value ? { base: base.value } : {}) } : {});
       const detail = el("div", {});
       const paint = () => {
         const shared = b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "";
@@ -970,7 +969,7 @@ function startPanel(f, row, index, close, begin) {
             el("div", { class: "dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files."),
             b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch; the feature gets one of its own.`) : "");
         } else {
-          detail.replaceChildren(el("span", {},
+          detail.replaceChildren(b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch. If the repo can't switch to it (another folder has it checked out), tick Own worktree to give this feature a branch of its own.`) : "", el("span", {},
             b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
               : b.create ? ["A new branch ", code(b.create), " is made in the repo's own checkout from ", code(b.current || "the detached HEAD")]
                 : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),

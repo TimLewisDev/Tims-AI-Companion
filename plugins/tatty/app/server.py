@@ -2346,7 +2346,6 @@ def branch_info(state, folder, project, workdir="", pick=""):
     out["worktree"] = work_repo(rec) if has_wt and os.path.isdir(rec["worktree"]) else ""
     out["isolated"] = has_wt
     out["canIsolate"] = not has_wt
-    out["isolate"] = not has_wt and fresh and not out["branch"]  # what the box starts as
     if not has_wt:
         newbranch = branch_name(repo, folder.name)
         out.update(newBranch=newbranch, newPath=worktree_path(repo, newbranch), baseDefault=out["branch"] or here,
@@ -2793,14 +2792,14 @@ def make_worktree(feature, repo, here, base, old):
 
 
 def ensure_branch(folder, project, workdir, fresh, isolate=None, base=""):
-    """Give a feature its branch, and its own worktree, before a session starts. (ok, info):
-    the first Start of an unstarted feature makes a branch in a worktree of its own, from `base`
-    (else where the repo is), leaving the repo's checkout alone; a later Start finds that
-    worktree again (re-making it if it was removed). isolate False keeps the older way: the
-    branch is made in the repo's own checkout (and a later Start switches it back); isolate True
-    gives a feature already under way a new worktree; None = a worktree for an unstarted
-    feature, otherwise whatever the feature already has. A feature under way with no
-    record adopts the branch the repo is on. Not a git repo: nothing to do."""
+    """Give a feature its branch, in its own worktree if asked, before a session starts. (ok, info):
+    by default (isolate not True) the first Start of an unstarted feature makes the branch in the
+    repo's own checkout, and a later Start switches it back, because a worktree is a whole second
+    checkout (huge for a Unity project). isolate True gives the feature a new branch in a worktree
+    of its own, from `base` (else where the repo is), leaving the repo's checkout alone, whether
+    it is unstarted or under way; a later Start finds that worktree again (re-making it if it was
+    removed), whatever isolate says. A feature under way with no record adopts the branch the
+    repo is on. Not a git repo: nothing to do."""
     repo = branch_repo(folder.name, project, workdir)
     if not repo:
         return True, {"note": "Not in a git repository: no branch was made."}
@@ -2811,7 +2810,7 @@ def ensure_branch(folder, project, workdir, fresh, isolate=None, base=""):
         mine = bool(rec.get("branch")) and same_folder(rec.get("repo", ""), repo)
         if mine and rec.get("worktree"):
             return attach_worktree(feature, repo, rec)
-        if isolate is True or (isolate is None and fresh and not mine):
+        if isolate is True:
             return make_worktree(feature, repo, here, base or (rec["branch"] if mine else ""), rec)
         if mine:
             want = rec["branch"]
@@ -3337,7 +3336,8 @@ def start_session(state, folder, body):
         return 400, {"error": why}
     # The work goes on a branch of the feature's own (see "branches and merging"), made on its first Start.
     # A review only reads: it never makes or switches a branch, nor records one for the feature.
-    # The branch is in a worktree of its own unless the person opted out (body "isolate": false); "base" is what a new branch starts from.
+    # The branch is made in the repo's own checkout unless the person opted in to a worktree of its own (body "isolate": true);
+    # "base" is what a new worktree branch starts from.
     isolate = body["isolate"] if isinstance(body.get("isolate"), bool) else None
     ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty",
                                                                  isolate, str(body.get("base") or "").strip())
