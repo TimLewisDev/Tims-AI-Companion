@@ -2718,6 +2718,26 @@ if [ -n "$HAVE_LLMS" ]; then
 	post /api/model-config '{"action":"delete","mode":"mine"}' >"$T/j"
 	[ "$(pick "$T/j" "[m['name'] for m in d['modes']]")" = "['economy', 'recommended', 'thorough']" ] && ok "a saved mode is deleted" || bad "a saved mode is deleted" "$(head -c 300 "$T/j")"
 	post /api/model-config '{"action":"use","mode":"recommended"}' >/dev/null
+	# The version each family name means: a subagent is given the name (sonnet), and the session it runs in is
+	# started with the version, or Claude Code falls back to an older model.
+	get /api/model-config >"$T/j"
+	if [ "$(pick "$T/j" "d.get('families') is not None")" = True ]; then
+		[ "$(pick "$T/j" "[f['family'] for f in d['families']]")" = "['sonnet', 'opus', 'haiku', 'fable']" ] && ok "each family is listed" || bad "each family is listed" "$(head -c 300 "$T/j")"
+		[ "$(pick "$T/j" "all(f['versions'] and f['effective'] for f in d['families'])")" = True ] && ok "with its versions and the one it means" || bad "with its versions and the one it means"
+		OLDEST=$(pick "$T/j" "d['families'][0]['versions'][-1]['id']")
+		post /api/model-config "{\"action\":\"family\",\"family\":\"sonnet\",\"model\":\"$OLDEST\"}" >"$T/j"
+		[ "$(pick "$T/j" "d['families'][0]['chosen']")" = "$OLDEST" ] && ok "a family is pinned to a version" || bad "a family is pinned to a version" "$(head -c 300 "$T/j")"
+		[ "$(pick "$T/j" "d['families'][0]['source']")" = chosen ] && ok "and says it was chosen" || bad "and says it was chosen"
+		post /api/start '{"name":"Demo","row":0}' >"$T/j"
+		has "a started session is given the pinned version" "$T/j" "ANTHROPIC_DEFAULT_SONNET_MODEL=$OLDEST"
+		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"cat","model":"-"}' "$U/api/model-config")" = 400 ] && ok "an unknown family is refused" || bad "an unknown family is refused"
+		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"sonnet","model":"claude-nonsense-9"}' "$U/api/model-config")" = 400 ] && ok "so is a version it doesn't have" || bad "so is a version it doesn't have"
+		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"sonnet","model":"x; rm -rf /"}' "$U/api/model-config")" = 400 ] && ok "a version is a single word" || bad "a version is a single word"
+		post /api/model-config '{"action":"family","family":"sonnet","model":"-"}' >"$T/j"
+		[ "$(pick "$T/j" "d['families'][0]['chosen']")" = "" ] && ok "a pin is cleared" || bad "a pin is cleared" "$(head -c 300 "$T/j")"
+	else
+		ok "this toolbox can't say which version a family means (skipped)"
+	fi
 else
 	ok "the LLM connection checks need a toolbox checkout (TATTY_TOOLBOX) with llms.sh (skipped)"
 fi

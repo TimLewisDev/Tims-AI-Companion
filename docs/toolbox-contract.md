@@ -433,6 +433,7 @@ scripts, on a person's click, by argv:
 | `tt-connections/scripts/llms.sh status --tsv`, `models --tsv`, `connect <tool>`, `disconnect <tool>`, `refresh [tool]` | the LLM tools (claude, copilot, codex) that are connected, and the models they offer. Only claude's can run a workflow today; the others are listed greyed out. Tatty never signs a tool in. |
 | `tt-common/scripts/model-config.sh list --tsv`, `modes`, `get session` | the model and effort of each step that starts a subagent, the modes that hold them, and the `session` setting |
 | `tt-common/scripts/model-config.sh set <role> <model> <effort>`, `use`, `save`, `reset`, `delete` | changing them: the Step models table, the Workflow session setting and the mode controls |
+| `tt-common/scripts/model-config.sh family list --tsv`, `family set <family> <id\|->`, `family env`; `tt-connections/scripts/llms.sh versions --tsv` | the version each family name (sonnet, opus, haiku, fable) means: the Model versions table under the Step models, and the `ANTHROPIC_DEFAULT_<FAMILY>_MODEL=<id>` lines Tatty exports when it starts a session (and a headless `claude -p`) |
 
 The Start panels offer the connected, runnable models, starting from the
 `session` setting. A toolbox without `llms.sh` is treated as offering Claude's
@@ -446,6 +447,18 @@ under its alias in the Start panels and the Workflow session setting, and leaves
 it out of the Step models table (`model-config.sh` refuses it for any role but
 `session` as well). A row with five columns is `any`, so an older toolbox shows
 the aliases only.
+
+A step is run with its family name, which the Agent tool can't give a version,
+and the name means whatever `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` says in the
+environment of the session that spawns the subagent. A session Tatty starts
+doesn't inherit one from a Claude session (the terminal it opens is not a child
+of one), so Claude Code falls back to an older model (Sonnet 4.5 on Bedrock).
+Tatty therefore asks `model-config.sh family env` at each start and exports what
+it prints in the session's launcher script, and in the environment of its
+headless runs. The toolbox decides the values: a version chosen in the Model
+versions table, else the newest it lists, leaving alone a variable the person's
+own environment or `settings.json` already sets. A toolbox without `family`
+shows no table and exports nothing.
 
 ## Branches and merging
 

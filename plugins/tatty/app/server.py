@@ -1181,6 +1181,46 @@ def llm_setup_change(state, b):
     return 200, {**llm_setup_view(state), "said": got.get("said", "")}
 
 
+FAMILY_NAMES = ("sonnet", "opus", "haiku", "fable")
+FAMILY_VAR = re.compile(r"ANTHROPIC_DEFAULT_[A-Z]+_MODEL\Z")
+
+
+def family_view(state):
+    """Which version each alias (sonnet, opus, haiku, fable) means, from the toolbox's `model-config.sh family list`:
+    dicts of family, chosen ("" = none pinned), effective, label, source (chosen, own or newest) and versions
+    (id and label, newest first). None when this toolbox can't say (an older one)."""
+    got = toolbox_run(state, MODEL_CONFIG, ["family", "list", "--tsv"])
+    if not got or got[0] != 0:
+        return None
+    asked = toolbox_run(state, LLMS, ["versions", "--tsv"])
+    versions = {}
+    for r in tsv_rows(asked[1], 3) if asked and asked[0] == 0 else []:
+        versions.setdefault(r[0], []).append({"id": r[2].strip(), "label": r[1]})
+    return [{"family": r[0], "chosen": "" if r[1] in ("", "-") else r[1], "effective": "" if r[2] == "-" else r[2],
+             "label": "" if r[3] == "-" else r[3], "source": r[4].strip(), "versions": versions.get(r[0], [])}
+            for r in tsv_rows(got[1], 5) if r[0] in FAMILY_NAMES]
+
+
+def family_exports(state):
+    """The ANTHROPIC_DEFAULT_<FAMILY>_MODEL variables a session should start with, so that the alias a subagent is
+    given (sonnet) means the version chosen for it, else the newest. Claude Code started from somewhere that doesn't
+    set them falls back to an older model (Sonnet 4.5 on Bedrock). {} when the toolbox can't say."""
+    got = toolbox_run(state, MODEL_CONFIG, ["family", "env"])
+    out = {}
+    for line in (got[1].splitlines() if got and got[0] == 0 else []):
+        k, _, v = line.strip().partition("=")
+        if FAMILY_VAR.match(k) and MODEL_WORD.match(v):
+            out[k] = v
+    return out
+
+
+def claude_child_env(state):
+    """The environment of a headless `claude -p` Tatty runs: its own, without a session tag, and the alias versions."""
+    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    env.update(family_exports(state))
+    return env
+
+
 def model_config_view(state):
     got = toolbox_run(state, MODEL_CONFIG, ["list", "--tsv"])
     roles = [{"role": r[0], "kind": r[1], "tier": int(r[2]) if r[2].isdigit() else 4, "usedBy": r[3], "label": r[4],
@@ -1196,7 +1236,9 @@ def model_config_view(state):
                 active = m.group(2)
     # A step's model is an alias: a specific version is for the session alone.
     return {"available": bool(roles), "mode": active, "modes": modes, "roles": roles,
-            "models": [m for m in llm_models(state) if m["scope"] != "session"]}
+            "models": [m for m in llm_models(state) if m["scope"] != "session"],
+            # what each alias means (None from a toolbox that can't say): a step takes the alias, this picks its version
+            "families": family_view(state) if roles else None}
 
 
 def model_config_change(state, b):
@@ -1216,13 +1258,20 @@ def model_config_change(state, b):
         if mode not in names:
             return 400, {"error": "no such mode"}
         args = [action, mode]
+    elif action == "family":
+        family = str(b.get("family", ""))
+        if family not in FAMILY_NAMES:
+            return 400, {"error": "no such family"}
+        if now["families"] is None:
+            return 501, {"error": "This toolbox is too old to choose model versions. Update the core plugin."}
+        args = ["family", "set", family, str(b.get("model") or "-").strip() or "-"]
     elif action == "save":
         name = str(b.get("name", "")).strip()
         if not re.match(r"[a-z0-9][a-z0-9_-]*\Z", name):
             return 400, {"error": "A mode's name is lowercase letters, digits, - and _."}
         args = ["save", name]
     else:
-        return 400, {"error": "action: set, use, reset, save or delete"}
+        return 400, {"error": "action: set, family, use, reset, save or delete"}
     if any(not MODEL_WORD.match(a) for a in args):
         return 400, {"error": "model and effort are single words"}
     got = toolbox_run(state, MODEL_CONFIG, args)
@@ -3234,7 +3283,7 @@ def launch(state, project, name, prompt, tag, workdir="", flags=()):
         args += ["--add-dir", Path(workdir).as_posix()]
     # TT_DECIDE=elsewhere: the toolbox's skills record their pre-written questions (challenges) and end the
     # turn, for the person to answer on the feature's Decide page instead of in the terminal (see decide_set).
-    exports = {"TATTY_SESSION": tag, "TT_DECIDE": "elsewhere"}
+    exports = {"TATTY_SESSION": tag, "TT_DECIDE": "elsewhere", **family_exports(state)}
     if os.environ.get("TATTY_HOME"):
         exports["TATTY_HOME"] = Path(os.environ["TATTY_HOME"]).as_posix()
     run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, "-n", name, prompt])
@@ -3807,7 +3856,7 @@ def jira_claude(state, prompt, tools, schema):
     if own:
         argv += ["--strict-mcp-config", "--mcp-config", own]
     # Not one of Tatty's sessions: its mod stays out of this run.
-    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    env = claude_child_env(state)
     jira_dir().mkdir(parents=True, exist_ok=True)
     started = time.time()
     try:
@@ -4966,7 +5015,7 @@ def start_stories_run(state, folder, b):
 def stories_run_work(state, folder, doc, argv, prompt, before, run_dir):
     import shutil
     r = state.stories_run
-    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    env = claude_child_env(state)
     if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
         env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
     final, error = None, ""
@@ -6970,7 +7019,7 @@ def task_write_start(state, folder, b, client):
 
 
 def task_write_work(state, name, client, r, argv, prompt, cwd, timeout):
-    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    env = claude_child_env(state)
     if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
         env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
     final, error, text = None, "", ""
@@ -7386,7 +7435,7 @@ def model_more_info(state, folder, task):
             argv += ["-p", prompt, "--system-prompt", DIFF_MORE_SYSTEM, "--model", "haiku",
                      "--output-format", "json", "--tools", "", "--setting-sources", "user", "--disable-slash-commands",
                      "--no-session-persistence", "--strict-mcp-config"]
-            env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+            env = claude_child_env(state)
             project = feature_project(folder, docs_of(folder))[0]
             try:
                 p = quiet_run(state, argv, cwd=project if project and os.path.isdir(project) else str(folder),
@@ -7551,7 +7600,7 @@ def model_summary(state, c):
         argv += ["-p", context_block(ctx), "--system-prompt", SUMMARY_SYSTEM, "--model", "haiku",
                  "--output-format", "json", "--tools", "", "--setting-sources", "user", "--disable-slash-commands",
                  "--no-session-persistence", "--strict-mcp-config"]
-        env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+        env = claude_child_env(state)
         try:
             p = quiet_run(state, argv, cwd=c["project"], timeout=SUMMARY_TIMEOUT, env=env)
             out = json.loads(p.stdout)
@@ -7695,7 +7744,7 @@ def chat_step(block):
 def chat_turn_work(state, c, argv, prompt):
     import tempfile
     cid, run = c["id"], state.chat_runs[c["id"]]
-    env = {k: v for k, v in os.environ.items() if k not in ("TATTY_SESSION", "TATTY_JOIN")}
+    env = claude_child_env(state)
     if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
         env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
     final, texts, steps, error, said = None, [], [], "", []

@@ -251,7 +251,7 @@ function sessionSettings() {
 // own session is advisory (the session's model is the one above).
 function stepSettings() {
   const box = el("section", { id: "step-settings" }, el("h3", {}, "Step models"),
-    el("p", { class: "dim small" }, "Which model and effort each step of the workflow uses for its subagents, in the active mode. Steps marked advisory run in your own session, which the toolbox can only recommend a model for. A step takes the model families only (sonnet, opus, haiku, fable); a specific version can be chosen for the session above."));
+    el("p", { class: "dim small" }, "Which model and effort each step of the workflow uses for its subagents, in the active mode. Steps marked advisory run in your own session, which the toolbox can only recommend a model for. A step takes a model family (sonnet, opus, haiku, fable); the version a family means is chosen just below, and a specific version can also be chosen for the session above."));
   const body = el("div", {});
   const note = el("p", { class: "dim small", id: "step-note" });
   box.append(body, note);
@@ -260,6 +260,26 @@ function stepSettings() {
     note.textContent = "Working…";
     try { now = await api("/api/model-config", change); note.textContent = now.said || ""; draw(); }
     catch (e) { note.textContent = ""; alert(e.message || e); }
+  };
+  // Which version each family means: a subagent is started with the family name (sonnet), and the session
+  // Start launches is given the version, so the name means it. Not part of a mode. Nothing when the toolbox can't say.
+  const familyTable = () => {
+    if (!now.families || !now.families.length) return null;
+    const rows = now.families.map(f => {
+      const newest = f.versions[0];
+      const sel = el("select", { id: "family-" + f.family, "aria-label": `${f.family} version` },
+        el("option", { value: "" }, f.source === "own" ? `Your own setting (${f.label || f.effective})` : `Newest${newest ? ` (${newest.label})` : ""}`),
+        f.versions.map(v => el("option", { value: v.id }, v.label)));
+      sel.value = f.chosen;
+      sel.addEventListener("change", () => act({ action: "family", family: f.family, model: sel.value || "-" }));
+      return el("tr", { id: "family-row-" + f.family, class: f.chosen ? "current" : "" },
+        el("td", {}, f.family), el("td", {}, sel), el("td", { class: "dim small" }, f.label || f.effective || "-"));
+    });
+    return el("div", { id: "family-versions" },
+      el("h4", {}, "Model versions"),
+      el("p", { class: "dim small" }, "The version each family name means for the steps below. Newest follows the newest the toolbox lists. Applies to workflow sessions started from now on; one already running keeps its version."),
+      el("table", { class: "plugins", id: "family-table" },
+        el("tr", {}, el("th", {}, "Family"), el("th", {}, "Version"), el("th", {}, "Runs as")), rows));
   };
   const draw = () => {
     if (!now || !now.available) {
@@ -294,7 +314,7 @@ function stepSettings() {
         el("td", {}, r.kind === "main" ? el("span", {}, r.role, " ", el("span", { class: "dim small" }, "advisory")) : r.role),
         el("td", { class: "dim small" }, r.label), el("td", {}, model), el("td", {}, effort));
     };
-    body.replaceChildren(tools, el("table", { class: "plugins", id: "step-table" },
+    body.replaceChildren(tools, familyTable(), el("table", { class: "plugins", id: "step-table" },
       el("tr", {}, el("th", {}, "Step"), el("th", {}, "What it does"), el("th", {}, "Model"), el("th", {}, "Effort")),
       now.roles.filter(r => r.role !== "session").map(row)));
   };
