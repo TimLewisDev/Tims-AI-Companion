@@ -165,8 +165,22 @@ has "header and answer" "$T/out" "$(printf 'Update\tNo')"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"id\":\"$id\",\"answers\":{}}" "$U/api/reply")" = 409 ] &&
 	ok "answered once only" || bad "answered once only"
 
-( sleep 1; get /api/events | $PY -c "import json,sys; print([e for e in json.load(sys.stdin) if e['type']=='ask'][-1]['id'])" >"$T/qid"
-	post /api/reply "{\"id\":\"$(cat "$T/qid")\",\"declined\":true}" >/dev/null ) &
+# (declines the next question asked, not the last one: starting `ask` takes longer than any fixed wait on a slow machine)
+( $PY - "$U" "$K" "$id" <<'PYEOF'
+import json, sys, time, urllib.request
+u, k, old = sys.argv[1:4]
+def call(path, body=None):
+    r = urllib.request.Request(u + path, data=None if body is None else json.dumps(body).encode(),
+                               headers={"X-TT-Token": k, "Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(r, timeout=10))
+for _ in range(150):
+    asks = [e["id"] for e in call("/api/events") if e["type"] == "ask"]
+    if asks and asks[-1] != old:
+        call("/api/reply", {"id": asks[-1], "declined": True})
+        break
+    time.sleep(0.2)
+PYEOF
+) &
 expect "declined: exit 6" 6 bash -c "echo '$Q' | bash '$W' ask --wait 10"
 wait
 expect "not JSON" 2 bash -c "echo nope | bash '$W' ask"
@@ -466,7 +480,9 @@ print("copilot now:", [(t["installed"], t["signedIn"], t["connected"], t["state"
 put(base / "copilot-home" / "config.json", '// User settings\n{\n  // who\n  "loggedInUsers": [{"host": "https://github.com", "login": "me"}]\n}\n')
 print("signed in:", [t["signedIn"] for t in m.llm_setup_view(st)["tools"] if t["provider"] == "copilot"])
 code, got = m.llm_setup_change(st, {"action": "signin", "provider": "copilot"})
-print("signin:", code, got["said"].splitlines()[-1].endswith("copilot login"))
+import shlex
+run = shlex.split(got["said"].splitlines()[-1])  # the path is quoted when it has a character the shell treats specially (TIM~1.LEW)
+print("signin:", code, run[0].endswith("/copilot") and run[1:] == ["login"])
 code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
 print("connect:", code, got.get("said"))
 shutil.rmtree(tb, onerror=lambda f, p, e: (os.chmod(p, 0o700), f(p)))
