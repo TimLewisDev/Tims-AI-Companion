@@ -92,8 +92,18 @@ def home():
     return Path(os.environ.get("TATTY_HOME") or config_dir() / "tatty")
 
 
-def info_path():
-    return home() / "server.json"
+def instance_id():
+    """The Hub project this process belongs to ('' for the Hub window itself, and for a server
+    run by hand). Every project gets a server and a window of its own, so each server
+    answers for one project only (see "the Hub")."""
+    return os.environ.get("TATTY_PROJECT", "").strip()
+
+
+def info_path(project=None):
+    """Where a server writes how to reach it. The Hub's is <home>/server.json; a project's is
+    <home>/servers/<id>.json. project None: this process's own."""
+    pid = instance_id() if project is None else project
+    return home() / "servers" / f"{pid}.json" if pid else home() / "server.json"
 
 
 def plugin_version():
@@ -463,7 +473,7 @@ SESSION_CACHE_ROWS = 300  # feed rows kept per session
 
 
 def sessions_cache_file():
-    return home() / "sessions-cache.json"
+    return home() / (f"sessions-cache-{instance_id()}.json" if instance_id() else "sessions-cache.json")
 
 
 def cache_sessions(state):
@@ -805,9 +815,43 @@ def watch_updates(state):
     turning it on or off in the page needs no restart."""
     time.sleep(UPDATE_FIRST)
     while True:
-        if load_settings()["autoUpdate"]:
+        if load_settings()["autoUpdate"] and update_leader():
             update_work(state, apply=True, auto=True)
         time.sleep(UPDATE_EVERY)
+
+
+UPDATE_LOCK_STALE = 90  # seconds without a refresh before another server may take the lock over
+
+
+def update_lock_file():
+    return home() / "update.lock"
+
+
+def update_leader():
+    """True when this server is the one that looks for updates on its own. Every project has a
+    server, and one of them doing it is enough: the first to ask takes <home>/update.lock, keeps
+    it fresh (the watchdog asks every 30 s), and another takes it over only when it goes stale."""
+    f = update_lock_file()
+    try:
+        owner, age = f.read_text(encoding="utf-8").strip(), time.time() - f.stat().st_mtime
+    except OSError:
+        owner, age = "", None
+    if owner == str(os.getpid()) or age is None or age > UPDATE_LOCK_STALE:
+        try:
+            f.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            return False
+        return True
+    return False
+
+
+def update_release():
+    f = update_lock_file()
+    try:
+        if f.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            f.unlink()
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------- views
@@ -1291,10 +1335,14 @@ DEBUG_PHASES = {"debugging", "debug-done", "debugged"}
 
 
 def tatty_root():
-    """(root, is_set). The same rule as scripts/tatty-root.sh: TATTY_ROOT, else the
-    one line in <Tatty's home>/root, else ~/Tatty (unset)."""
+    """(root, is_set). The same rule as scripts/tatty-root.sh: TATTY_ROOT, else (in a
+    project's own server) that project's root, else the one line in <Tatty's home>/root,
+    else ~/Tatty (unset)."""
     if os.environ.get("TATTY_ROOT"):
         return Path(os.environ["TATTY_ROOT"]), True
+    mine = instance_project()
+    if mine:
+        return Path(mine["root"]), True
     setting = home() / "root"
     try:
         line = setting.read_text(encoding="utf-8").splitlines()[0].strip()
@@ -1325,13 +1373,19 @@ def root_from_pick(path):
 # ---------------------------------------------------------------- the Hub
 # Tatty keeps several projects, each its own root folder (features, design, tasks, archive)
 # and optionally a default code repo its sessions start in. <home>/hub.json lists them:
-# {version, projects: [{id, name, root, repo, created, lastOpened}]}. The active project is
-# the one whose root <home>/root names (that file stays the one source of truth, which the
-# toolbox's skills and scripts/tatty-root.sh read). Opening a project makes its root the
-# active one. Forgetting a project only drops its entry: no folder is ever deleted. TATTY_ROOT
-# (the tests, development) overrides the setting and so bypasses the Hub's choice.
+# {version, projects: [{id, name, root, repo, created, lastOpened}]}. Every project is open in a
+# window of its own: opening one starts a server for it (TATTY_PROJECT=<id>, writing
+# <home>/servers/<id>.json) and a desktop window to show it, and that server answers for that
+# project only. The Hub is a window of its own, shown at launch and when asked for, and it is
+# done with once a project is picked. <home>/root still names the project opened last (the
+# toolbox's skills and scripts/tatty-root.sh read it), but a project's server doesn't: its root
+# is its entry's. Forgetting a project only drops its entry: no folder is ever deleted.
+# TATTY_ROOT (the tests, development) overrides everything and so bypasses the Hub's choice.
+# A project's number is its place in the list (the order it was added): the flag its Tatty holds.
 
 HUB_LOCK = threading.RLock()
+_REGISTRY_CACHE = {"stamp": None, "projects": []}
+_LAST_PROJECT = {}
 
 
 def hub_path():
@@ -1388,13 +1442,60 @@ def hub_find(d, ref):
         next((p for p in d["projects"] if p["name"].lower() == ref.lower()), None)
 
 
+def instance_project():
+    """The project this server answers for (its entry in the list), or None for the Hub window
+    and for a server run by hand. Read from the list each time, so an edit shows at once; a
+    project forgotten while its window is open stays what it was."""
+    pid = instance_id()
+    if not pid:
+        return None
+    try:
+        st = hub_path().stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = None
+    if stamp is None or _REGISTRY_CACHE["stamp"] != stamp:
+        rows = [p for p in read_json(hub_path(), {}).get("projects", []) if isinstance(p, dict) and p.get("id") and p.get("root")]
+        _REGISTRY_CACHE.update(stamp=stamp, projects=rows)
+    found = next((p for p in _REGISTRY_CACHE["projects"] if p["id"] == pid), None)
+    if found:
+        _LAST_PROJECT[pid] = found
+        return found
+    return _LAST_PROJECT.get(pid)
+
+
+def hub_for_folder(d, folder):
+    """The project a folder belongs to (it is, or is inside, the project's root or code repo),
+    the deepest match; None if it belongs to none."""
+    f = hub_key(Path(str(folder)).resolve())
+    best, best_len = None, -1
+    for p in d["projects"]:
+        for base in (p["root"], p.get("repo") or ""):
+            if not base:
+                continue
+            b = hub_key(Path(base).resolve())
+            if (f == b or f.startswith(b.rstrip("/") + "/")) and len(b) > best_len:
+                best, best_len = p, len(b)
+    return best
+
+
 def hub_active(d):
-    """The project whose root is the active root, or None (also when TATTY_ROOT overrides)."""
+    """The project this server is for; in the Hub window (and in a server run by hand), the
+    one whose root is the root setting (the one opened last). None when there is none (also
+    when TATTY_ROOT overrides and names no listed project)."""
     if os.environ.get("TATTY_ROOT"):
         root = os.environ["TATTY_ROOT"]
+    elif instance_id():
+        mine = instance_project()
+        return next((p for p in d["projects"] if mine and p["id"] == mine["id"]), mine)
     else:
         root = hub_setting_root()
     return next((p for p in d["projects"] if root and hub_key(p["root"]) == hub_key(root)), None)
+
+
+def hub_number(d, p):
+    """The project's number: its place in the list, from 1 (what its Tatty's flag shows)."""
+    return next((i + 1 for i, x in enumerate(d["projects"]) if x["id"] == p["id"]), 0)
 
 
 def project_home():
@@ -1442,23 +1543,42 @@ def hub_root_refused(path):
     return ""
 
 
-def hub_project_view(p):
+def project_window_up(pid):
+    """True when the project has a window open: its server answers. (This server's own project
+    is open by definition.)"""
+    return pid == instance_id() or bool(alive(pid))
+
+
+def hub_project_view(p, d=None):
+    """A project as the Hub shows it: its entry, its number, whether its folders are there and
+    whether it is open in a window."""
+    d = d or hub_load()
     root = Path(p["root"])
     features = root / "features"
     try:
         count = sum(1 for x in features.iterdir() if x.is_dir() and not x.name.startswith(".")) if features.is_dir() else 0
     except OSError:
         count = 0
-    return {**p, "exists": root.is_dir(), "features": count, "repoExists": bool(p.get("repo")) and os.path.isdir(p["repo"])}
+    return {**p, "number": hub_number(d, p), "open": project_window_up(p["id"]), "exists": root.is_dir(), "features": count,
+            "repoExists": bool(p.get("repo")) and os.path.isdir(p["repo"])}
 
 
 def hub_view(state=None):
     d = hub_load()
     active = hub_active(d)
     rows = sorted(d["projects"], key=lambda p: (-(p.get("lastOpened") or 0), p["name"].lower()))
-    return {"projects": [hub_project_view(p) for p in rows], "active": active["id"] if active else "",
+    return {"projects": [hub_project_view(p, d) for p in rows], "active": active["id"] if active else "",
             "pending": bool(getattr(state, "hub_pending", False)), "locked": bool(os.environ.get("TATTY_ROOT")),
-            "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
+            "self": instance_id(), "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
+
+
+def project_status():
+    """What /api/status says of the project this server is for: id, name, number. None in the
+    Hub window."""
+    mine = instance_project()
+    if not mine:
+        return None
+    return {"id": mine["id"], "name": mine["name"], "number": hub_number(hub_load(), mine)}
 
 
 def hub_clean_repo(repo):
@@ -1499,12 +1619,52 @@ def hub_add(state, b):
         return 400, {"error": f"Couldn't create {root}: {e}"}
     got = hub_register(p.resolve().as_posix() if p.exists() else root, name, repo)
     if b.get("open"):
-        return hub_open(state, got["id"])
+        return hub_open(state, got["id"], bool(b.get("closeHub")), not b.get("noWindow"))
     return 200, {"project": hub_project_view(got), "hub": hub_view(state)}
 
 
-def hub_open(state, ref):
-    """Make a project the active one: its root becomes the root, and the Hub is done with. (code, answer)"""
+def project_set_root(state, path, create):
+    """Move this window's project to another root folder (the page's "Choose a folder"): its entry
+    in the list changes, nothing else does. (0 ok | nonzero, what went wrong)"""
+    why = hub_root_refused(path)
+    if why:
+        return 2, why
+    p = Path(path)
+    if not p.is_dir():
+        if not create:
+            return 1, f"No such folder: {path} (create it to use it)"
+        try:
+            (p / "features").mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return 2, f"Couldn't create {path}: {e}"
+    root = p.resolve().as_posix()
+    with HUB_LOCK:
+        d = hub_load()
+        entry = hub_find(d, instance_id())
+        if not entry:
+            return 1, "This project isn't listed any more."
+        entry["root"] = root
+        # The root setting (the one opened last, for the toolbox's skills) is set before the list is
+        # saved, inside the lock: a list that names a root the setting doesn't would add it again.
+        set_root(state, root, False)
+        hub_save(d)
+    os.environ["TATTY_PROJECT_ROOT"] = root
+    return 0, ""
+
+
+def project_cwd(p):
+    """The folder a project's server starts in: its code repo when it has one, else its root."""
+    repo = p.get("repo") or ""
+    return repo if repo and os.path.isdir(repo) else p["root"]
+
+
+def hub_open(state, ref, close_hub=False, window=True):
+    """Open a project in a window of its own (one already open is brought forward). With
+    close_hub, and this being the Hub window, the Hub is done with once that window is up and
+    goes away. The project is also noted as the root setting, for the toolbox's skills. With
+    TATTY_ROOT set there are no windows to open: the server just carries on with that root,
+    as it always did; so it does without window (the shell's `hub open` with nothing running).
+    (code, answer)"""
     with HUB_LOCK:
         d = hub_load()
         p = hub_find(d, ref)
@@ -1517,12 +1677,85 @@ def hub_open(state, ref):
             return 400, {"error": said or "Couldn't open the project."}
         p["lastOpened"] = time.time()
         hub_save(d)
-    repo = p.get("repo") or ""
-    state.cwd = repo if repo and os.path.isdir(repo) else p["root"]
-    state.hub_pending = False
-    state.emit("hub", pending=False, active=p["id"])
-    state.emit("root", root=p["root"])
-    return 200, {"project": hub_project_view(p), "hub": hub_view(state)}
+    if os.environ.get("TATTY_ROOT") or not window:
+        state.cwd = project_cwd(p)
+        state.hub_pending = False
+        state.emit("hub", pending=False, active=p["id"])
+        state.emit("root", root=p["root"])
+        return 200, {"project": hub_project_view(p), "hub": hub_view(state)}
+    ok, said = open_project_window(state, p)
+    if not ok:
+        return 500, {"error": said}
+    if not instance_id():
+        # The Hub has done its job. With close_hub its server stops a moment after answering, and
+        # its window (which follows its server) goes with it; a project's window is left as it is.
+        state.hub_pending = False
+        if close_hub and state.httpd:  # no "hub" event: the page says it is closing, not that it is done
+            threading.Timer(1.0, state.httpd.shutdown).start()
+        else:
+            state.emit("hub", pending=False, active=p["id"])
+    else:
+        state.hub_pending = False
+    return 200, {"project": hub_project_view(p), "hub": hub_view(state), "window": said}
+
+
+def open_project_window(state, p):
+    """Make sure the project's server is up (starting it if not) and its window is showing,
+    brought forward if it already was. TATTY_NO_UI=1 starts no window (the tests). (ok, what happened)"""
+    pid = p["id"]
+    if pid == instance_id():
+        ui = "this window"
+    else:
+        info = alive(pid)
+        fresh = not info
+        if fresh:
+            cwd = project_cwd(p)
+            try:
+                spawn_server(cwd, state.bash, env={"TATTY_PROJECT": pid})
+            except OSError as e:
+                return False, f"Couldn't start the project's server: {e}"
+            for _ in range(150):
+                time.sleep(0.1)
+                info = alive(pid)
+                if info:
+                    break
+            else:
+                return False, f"The project's server didn't start; see {home() / 'server.log'}."
+            threading.Thread(target=greet, args=(info, cwd, state.bash), daemon=True).start()
+        if os.environ.get("TATTY_NO_UI") == "1":
+            return True, "started" if fresh else "open"
+        ui = show_ui(info, pid)
+        if ui.startswith("companion (already") and wake_companion(pid):
+            ui = "companion (brought forward)"
+    return True, ui
+
+
+def hub_window(state):
+    """Open the Hub window (the projects to pick from): its server is started if need be, and
+    asked to show the Hub. Called from a project's window, whose own is left as it is."""
+    info = alive("")
+    if not info:
+        try:
+            spawn_server(state.cwd, state.bash, env={"TATTY_PROJECT": None})
+        except OSError as e:
+            return False, f"Couldn't start the Hub: {e}"
+        for _ in range(150):
+            time.sleep(0.1)
+            info = alive("")
+            if info:
+                break
+        else:
+            return False, f"The Hub didn't start; see {home() / 'server.log'}."
+    try:
+        call(info, "POST", "/api/hub", {"action": "show"})
+    except (OSError, urllib.error.URLError, ValueError):
+        pass
+    if os.environ.get("TATTY_NO_UI") == "1":
+        return True, "started"
+    ui = show_ui(info, "")
+    if ui.startswith("companion (already") and wake_companion(""):
+        ui = "companion (brought forward)"
+    return True, ui
 
 
 def hub_update(state, b):
@@ -1551,19 +1784,28 @@ def hub_forget(state, ref):
             return 404, {"error": "No such project."}
         if hub_active(d) is p:
             return 409, {"error": "That project is open. Open another one first, then forget this one."}
+        if project_window_up(p["id"]):
+            return 409, {"error": "That project is open in a window. Close that window first, then forget the project."}
         d["projects"] = [x for x in d["projects"] if x is not p]
+        if hub_setting_root() and hub_key(hub_setting_root()) == hub_key(p["root"]):
+            # it was the one opened last: the setting must not name it, or the list would add it again
+            (home() / "root").unlink(missing_ok=True)
         hub_save(d)
+    state.emit("hub", pending=bool(state.hub_pending), numbers=True)
     return 200, {"hub": hub_view(state)}
 
 
 def hub_change(state, b):
     action = str(b.get("action", ""))
     if action == "show":
+        if instance_id():  # a project's window: the Hub has a window of its own
+            ok, said = hub_window(state)
+            return (200, {**hub_view(state), "window": said}) if ok else (500, {"error": said})
         state.hub_pending = True
         state.emit("hub", pending=True)
         return 200, hub_view(state)
     if action == "open":
-        return hub_open(state, b.get("id"))
+        return hub_open(state, b.get("id"), bool(b.get("closeHub")), not b.get("noWindow"))
     if action == "add":
         return hub_add(state, b)
     if action == "update":
@@ -3284,6 +3526,12 @@ def launch(state, project, name, prompt, tag, workdir="", flags=()):
     # TT_DECIDE=elsewhere: the toolbox's skills record their pre-written questions (challenges) and end the
     # turn, for the person to answer on the feature's Decide page instead of in the terminal (see decide_set).
     exports = {"TATTY_SESSION": tag, "TT_DECIDE": "elsewhere", **family_exports(state)}
+    # The project this window is for: the session's mod finds this window by it, and the toolbox's
+    # scripts there keep this project's root however many other projects are opened meanwhile.
+    mine = instance_project()
+    if mine and not os.environ.get("TATTY_ROOT"):
+        exports["TATTY_PROJECT"] = mine["id"]
+        exports["TATTY_ROOT"] = Path(mine["root"]).as_posix()
     if os.environ.get("TATTY_HOME"):
         exports["TATTY_HOME"] = Path(os.environ["TATTY_HOME"]).as_posix()
     run = " ".join(shlex.quote(a) for a in [Path(claude).as_posix(), *args, "-n", name, prompt])
@@ -7924,7 +8172,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             return self.send(200, {"open": True, "mod": st.mod_attached(), "cwd": st.cwd,
                                    "session": st.mod_session, "modes": installed_modes(),
-                                   "hub": {"pending": st.hub_pending}})
+                                   "hub": {"pending": st.hub_pending}, "project": project_status()})
         if path == "/api/hub":
             return self.send(200, hub_view(st))
         if path == "/api/events":
@@ -8230,7 +8478,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": f"event must be one of {sorted(MILESTONES)}"})
             return self.send(200, {"seq": ev["seq"]})
         if path == "/api/root":
-            code, said = set_root(st, root_from_pick(str(b.get("path", "")).strip()), bool(b.get("create")))
+            pick = root_from_pick(str(b.get("path", "")).strip())
+            if instance_project() and not os.environ.get("TATTY_ROOT"):
+                code, said = project_set_root(st, pick, bool(b.get("create")))  # this window's project moves
+            else:
+                code, said = set_root(st, pick, bool(b.get("create")))
             if code != 0:
                 return self.send(400, {"error": said or "couldn't set the root"})
             return self.send(200, root_info())
@@ -8491,6 +8743,9 @@ class Handler(BaseHTTPRequestHandler):
 def serve(cwd, bash):
     h = home()
     h.mkdir(parents=True, exist_ok=True)
+    if instance_id() and not instance_project():
+        print(f"serve: no project {instance_id()} in {hub_path()}", file=sys.stderr)
+        return 2
     state = State(cwd, bash)
     token = secrets.token_urlsafe(24)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -8500,16 +8755,25 @@ def serve(cwd, bash):
     state.httpd = httpd
     restore_sessions(state)  # the sessions a restart was told to keep (see "restarting")
     url = f"http://127.0.0.1:{port}/#token={token}"
-    tmp = h / "server.json.tmp"
+    mine = instance_project()
+    if mine:  # what this server runs answers for this project (see tatty-root.sh)
+        os.environ["TATTY_PROJECT_ROOT"] = mine["root"]
+    else:
+        os.environ.pop("TATTY_PROJECT_ROOT", None)
+    info_path().parent.mkdir(parents=True, exist_ok=True)
+    tmp = info_path().with_name(info_path().name + ".tmp")
     tmp.write_text(json.dumps({"port": port, "token": token, "pid": os.getpid(), "url": url,
-                               "cwd": cwd, "started": time.time()}))
+                               "cwd": cwd, "started": time.time(), "project": instance_id()}))
     os.replace(tmp, info_path())
 
     idle = float(os.environ.get("TATTY_IDLE", "7200"))
 
+    update_leader()
+
     def watchdog():
         while True:
             time.sleep(30)
+            update_leader()
             if time.time() - state.last_activity > idle:
                 httpd.shutdown()
                 return
@@ -8522,6 +8786,7 @@ def serve(cwd, bash):
     try:
         httpd.serve_forever(poll_interval=0.5)
     finally:
+        update_release()
         try:
             if json.loads(info_path().read_text()).get("pid") == os.getpid():
                 info_path().unlink()
@@ -8532,9 +8797,11 @@ def serve(cwd, bash):
 # ---------------------------------------------------------------- client
 
 
-def load_info():
+def load_info(project=None):
+    """How to reach a server, from the file it wrote: this process's own (project None: the
+    project it is for, or the Hub), a project's (its id) or the Hub's ('')."""
     try:
-        return json.loads(info_path().read_text())
+        return json.loads(info_path(project).read_text())
     except (OSError, ValueError):
         return None
 
@@ -8548,14 +8815,25 @@ def call(info, method, path, body=None, timeout=10):
         return json.loads(r.read().decode("utf-8"))
 
 
-def alive():
-    info = load_info()
+def alive(project=None):
+    """The info of a running server (see load_info for which), or None."""
+    info = load_info(project)
     if not info:
         return None
     try:
         return info if call(info, "GET", "/api/status", timeout=3).get("open") else None
     except (OSError, urllib.error.URLError, ValueError):
         return None
+
+
+def live_windows():
+    """Every server that is up, as (project id or '', its info): the Hub's and each project's."""
+    found = []
+    for pid in ["", *sorted(p.stem for p in (home() / "servers").glob("*.json"))]:
+        info = alive(pid)
+        if info:
+            found.append((pid, info))
+    return found
 
 
 def need():
@@ -8584,14 +8862,22 @@ def flag(args, name):
     return False
 
 
-def spawn_server(cwd, bash, script=None):
+def spawn_server(cwd, bash, script=None, env=None):
     """Start a window server in the background, from `script` (a server.py; this
-    one when none is given). It is not waited for: see start_detached."""
+    one when none is given). It is not waited for: see start_detached. env changes
+    what it inherits (a None value removes the variable): a project's server gets
+    TATTY_PROJECT, the Hub's has none; a restarted server stays what this one is."""
     h = home()
     h.mkdir(parents=True, exist_ok=True)
     log = open(h / "server.log", "ab")
     argv = [sys.executable, str(script or Path(__file__).resolve()), "serve", "--cwd", cwd, "--bash", bash]
-    kw = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "close_fds": True, "cwd": cwd}
+    child = {k: v for k, v in os.environ.items() if k != "TATTY_PROJECT_ROOT"}
+    for k, v in (env or {}).items():
+        if v is None:
+            child.pop(k, None)
+        else:
+            child[k] = v
+    kw = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "close_fds": True, "cwd": cwd, "env": child}
     if os.name == "nt":
         # A hidden console, not none: a console program started by a process
         # with no console (DETACHED_PROCESS) gets a visible window of its own,
@@ -8605,12 +8891,14 @@ def spawn_server(cwd, bash, script=None):
         subprocess.Popen(argv, start_new_session=True, **kw)
 
 
-def start_detached(cwd, bash):
+def start_detached(cwd, bash, project=None):
+    """Start a server and wait for it: this process's own kind (project None), a project's
+    (its id) or the Hub's ('')."""
     h = home()
-    spawn_server(cwd, bash)
+    spawn_server(cwd, bash, env=None if project is None else {"TATTY_PROJECT": project or None})
     for _ in range(100):
         time.sleep(0.1)
-        info = alive()
+        info = alive(project)
         if info:
             return info
     print(f"the window server didn't start; see {h / 'server.log'}", file=sys.stderr)
@@ -8709,27 +8997,37 @@ def companion_ready():
     return build_or_prebuilt(COMPANION, BUILD, COMPANION_EXE, "TtCompanion.exe", "Tatty's tray companion")
 
 
-def companion_running():
-    """True when Tatty's companion is already up (it holds this named mutex). It
+def companion_names(project=None):
+    """The named mutex a project's tray app holds, and the event that brings it forward. The
+    Hub's (project '') keep the names Tatty always had; project None: this process's own."""
+    pid = instance_id() if project is None else project
+    suffix = f"-{pid}" if pid else ""
+    return f"Local\\tatty-companion{suffix}", f"Local\\tatty-companion-show{suffix}"
+
+
+def companion_running(project=None):
+    """True when the project's tray app is already up (it holds its named mutex). It
     then serves this window as it is: rebuilding would fail on its locked exe."""
     import ctypes
     k32 = ctypes.windll.kernel32
-    h = k32.OpenMutexW(0x00100000, False, "Local\\tatty-companion")  # SYNCHRONIZE
+    h = k32.OpenMutexW(0x00100000, False, companion_names(project)[0])  # SYNCHRONIZE
     if h:
         k32.CloseHandle(h)
     return bool(h)
 
 
-def show_ui(info):
-    """Show the window: Tatty's tray companion on Windows, else (or when it can't
-    be built, or TATTY_UI=browser) a browser tab. Returns which."""
+def show_ui(info, project=None):
+    """Show a project's window (the Hub's when project is ''; project None: this process's
+    own): its tray companion on Windows, else (or when it can't be built, or TATTY_UI=browser)
+    a browser tab. Returns which."""
     want = os.environ.get("TATTY_UI", "auto")
-    if os.name == "nt" and want in ("auto", "companion") and companion_running():
+    if os.name == "nt" and want in ("auto", "companion") and companion_running(project):
         return "companion (already running)"
     if os.name == "nt" and want in ("auto", "companion") and companion_ready():
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP  # a GUI app: no console wanted
         kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
-        argv = [str(COMPANION_EXE), "--home", str(home())]
+        pid = instance_id() if project is None else project
+        argv = [str(COMPANION_EXE), "--home", str(home())] + (["--project", pid] if pid else [])
         try:
             subprocess.Popen(argv, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
         except OSError:
@@ -8774,7 +9072,6 @@ LAUNCHER = HERE / "launcher"  # the launcher's sources, shipped with the plugin
 LAUNCHER_BUILD = APP / "launcher"
 LAUNCHER_EXE = LAUNCHER_BUILD / "bin" / "Tatty.exe"
 BOOT_JSON = APP / "boot.json"  # what the launcher needs to find this plugin
-SHOW_EVENT = "Local\\tatty-companion-show"  # the tray app waits on it to come forward
 
 
 def boot_project(project=None):
@@ -8791,8 +9088,8 @@ def boot_project(project=None):
     return (root if is_set and root.is_dir() else Path.home()).as_posix()
 
 
-def wake_companion():
-    """Ask a running tray app to come forward: it waits on SHOW_EVENT. True if it was there."""
+def wake_companion(project=None):
+    """Ask a project's running tray app to come forward: it waits on its show event. True if it was there."""
     if os.name != "nt":
         return False
     import ctypes
@@ -8801,7 +9098,7 @@ def wake_companion():
     k32.OpenEventW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
     k32.SetEvent.argtypes = [ctypes.c_void_p]
     k32.CloseHandle.argtypes = [ctypes.c_void_p]
-    h = k32.OpenEventW(0x0002, False, SHOW_EVENT)  # EVENT_MODIFY_STATE
+    h = k32.OpenEventW(0x0002, False, companion_names(project)[1])  # EVENT_MODIFY_STATE
     if h:
         k32.SetEvent(h)
         k32.CloseHandle(h)
@@ -8891,6 +9188,12 @@ def boot(bash, project, no_ui, no_claude=False, no_hub=False):
     fixes the root. 0 ok; 2 when the folder asked
     for isn't there. (no_claude is still taken, and does nothing: there is no
     Claude session of Tatty's own to start any more.)"""
+    if project and not os.environ.get("TATTY_ROOT"):
+        # A project asked for (by id or name, or a folder inside it) opens in its own window.
+        d = hub_load()
+        found = hub_find(d, project) or (hub_for_folder(d, project) if os.path.isdir(project) else None)
+        if found:
+            return boot_project_window(bash, found, no_ui)
     try:
         cwd = boot_project(project)
     except ValueError as e:
@@ -8900,14 +9203,14 @@ def boot(bash, project, no_ui, no_claude=False, no_hub=False):
     if BOOT_JSON.exists():
         write_boot_json(bash)
     pinned = bool(read_boot().get("pin"))
-    info = alive()
+    info = alive("")  # the Hub's own server: a boot is the Hub's start, whichever window ran it
     if not info:
         newer = None if pinned else update_at_launch(bash, cwd)
         if newer:  # an update was installed: carry on from the new Tatty, so everything of this launch is its
             argv = [sys.executable, str(newer / "app" / "server.py"), "boot", "--bash", bash]
             argv += (["--project", project] if project else []) + (["--no-browser"] if no_ui else []) + (["--no-claude"] if no_claude else []) + (["--no-hub"] if no_hub else [])
             return subprocess.run(argv, env={**os.environ, "TATTY_LAUNCH_UPDATED": "1"}).returncode
-        info = start_detached(cwd, bash)
+        info = start_detached(cwd, bash, "")
         greet(info, cwd, bash)
     elif not pinned and not os.environ.get("TATTY_NO_LAUNCH_UPDATE"):
         try:  # the server that is up looks for an update (and moves to it if nothing is lost): not waited for
@@ -8921,10 +9224,24 @@ def boot(bash, project, no_ui, no_claude=False, no_hub=False):
             pass
     print(info["url"])
     if not no_ui:
-        ui = show_ui(info)
-        if ui.startswith("companion (already") and wake_companion():
+        ui = show_ui(info, "")
+        if ui.startswith("companion (already") and wake_companion(""):
             ui = "companion (brought forward)"
         print(f"ui={ui}")
+    return 0
+
+
+def boot_project_window(bash, p, no_ui):
+    """boot --project: open (or bring forward) that project's window, without the Hub. 0 ok, 2 when it can't."""
+    if no_ui:
+        os.environ["TATTY_NO_UI"] = "1"
+    code, got = hub_open(State(project_cwd(p), bash), p["id"])
+    if code != 200:
+        print(f"boot: {got.get('error', 'failed')}", file=sys.stderr)
+        return 2
+    info = alive(p["id"])
+    print(info["url"] if info else "")
+    print(f"ui={got.get('window', '')}")
     return 0
 
 
@@ -9019,7 +9336,7 @@ def hub_cli(args, cwd, bash):
             except urllib.error.HTTPError as e:
                 code, got = e.code, json.loads(e.read().decode("utf-8") or "{}")
         else:
-            code, got = hub_change(State(cwd, bash), body)
+            code, got = hub_change(State(cwd, bash), {**body, "noWindow": True})
         if code != 200:
             print(f"hub: {got.get('error', 'failed')}", file=sys.stderr)
             return 2
@@ -9042,6 +9359,25 @@ def main(argv):
     wait = float(opt(args, "--wait", "100"))
     if cmd == "serve":
         return serve(cwd, bash)
+    if cmd == "boot":
+        return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"), flag(args, "--no-hub"))
+    # The rest talk to one window's server: the project's named with --project (an id or name),
+    # else the one this shell belongs to (TATTY_PROJECT: a session Tatty started), else, for
+    # `open`, the project the folder is in; otherwise the Hub's.
+    every = False
+    if cmd not in ("hub", "install", "uninstall"):
+        named = opt(args, "--project")
+        every = flag(args, "--all") if cmd in ("stop", "status") else False
+        if named:
+            found = hub_find(hub_load(), named)
+            if not found:
+                print(f"{cmd}: no such project: {named} (tatty.sh hub list)", file=sys.stderr)
+                return 2
+            os.environ["TATTY_PROJECT"] = found["id"]
+        elif cmd == "open" and not instance_id() and not os.environ.get("TATTY_ROOT"):
+            found = hub_for_folder(hub_load(), cwd)
+            if found:
+                os.environ["TATTY_PROJECT"] = found["id"]
     if cmd == "open":
         no_browser = flag(args, "--no-browser")
         info = alive()
@@ -9049,17 +9385,27 @@ def main(argv):
             info = start_detached(cwd, bash)
             greet(info, cwd, bash)
         print(info["url"])
+        if instance_id():
+            print(f"project={instance_id()}")  # the mod learns which window this is
         if not no_browser:
             print(f"ui={show_ui(info)}")
         return 0
-    if cmd == "boot":
-        return boot(bash, opt(args, "--project"), flag(args, "--no-browser"), flag(args, "--no-claude"), flag(args, "--no-hub"))
     if cmd == "hub":
         return hub_cli(args, cwd, bash)
     if cmd == "install":
         return install(bash, flag(args, "--pin"))
     if cmd == "uninstall":
         return uninstall()
+    if cmd == "status" and every:
+        up = live_windows()
+        if not up:
+            print("not open")
+            return 1
+        for pid, info in up:
+            st = call(info, "GET", "/api/status")
+            who = st.get("project") or {}
+            print(f"{who.get('number', '-')}\t{who.get('name', 'Hub')}\t" + ("attached (claude mod)" if st.get("mod") else "attached"))
+        return 0
     if cmd == "status":
         info = alive()
         if not info:
@@ -9070,6 +9416,11 @@ def main(argv):
         return 0
     if cmd == "url":
         print(need()["url"])
+        return 0
+    if cmd == "stop" and every:
+        for pid, info in live_windows():
+            call(info, "POST", "/api/stop", {})
+        print("stopped")
         return 0
     if cmd == "stop":
         info = alive()

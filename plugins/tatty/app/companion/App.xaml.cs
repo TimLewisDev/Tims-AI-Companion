@@ -20,6 +20,11 @@ namespace TtCompanion
     // watches its events, and pops Tatty and the speech bubble up over everything
     // when a question or a reply arrives; tucks them away once nothing waits.
     // Exits when the server stops.
+    //
+    // Every project has one of these (--project <id>), with a server of its own
+    // (servers/<id>.json), its own mutex and wake event, its own panel bounds, and its
+    // own Tatty, who holds up a flag with the project's number. Without --project it
+    // is the Hub's: the window the projects are picked in, which goes once one is.
     public partial class App : Application
     {
         private Mutex? single;
@@ -37,6 +42,10 @@ namespace TtCompanion
         private readonly DispatcherTimer tuck = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         private readonly HashSet<string> openAsks = new HashSet<string>();
         private string home = "";
+        private string project = "";     // the project this is for; "" is the Hub's
+        private string projectName = "";
+        private int number;               // its place in the Hub's list, from 1: the flag
+        private int refreshTick;
         private (int Port, string Token) server;
         private int since = -1;
         private int failures;
@@ -50,7 +59,8 @@ namespace TtCompanion
             base.OnStartup(e);
             if (Array.IndexOf(e.Args, "--pick-folder") >= 0) { PickFolderAndExit(e.Args); return; }
             if (Array.IndexOf(e.Args, "--pick-file") >= 0) { PickFileAndExit(e.Args); return; }
-            single = new Mutex(true, @"Local\tatty-companion", out bool first);
+            project = Arg(e.Args, "--project") ?? "";
+            single = new Mutex(true, @"Local\tatty-companion" + Suffix, out bool first);
             if (!first) { Shutdown(0); return; }
 
             // Before any window and before the tray: the exe lives in a folder
@@ -60,9 +70,10 @@ namespace TtCompanion
             Native.NameThisApp("TimsAICompanion.Tatty");
 
             home = Arg(e.Args, "--home") ?? DefaultHome();
-            var info = ReadServer(home);
+            var info = ReadServer(home, project);
             if (info == null) { Shutdown(1); return; }
             Connect(info.Value);
+            if (project.Length > 0) ReadProject();
 
             string dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Tatty", "webview2");
             var face = MakeIcon(); // the one icon, before anything asks for it
@@ -70,7 +81,10 @@ namespace TtCompanion
             sounds.Enabled = settings.Sound;
             Motion.Chosen = settings.Lively;
             tatty = new TattyWindow();
-            bubble = new BubbleWindow(PageUrl(info.Value), dataDir);
+            bubble = new BubbleWindow(PageUrl(info.Value), dataDir, project.Length > 0 ? $"companion-{project}.json" : "companion.json")
+            {
+                Slot = Math.Max(number - 1, 0),
+            };
             // The confetti, the pulses and the Z's: a click-through window of its
             // own around Tatty, so it can cover more ground than he does without
             // taking any of the desktop out of use.
@@ -110,6 +124,7 @@ namespace TtCompanion
             menu = MakeMenu();
             tatty.RightClicked += ShowMenu;
             tray = MakeTray(face);
+            ShowWhoIAm();
             PopUp(activate: false);
             WatchForWake();
             poll.Tick += async (_, _) => await Poll();
@@ -143,14 +158,52 @@ namespace TtCompanion
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "tatty");
         }
 
-        private static (int, string)? ReadServer(string home)
+        // The names that are this project's alone ("" for the Hub's, which keep the names they always had).
+        private string Suffix => project.Length > 0 ? "-" + project : "";
+
+        // Where the project's server wrote how to reach it: servers/<id>.json, the Hub's server.json.
+        private static (int, string)? ReadServer(string home, string project)
         {
             try
             {
-                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(home, "server.json")));
+                var file = project.Length > 0 ? Path.Combine(home, "servers", project + ".json") : Path.Combine(home, "server.json");
+                using var doc = JsonDocument.Parse(File.ReadAllText(file));
                 return (doc.RootElement.GetProperty("port").GetInt32(), doc.RootElement.GetProperty("token").GetString() ?? "");
             }
             catch (Exception) { return null; }
+        }
+
+        // The project's name and its number: its place in the Hub's list (hub.json, in the order
+        // it was added; the server counts the same rows). Read from the file rather than asked
+        // of the server, so the flag is right from the first frame.
+        private void ReadProject()
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(home, "hub.json")));
+                int n = 0;
+                foreach (var p in doc.RootElement.GetProperty("projects").EnumerateArray())
+                {
+                    if (!p.TryGetProperty("id", out var id) || !p.TryGetProperty("root", out _)) continue;
+                    n++;
+                    if (id.GetString() != project) continue;
+                    number = n;
+                    projectName = p.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "";
+                    return;
+                }
+            }
+            catch (Exception) { }
+        }
+
+        // Which project this is, wherever it shows: the flag, the taskbar button's label, the
+        // bubble's title and the tray icon's tooltip.
+        private void ShowWhoIAm()
+        {
+            if (project.Length == 0) return;
+            var title = number > 0 ? $"Tatty - {projectName} ({number})" : $"Tatty - {projectName}";
+            tatty.SetFlag(number);
+            tatty.Title = bubble.Title = proxy.Title = title;
+            if (tray != null) tray.Text = title.Length > 63 ? title.Substring(0, 63) : title;
         }
 
         private void Connect((int Port, string Token) info)
@@ -171,7 +224,7 @@ namespace TtCompanion
         // instead of leaving, so close-then-open just works.
         private bool FollowNewServer()
         {
-            var info = ReadServer(home);
+            var info = ReadServer(home, project);
             if (info == null || info.Value == server) return false;
             Connect(info.Value);
             bubble.Navigate(PageUrl(info.Value));
@@ -186,6 +239,13 @@ namespace TtCompanion
             {
                 var text = await http.GetStringAsync($"/api/events?since={Math.Max(since, 0)}");
                 failures = 0;
+                if (project.Length > 0 && ++refreshTick % 3 == 0)
+                {
+                    // renamed, or renumbered by a project forgotten before it
+                    int was = number; string wasName = projectName;
+                    ReadProject();
+                    if (number != was || projectName != wasName) ShowWhoIAm();
+                }
                 using var doc = JsonDocument.Parse(text);
                 var events = doc.RootElement;
                 bool first = since < 0;
@@ -220,8 +280,12 @@ namespace TtCompanion
                 if (++failures >= 3)
                 {
                     poll.Stop();
-                    tray.ShowBalloonTip(3000, "Tatty", "Tatty's window closed. /tatty open brings me back.", Forms.ToolTipIcon.Info);
-                    await Task.Delay(3500);
+                    // The Hub goes once a project is picked, which is no news; a project's window closing is.
+                    if (project.Length > 0)
+                    {
+                        tray.ShowBalloonTip(3000, "Tatty", "Tatty's window closed. /tatty open brings me back.", Forms.ToolTipIcon.Info);
+                        await Task.Delay(3500);
+                    }
                     Quit();
                 }
             }
@@ -269,7 +333,7 @@ namespace TtCompanion
         // of starting a second one (server.py's wake_companion).
         private void WatchForWake()
         {
-            wake = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\tatty-companion-show");
+            wake = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\tatty-companion-show" + Suffix);
             var handle = wake;
             new Thread(() =>
             {
@@ -551,7 +615,9 @@ namespace TtCompanion
         {
             var wa = Native.WorkAreaUnderPointer();
             var r = Native.Rect(tatty);
-            Native.MoveTo(tatty, wa.Right - r.Width - 24, wa.Bottom - r.Height - 8);
+            // Project 1 stands in the corner, 2 beside him, and so on, so Tattys don't stand on each other.
+            int beside = Math.Max(number - 1, 0) * (r.Width + 8);
+            Native.MoveTo(tatty, Math.Max(wa.Left, wa.Right - r.Width - 24 - beside), wa.Bottom - r.Height - 8);
             effects.PlaceOn(tatty); // the stage goes wherever he does
         }
 
@@ -615,10 +681,11 @@ namespace TtCompanion
             };
             menu.Items.Add("Show Tatty", null, (_, _) => PopUp(activate: true));
             menu.Items.Add("Open full panel", null, (_, _) => { PopUp(activate: true); if (!bubble.IsExpanded) OnPageMessage("expand"); });
-            menu.Items.Add("Switch project…", null, (_, _) =>
+            // The Hub has a window of its own; this one is left as it is. (In the Hub's own window the
+            // page shows it, in the full panel.)
+            menu.Items.Add("Projects…", null, (_, _) =>
             {
-                PopUp(activate: true);
-                if (!bubble.IsExpanded) OnPageMessage("expand");
+                if (project.Length == 0) { PopUp(activate: true); if (!bubble.IsExpanded) OnPageMessage("expand"); }
                 bubble.Post("hub"); // the page asks the server to show the Hub
             });
             menu.Items.Add("Hide until something happens", null, (_, _) => OnPageMessage("hide"));

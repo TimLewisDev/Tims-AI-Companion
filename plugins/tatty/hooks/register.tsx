@@ -23,6 +23,7 @@ let polling = false
 let session = ''
 let tag = '' // set when Tatty started this session from a feature page
 let joined = false // this session works with Tatty (tagged, TATTY_JOIN, or /tatty open|attach)
+let project = '' // the Tatty project (window) this session belongs to; '' is the Hub's
 let lastRoster = '' // the subagent roster last reported (see reportAgents)
 // What each subagent was asked to run on and what it runs on, by its id (see the
 // agent.spawn hook): so the window can say when a subagent isn't on the model it was given.
@@ -51,10 +52,14 @@ async function api($: EngineInterface, info: Info, path: string, body?: Record<s
   return JSON.parse(r.text)
 }
 
-// find: the running window from server.json, or null
+// find: the running window, or null. Every project has a window (and so a server) of its own,
+// each writing <home>/servers/<id>.json; a session Tatty started carries its project's id
+// (TATTY_PROJECT), and one that ran /tatty open learns it from what `open` printed. With
+// neither it is the Hub's window, server.json.
 async function find($: EngineInterface): Promise<Info | null> {
   try {
-    const info = JSON.parse(await $.fs.read(`${await home($)}/server.json`)) as Info
+    const file = project ? `servers/${project}.json` : 'server.json'
+    const info = JSON.parse(await $.fs.read(`${await home($)}/${file}`)) as Info
     const st = await api($, info, '/api/status')
     return st.open ? info : null
   } catch {
@@ -256,6 +261,9 @@ async function runTatty($: EngineInterface, args: string): Promise<{ text: strin
     const r = await tattySh($, ['open'])
     if (r.exitCode === 3) return { text: 'No Python 3.8+ found, so Tatty is not available here.' }
     if (r.exitCode !== 0) return { text: `Tatty didn't open: ${(r.stderr || r.stdout).trim()}` }
+    // `open` opens the window of the project this folder is in, and says which ("project=<id>")
+    const opened = /^project=(\S+)/m.exec(r.stdout)
+    if (opened) project = opened[1]
     joined = true
     const info = await attach($)
     return { text: info ? 'Tatty is open, and this session works with it: questions are asked there.' : 'Tatty started, but this session could not attach to it.' }
@@ -271,7 +279,7 @@ async function runTatty($: EngineInterface, args: string): Promise<{ text: strin
   }
   if (verb === 'close') {
     await detach($)
-    await tattySh($, ['close'])
+    await tattySh($, project ? ['close', '--project', project] : ['close'])
     return { text: "Tatty's window is closed. Questions come back to the terminal." }
   }
   if (verb === 'status') {
@@ -298,6 +306,7 @@ export const register: Register = on => {
     const started = await next(e)
     session = await $.session.id()
     tag = (await $.env.get('TATTY_SESSION')) || ''
+    project = (await $.env.get('TATTY_PROJECT')) || ''
     // TATTY_JOIN: Tatty's own session (the Desktop app starts it): it works with
     // Tatty like a /tatty attach'd one, on the main feed rather than a feature's.
     joined = Boolean(tag) || (await $.env.get('TATTY_JOIN')) === '1'

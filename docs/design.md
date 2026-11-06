@@ -127,24 +127,45 @@ optional default code repo. The registry is `<home>/hub.json`
 (`{version, projects: [{id, name, root, repo, created, lastOpened, legacy?}]}`), kept by
 `hub_load` and changed through `hub_change` (`/api/hub`, and `tatty.sh hub`).
 
-- **The active project is `<home>/root`**, the single source of truth that
-  `tatty-root.sh` and the toolbox's skills already read (or `TATTY_ROOT`, which fixes
-  it and skips the Hub). Opening a project writes `root` and moves the server to it;
-  `hub_load` registers whatever `root` already names, as `legacy` when `hub.json`
-  didn't exist yet.
+- **Every project has a window of its own.** Opening a project (`hub_open` →
+  `open_project_window`) starts a server for it with `TATTY_PROJECT=<id>`, which writes
+  `<home>/servers/<id>.json` (the Hub's keeps `<home>/server.json`), and a tray app with
+  `--project <id>` (its own mutex `Local\tatty-companion-<id>`, wake event, panel bounds
+  `companion-<id>.json`). That server answers for its project only, so everything that
+  was process-global (`tatty_root()`, `project_home()`, `state.cwd`, the watchers, the one
+  event list) is right without a project id on every request: `tatty_root()` is the
+  entry's root (`instance_project()`), and what the server runs gets
+  `TATTY_PROJECT_ROOT`, which `tatty-root.sh` honours. Sessions Start opens export
+  `TATTY_PROJECT` and `TATTY_ROOT`, so they keep their project however many others are
+  opened, and the mod finds its window by `TATTY_PROJECT`. `<home>/root` is only the
+  project opened last, for the toolbox's skills; `TATTY_ROOT` still fixes the root, skips
+  the Hub and opens no windows (the tests, development). `hub_load` registers whatever
+  `root` already names, as `legacy` when `hub.json` didn't exist yet.
+- **The Hub is a window too**, shown at launch (`boot`) and by **Projects…** in a
+  project's tray menu (`hub_window`); picking a project there opens its window and the
+  Hub's goes (`closeHub`). `tatty.sh status --all` and `close --all` list and stop every
+  window; `--project <id|name>` picks one; `open` in a folder inside a project is that
+  project's window.
+- **A project's number** is its place in `hub.json` (`hub_number`, the order added, shown
+  on its Hub card and in `/api/status.project`). Its Tatty holds that number up on a
+  flag (`TattyWindow.xaml` `ArmFlag`, waved by `Avatar.Wave`; the tray app reads the number
+  from `hub.json` so it is right from the first frame, and again every few seconds).
+- **One server looks for updates**: `update_leader()` takes `<home>/update.lock` and
+  refreshes it every 30 s; another takes over only when it goes stale.
 - **Records are per project** (`project_home()`): the legacy project keeps its
   session models, branches and archive records in `<home>`, so nothing is lost on
   upgrade; the others use `<home>/projects/<id>/`. Stores keyed by a full-path hash
   (boards, diffs, the tasks index, `projects.tsv`) were per folder already; chats are
   global, keyed by the project folder.
 - **Forgetting** a project removes its entry, never its files, and is refused (409)
-  for the active one. `hub_root_refused` rejects relative roots and any inside Claude's
-  config folder.
-- **The page** (`web/hub.js`, `hub.css`): `boot` posts `/api/hub {action: "show"}`,
-  which makes the Hub *pending*; the page then opens on it instead of the mode
-  chooser, and **Open** clears the pending state. The tray menu's **Switch
-  project…** (`App.xaml.cs`) posts the same. The page ignores stale SSE replays.
-  `--no-hub` and `--project` skip it.
+  while it is open in a window. `hub_root_refused` rejects relative roots and any inside
+  Claude's config folder.
+- **The page** (`web/hub.js`, `hub.css`): `boot` posts `/api/hub {action: "show"}` to the
+  Hub's server, which makes the Hub *pending*; the page then opens on it instead of the
+  mode chooser, and **Open** opens the project's window and closes the Hub. In a project's
+  window the header names the project and its number (`setProject` in `app.js`). The tray
+  menu's **Projects…** (`App.xaml.cs`) posts `show` to its own server, which opens the
+  Hub's window. The page ignores stale SSE replays. `--no-hub` and `--project` skip it.
 
 ## The installer
 

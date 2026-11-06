@@ -30,6 +30,8 @@ printf '#!/usr/bin/env bash\necho "$*" >>"%s/picker.log"\nout=""; while [ $# -gt
 export TATTY_PICKER="$T/picker.sh"
 # Start reports the session it would open instead of opening it.
 export TATTY_DRYRUN=1
+# Opening a project starts its server but shows no window (no tray app, no browser tab).
+export TATTY_NO_UI=1
 # The toolbox's model choices and LLM connections are kept in its own folders;
 # these tests keep theirs in the throwaway one, with a stand-in copilot and codex
 # when the toolbox checkout has them.
@@ -354,7 +356,81 @@ hasnt "a forgotten project is gone from the list" "$T/j" "Alpha 2"
 [ -d "$HW/alpha/features" ] && ok "forgetting deletes no folder" || bad "forgetting deletes no folder"
 hpost /api/hub '{"action":"nope"}' >"$T/j"
 has "an unknown action is refused" "$T/j" "action:"
-env TATTY_HOME="$HH" bash "$W" close >/dev/null 2>&1
+env TATTY_HOME="$HH" bash "$W" close --all >/dev/null 2>&1
+
+echo "# a window per project"
+# Every project has a server (and, on Windows, a tray app) of its own, so two can be open at once, each for its own project.
+PH="$T/projhome"; mkdir -p "$PH" "$HW/one-repo/sub" "$HW/two"
+ph() { env TATTY_HOME="$PH" bash "$W" "$@"; }
+phurl() { $PY -c "import json,sys; d=json.load(open(sys.argv[1])); print('http://127.0.0.1:%s' % d['port'], d['token'])" "$1"; }
+# pget <server file> <path>
+pget() { local u; u=$(phurl "$1"); curl -s -H "X-TT-Token: ${u#* }" "${u% *}$2"; }
+# ppost <server file> <path> <json>
+ppost() { local u; u=$(phurl "$1"); curl -s -H "X-TT-Token: ${u#* }" -H 'Content-Type: application/json' -d "$3" "${u% *}$2"; }
+ph hub add --name One --root "$HW/one" --repo "$HW/one-repo" >/dev/null 2>&1
+ph hub add --name Two --root "$HW/two" >/dev/null 2>&1
+ph open --no-browser >/dev/null 2>&1   # a folder in no project: the Hub's own server
+[ -f "$PH/server.json" ] && ok "the Hub has the server.json it always had" || bad "the Hub has the server.json it always had"
+pget "$PH/server.json" /api/hub >"$T/j"
+ONE=$(pick "$T/j" "[p['id'] for p in d['projects'] if p['name']=='One'][0]")
+TWO=$(pick "$T/j" "[p['id'] for p in d['projects'] if p['name']=='Two'][0]")
+pick "$T/j" "[(p['number'], p['open']) for p in d['projects'] if p['name'] in ('One','Two')]" >"$T/f"
+has "projects are numbered in the order they were added" "$T/f" "(1, False)"
+pget "$PH/server.json" /api/status >"$T/st"
+has "the Hub has no project" "$T/st" '"project": null'
+ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$ONE\"}" >"$T/j"
+has "opening a project starts its window" "$T/j" '"window": "started"'
+[ -f "$PH/servers/$ONE.json" ] && ok "the project's server writes servers/<id>.json" || bad "the project's server writes servers/<id>.json"
+[ -f "$PH/server.json" ] && ok "opening one leaves the Hub up (it closes only when asked)" || bad "opening one leaves the Hub up"
+ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$TWO\",\"closeHub\":true}" >"$T/j"
+has "a second project opens beside the first" "$T/j" '"window": "started"'
+pget "$PH/servers/$ONE.json" /api/status >"$T/st"; has "the first says its number and name" "$T/st" '"project": {"id": "'"$ONE"'", "name": "One", "number": 1}'
+pget "$PH/servers/$TWO.json" /api/status >"$T/st"; has "the second says its own" "$T/st" '"number": 2'
+pget "$PH/servers/$ONE.json" /api/root >"$T/j"; has "the first answers for its own root" "$T/j" "/one\""
+pget "$PH/servers/$TWO.json" /api/root >"$T/j"; has "the second answers for its own" "$T/j" "/two\""
+pget "$PH/servers/$ONE.json" /api/root >"$T/j"; has "the first is unmoved by the second opening" "$T/j" "/one\""
+sleep 3
+[ ! -f "$PH/server.json" ] && ok "the Hub is done with once a project is picked" || bad "the Hub is done with once a project is picked"
+ph status --all >"$T/f" 2>&1
+has "status --all lists the first window" "$T/f" "One"
+has "status --all lists the second window" "$T/f" "Two"
+ppost "$PH/servers/$ONE.json" /api/hub "{\"action\":\"forget\",\"id\":\"$TWO\"}" >"$T/j"
+has "a project open in a window can't be forgotten" "$T/j" "open in a window"
+ppost "$PH/servers/$ONE.json" /api/hub '{"action":"show"}' >"$T/j"
+has "a project's window opens the Hub in a window of its own" "$T/j" '"window": "started"'
+[ -f "$PH/servers/$ONE.json" ] && [ -f "$PH/server.json" ] && ok "and is left as it was" || bad "and is left as it was"
+(cd "$HW/one-repo/sub" && env TATTY_HOME="$PH" bash "$W" open --no-browser) >"$T/f" 2>&1
+has "open in a project's folder is that project's window" "$T/f" "project=$ONE"
+ph status --project Two >"$T/f" 2>&1; has "--project names a window" "$T/f" "attached"
+expect "--project refuses an unknown project" 2 bash "$W" status --project nope
+[ "$(env TATTY_HOME="$PH" TATTY_PROJECT_ROOT="$HW/two" bash "$TR")" = "$HW/two" ] && ok "tatty-root.sh answers for a project's server" || bad "tatty-root.sh answers for a project's server"
+ph close --project One >/dev/null 2>&1; sleep 1
+[ ! -f "$PH/servers/$ONE.json" ] && [ -f "$PH/servers/$TWO.json" ] && ok "close --project stops one window" || bad "close --project stops one window"
+ph close --all >/dev/null 2>&1; sleep 1
+[ -z "$(ls "$PH/servers" 2>/dev/null)" ] && [ ! -f "$PH/server.json" ] && ok "close --all stops every window" || bad "close --all stops every window" "$(ls "$PH/servers" 2>&1)"
+# One lock shared by the servers: the first to ask looks for updates, another only when its refresh stops.
+$PY - "$SRV" "$T/lockhome" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, sys, time
+home = pathlib.Path(sys.argv[2]); home.mkdir(parents=True, exist_ok=True)
+os.environ["TATTY_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+print("first:", m.update_leader())
+print("again:", m.update_leader())
+f = m.update_lock_file()
+f.write_text("1")                      # another server's
+print("held by another:", m.update_leader())
+old = time.time() - m.UPDATE_LOCK_STALE - 5
+os.utime(f, (old, old))
+print("stale lock taken over:", m.update_leader())
+m.update_release()
+print("released:", not f.exists())
+EOF
+has "the first server looks for updates" "$T/f" "first: True"
+has "and keeps the lock" "$T/f" "again: True"
+has "another doesn't while the lock is fresh" "$T/f" "held by another: False"
+has "it can once the lock goes stale" "$T/f" "stale lock taken over: True"
+has "the lock is let go at the end" "$T/f" "released: True"
 # Records kept by feature name belong to a project: the first project keeps them in the home, the others in their own folder.
 $PY - "$SRV" "$T/hubiso" "$HW" >"$T/f" 2>&1 <<'EOF'
 import importlib.util, os, pathlib, sys

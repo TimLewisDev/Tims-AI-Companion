@@ -1,6 +1,8 @@
 // The Hub: the page Tatty opens on, where a project is picked. A project is its own
 // root folder (features, design, tasks, archive) and, optionally, a default code
-// repo its sessions start in. Opening one makes its folder Tatty's root.
+// repo its sessions start in. Opening one opens a window of its own for it (and the Hub,
+// the window this page is in at launch, closes); each project is numbered in the order it was
+// added, and its Tatty holds that number up on a flag.
 // Uses app.js's $, el, api, token, companion, tell, host, pageOpened and hubPending, features.js's pageEls, ago,
 // copyable, pickFolder, openSidePanel and featureCache, and modes.js's currentMode. See server.py's "the Hub".
 "use strict";
@@ -34,18 +36,35 @@ if (host) host.addEventListener("message", m => {
   api("/api/hub", { action: "show" }).catch(() => { /* an older server: the page alone */ showHub(); });
 });
 
-async function openProject(id, msg) {
-  msg.className = "home-note small dim";
-  msg.textContent = "Opening…";
-  try {
-    const got = await api("/api/hub", { action: "open", id });
+// What to do once the server has answered an open: this window is the project's own (or the
+// server has no windows to open: TATTY_ROOT fixes the root), so it carries on into the project;
+// otherwise the project is in a window of its own now, and the Hub (this window) is done with.
+function openedProject(data, p, msg) {
+  if (data.locked || data.self === p.id) {
     hubPending = false;
     featureCache.clear();
     leaveHub();
+    return;
+  }
+  msg.className = "home-note small dim";
+  msg.textContent = data.self ? `${p.name} is open in its own window.` : `${p.name} is open in its own window; this one closes.`;
+  if (!data.self && !companion) setTimeout(() => window.close(), 1500); // a browser tab the page opened itself can close; others stay
+}
+
+async function openProject(p, data, msg, redraw) {
+  msg.className = "home-note small dim";
+  msg.textContent = "Opening…";
+  try {
+    await api("/api/hub", { action: "open", id: p.id, closeHub: !data.self });
+    openedProject(data, p, msg);
+    if (data.self && data.self !== p.id) redraw();
   } catch (e) { msg.className = "home-note small st missing"; msg.textContent = String(e.message || e); }
 }
 
-function hubProjectCard(p, active, redraw, msg) {
+function hubProjectCard(p, data, redraw, msg) {
+  // TATTY_ROOT fixes the root and opens no windows: the one it names is "this window" (it is the only one)
+  const here = data.self === p.id || (data.locked && p.id === data.active);
+  const active = p.open || here; // it has a window
   const lines = [
     el("div", { class: "hub-path" }, "Folder: ", copyable(p.root)),
     p.repo ? el("div", { class: "hub-path" }, "Code: ", copyable(p.repo), p.repoExists ? "" : el("span", { class: "st missing" }, " (missing)")) : "",
@@ -60,11 +79,11 @@ function hubProjectCard(p, active, redraw, msg) {
       try { await api("/api/hub", { action: "forget", id: p.id }); redraw(); } catch (e) { msg.className = "home-note small st missing"; msg.textContent = String(e.message || e); }
     } }, "Forget");
   return el("div", { class: "fcard hub-card" + (active ? " hub-active" : "") + (p.exists ? "" : " hub-missing"), "data-project": p.id },
-    el("div", { class: "fcard-top" }, el("strong", {}, p.name), active ? el("span", { class: "chip now" }, "open") : ""),
+    el("div", { class: "fcard-top" }, el("span", { class: "hub-number", title: "Its Tatty holds this number up on a flag" }, String(p.number)), el("strong", {}, p.name), active ? el("span", { class: "chip now" }, here ? "this window" : "open") : ""),
     ...lines,
     p.exists ? "" : el("p", { class: "st missing small" }, "This folder is missing. Put it back, or forget the project."),
     el("div", { class: "actions" },
-      el("button", { type: "button", class: "primary", disabled: !p.exists, onclick: () => openProject(p.id, msg) }, active ? "Continue" : "Open"),
+      el("button", { type: "button", class: "primary", disabled: !p.exists, onclick: () => openProject(p, data, msg, redraw) }, here ? "Continue" : active ? "Show window" : "Open"),
       edit, forget));
 }
 
@@ -84,7 +103,7 @@ function hubEditPanel(p, redraw) {
   });
 }
 
-function hubNewForm(data, msg) {
+function hubNewForm(data, msg, redraw) {
   const name = el("input", { "aria-label": "Project name", maxlength: "80", placeholder: "e.g. Payments app" });
   const root = el("input", { "aria-label": "Project folder", placeholder: `${data.default}/<name>` });
   const repo = el("input", { "aria-label": "Code repo", placeholder: "(optional) a git repo for its sessions" });
@@ -95,10 +114,9 @@ function hubNewForm(data, msg) {
     e.preventDefault();
     if (!name.value.trim() && !root.value.trim()) { msg.className = "home-note small st missing"; msg.textContent = "Give the project a name."; return; }
     try {
-      const got = await api("/api/hub", { action: "add", name: name.value.trim(), root: root.value.trim(), repo: repo.value.trim(), create: true, open: true });
-      hubPending = false;
-      featureCache.clear();
-      leaveHub();
+      const got = await api("/api/hub", { action: "add", name: name.value.trim(), root: root.value.trim(), repo: repo.value.trim(), create: true, open: true, closeHub: !data.self });
+      openedProject(data, got.project, msg);
+      if (data.self && data.self !== got.project.id) redraw();
     } catch (err) { msg.className = "home-note small st missing"; msg.textContent = String(err.message || err); }
   } },
   el("h3", {}, "New project"),
@@ -175,7 +193,7 @@ async function renderHub(box) {
   const llm = await hubLlmCard(msg, first);
   if (mine !== hubDraw) return;
   const list = data.projects.length
-    ? el("div", { class: "fgrid hub-grid" }, data.projects.map(p => hubProjectCard(p, p.id === data.active, redraw, msg)))
+    ? el("div", { class: "fgrid hub-grid" }, data.projects.map(p => hubProjectCard(p, data, redraw, msg)))
     : el("div", { class: "card empty-state" }, el("h3", {}, "Welcome to Tatty"), el("p", {}, "Tatty works in a folder per project. Make your first one below" + " (you can connect an LLM first or later)."));
   box.replaceChildren(
     el("div", { class: "hub" },
@@ -184,6 +202,6 @@ async function renderHub(box) {
         el("div", { class: "dim small" }, data.locked
           ? "TATTY_ROOT fixes Tatty's root folder in this environment, so opening a project here won't change it."
           : "Each project has its own folder of features, designs and tasks."))),
-      first ? el("div", {}, list, llm, hubNewForm(data, msg)) : el("div", {}, list, hubNewForm(data, msg), llm),
+      first ? el("div", {}, list, llm, hubNewForm(data, msg, redraw)) : el("div", {}, list, hubNewForm(data, msg, redraw), llm),
       msg));
 }

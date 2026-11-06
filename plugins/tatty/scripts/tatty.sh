@@ -9,13 +9,15 @@ set -u
 usage() {
 	cat >&2 <<'EOF'
 usage: tatty.sh open [--no-browser]     start Tatty (if needed) and show it; prints the URL
-       tatty.sh boot [--project DIR]    what the Desktop shortcut runs: the server and the tray app
+                                        (the window of the project this folder is in, else the Hub's)
+       tatty.sh boot [--project P]      what the Desktop shortcut runs: the server and the tray app
                                         (looks for a newer Tatty first, and installs it with auto-update on);
-                                        opens on the Hub unless --project (or --no-hub) is given
-       tatty.sh hub list                the Hub's projects (* marks the open one)
+                                        opens on the Hub unless --project (or --no-hub) is given; P is a
+                                        project (id, name or a folder in it), which opens in its own window
+       tatty.sh hub list                the Hub's projects (* marks the one opened last)
        tatty.sh hub add [--name N] [--root DIR] [--repo DIR] [--open]
-                                        add a project (makes its folders); --open makes it the active one
-       tatty.sh hub open <id|name>      make a project the active one
+                                        add a project (makes its folders); --open also opens it
+       tatty.sh hub open <id|name>      open a project in a window of its own
        tatty.sh install [--pin]         Desktop and Start menu shortcuts for Tatty (Windows); they run the
                                         installed Tatty, or with --pin this checkout (no update look)
        tatty.sh uninstall               take them away
@@ -28,7 +30,11 @@ usage: tatty.sh open [--no-browser]     start Tatty (if needed) and show it; pri
        tatty.sh listen [--wait S]       the next message typed in the window
        tatty.sh cheer [<event>]         celebrate a milestone now, as the toolbox's ledger would
                                         (default build.complete); --prefix names the feature
-       tatty.sh close                   stop Tatty's window
+       tatty.sh close [--all]           stop Tatty's window (--all: every project's, and the Hub's)
+
+status, url, show, ask, answer, listen, cheer and close talk to one project's window: --project P
+names it (an id or name), else the one a session Tatty started belongs to (TATTY_PROJECT), else the
+Hub's. status --all lists every window.
 
 --wait is in seconds (default 100, under a 120 s shell-tool limit).
 On Windows, open shows Tatty's tray companion (built with dotnet the first time,
@@ -76,7 +82,7 @@ open)
 	exec $PY "$(winpath "$SERVER")" open --cwd "$(winpath "$PWD")" --bash "$(winpath "${BASH:-$(command -v bash)}")" "$@" ;;
 boot | install | hub)
 	exec $PY "$(winpath "$SERVER")" "$cmd" --bash "$(winpath "${BASH:-$(command -v bash)}")" "$@" ;;
-close) exec $PY "$(winpath "$SERVER")" stop ;;
+close) exec $PY "$(winpath "$SERVER")" stop "$@" ;;
 uninstall) exec $PY "$(winpath "$SERVER")" uninstall ;;
 status | url | show | ask | answer | listen | cheer) exec $PY "$(winpath "$SERVER")" "$cmd" "$@" ;;
 *) usage; exit 2 ;;

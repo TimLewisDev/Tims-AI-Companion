@@ -13,7 +13,8 @@ usage: tatty-root.sh                      the root folder (exit 1: none set; pri
        tatty-root.sh set <path> [--create]
                                           make <path> the root; --create makes <path>/features too
 
-TATTY_ROOT overrides the setting; TATTY_HOME is where Tatty keeps it.
+TATTY_ROOT overrides the setting; so does TATTY_PROJECT_ROOT (set by a project's own Tatty
+server for what it runs), below TATTY_ROOT. TATTY_HOME is where Tatty keeps the setting.
 Exit: 0 ok, 1 not set or missing, 2 usage or a refused path.
 EOF
 }
@@ -35,6 +36,8 @@ default_root() { norm "$HOME/Tatty"; }
 
 current() {
 	if [ -n "${TATTY_ROOT:-}" ]; then norm "$TATTY_ROOT"; return 0; fi
+	# a project's own server (and what it runs) answers for that project, whatever was opened last
+	if [ -n "${TATTY_PROJECT_ROOT:-}" ]; then norm "$TATTY_PROJECT_ROOT"; return 0; fi
 	[ -s "$setting" ] || return 1
 	local r
 	r=$(head -n 1 "$setting" | tr -d '\r')

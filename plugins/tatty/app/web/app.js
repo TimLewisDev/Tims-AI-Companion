@@ -965,6 +965,18 @@ if (companion) {
 // The pages wait for this: which page a bare #mode (or no hash at all) means
 // depends on the modes installed, which the server says here. features.js
 // routes once it resolves, however it went.
+// Each project has a window of its own: say which one this is, in the header and the title.
+// (The Hub's window has no project.)
+function setProject(project) {
+  const chip = $("#project-chip");
+  if (chip) {
+    chip.hidden = !project;
+    chip.textContent = project ? `${project.number} · ${project.name}` : "";
+    chip.title = project ? `Project ${project.number}: its Tatty holds that number up on a flag` : "";
+  }
+  document.title = project ? `Tatty — ${project.name} (${project.number})` : "Tatty";
+}
+
 const booted = (async () => {
   if (!token) {
     feed.append(el("div", { class: "card notice" }, "No token: open Tatty with /tatty open (or scripts/tatty.sh open)."));
@@ -973,6 +985,7 @@ const booted = (async () => {
   try {
     const st = await api("/api/status");
     $("#cwd").textContent = st.cwd;
+    setProject(st.project);
     setMod(st.mod);
     setInstalledModes(st.modes); // which discipline plugins there are (modes.js)
     // A launch from the shortcut opens on the Hub (hub.js): the full panel, not the bubble.
@@ -983,6 +996,7 @@ const booted = (async () => {
   setInterval(async () => {
     try {
       const st = await api("/api/status");
+      setProject(st.project); // renamed, or renumbered by a project forgotten before it
       setMod(st.mod);
       setInstalledModes(st.modes); // a plugin installed meanwhile turns up here
     } catch { /* the SSE badge says so */ }

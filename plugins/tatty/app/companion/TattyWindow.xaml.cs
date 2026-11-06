@@ -13,8 +13,9 @@ namespace TtCompanion
         // The strips of empty window above and below the drawing, in WPF units:
         // room to jump up into and to sit down into, since anything that leaves
         // the window is clipped. Whatever places something against Tatty measures
-        // from these rather than from the window's edges.
-        public const double TopInset = 24, BottomInset = 12;
+        // from these rather than from the window's edges. (The top one is deep enough for the
+        // flag his raised arm holds above his head.)
+        public const double TopInset = 44, BottomInset = 12;
 
         public event Action? Clicked;
         public event Action? Moved;
@@ -33,6 +34,16 @@ namespace TtCompanion
             // His own menu, the same one the tray icon has: everything about him
             // is where he is, rather than down in the corner of the screen.
             MouseRightButtonUp += (_, e) => { e.Handled = true; avatar.Poke(); RightClicked?.Invoke(); };
+        }
+
+        // The flag he holds up: the number of the project this Tatty is for, or none (the Hub's
+        // Tatty has no project, and so no flag). Two digits get a smaller type, and past 99 it
+        // says so rather than overflowing.
+        public void SetFlag(int number)
+        {
+            ArmFlag.Visibility = number > 0 ? Visibility.Visible : Visibility.Collapsed;
+            FlagNumber.Text = number > 99 ? "99+" : number.ToString();
+            FlagNumber.FontSize = number > 99 ? 8 : number > 9 ? 10 : 12;
         }
 
         public bool HasBadge

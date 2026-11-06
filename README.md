@@ -135,15 +135,18 @@ what it touches.
 
 Each project has its own Tatty folder (its features, designs, tasks and archive) and,
 if you like, a default code repository. When Tatty starts, the **Hub** lists your
-projects: **Open** one and Tatty works in it. **New project** makes another;
-**Switch project…** in the tray menu comes back to the Hub. `tatty.sh hub list`,
-`hub add` and `hub open` do the same from a shell.
+projects: **Open** one and it opens in a window of its own (the Hub closes). Open several
+and you have several Tattys, one per project, each working on its own project; each holds
+up a flag with its project's number (its place in the list, the order the projects were
+added). **New project** makes another; **Projects…** in a Tatty's tray menu brings the Hub
+back. `tatty.sh hub list`, `hub add` and `hub open` do the same from a shell, and
+`tatty.sh status --all` / `close --all` show and close every window.
 
 | You want to | Do this |
 |---|---|
 | pick the project to work in | the Hub, shown when Tatty starts → **Open** |
 | start a project | the Hub → **New project** (name, folder, optional code repository) |
-| change project | the tray menu → **Switch project…** |
+| work on another project as well | the tray menu → **Projects…** → **Open** (a new window; this one stays) |
 | rename a project, or set its code repository | the Hub → its **Edit…** |
 | take a project off the list | the Hub → its **Forget** (its files stay) |
 

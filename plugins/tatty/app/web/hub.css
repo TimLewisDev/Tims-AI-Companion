@@ -5,6 +5,10 @@
 .hub-card .actions { margin-top: auto; padding-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
 .hub-card.hub-active { border-color: var(--accent, #3b9bd6); }
 .hub-card.hub-missing { opacity: 0.8; }
+#project-chip[hidden] { display: none; }
+/* the project's number: the same one its Tatty holds up on a flag */
+.hub-number { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 5px;
+  margin-right: 8px; border-radius: 4px; background: var(--accent, #3b9bd6); color: #fff; font-size: 13px; font-weight: 700; }
 .hub-path { overflow-wrap: anywhere; font-size: 0.85em; }
 .hub-new, .hub-form { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
 .hub-new label, .hub-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; }

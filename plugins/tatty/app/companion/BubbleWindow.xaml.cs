@@ -52,13 +52,20 @@ namespace TtCompanion
         // it. Written a moment after the person stops moving or resizing it.
         private readonly DispatcherTimer settle = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
 
-        private static string BoundsFile => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Tatty", "companion.json");
+        // Each project's window remembers where its own panel was (the Hub's keeps the name it
+        // always had), and a panel that has never been placed opens a step down and right of
+        // the one before it, by the project's number, so two don't open one over the other.
+        private readonly string boundsName;
+        public int Slot { get; set; }
 
-        public BubbleWindow(string url, string dataDir)
+        private string BoundsFile => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Tatty", boundsName);
+
+        public BubbleWindow(string url, string dataDir, string boundsName = "companion.json")
         {
             this.url = url;
             this.dataDir = dataDir;
+            this.boundsName = boundsName;
             origin = new Uri(url).GetLeftPart(UriPartial.Authority);
             InitializeComponent();
             SourceInitialized += (_, _) =>
@@ -188,7 +195,9 @@ namespace TtCompanion
             var wa = Native.WorkAreaOf(this);
             double s = Native.Scale(this);
             int w = (int)Math.Min(FullWidth * s, wa.Width), h = (int)Math.Min(FullHeight * s, wa.Height);
-            Native.SetBounds(this, wa.Left + (wa.Width - w) / 2, wa.Top + (wa.Height - h) / 2, w, h);
+            int step = (int)(36 * s) * Math.Max(Slot, 0);
+            int x = Math.Min(wa.Left + (wa.Width - w) / 2 + step, wa.Right - w), y = Math.Min(wa.Top + (wa.Height - h) / 2 + step, wa.Bottom - h);
+            Native.SetBounds(this, x, y, w, h);
             RememberWhere();
         }
 
@@ -292,7 +301,7 @@ namespace TtCompanion
             catch (Exception) { }
         }
 
-        private static System.Drawing.Rectangle? LoadBounds()
+        private System.Drawing.Rectangle? LoadBounds()
         {
             try
             {

@@ -61,8 +61,11 @@ The Start menu's **Repair Tatty** is still there if a setup step failed.
 
 Tatty opens on the **Hub**, a page listing your projects. Each project is a Tatty folder
 (`features`, `design`, `tasks`, `archive`) and, optionally, a default code repository.
-Opening one makes its folder Tatty's root (`<home>\root`, which the toolbox's skills read),
-and then the usual window opens. **Switch project…** in the tray menu returns to the Hub.
+Opening one opens a window of its own for it (its own server, `<home>\servers\<id>.json`, and
+its own Tatty with a flag showing the project's number) and closes the Hub; the project is also
+noted as `<home>\root`, which the toolbox's skills read. Open several and you have several
+windows at once. **Projects…** in a Tatty's tray menu brings the Hub back, beside the windows
+already open.
 The list is `<home>\hub.json`; forgetting a project removes only its entry. The project
 Tatty used before the Hub existed is listed as the first one and keeps its records where
 they were; every other project keeps its session models, branches and archive records
@@ -260,7 +263,7 @@ for it to notice.
 
 | Variable | What |
 |---|---|
-| `TATTY_HOME` | Tatty's state (default `~/.claude/tatty`): the root setting, projects, server.json, settings.json (what Settings saves) |
+| `TATTY_HOME` | Tatty's state (default `~/.claude/tatty`): the root setting, projects, server.json (the Hub's) and servers/&lt;id&gt;.json (each project's window), settings.json (what Settings saves) |
 | `TATTY_ROOT` | use this root folder instead of the setting |
 | `TATTY_TOOLBOX` | a toolbox checkout to use instead of the installed toolbox |
 | `TATTY_MODES` | the modes (discipline plugins) to offer, e.g. `engineering,design`, instead of the ones installed |
