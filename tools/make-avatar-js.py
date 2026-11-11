@@ -150,7 +150,7 @@ function animate(svgs, id, state = "idle") {
 // The tray app draws Tatty natively (TattyWindow.xaml, AvatarArt.cs), so the page hands
 // it the chosen avatar in what he wears as a plain description: the drawing laid out in
 // the window's own moving parts (the legs, the body, the eyes and pupils, the mouths,
-// the flag arm, the badge, and any part of his own that moves, such as a tail), every
+// the project number's badge, the "!" badge, and any part of his own that moves, such as a tail), every
 // colour, stroke and visibility already worked out here by the browser, which has the
 // cascade. accent: the mode's colour as the tray app draws it (its TtAccent).
 const BAKE_SKIP = /^(Tip|Bub\d|Back|Front)$/;
@@ -183,7 +183,7 @@ function bake(id, outfit, accent) {
   holder.innerHTML = svgFor(d, 1, null, "", dressClass(outfit));
   document.body.append(holder);
   const svg = holder.querySelector("svg");
-  for (const n of svg.querySelectorAll(".mouth, .flagarm, .badge")) n.style.display = "inline";
+  for (const n of svg.querySelectorAll(".mouth, .numtag, .badge")) n.style.display = "inline";
   const gradients = new Set();
   const out = [];
   const shown = n => getComputedStyle(n).display !== "none";
@@ -216,14 +216,16 @@ function bake(id, outfit, accent) {
       out.push(`<${tag} ${[...geo, ...paint(node, cs), ...common].join(" ")}/>`);
       return;
     }
-    if (tag !== "g") return; // (text is the flag's number and the badge's "!", which the window has of its own)
+    if (tag !== "g") return; // (text is the project number and the badge's "!", which the window writes itself)
     let open, close = "</g>";
     const m = [...node.classList].find(c => /^m-/.test(c));
     if (p === "Eyes") { open = `<eyes c="${node.dataset.c}"`; close = "</eyes>"; }
     else if (p === "Pupils") { open = "<pupils"; close = "</pupils>"; }
-    else if (p === "Arm") {
-      const t = node.querySelector("text");
-      open = `<flag c="${node.dataset.c}" text="${t ? t.getAttribute("x") + "," + t.getAttribute("y") : ""}"`; close = "</flag>";
+    else if (node.classList.contains("numtag")) {
+      // the project number's badge: its shapes, and where and how the window writes the number
+      const t = node.querySelector("text"), tcs = t ? getComputedStyle(t) : null;
+      open = t ? `<numtag text="${t.getAttribute("x")},${t.getAttribute("y")}" size="${t.getAttribute("font-size")}" fill="${rgba(tcs.fill)}"` : "<numtag";
+      close = "</numtag>";
     } else if (node.classList.contains("badge")) {
       const c = node.querySelector("circle");
       out.push(`<badge at="${c.getAttribute("cx")},${c.getAttribute("cy")}"/>`);

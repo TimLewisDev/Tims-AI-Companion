@@ -1861,9 +1861,13 @@ echo "# coins and the shop"
 # A wallet belongs to a project (the legacy one's is Tatty's home's wallet.json): it starts with shop.json's
 # welcome gift and Polished Tatty, and the page reads it, with the catalogue, from /api/wallet.
 coins() { get /api/wallet >"$T/w"; pick "$T/w" "d['coins']"; }
+# (a wallet of its own for this: sections before this one may have earned plenty, and the view shows the last ten)
+[ -f "$TATTY_HOME/wallet.json" ] && mv "$TATTY_HOME/wallet.json" "$T/wallet.kept"
 get /api/wallet >"$T/w"
-[ "$(pick "$T/w" "d['log'][0]['amount'] == 100 and d['log'][0]['reason'] == 'Welcome to the shop'")" = True ] &&
+[ -f "$T/wallet.kept" ] && mv "$T/wallet.kept" "$TATTY_HOME/wallet.json"
+[ "$(pick "$T/w" "d['coins'] == 100 and d['log'][0]['amount'] == 100 and d['log'][0]['reason'] == 'Welcome to the shop'")" = True ] &&
 	ok "a new wallet starts with the welcome gift" || bad "a new wallet starts with the welcome gift" "$(head -c 300 "$T/w")"
+get /api/wallet >"$T/w"
 [ "$(pick "$T/w" "d['avatar'] == 'polished' and 'polished' in d['owned']")" = True ] &&
 	ok "and Polished Tatty, his to start with" || bad "and Polished Tatty, his to start with" "$(head -c 300 "$T/w")"
 [ "$(pick "$T/w" "len(d['catalogue']['avatars']) == 6 and len(d['catalogue']['items']) > 50")" = True ] &&

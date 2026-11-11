@@ -22,26 +22,28 @@ namespace TtCompanion
     //     <part name="Body" c=..>the back accessories</part>  (they ride with the body, behind the legs)
     //     <part name="LegL" c=..>..</part> <part name="LegR" c=..>..</part>
     //     <part name="Body" c=..> .. <eyes c=..> .. <pupils>..</pupils> .. </eyes> .. <mouth name="neutral">..</mouth>
-    //        <flag c="shoulder" text="x,y">..</flag> <badge at="x,y"/> <g p="Tail" c=..>..</g> .. </part>
+    //        <numtag text="x,y" size=.. fill=..>..</numtag> <badge at="x,y"/> <g p="Tail" c=..>..</g> .. </part>
     //   </part><defs>gradients</defs></tatty>
     //
     // Shapes are SVG's path, circle, ellipse, rect, line and polygon, each drawn as a WPF
     // Path in the drawing's own coordinates. TattyWindow.Apply puts the parts into the
     // canvases TattyWindow.xaml names, so Avatar.cs moves them as it always has; the
     // parts of an avatar's own that move (a tail, wings, a propeller) get a little idle
-    // motion of their own here (Idle).
+    // motion of their own here (Idle). The project number's badge (numtag) may be in Body or in a
+    // leg; the window writes the number itself, where and how the badge says.
     internal sealed class AvatarArt
     {
         public string Id = "";
         public Point Root = new(52, 100), LegLPivot = new(38, 80), LegRPivot = new(66, 80), BodyPivot = new(52, 90);
-        public Point EyesPivot = new(52, 48), Shoulder = new(18, 58), FlagText = new(22, 9.5), BadgeAt = new(85, 23);
+        public Point EyesPivot = new(52, 48), BadgeAt = new(85, 23);
+        public Point? NumberAt;      // where the project number's baseline sits, at its middle
+        public double? NumberSize;
+        public Brush? NumberPaint;
         public readonly List<UIElement> Back = new(), LegL = new(), LegR = new(), Body = new();
-        public readonly List<UIElement> Eyes = new(), Pupils = new(), Flag = new();
+        public readonly List<UIElement> Eyes = new(), Pupils = new(), NumTag = new();
         public readonly Dictionary<string, UIElement> Mouths = new();
-        // where the window's own Eyes canvas and flag arm go among Body's things
-        public Panel? EyesSlot, FlagSlot;
-        // his own left arm (or paw, or wing), which the flag arm takes the place of in a project's window
-        public UIElement? LeftArm;
+        // where the window's own Eyes canvas and number badge go among the drawing's things
+        public Panel? EyesSlot, NumSlot;
         public readonly List<(string Name, ScaleTransform S, RotateTransform R, TranslateTransform T)> Moving = new();
 
         private readonly Dictionary<string, Brush> gradients = new();
@@ -112,12 +114,13 @@ namespace TtCompanion
                     }
                     EyesSlot = new Canvas();
                     return EyesSlot;
-                case "flag":
-                    Shoulder = Pt(e, "c", Shoulder);
-                    FlagText = Pt(e, "text", FlagText);
-                    Kids(e, Flag);
-                    FlagSlot = new Canvas();
-                    return FlagSlot;
+                case "numtag":
+                    if (e.Attribute("text") != null) NumberAt = Pt(e, "text", new Point(52, 80));
+                    if (e.Attribute("size") != null) NumberSize = Num(e, "size", 7);
+                    NumberPaint = Paint((string?)e.Attribute("fill"), 1);
+                    Kids(e, NumTag);
+                    NumSlot = new Canvas();
+                    return NumSlot;
                 case "badge":
                     BadgeAt = Pt(e, "at", BadgeAt);
                     return null;
@@ -145,7 +148,6 @@ namespace TtCompanion
                     var outer = new Canvas { RenderTransform = new TransformGroup { Children = { s, r, t } } };
                     outer.Children.Add(c);
                     Moving.Add((moving!, s, r, t));
-                    if (moving == "ArmL") LeftArm = outer;
                     return outer;
                 }
                 default:

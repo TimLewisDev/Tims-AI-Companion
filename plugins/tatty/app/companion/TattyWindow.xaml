@@ -9,7 +9,7 @@
        Native drawing only, so the window can be truly transparent.
 
        He is 104x120 of drawing in a 104x176 window: the window keeps a strip
-       above him to jump and lean into (and for the flag his raised arm holds) and
+       above him to jump and lean into (and for the tallest hats) and
        one below him to sit down into, since a window clips whatever leaves it. TattyWindow.TopInset and BottomInset
        name those strips, and the bubble is placed off them rather than off the
        window's own edges (App.xaml.cs's PlaceBubbleOnce).
@@ -69,22 +69,6 @@
         <Line X1="52" Y1="10" X2="52" Y2="24" Stroke="{DynamicResource TtAccent}" StrokeThickness="3" StrokeStartLineCap="Round" />
         <Ellipse Canvas.Left="47" Canvas.Top="4" Width="10" Height="10" Fill="{DynamicResource TtAccent}" />
 
-        <!-- his arm, raised on the side away from the badge, holding up a flag with the number
-             of the project this Tatty is for (the project's place in the Hub's list). The whole
-             arm waves about the shoulder (ArmWave); it is only there in a project's window,
-             and Avatar.cs animates it with the rest. -->
-        <Canvas x:Name="ArmFlag" Visibility="Collapsed">
-          <Canvas.RenderTransform>
-            <RotateTransform x:Name="ArmWave" CenterX="18" CenterY="58" Angle="0" />
-          </Canvas.RenderTransform>
-          <Line X1="9" Y1="-8" X2="9" Y2="54" Stroke="#6B5B45" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-          <Polygon Points="9,-6 40,-6 34,3 40,12 9,12" Fill="{DynamicResource TtAccent}" Stroke="#FDFCF9" StrokeThickness="1" />
-          <TextBlock x:Name="FlagNumber" Canvas.Left="11" Canvas.Top="-6" Width="22" Height="18" Text="1" Foreground="White"
-                     FontWeight="Bold" FontSize="12" TextAlignment="Center" LineHeight="18" LineStackingStrategy="BlockLineHeight" />
-          <Line X1="18" Y1="60" X2="9" Y2="46" Stroke="{DynamicResource TtAccent}" StrokeThickness="3.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-          <Ellipse Canvas.Left="5.5" Canvas.Top="42" Width="7" Height="7" Fill="{DynamicResource TtAccent}" />
-        </Canvas>
-
         <!-- head -->
         <Rectangle Canvas.Left="18" Canvas.Top="24" Width="68" Height="56" RadiusX="12" RadiusY="12"
                    Fill="#FDFCF9" Stroke="{DynamicResource TtAccent}" StrokeThickness="3" />
@@ -113,6 +97,15 @@
         <Path x:Name="MouthHappy" Data="M 42,61 Q 52,77 62,61 Z" Fill="{DynamicResource TtAccent}" Visibility="Collapsed" />
         <Line x:Name="MouthFlat" X1="45" Y1="67" X2="59" Y2="67" Visibility="Collapsed"
               Stroke="{DynamicResource TtAccent}" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+
+        <!-- the number of the project this Tatty is for (its place in the Hub's list), only in a
+             project's window: a little plate low on his face. An avatar from the shop wears it
+             where it suits him (TattyWindow.Apply moves it there, AvatarArt.cs draws its badge). -->
+        <Canvas x:Name="NumTag" Visibility="Collapsed">
+          <Rectangle Canvas.Left="25" Canvas.Top="67" Width="13" Height="9" RadiusX="2.5" RadiusY="2.5" Fill="{DynamicResource TtAccent}" />
+          <TextBlock x:Name="NumberText" Canvas.Left="19.5" Canvas.Top="66" Width="24" Text="1" Foreground="White"
+                     FontWeight="ExtraBold" FontSize="7" TextAlignment="Center" FontFamily="Segoe UI" />
+        </Canvas>
 
         <!-- something to answer -->
         <Grid x:Name="Badge" Canvas.Left="74" Canvas.Top="12" Width="22" Height="22" Visibility="Collapsed">

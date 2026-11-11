@@ -61,7 +61,6 @@ namespace TtCompanion
             ladder.Tick += (_, _) => Tick();
             ladder.Start();
             Bob();
-            Wave();
         }
 
         // Something happened (or someone reached for him): stand up, open your
@@ -168,7 +167,6 @@ namespace TtCompanion
             Mouth(next == Pose.Asleep);
             Hold(w.PupilShift, TranslateTransform.XProperty, 0, 0.3);
             Bob();
-            Wave();
             if (next == Pose.Stand || next == Pose.Sit) blink.Start(); else blink.Stop();
             PoseChanged?.Invoke(next);
         }
@@ -188,26 +186,6 @@ namespace TtCompanion
             };
             w.BodyShift.BeginAnimation(TranslateTransform.YProperty,
                 new DoubleAnimation(0, -rise, Seconds(seconds))
-                {
-                    AutoReverse = true,
-                    RepeatBehavior = RepeatBehavior.Forever,
-                    EasingFunction = Ease,
-                });
-        }
-
-        // The flag arm's gentle wave about the shoulder, as lazy as the rest of him: smaller and
-        // slower the sleepier he is. It owns ArmWave.Angle, so it carries on under every performance.
-        private void Wave()
-        {
-            (double swing, double seconds) = pose switch
-            {
-                Pose.Sit => (4.0, 2.4),
-                Pose.Doze => (2.5, 3.0),
-                Pose.Asleep => (1.2, 3.8),
-                _ => (7.0, 1.7),
-            };
-            w.ArmWave.BeginAnimation(RotateTransform.AngleProperty,
-                new DoubleAnimation(-swing, swing, Seconds(seconds))
                 {
                     AutoReverse = true,
                     RepeatBehavior = RepeatBehavior.Forever,

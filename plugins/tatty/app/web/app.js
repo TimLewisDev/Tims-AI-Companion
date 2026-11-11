@@ -972,7 +972,7 @@ function setProject(project) {
   if (chip) {
     chip.hidden = !project;
     chip.textContent = project ? `${project.number} · ${project.name}` : "";
-    chip.title = project ? `Project ${project.number}: its Tatty holds that number up on a flag` : "";
+    chip.title = project ? `Project ${project.number}: its Tatty wears that number` : "";
   }
   document.title = project ? `Tatty — ${project.name} (${project.number})` : "Tatty";
 }

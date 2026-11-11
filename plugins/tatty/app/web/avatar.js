@@ -94,7 +94,7 @@ const STATES = {
     L("TL.sx", 0, 1, 0, 1.2),
     T("Caret.o", [[1, 0], [1, .28], [0, .3], [0, .58], [1, .6]]),
     T("ArmL.a", [[20, 0], [-20, .3], [20, .6]]), T("ArmR.a", [[20, 0], [-20, .3], [20, .6]])] }),
-  delegating: d => ({ dur: 2.4, mouth: "happy", wave: [10, .6], tracks: [
+  delegating: d => ({ dur: 2.4, mouth: "happy", tracks: [
     T("Mini0.y", [[0, 0], [-7, .2], [0, .4], [0, 1.2], [-7, 1.4], [0, 1.6], [0, 2.4]]),
     T("Mini1.y", [[0, 0], [0, .6], [-7, .8], [0, 1], [0, 1.8], [-7, 2], [0, 2.2]]),
     T("Pupils.x", [[-3, 0], [-3, 1], [3, 1.2], [3, 2.2], [-3, 2.4]]),
@@ -120,7 +120,7 @@ const STATES = {
     T("Puff.o", [[0, 0], [.8, .15], [0, 1.1], [0, 2]]),
     T("Puff.y", [[0, 0], [-9, 1.1], [-9, 2]]),
     T("ArmR.a", [[-120, 0], [-132, .25], [-120, .5]], .5), T("ArmL.a", [[8, 0]])] }),
-  celebrate: d => ({ dur: 2.4, mouth: "happy", wave: [14, .4], tracks: [
+  celebrate: d => ({ dur: 2.4, mouth: "happy", tracks: [
     T("Root.sy", [[1, 0], [.84, .13], [1.08, .3], [1, .55], [1, 2.4]]),
     T("Root.sx", [[1, 0], [1.14, .13], [.94, .3], [1, .55], [1, 2.4]]),
     T("LegL.y", [[0, 0], [0, .13], [-5, .3], [0, .58]]),
@@ -134,7 +134,7 @@ const STATES = {
       L(`Cf${i}.y`, 0, 152, i / CONFETTI),
       W(`Cf${i}.x`, -5, 5, frac(i * .37), 1.2),
       L(`Cf${i}.a`, 0, i % 2 ? 540 : -540)]).flat()] }),
-  asleep: d => ({ dur: 3, mouth: "flat", lids: .08, blink: false, bob: [2.5, 3.6], wave: [1.2, 3.8], tracks: [
+  asleep: d => ({ dur: 3, mouth: "flat", lids: .08, blink: false, bob: [2.5, 3.6], tracks: [
     T("Root.y", [[12, 0]]), T("LegL.a", [[72, 0]]), T("LegR.a", [[-72, 0]]),
     T("ArmL.a", [[10, 0]]), T("ArmR.a", [[-10, 0]]),
     ...[0, 1, 2].map(i => [
@@ -146,16 +146,6 @@ const WORKING = ["thinking", "reading", "writing", "running", "delegating"];
 // ------------------------------------------------------------------ shared drawing helpers
 const n = v => +(+v).toFixed(2);
 const P = (c, r, w, h, cls, extra = "") => `<rect x="${c * 4}" y="${r * 4}" width="${w * 4}" height="${h * 4}" class="${cls}" ${extra}/>`;
-
-function flagArm(d) {
-  const [sx, sy] = d.pivots.shoulder, top = d.flagTop ?? -8, px = sx - 9;
-  return `<g class="flagarm"><g data-p="Arm" data-c="${sx},${sy}">
-    <line x1="${px}" y1="${top}" x2="${px}" y2="${sy - 4}" stroke="#6B5B45" stroke-width="2.5" class="rc"/>
-    <polygon points="${px},${top + 2} ${px + 31},${top + 2} ${px + 25},${top + 11} ${px + 31},${top + 20} ${px},${top + 20}" class="fa" stroke="#FDFCF9" stroke-width="1"/>
-    <text x="${px + 13}" y="${top + 15.5}" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="Segoe UI, sans-serif">1</text>
-    <line x1="${sx}" y1="${sy + 2}" x2="${px}" y2="${sy - 12}" class="sa rc" stroke-width="3.5"/>
-    <circle cx="${px}" cy="${sy - 12}" r="3.5" class="fa"/></g></g>`;
-}
 
 // ------------------------------------------------------------------ the wardrobe
 // Every item: [spot, id, label, rules]. The rules say what it does to an avatar's
@@ -467,13 +457,16 @@ const A = {
   pitch: "Today's shape, with more warmth: soft shading, blushing cheeks, sparkly eyes, a grin with a tongue and an antenna that glows like an LED.",
   wins: "The cheapest change that still makes him cuter. It keeps the same rig and the same tray icon shape, so people still know him.",
   risks: "It brings the least new character of the six: his warmth is all in the face and the little arms.",
-  rig: "The same named parts as today. New: little arms (ArmL, ArmR; the left gives way to the flag arm), two more mouths (O, wobble), a pupil highlight, a glow behind the antenna tip, and a gradient fill (LinearGradientBrush).",
+  rig: "The same named parts as today. New: little arms (ArmL, ArmR), a serial plate for his project number, two more mouths (O, wobble), a pupil highlight, a glow behind the antenna tip, and a gradient fill (LinearGradientBrush).",
   pivots: BASE.pivots,
   anchors: { ...BASE.anchors, eyes: { x: 52, y: 47, dx: 14, r: 10 }, side: { x: 84, y: 33 }, top: { x: 52, y: -1 } },
   tips: [[52, 8]], iconBox: [10, 0, 84, 84],
   legs: {
     L: `<line x1="38" y1="80" x2="38" y2="94" class="sa rc" stroke-width="4.5"/><ellipse cx="37" cy="97.5" rx="8" ry="3.5" class="fa"/>`,
     R: `<line x1="66" y1="80" x2="66" y2="94" class="sa rc" stroke-width="4.5"/><ellipse cx="67" cy="97.5" rx="8" ry="3.5" class="fa"/>` },
+  // his project number: a little serial plate, low on his face on the left
+  numtag: `<rect x="25.5" y="66.5" width="13" height="9" rx="2.5" class="fa"/><circle cx="27.4" cy="68.4" r=".6" fill="#fff" fill-opacity=".7"/>
+           <circle cx="36.6" cy="68.4" r=".6" fill="#fff" fill-opacity=".7"/><text class="num" x="32" y="73.6" text-anchor="middle" font-size="7" font-weight="800" font-family="Segoe UI, sans-serif" fill="#fff">1</text>`,
   // little arms from the sides of his head, behind it, hands as round as his feet
   back: `<circle cx="16" cy="52" r="4.5" class="fa"/><circle cx="88" cy="52" r="4.5" class="fa"/>
          <g data-p="ArmL" data-c="20,61" class="arm-l"><path d="M20,61 Q12.5,65.5 11,73" class="fn sa rc" stroke-width="4"/><circle cx="10.5" cy="75" r="3.8" class="fa"/></g>
@@ -499,7 +492,7 @@ const B = {
   wins: "The cutest at a glance. One simple shape reads well small and on any wallpaper, and the nub arms give 'needs you' a raised hand.",
   risks: "Furthest from 'robot': the sprout and the bean shape read more creature than machine. Legs become feet, so sitting down is a squat.",
   rig: "Robot, Body, Eyes, Pupils and mouths are reused. Legs become two feet (a fold barely shows). New: ArmL and ArmR, the sprout, and a Path body instead of a Rectangle.",
-  pivots: { ground: [52, 100], sway: [52, 94], legL: [40, 94], legR: [64, 94], eyes: [52, 54], shoulder: [14, 64] }, flagTop: -10,
+  pivots: { ground: [52, 100], sway: [52, 94], legL: [40, 94], legR: [64, 94], eyes: [52, 54], shoulder: [14, 64] },
   anchors: { hat: { x: 52, y: 21, w: 56, earY: 50, ear: 41 }, cheek: { x: 77, y: 64 }, nose: { x: 52, y: 59 }, back: { x: 52, y: 60, s: 1.05 }, eyes: { x: 52, y: 54, dx: 14, r: 8 }, mouth: { x: 52, y: 61, w: .85 }, neck: { x: 52, y: 77, w: .9 },
              hand: { x: 95, y: 74 }, side: { x: 84, y: 36 }, bubble: { x: 84, y: 4 }, badge: { x: 84, y: 24 }, top: { x: 59, y: 0 }, ground: 101 },
   tips: [[59, 8]], iconBox: [8, 0, 88, 100],
@@ -508,6 +501,7 @@ const B = {
   head: `<path d="M52,20 C80,20 92,40 92,62 C92,84 76,94 52,94 C28,94 12,84 12,62 C12,40 24,20 52,20 Z" class="ff sa" stroke-width="3"/>
          <ellipse cx="52" cy="84" rx="15" ry="5.5" class="fa" fill-opacity=".12"/>
          <path d="M26,34 Q32,26 42,24" class="fn rc" stroke="#fff" stroke-width="3"/>`,
+  numtag: `<text class="num fa" x="42.5" y="89.5" text-anchor="middle" font-size="10" font-weight="800" font-family="Segoe UI, sans-serif">1</text>`,
   over: `<g data-p="ArmL" data-c="17,62" class="arm-l"><ellipse cx="9" cy="72" rx="4.5" ry="7" class="fa" transform="rotate(25 9 72)"/></g>
          <g data-p="ArmR" data-c="87,62"><ellipse cx="95" cy="72" rx="4.5" ry="7" class="fa" transform="rotate(-25 95 72)"/></g>`,
   eyes: ``,
@@ -527,14 +521,16 @@ const C = {
   pitch: "A little TV head with rabbit-ear antennas. His face glows on a dark screen in the mode's light shade, and the screen shows a progress bar while he works.",
   wins: "The screen is the expression: any face or icon can go on it, so states are the easiest to read. The progress bar shows he's busy for free.",
   risks: "The dark screen is heavy on a dark desktop and at small sizes. It can feel more gadget than friend.",
-  rig: "Today's rig plus a small body box and little arms (ArmL, ArmR; the left gives way to the flag arm). The eyes become lit pills (still Eyes and Pupils). New Scan and Prog parts. Every face is a swap of shapes, which is how the XAML already prefers to do it.",
-  pivots: { ground: [52, 100], sway: [52, 90], legL: [43, 91], legR: [61, 91], eyes: [52, 48], shoulder: [16, 58] }, flagTop: -16,
+  rig: "Today's rig plus a small body box and little arms (ArmL, ArmR); his project number is a channel number on the screen. The eyes become lit pills (still Eyes and Pupils). New Scan and Prog parts. Every face is a swap of shapes, which is how the XAML already prefers to do it.",
+  pivots: { ground: [52, 100], sway: [52, 90], legL: [43, 91], legR: [61, 91], eyes: [52, 48], shoulder: [16, 58] },
   anchors: { hat: { x: 52, y: 22, w: 76, earY: 50 }, cheek: { x: 86, y: 52 }, nose: { x: 52, y: 55 }, back: { x: 52, y: 60, s: 1.1 }, eyes: { x: 52, y: 48, dx: 14, r: 9 }, mouth: { x: 52, y: 60 }, neck: { x: 52, y: 83, w: .85 },
              hand: { x: 92, y: 72 }, side: { x: 88, y: 30 }, bubble: { x: 86, y: 0 }, badge: { x: 88, y: 21 }, top: { x: 68, y: 0 }, ground: 100 },
   tips: [[36, 8], [68, 8]], iconBox: [10, 2, 84, 82],
   legs: {
     L: `<line x1="43" y1="91" x2="43" y2="96" class="sa rc" stroke-width="4"/><line x1="37" y1="98" x2="49" y2="98" class="sa rc" stroke-width="4"/>`,
     R: `<line x1="61" y1="91" x2="61" y2="96" class="sa rc" stroke-width="4"/><line x1="55" y1="98" x2="67" y2="98" class="sa rc" stroke-width="4"/>` },
+  // his project number: a channel number, glowing in the top corner of his screen
+  numtag: `<text class="num fg" x="77" y="40" text-anchor="middle" font-size="9.5" font-weight="800" font-family="Segoe UI, sans-serif">1</text>`,
   // little arms from the sides of the set, behind it
   back: `<g data-p="ArmL" data-c="17,63" class="arm-l"><path d="M17,63 Q9.5,67.5 8,75" class="fn sa rc" stroke-width="3.6"/><circle cx="7.5" cy="77" r="3.4" class="fa"/></g>
          <g data-p="ArmR" data-c="87,63"><path d="M87,63 Q94.5,67.5 96,75" class="fn sa rc" stroke-width="3.6"/><circle cx="96.5" cy="77" r="3.4" class="fa"/></g>
@@ -573,7 +569,7 @@ const G = {
   wins: "Instantly lovable, and the tiny arms are 'trying his best' built in: waving them for 'needs you' is the joke. The tail wag gives every state a second way to show his mood.",
   risks: "The tail makes him wider on one side, so his notepad moves to his other hand. A coloured face needs dark line work, which is a second accent shade.",
   rig: "Robot, Body, Eyes, Pupils, LegL/LegR (feet) and mouths are reused, and the tiny arms are ArmL/ArmR. New: Tail, and a darker shade of the accent for his line work.",
-  pivots: { ground: [52, 100], sway: [52, 92], legL: [40, 92], legR: [64, 92], eyes: [52, 42], shoulder: [30, 70] }, flagTop: -12,
+  pivots: { ground: [52, 100], sway: [52, 92], legL: [40, 92], legR: [64, 92], eyes: [52, 42], shoulder: [30, 70] },
   anchors: { hat: { x: 52, y: 17, w: 50, earY: 44, ear: 35 }, cheek: { x: 74, y: 54 }, nose: { x: 52, y: 51 }, back: { x: 52, y: 66, s: .95 }, eyes: { x: 52, y: 42, dx: 12, r: 8.5 }, mouth: { x: 52, y: 56, w: .9 }, neck: { x: 52, y: 67, w: .9 },
              hand: { x: 12, y: 76 }, side: { x: 80, y: 30 }, bubble: { x: 86, y: 0 }, badge: { x: 82, y: 20 }, top: { x: 52, y: 4 }, ground: 101 },
   tips: [], iconBox: [14, 2, 76, 70],
@@ -590,6 +586,7 @@ const G = {
   head: `<path d="M52,16 C72,16 84,28 84,44 C84,60 70,68 52,68 C34,68 20,60 20,44 C20,28 32,16 52,16 Z" class="fa sd" stroke-width="2.5"/>
          <ellipse cx="38" cy="25" rx="7" ry="3" fill="#fff" fill-opacity=".35" transform="rotate(-20 38 25)"/>
          <circle cx="48.5" cy="52" r="1.2" class="fdk"/><circle cx="55.5" cy="52" r="1.2" class="fdk"/>`,
+  numtag: `<text class="num fa" x="44.5" y="91.5" text-anchor="middle" font-size="10.5" font-weight="800" font-family="Segoe UI, sans-serif">1</text>`,
   over: `<g data-p="ArmL" data-c="32,70" class="arm-l"><ellipse cx="29" cy="76" rx="3.6" ry="5.6" class="fa sd" stroke-width="1.8" transform="rotate(28 29 76)"/></g>
          <g data-p="ArmR" data-c="72,70"><ellipse cx="75" cy="76" rx="3.6" ry="5.6" class="fa sd" stroke-width="1.8" transform="rotate(-28 75 76)"/></g>`,
   eyes: `<circle cx="40" cy="42" r="8.5" fill="#fff" class="sd" stroke-width="1.6"/><circle cx="64" cy="42" r="8.5" fill="#fff" class="sd" stroke-width="1.6"/>`,
@@ -619,7 +616,7 @@ const H = {
   wins: "The most stylish of the five. The tail and ears give him small, constant life without big motion, and his raised paw for 'needs you' is a beckoning lucky cat.",
   risks: "A dark coat can get lost on a dark desktop, so he leans on the accent outline. His cool eyes have to stay warm enough to read as friendly.",
   rig: "Robot, Body, Eyes (with a lid that blinks with them), Pupils (slits) and mouths are reused. The front paws are ArmL/ArmR and the back feet LegL/LegR. New: Tail and two ears that twitch (EarL, EarR).",
-  pivots: { ground: [52, 100], sway: [52, 94], legL: [34, 96], legR: [70, 96], eyes: [52, 44], shoulder: [32, 74] }, flagTop: -12,
+  pivots: { ground: [52, 100], sway: [52, 94], legL: [34, 96], legR: [70, 96], eyes: [52, 44], shoulder: [32, 74] },
   anchors: { hat: { x: 52, y: 23, w: 46, earY: 46, ear: 37 }, cheek: { x: 75, y: 53 }, nose: { x: 52, y: 55.5 }, back: { x: 52, y: 70, s: .9 }, eyes: { x: 52, y: 44, dx: 12, r: 7.5 }, mouth: { x: 52, y: 58, w: .7 }, neck: { x: 52, y: 77, w: .85 },
              hand: { x: 12, y: 80 }, side: { x: 82, y: 32 }, bubble: { x: 86, y: 0 }, badge: { x: 84, y: 18 }, top: { x: 52, y: 8 }, ground: 101 },
   tips: [], iconBox: [14, 8, 76, 68],
@@ -638,6 +635,7 @@ const H = {
          <path d="M52,50 C60,50 66,54.5 66,59.5 C66,65.5 59,69 52,69 C45,69 38,65.5 38,59.5 C38,54.5 44,50 52,50 Z" class="ff"/>
          <path class="own own-nose" d="M49,54 L55,54 L52,57.5 Z" fill="#E88AA0"/>`,
   with: `<path class="with with-nose" d="M49,50 L55,50 L52,53.5 Z" fill="#E88AA0" stroke="#C96F86" stroke-width=".6"/>`,
+  numtag: `<circle cx="52" cy="84.5" r="4.6" fill="#F2C94C" stroke="#C9A227" stroke-width="1"/><text class="num" x="52" y="86.8" text-anchor="middle" font-size="6" font-weight="800" font-family="Segoe UI, sans-serif" fill="#6B4A00">1</text>`,
   over: `<g data-p="ArmL" data-c="40,80" class="arm-l"><ellipse cx="41" cy="93" rx="6" ry="4.6" class="ff sa" stroke-width="1.6"/><path d="M39,95.5 v-2 M43,95.5 v-2" stroke="#C9C3B6" stroke-width="1" class="rc"/></g>
          <g data-p="ArmR" data-c="64,80"><ellipse cx="63" cy="93" rx="6" ry="4.6" class="ff sa" stroke-width="1.6"/><path d="M61,95.5 v-2 M65,95.5 v-2" stroke="#C9C3B6" stroke-width="1" class="rc"/></g>`,
   eyes: `<ellipse cx="40" cy="44" rx="7.5" ry="7.5" fill="#E6D35A" stroke="#15171C" stroke-width="1"/><ellipse cx="64" cy="44" rx="7.5" ry="7.5" fill="#E6D35A" stroke="#15171C" stroke-width="1"/>`,
@@ -678,7 +676,7 @@ const I = {
   wins: "A natural for 'thinking' and 'reading': he tilts his head the way owls do, and with round glasses on he is the wise owl. The wings make big, readable gestures without arms.",
   risks: "A beak can't smile, so his moods come from the eyes, brows, wings and head tilt, and his mouth set is the weakest of the five. The tufts and hats compete for the top of the head.",
   rig: "Robot, Body, Eyes, Pupils and LegL/LegR (talons) are reused, and the wings are ArmL/ArmR. The mouths are beak shapes. New: brows that lift (Brows), and a bigger head tilt in his idle.",
-  pivots: { ground: [52, 100], sway: [52, 94], legL: [42, 96], legR: [62, 96], eyes: [52, 45], shoulder: [22, 56] }, flagTop: -12,
+  pivots: { ground: [52, 100], sway: [52, 94], legL: [42, 96], legR: [62, 96], eyes: [52, 45], shoulder: [22, 56] },
   anchors: { hat: { x: 52, y: 20, w: 48, earY: 46, ear: 37 }, cheek: { x: 73, y: 56 }, nose: { x: 52, y: 57 }, back: { x: 52, y: 58, s: 1 }, eyes: { x: 52, y: 45, dx: 12, r: 8.5 }, mouth: { x: 52, y: 63, w: .7 }, neck: { x: 52, y: 74, w: .85 },
              hand: { x: 92, y: 86 }, side: { x: 82, y: 30 }, bubble: { x: 86, y: 2 }, badge: { x: 84, y: 20 }, top: { x: 52, y: 6 }, ground: 101 },
   tips: [], iconBox: [12, 6, 80, 92],
@@ -692,6 +690,8 @@ const I = {
          <ellipse cx="52" cy="79" rx="19" ry="15" class="fl"/>
          <path d="${chevrons}" class="fn sd rc" stroke-width="1.4"/><path d="${chevronsTop}" class="own own-neck fn sd rc" stroke-width="1.4"/>
          <circle cx="40" cy="45" r="14.5" fill="#F6EEDF"/><circle cx="64" cy="45" r="14.5" fill="#F6EEDF"/>`,
+  // his project number: a pin on his chest, low on the left (clear of a medal at the neck)
+  numtag: `<circle cx="39.5" cy="86" r="5.4" fill="#F6EEDF" class="sd" stroke-width="1.3"/><text class="num fdk" x="39.5" y="88.6" text-anchor="middle" font-size="7.5" font-weight="800" font-family="Segoe UI, sans-serif">1</text>`,
   over: `<g data-p="ArmL" data-c="22,56" class="arm-l"><path d="M23,54 C11,62 11,82 22,90 C26,78 27,64 23,54 Z" class="fdk"/></g>
          <g data-p="ArmR" data-c="82,56"><path d="M81,54 C93,62 93,82 82,90 C78,78 77,64 81,54 Z" class="fdk"/></g>`,
   eyes: `<circle cx="40" cy="45" r="8.5" fill="#F2B33D" class="sd" stroke-width="1.6"/><circle cx="64" cy="45" r="8.5" fill="#F2B33D" class="sd" stroke-width="1.6"/>`,
@@ -751,7 +751,6 @@ function svgFor(d, scale, viewBox, extra = "", dress = "") {
       <g data-p="LegR" data-c="${pv.legR}">${d.legs.R}</g>
       <g data-p="Body" data-c="${pv.sway}">
         ${d.back || ""}
-        ${flagArm(d)}
         ${d.head}
         ${d.over || ""}
         <g data-p="Eyes" data-c="${pv.eyes}">${d.eyes}<g data-p="Pupils">${d.pupils}</g>${d.lids || ""}</g>
@@ -760,6 +759,7 @@ function svgFor(d, scale, viewBox, extra = "", dress = "") {
         <g class="antenna-wrap">${tips}${d.antenna}</g>
         ${accessories(d)}
         ${d.with || ""}
+        ${d.numtag ? `<g class="numtag">${d.numtag}</g>` : ""}
         ${pr.body}
         <g class="badge"><circle cx="${b.x}" cy="${b.y}" r="11" fill="#C62828" stroke="#fff" stroke-width="2"/>
           <text x="${b.x}" y="${b.y + 5}" text-anchor="middle" font-size="14" font-weight="700" fill="#fff" font-family="Segoe UI, sans-serif">!</text></g>
@@ -798,8 +798,6 @@ class Card {
     for (const tr of st.tracks) v[tr.p] = evalTrack(tr, t, st.dur);
     const [rise, bs] = st.bob || [4, 1.6];
     v["Body.y"] = -rise * (d.bobMul || 1) * ease(pingpong(t, bs));   // the bob owns Body.y
-    const [sw, ws] = st.wave || [7, 1.7];
-    v["Arm.a"] = -sw + 2 * sw * ease(pingpong(t, ws));                 // the flag's wave owns Arm.a
     let f = 1;                                                         // the blink owns Eyes.sy
     if (st.blink !== false) {
       if (now >= this.nextBlink) { this.blinkAt = now; this.nextBlink = now + 3000 + Math.random() * 4000; }
@@ -932,7 +930,7 @@ function animate(svgs, id, state = "idle") {
 // The tray app draws Tatty natively (TattyWindow.xaml, AvatarArt.cs), so the page hands
 // it the chosen avatar in what he wears as a plain description: the drawing laid out in
 // the window's own moving parts (the legs, the body, the eyes and pupils, the mouths,
-// the flag arm, the badge, and any part of his own that moves, such as a tail), every
+// the project number's badge, the "!" badge, and any part of his own that moves, such as a tail), every
 // colour, stroke and visibility already worked out here by the browser, which has the
 // cascade. accent: the mode's colour as the tray app draws it (its TtAccent).
 const BAKE_SKIP = /^(Tip|Bub\d|Back|Front)$/;
@@ -965,7 +963,7 @@ function bake(id, outfit, accent) {
   holder.innerHTML = svgFor(d, 1, null, "", dressClass(outfit));
   document.body.append(holder);
   const svg = holder.querySelector("svg");
-  for (const n of svg.querySelectorAll(".mouth, .flagarm, .badge")) n.style.display = "inline";
+  for (const n of svg.querySelectorAll(".mouth, .numtag, .badge")) n.style.display = "inline";
   const gradients = new Set();
   const out = [];
   const shown = n => getComputedStyle(n).display !== "none";
@@ -998,14 +996,16 @@ function bake(id, outfit, accent) {
       out.push(`<${tag} ${[...geo, ...paint(node, cs), ...common].join(" ")}/>`);
       return;
     }
-    if (tag !== "g") return; // (text is the flag's number and the badge's "!", which the window has of its own)
+    if (tag !== "g") return; // (text is the project number and the badge's "!", which the window writes itself)
     let open, close = "</g>";
     const m = [...node.classList].find(c => /^m-/.test(c));
     if (p === "Eyes") { open = `<eyes c="${node.dataset.c}"`; close = "</eyes>"; }
     else if (p === "Pupils") { open = "<pupils"; close = "</pupils>"; }
-    else if (p === "Arm") {
-      const t = node.querySelector("text");
-      open = `<flag c="${node.dataset.c}" text="${t ? t.getAttribute("x") + "," + t.getAttribute("y") : ""}"`; close = "</flag>";
+    else if (node.classList.contains("numtag")) {
+      // the project number's badge: its shapes, and where and how the window writes the number
+      const t = node.querySelector("text"), tcs = t ? getComputedStyle(t) : null;
+      open = t ? `<numtag text="${t.getAttribute("x")},${t.getAttribute("y")}" size="${t.getAttribute("font-size")}" fill="${rgba(tcs.fill)}"` : "<numtag";
+      close = "</numtag>";
     } else if (node.classList.contains("badge")) {
       const c = node.querySelector("circle");
       out.push(`<badge at="${c.getAttribute("cx")},${c.getAttribute("cy")}"/>`);

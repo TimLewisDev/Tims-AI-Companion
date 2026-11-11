@@ -4,7 +4,7 @@
 // that one forward) and the Hub, the window this page is in at launch, stays: it is the
 // launcher, so several projects can be opened one after another. Which are open is watched
 // (hubWatch), since their windows are opened and closed on their own. Each project is
-// numbered in the order it was added, and its Tatty holds that number up on a flag.
+// numbered in the order it was added, and its Tatty wears that number.
 // Uses app.js's $, el, api, token, companion, tell, host, pageOpened and hubPending, features.js's pageEls, ago,
 // copyable, pickFolder, openSidePanel and featureCache, and modes.js's currentMode. See server.py's "the Hub".
 "use strict";
@@ -80,7 +80,7 @@ function hubProjectCard(p, data, redraw, msg) {
       try { await api("/api/hub", { action: "forget", id: p.id }); redraw(); } catch (e) { msg.className = "home-note small st missing"; msg.textContent = String(e.message || e); }
     } }, "Forget");
   return el("div", { class: "fcard hub-card" + (active ? " hub-active" : "") + (p.exists ? "" : " hub-missing"), "data-project": p.id },
-    el("div", { class: "fcard-top" }, el("span", { class: "hub-number", title: "Its Tatty holds this number up on a flag" }, String(p.number)), el("strong", {}, p.name), active ? el("span", { class: "chip now" }, here ? "this window" : "open") : ""),
+    el("div", { class: "fcard-top" }, el("span", { class: "hub-number", title: "Its Tatty wears this number" }, String(p.number)), el("strong", {}, p.name), active ? el("span", { class: "chip now" }, here ? "this window" : "open") : ""),
     ...lines,
     p.exists ? "" : el("p", { class: "st missing small" }, "This folder is missing. Put it back, or forget the project."),
     el("div", { class: "actions" },

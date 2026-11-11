@@ -152,9 +152,14 @@ optional default code repo. The registry is `<home>/hub.json`
   window; `--project <id|name>` picks one; `open` in a folder inside a project is that
   project's window.
 - **A project's number** is its place in `hub.json` (`hub_number`, the order added, shown
-  on its Hub card and in `/api/status.project`). Its Tatty holds that number up on a
-  flag (`TattyWindow.xaml` `ArmFlag`, waved by `Avatar.Wave`; the tray app reads the number
-  from `hub.json` so it is right from the first frame, and again every few seconds).
+  on its Hub card and in `/api/status.project`). Its Tatty wears that number as a little
+  badge where it suits the avatar: a serial plate low on Polished Tatty's face, a channel
+  number on Screen face's screen, on Pebble's tummy, a jersey number on the Dino's belly,
+  the Cat's collar tag, a pin on the Owl's chest (each avatar's `numtag`;
+  `TattyWindow.xaml` `NumTag` and `NumberText`, placed by `TattyWindow.Apply` and set by
+  `SetNumber`). It used to be a flag his raised arm held, which took over his left arm
+  and stopped it moving with everything else. The tray app reads the number from
+  `hub.json` so it is right from the first frame, and again every few seconds.
 - **One server looks for updates**: `update_leader()` takes `<home>/update.lock` and
   refreshes it every 30 s; another takes over only when it goes stale.
 - **Records are per project** (`project_home()`): the legacy project keeps its
@@ -397,12 +402,14 @@ through a feature, so most of it is in how it looks and sounds.
   visibility back from the browser, which has the cascade, and sends it to the
   window as a small description (`tell("avatar", …)`) laid out in the window's own
   moving parts: the legs, the body and what rides behind it, the eyes and pupils,
-  the mouths, the flag arm and the badge. `AvatarArt.cs` makes WPF paths of it, and
-  `TattyWindow.Apply` puts them into the canvases `TattyWindow.xaml` names and moves
-  every pivot to the avatar's own, so `Avatar.cs` performs exactly as before (its
-  mouths are `MouthN/H/F`, whichever drawing is on); the eyes, flag arm (with its
-  number) and badge stay the window's own elements, placed where the avatar has
-  them, and with the flag up the avatar's own left arm gives way to it. The parts
+  the mouths, the project number's badge (`numtag`: its shapes, and where, how big
+  and in what colour the number goes) and the "!" badge. `AvatarArt.cs` makes WPF
+  paths of it, and `TattyWindow.Apply` puts them into the canvases `TattyWindow.xaml`
+  names and moves every pivot to the avatar's own, so `Avatar.cs` performs exactly as
+  before (its mouths are `MouthN/H/F`, whichever drawing is on); the eyes, the number
+  badge (whose number the window writes, `SetNumber`) and the "!" badge stay the
+  window's own elements, placed where the avatar has them, so both arms always move
+  with him. The parts
   of an avatar's own that move (a tail, wings, a propeller, a jetpack's flames) get
   a small idle motion there (`AvatarArt.Idle`, only with Animations on); the
   states the page has and the tray app hasn't (thinking, reading and the rest)
@@ -411,7 +418,7 @@ through a feature, so most of it is in how it looks and sounds.
   The last description is kept (`%LOCALAPPDATA%\Tatty\avatar-art.xml`), so he is
   right from the first frame; one that doesn't read changes nothing. A look arrives
   at least twice (the kept one at start, then the page's), and the window's own
-  elements may sit deep in the last drawing (the flag arm inside its wrapper), so
+  elements may sit deep in the last drawing (the number badge inside a wrapper), so
   `Apply` takes each out wherever it is before putting it into the new one: WPF
   refuses an element that still has a parent, and the throw left him with no mouth
   and no flag (0.34.0).

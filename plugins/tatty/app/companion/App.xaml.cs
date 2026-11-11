@@ -23,7 +23,7 @@ namespace TtCompanion
     //
     // Every project has one of these (--project <id>), with a server of its own
     // (servers/<id>.json), its own mutex and wake event, its own panel bounds, and its
-    // own Tatty, who holds up a flag with the project's number. Without --project it
+    // own Tatty, who wears the project's number. Without --project it
     // is the Hub's: the launcher the projects are picked in, which stays when one is opened and
     // has no Tatty of its own (HasAvatar).
     public partial class App : Application
@@ -45,7 +45,7 @@ namespace TtCompanion
         private string home = "";
         private string project = "";     // the project this is for; "" is the Hub's
         private string projectName = "";
-        private int number;               // its place in the Hub's list, from 1: the flag
+        private int number;               // its place in the Hub's list, from 1: the number he wears
         private int refreshTick;
         private (int Port, string Token) server;
         private int since = -1;
@@ -53,7 +53,7 @@ namespace TtCompanion
         private bool polling;
         private bool tattyPlaced;
         // The Hub, the window the projects are launched from, has no Tatty: he is not drawn, not placed, and
-        // not on its menu. A project's window has him (and the flag with its number).
+        // not on its menu. A project's window has him (wearing its number).
         private bool HasAvatar => project.Length > 0;
         private bool demoPulse; // the pulses, asked for from his menu rather than by a question
         private bool alertWaiting; // something called for the person that they have not opened yet
@@ -179,7 +179,7 @@ namespace TtCompanion
 
         // The project's name and its number: its place in the Hub's list (hub.json, in the order
         // it was added; the server counts the same rows). Read from the file rather than asked
-        // of the server, so the flag is right from the first frame.
+        // of the server, so the number is right from the first frame.
         private void ReadProject()
         {
             try
@@ -199,13 +199,13 @@ namespace TtCompanion
             catch (Exception) { }
         }
 
-        // Which project this is, wherever it shows: the flag, the taskbar button's label, the
+        // Which project this is, wherever it shows: the number he wears, the taskbar button's label, the
         // bubble's title and the tray icon's tooltip.
         private void ShowWhoIAm()
         {
             if (project.Length == 0) return;
             var title = number > 0 ? $"Tatty - {projectName} ({number})" : $"Tatty - {projectName}";
-            tatty.SetFlag(number);
+            tatty.SetNumber(number);
             tatty.Title = bubble.Title = proxy.Title = title;
             if (tray != null) tray.Text = title.Length > 63 ? title.Substring(0, 63) : title;
         }

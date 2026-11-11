@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 
 namespace TtCompanion
 {
@@ -17,7 +18,7 @@ namespace TtCompanion
         // room to jump up into and to sit down into, since anything that leaves
         // the window is clipped. Whatever places something against Tatty measures
         // from these rather than from the window's edges. (The top one is deep enough for the
-        // flag his raised arm holds above his head.)
+        // tallest hats in the shop.)
         public const double TopInset = 44, BottomInset = 12;
 
         public event Action? Clicked;
@@ -31,7 +32,7 @@ namespace TtCompanion
         internal UIElement MouthN, MouthH, MouthF;
         private Canvas? backBody; // what he wears on his back: behind his legs, riding with his body
         private AvatarArt? art;
-        private int flag;
+        private int number;
 
         public TattyWindow()
         {
@@ -53,16 +54,25 @@ namespace TtCompanion
             MouseRightButtonUp += (_, e) => { e.Handled = true; avatar.Poke(); RightClicked?.Invoke(); };
         }
 
-        // The flag he holds up: the number of the project this Tatty is for, or none (the Hub's
-        // Tatty has no project, and so no flag). Two digits get a smaller type, and past 99 it
-        // says so rather than overflowing.
-        public void SetFlag(int number)
+        // The number he wears: the project this Tatty is for, or none (the Hub's Tatty has no
+        // project, and so no number). It sits where it suits the avatar (Apply); two digits get a
+        // smaller type, and past 99 it says so rather than overflowing.
+        public void SetNumber(int number)
         {
-            flag = number;
-            ArmFlag.Visibility = number > 0 ? Visibility.Visible : Visibility.Collapsed;
-            if (art?.LeftArm != null) art.LeftArm.Visibility = number > 0 ? Visibility.Collapsed : Visibility.Visible;
-            FlagNumber.Text = number > 99 ? "99+" : number.ToString();
-            FlagNumber.FontSize = number > 99 ? 8 : number > 9 ? 10 : 12;
+            this.number = number;
+            NumTag.Visibility = number > 0 ? Visibility.Visible : Visibility.Collapsed;
+            NumberText.Text = number > 99 ? "99+" : number.ToString();
+            PlaceNumber();
+        }
+
+        // The number's type and place, from the avatar's badge (or the plate of today's drawing).
+        private void PlaceNumber()
+        {
+            double size = (art?.NumberSize ?? 7) * (number > 99 ? 0.65 : number > 9 ? 0.8 : 1);
+            var at = art?.NumberAt ?? new Point(32, 73.6);
+            NumberText.FontSize = size;
+            Canvas.SetLeft(NumberText, at.X - NumberText.Width / 2);
+            Canvas.SetTop(NumberText, at.Y - size * 1.05); // its baseline on the badge's (Segoe UI's ascent)
         }
 
         // What he looks like now, from the page (avatar.js's bake): the avatar chosen in the
@@ -78,8 +88,8 @@ namespace TtCompanion
 
         // The new drawing goes into the canvases TattyWindow.xaml names, and every pivot moves
         // to the avatar's own, so Avatar.cs moves him exactly as before. The eyes, the pupils,
-        // the flag arm (with its number) and the badge stay the window's own elements, placed
-        // where this avatar has them.
+        // the project number's badge (with the number, which the window writes) and the "!"
+        // badge stay the window's own elements, placed where this avatar has them.
         private void Apply(AvatarArt a)
         {
             art?.Idle(false);
@@ -90,7 +100,6 @@ namespace TtCompanion
             LegRFold.CenterX = a.LegRPivot.X; LegRFold.CenterY = a.LegRPivot.Y;
             BodySway.CenterX = a.BodyPivot.X; BodySway.CenterY = a.BodyPivot.Y;
             Blink.CenterY = a.EyesPivot.Y;
-            ArmWave.CenterX = a.Shoulder.X; ArmWave.CenterY = a.Shoulder.Y;
 
             if (backBody == null)
             {
@@ -101,29 +110,28 @@ namespace TtCompanion
             Fill(LegL, a.LegL);
             Fill(LegR, a.LegR);
 
-            // The window's own elements may sit deep in the last drawing (the flag arm inside
-            // its wrapper, say), not just in Body: take each out wherever it is, or putting it
-            // into the new drawing throws and leaves him half drawn.
-            foreach (var own in new FrameworkElement[] { Eyes, Pupils, ArmFlag, FlagNumber, Badge }) Detach(own);
+            // The window's own elements may sit deep in the last drawing (the number's badge
+            // inside a wrapper, or in a leg), not just in Body: take each out wherever it is, or
+            // putting it into the new drawing throws and leaves him half drawn.
+            foreach (var own in new FrameworkElement[] { Eyes, Pupils, NumTag, NumberText, Badge }) Detach(own);
             Body.Children.Clear();
             Eyes.Children.Clear();
             Fill(Pupils, a.Pupils);
             foreach (var e in a.Eyes) Eyes.Children.Add(e is AvatarArt.PupilsMark ? Pupils : e);
             if (!a.Eyes.Any(e => e is AvatarArt.PupilsMark)) Eyes.Children.Add(Pupils);
-            ArmFlag.Children.Clear();
-            foreach (var f in a.Flag) ArmFlag.Children.Add(f);
-            ArmFlag.Children.Add(FlagNumber);
-            Canvas.SetLeft(FlagNumber, a.FlagText.X - 11);
-            Canvas.SetTop(FlagNumber, a.FlagText.Y - 13.5);
+            NumTag.Children.Clear();
+            foreach (var t in a.NumTag) NumTag.Children.Add(t);
+            NumTag.Children.Add(NumberText);
+            NumberText.Foreground = a.NumberPaint ?? Brushes.White;
 
             foreach (var e in a.Body) Body.Children.Add(e);
             if (!Replace(a.EyesSlot, Eyes)) Body.Children.Add(Eyes);
-            if (!Replace(a.FlagSlot, ArmFlag)) Body.Children.Insert(0, ArmFlag);
+            if (!Replace(a.NumSlot, NumTag)) Body.Children.Add(NumTag);
             Canvas.SetLeft(Badge, a.BadgeAt.X - 11);
             Canvas.SetTop(Badge, a.BadgeAt.Y - 11);
             Body.Children.Add(Badge);
 
-            if (a.LeftArm != null) a.LeftArm.Visibility = flag > 0 ? Visibility.Collapsed : Visibility.Visible;
+            PlaceNumber();
             MouthN = a.Mouths.GetValueOrDefault("neutral") ?? new Canvas();
             MouthH = a.Mouths.GetValueOrDefault("happy") ?? new Canvas();
             MouthF = a.Mouths.GetValueOrDefault("flat") ?? new Canvas();

@@ -167,7 +167,8 @@ def main(argv):
             check("a wrong password is refused", wait("document.querySelector('#debug-said').textContent === \"That isn't it.\"", 5))
             p.js(f"{{ const pw = document.querySelector('#debug-password'); pw.value = {json.dumps(secret)}; document.querySelector('#debug-unlock').click(); }} 1")
             check("the right one shows the coin buttons", wait("document.querySelectorAll('#debug-settings .debug-give').length === 3", 5))
-            before = int(p.js("document.querySelector('.purse-count').textContent.replace(/\\D/g, '')"))
+            # (the balance from the server: the purse may still be counting in the milestones' coins)
+            before = int(p.js("api('/api/wallet').then(w => w.coins)"))
             p.js("{ const r = document.querySelectorAll('#debug-settings .debug-give')[1].getBoundingClientRect(); "
                  "document.body.dispatchEvent(new PointerEvent('pointerdown', {clientX: r.x + 10, clientY: r.y + 10, bubbles: true})); "
                  "document.querySelectorAll('#debug-settings .debug-give')[1].click(); } 1")
@@ -175,13 +176,15 @@ def main(argv):
             time.sleep(0.3)
             shot("8-debug-coins")
             check("and count in", wait(f"document.querySelector('.purse-count').textContent.replace(/\\D/g, '') === '{before + 100}'", 8))
+            out["debug_coins"] = [before, p.js("document.querySelector('.purse-count').textContent"), p.js("api('/api/wallet').then(w => w.coins)")]
 
         # what the tray app is sent: the chosen avatar in what he wears, in the window's own parts
         baked = p.js("TattyAvatar.bake('cat', {neck: 'bow', hat: 'top'}, '#3B6EA8')") or ""
         check("the tray app's description has his parts", all(x in baked for x in (
             '<tatty av="cat"', '<part name="Root"', '<part name="LegL"', '<part name="Body"', "<eyes ", "<pupils>",
-            '<mouth name="neutral">', "<flag ", "<badge ", '<g p="Tail"')))
-        check("and what he wears, with his collar off", "w-neck-bow" in baked and baked.count("#c9a227") == 0)
+            '<mouth name="neutral">', "<numtag ", "<badge ", '<g p="Tail"')))
+        # (the collar's band is his own bit at the neck; his number's tag is not, and stays)
+        check("and what he wears, with his collar off", "w-neck-bow" in baked and 'd="M35,71 Q52,80 69,71' not in baked)
         out["errors"] = p.js("window.__shopErrs")
         check("no script errors or CSP refusals", not out["errors"])
     finally:
