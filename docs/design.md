@@ -301,6 +301,101 @@ the noise.
   turned off. The page does the same thing for `prefers-reduced-motion`, where
   the card says it just as well.
 
+## Coins and the shop
+
+Tatty pays for work done. **Tatty coins** are earned for finishing things and, a
+few at a time, for deciding them, and spent in the **shop** on avatars for him to
+be and accessories for him to wear. It is meant to be a small pleasure on the way
+through a feature, so most of it is in how it looks and sounds.
+
+- **What pays, and how much** is `app/shop.json`'s `rewards`, read each time it is
+  wanted. A milestone pays by its tier (big 50, mid 20, small 8: `MILESTONES`), a
+  merge request opened 15 and merged 40, a task done on a task board 4 (a batch 10,
+  a big round number 50, whether or not the board celebrates), and a decision
+  made: a question answered (2; declined, nothing), a challenge, proposal or
+  question decided (3), a review suggestion decided (3), a story accepted or
+  rejected (2). `/api/milestone` and `tatty.sh cheer` pay nothing, or they would be
+  a tap to fill the purse from.
+- **One wallet** for the person, not one per project: `<home>/wallet.json`, holding
+  the balance, what is owned and worn, the avatar chosen, the last forty
+  transactions and every reward key paid. A new one holds the welcome gift
+  (`welcome`, 100) and Polished Tatty, who is free. Each window's server writes it,
+  so every change is a read-change-write under the cross-process lock
+  `reviewdoc.Lock` already keeps for the Review Suggestions document
+  (`wallet_change`). A wallet edited by hand is read safely: a balance that isn't a
+  number is nothing, and nothing that isn't owned can be worn or chosen.
+- **Once only.** Every reward has a key (`ledger:<row key>`, `answer:<id>`,
+  `decide:<doc>:<id>`, `review:<doc>:<id>`, `story:<board>:<id>`, `task:...`,
+  `merge:<feature>:<state>`), and the wallet remembers each one it has paid
+  (`reward`). That is what makes a reward once-only across restarts, across a
+  decision changed (the first one paid), and across the several servers running at
+  once, which all follow the one ledger and so all see the same milestone. The
+  server that pays says so with a `coins` event (`amount`, `reason`, `kind`,
+  `balance`, `paid: true`, and `milestone`: the seq of the milestone event it was
+  for); one that finds the key paid in the last thirty seconds says so too
+  (`paid: false`), so every open window shows the coins arriving and none pays them
+  twice. `/api/status` carries the balance as well, so a window catches up on what
+  another spent within its fifteen-second poll.
+- **The shop's API.** `GET /api/wallet` is the wallet with the catalogue;
+  `POST /api/shop` buys (`{action: "buy", id}`: an avatar or an accessory, once,
+  if the coins are there; refused with how many more are `need`ed), wears
+  (`{action: "wear", slot, id}`, an accessory owned, in its own spot; `id: ""`
+  takes it off) and chooses an avatar unlocked (`{action: "choose", id}`). Each
+  change is a `wallet` event, for the other windows.
+- **The drawings** are `web/avatar.js`, made from the concept board where the look
+  was chosen (`docs/avatar/concepts.html`: the board is the design record, and
+  `tools/make-avatar-js.py` makes avatar.js from it, leaving out the directions
+  not chosen; change a drawing on the board, then run it). Each avatar is an
+  SVG whose groups are named after `TattyWindow.xaml`'s moving parts, moved by
+  keyframe tracks the way `Avatar.cs` moves them, so the tray app can take the same
+  avatars on later. What is worn is a class on the drawing's `.dress` group; the
+  rules (which item shows, which of the avatar's own bits it takes off -- the cat's
+  collar for anything at the neck, the owl's beak to a tip under a moustache -- and
+  what a hat does to an antenna) are generated from the wardrobe and go in through
+  the CSSOM, because the page's CSP refuses style attributes and `<style>`.
+- **The purse** (`web/wallet.js`) sits beside the gear with the balance, and opens
+  the shop. A `coins` event that is news (not a replay on connect) flies that many
+  coins (up to fourteen) into it, from where the person just clicked for a
+  decision or from the middle of the page for a milestone, each clinking as it
+  lands, the count rolling up and a "+N" rising off the purse; forty or more gets a
+  fanfare. The motion is the Web Animations API, which the CSP allows.
+- **The shop** (`#shop`, `web/shop.js` and `shop.css`) is a striped awning, a spinning
+  coin with the balance, a stage where Tatty stands in what he wears, and shelves:
+  Avatars, then one per spot. A hand over a card puts it on him to try (the stage
+  says so); buying pours coins from the balance into the card with a till's
+  ka-ching, the card pops and sparkles, and he puts it on and celebrates; a thing
+  too dear shakes, bonks and says how many more it needs, and he goes "oops". The
+  rarer a thing (by price: common, rare, epic, legendary), the more its card shines.
+  The side shows what he wears (a chip takes each off), what pays and how much, and
+  the last few transactions.
+- **Sound and motion.** The sounds (`web/sfx.js`) are worked out rather than shipped,
+  like `Sounds.cs`: tones and filtered noise through Web Audio. A browser plays
+  nothing before the page has been clicked, so coins earned on a page nobody has
+  touched yet land silently. The shop has a **Sound** and a **Motion** switch
+  (`tt-sound`, `tt-juice` in localStorage). Like the status bar, the shop's motion
+  is not gated on `prefers-reduced-motion`: a default, not a veto, and this
+  switch is the person's say. With it off the coins just count and the shelves
+  stand still.
+- **On the desktop.** The tray app's Tatty wears the same: the page in its bubble
+  draws the chosen avatar in what he wears out of sight (avatar.js's `bake`, in the
+  mode's colour as the tray app has it, `TtAccent`), reads every colour, stroke and
+  visibility back from the browser, which has the cascade, and sends it to the
+  window as a small description (`tell("avatar", …)`) laid out in the window's own
+  moving parts: the legs, the body and what rides behind it, the eyes and pupils,
+  the mouths, the flag arm and the badge. `AvatarArt.cs` makes WPF paths of it, and
+  `TattyWindow.Apply` puts them into the canvases `TattyWindow.xaml` names and moves
+  every pivot to the avatar's own, so `Avatar.cs` performs exactly as before (its
+  mouths are `MouthN/H/F`, whichever drawing is on); the eyes, flag arm (with its
+  number) and badge stay the window's own elements, placed where the avatar has
+  them, and with the flag up the avatar's own left arm gives way to it. The parts
+  of an avatar's own that move (a tail, wings, a propeller, a jetpack's flames) get
+  a small idle motion there (`AvatarArt.Idle`, only with Animations on); the
+  states the page has and the tray app hasn't (thinking, reading and the rest)
+  aren't drawn there yet. The page sends again when the look changes: here (a
+  `wallet` event), in another window (the status poll's `look`), or with the mode.
+  The last description is kept (`%LOCALAPPDATA%\Tatty\avatar-art.xml`), so he is
+  right from the first frame; one that doesn't read changes nothing.
+
 ## Modes and colour
 
 A **mode** is one of the toolbox's discipline plugins: engineering, design or
@@ -1259,6 +1354,14 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   app's boot, which starts no Claude session.
 - `claude plugin test plugins/tatty` covers the mod, including the joining
   rule.
+- `tools/shop-check.py` opens the shop in headless Edge or Chrome against a
+  server with a new wallet and a ledger it can write: coins earned flying into the
+  purse, the shelves, a hat tried on, bought and worn, a thing too dear, and an
+  avatar unlocked, with any script error or CSP refusal reported (`--shots <dir>`
+  keeps screenshots, `--dark` the dark theme). test-tatty.sh's `coins` section
+  covers the server's side: the welcome gift, a milestone paid once, another
+  server paying nothing twice, answers, buying, wearing, choosing and a mangled
+  wallet.
 - `tools/page-check.py` and `tools/features-check.py` drive the page in
   headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
   Given a page opened as the companion (`?mode=companion`), `page-check.py` also

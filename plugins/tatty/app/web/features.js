@@ -5,7 +5,7 @@
 "use strict";
 
 const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
-  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), jira: $("#page-jira"),
+  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
   whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard") };
 // A page of one mode's own: going to it switches to that mode, so a link never
@@ -132,7 +132,7 @@ window.addEventListener("hashchange", closeSidePanel);
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #workflows/<session tag>[/ask/<question id>] · #chats/<chat id> (chat.js)
 // · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/code-diff (diff.js)
-// · #toolbox · #settings · #jira
+// · #toolbox · #settings · #shop (shop.js) · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
 
@@ -156,6 +156,7 @@ function parseRoute() {
   if (parts[0] === "tasks") return { page: "tasks" };
   if (parts[0] === "toolbox") return { page: "toolbox" };
   if (parts[0] === "settings") return { page: "settings" };
+  if (parts[0] === "shop") return { page: "shop" };
   if (parts[0] === "jira") return { page: "jira" };
   if (parts[0] === "modes") return { page: "modes" };
   if (parts[0] === "hub") return { page: "hub" };
@@ -176,6 +177,8 @@ function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
   for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks", whiteboard: "whiteboards" }[which] || which));
   $("#settings-link").classList.toggle("on", which === "settings");
+  const purse = $("#wallet-link");
+  if (purse) purse.classList.toggle("on", which === "shop");
   renderNav();
   clearInterval(homeTimer);
 }
@@ -221,6 +224,11 @@ async function route() {
     }
   } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide);
   else if (r.page === "settings") renderSettings(pageEls.settings);
+  else if (r.page === "shop") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderShop === "function") await renderShop(pageEls.shop);
+    else pageEls.shop.replaceChildren(el("p", { class: "pad st missing" }, "The shop didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
   else if (r.page === "jira") {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderJira === "function") renderJira(pageEls.jira);

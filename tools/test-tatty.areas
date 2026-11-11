@@ -12,6 +12,8 @@ ignore	plugins/tatty/assets/*	-
 ignore	plugins/tatty/tsconfig.json	-
 ignore	tools/features-check.py	-
 ignore	tools/page-check.py	-
+ignore	tools/shop-check.py	-
+ignore	tools/make-avatar-js.py	-
 ignore	tools/window-check.py	-
 ignore	tools/whiteboard-perf.py	-
 ignore	tools/test-compact-chat-browser.py	-
@@ -44,7 +46,8 @@ banner	^models	models,llms,settings,chats
 banner	^setting up LLM	clone,hub,llms
 banner	^features	features,newfeature,editdoc,startstep,views,root,milestones
 banner	^the Hub	hub,clone
-banner	^milestones	milestones
+banner	^milestones	milestones,coins
+banner	^coins and the shop	coins
 banner	^branches	branches,worktrees,mergestep,startstep,archive
 banner	^committing	commit
 banner	^the Review step	reviewstep,reviewrepo,mergestep

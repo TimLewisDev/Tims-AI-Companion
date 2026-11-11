@@ -75,6 +75,8 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
+          "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
+          "wallet.js": "text/javascript", "shop.js": "text/javascript", "shop.css": "text/css",
           "theme.css": "text/css", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -2173,9 +2175,13 @@ def watch_ledger(state):
             for row in rows:
                 key = str(row.get("key") or
                           f"{row.get('folder')}|{row.get('event')}|{row.get('qualifier')}")
-                if key in seen or not announce(state, row):
+                if key in seen:
+                    continue
+                ev = announce(state, row)
+                if not ev:
                     continue
                 seen.add(key)
+                reward(state, "ledger:" + key, ev["tier"], ev["label"], milestone=ev["seq"])
                 state.touch()  # the toolbox is working, so the window is wanted
         except Exception:  # a watcher that dies takes the celebrations with it
             continue
@@ -2386,6 +2392,7 @@ def decide_record(state, folder, body):
         for pre in ("decide.sh: ", "challenges.sh: ", "proposals.sh: ", "questions.sh: "):
             msg = msg.removeprefix(pre)
         return (409 if p.returncode == 1 else 400), {"error": msg}
+    reward(state, f"decide:{doc.as_posix()}:{item}", "decision", "Decision made")
     return 200, {"said": p.stdout.strip()}
 
 
@@ -2561,6 +2568,177 @@ def features_list(state):
         found = list(pool.map(lambda d: feature_summary(state, d), folders))
     return {"root": info, "features": sorted(found, key=lambda f: -f["updated"]), "toolbox": toolbox,
             "archived": archived_list()}
+
+
+# ---------------------------------------------------------------- coins and the shop
+# Tatty coins: earned for finishing things (the milestones above, a merge, a task
+# board's tasks done) and, a few at a time, for every decision made (a question
+# answered; a challenge, proposal or question decided; a review suggestion; a
+# story accepted or rejected), and spent in the shop (shop.js) on avatars and
+# accessories. shop.json says what is for sale, at what price, and what each
+# kind of reward pays.
+#
+# There is one wallet for the person, not one per project: <home>/wallet.json.
+# Every window's server writes it, so each write is a read-change-write under the
+# cross-process lock reviewdoc.py keeps for its documents. A reward has a key, and
+# the wallet remembers every key it has paid ("paid"): that is what makes a reward
+# once-only, across restarts and across the several servers that follow the one
+# ledger and so all see the same milestone. The server that pays says so with a
+# "coins" event; one that finds it paid a moment ago says so too (paid: false), so
+# every open window shows the coins arriving and none pays them twice.
+
+SHOP_FILE = HERE / "shop.json"
+WALLET_LOG = 40   # the transactions kept, newest last
+WALLET_ECHO = 30  # seconds: a reward another server paid this recently is still news in this window
+
+
+def shop_catalogue():
+    """shop.json, read each time it is wanted (it is small, and an edit then needs no restart)."""
+    data = read_json(SHOP_FILE, {})
+    keep = lambda key, need: [x for x in data.get(key, []) if isinstance(x, dict) and all(x.get(k) for k in need)]
+    return {"welcome": int(data.get("welcome", 0) or 0),
+            "rewards": {k: v for k, v in (data.get("rewards") or {}).items() if isinstance(v, int)},
+            "avatars": keep("avatars", ("id",)), "slots": keep("slots", ("id",)), "items": keep("items", ("id", "slot"))}
+
+
+def wallet_path():
+    return home() / "wallet.json"
+
+
+def wallet_load(cat=None):
+    """The wallet as stored, every part checked, or a new one (with shop.json's welcome gift) when
+    there is none yet. The free avatars are always owned, and the one chosen is always owned."""
+    cat = cat or shop_catalogue()
+    free = [a["id"] for a in cat["avatars"] if not a.get("price")]
+    w = read_json(wallet_path(), {})
+    fresh = not w
+    coins = w.get("coins") if isinstance(w.get("coins"), int) else (cat["welcome"] if fresh else 0)
+    owned = [x for x in w.get("owned", []) if isinstance(x, str)] if isinstance(w.get("owned"), list) else []
+    owned = [f for f in free if f not in owned] + owned
+    avatar = w.get("avatar") if w.get("avatar") in owned else (free[0] if free else "")
+    outfit = w.get("outfit") if isinstance(w.get("outfit"), dict) else {}
+    outfit = {str(k): v for k, v in outfit.items() if isinstance(v, str) and v in owned}
+    paid = w.get("paid") if isinstance(w.get("paid"), dict) else {}
+    log = w.get("log") if isinstance(w.get("log"), list) else []
+    if fresh and coins:
+        log = [{"ts": time.time(), "amount": coins, "reason": "Welcome to the shop"}]
+    return {"coins": max(0, coins), "owned": owned, "avatar": avatar, "outfit": outfit, "paid": paid,
+            "log": [e for e in log if isinstance(e, dict)][-WALLET_LOG:]}
+
+
+def wallet_change(fn):
+    """Read, change and write the wallet as one step, across every Tatty process. fn(wallet) changes
+    it in place and returns an answer; returns (answer, the wallet after). Raises reviewdoc.DocError
+    when another process holds the wallet for too long."""
+    home().mkdir(parents=True, exist_ok=True)
+    with reviewdoc.Lock(wallet_path()):
+        w = wallet_load()
+        answer = fn(w)
+        write_json(wallet_path(), w)
+    return answer, w
+
+
+def wallet_view(w=None):
+    """What the page is told: the balance, what is owned and worn, and the last few transactions."""
+    w = w or wallet_load()
+    return {"coins": w["coins"], "owned": w["owned"], "avatar": w["avatar"], "outfit": w["outfit"], "log": w["log"][-10:]}
+
+
+def wallet_glance():
+    """For the status poll: the balance, and what Tatty looks like (the avatar and what he wears),
+    so every window, and each tray app's Tatty, catches up on a change made in another."""
+    w = wallet_load()
+    return {"coins": w["coins"], "look": w["avatar"] + "|" + ",".join(f"{k}={v}" for k, v in sorted(w["outfit"].items()))}
+
+
+def wallet_log(w, amount, reason):
+    w["log"] = (w["log"] + [{"ts": time.time(), "amount": amount, "reason": reason}])[-WALLET_LOG:]
+
+
+def reward(state, key, kind, reason, **extra):
+    """Pay the reward of `kind` (shop.json's "rewards") once for `key`, and say so with a "coins" event
+    (extra: what the page shows the coins coming from, such as the milestone event's seq). Returns the
+    event, or None when there was nothing to pay or to say. Never raises: a reward is never worth a
+    failed request."""
+    try:
+        amount = int(shop_catalogue()["rewards"].get(kind, 0) or 0)
+        if amount <= 0 or not key:
+            return None
+        now = time.time()
+
+        def pay(w):
+            when = w["paid"].get(key)
+            if isinstance(when, (int, float)):
+                return False, when
+            w["paid"][key] = now
+            w["coins"] += amount
+            wallet_log(w, amount, reason)
+            return True, now
+
+        (paid, when), w = wallet_change(pay)
+        if not paid and now - when > WALLET_ECHO:
+            return None
+        return state.emit("coins", amount=amount, reason=reason, kind=kind, key=key, paid=paid, balance=w["coins"], **extra)
+    except Exception:  # (a busy or unreadable wallet: the work itself still counts)
+        return None
+
+
+def shop_act(state, b):
+    """The page's purchases and choices: (code, answer). action: buy {id} (an avatar or an accessory),
+    wear {slot, id} (an accessory owned; id "" takes that spot's off), choose {id} (an avatar owned).
+    A refusal says why, and (not enough coins) how many more are needed."""
+    cat = shop_catalogue()
+    action, iid = str(b.get("action", "")), str(b.get("id", ""))
+    if action not in ("buy", "wear", "choose"):
+        return 400, {"error": "action: buy, wear or choose"}
+    avatars = {a["id"]: a for a in cat["avatars"]}
+    items = {i["id"]: i for i in cat["items"]}
+    things = {**items, **avatars}
+    slots = {x["id"] for x in cat["slots"]}
+    slot = str(b.get("slot", ""))
+
+    def change(w):
+        if action == "buy":
+            thing = things.get(iid)
+            if not thing:
+                return 404, {"error": "there's no such thing in the shop"}
+            if iid in w["owned"]:
+                return 409, {"error": "you have that already"}
+            price = max(0, int(thing.get("price", 0) or 0))
+            if w["coins"] < price:
+                return 409, {"error": "not enough coins", "need": price - w["coins"]}
+            w["coins"] -= price
+            w["owned"].append(iid)
+            wallet_log(w, -price, "Bought: " + str(thing.get("name") or iid))
+            return 200, {}
+        if action == "wear":
+            if slot not in slots:
+                return 400, {"error": "slot: " + ", ".join(sorted(slots))}
+            if not iid:
+                w["outfit"].pop(slot, None)
+                return 200, {}
+            if iid not in items or items[iid]["slot"] != slot:
+                return 404, {"error": "there's no such thing for that spot"}
+            if iid not in w["owned"]:
+                return 409, {"error": "buy it first"}
+            w["outfit"][slot] = iid
+            return 200, {}
+        if iid not in avatars:
+            return 404, {"error": "there's no such avatar"}
+        if iid not in w["owned"]:
+            return 409, {"error": "unlock him first"}
+        w["avatar"] = iid
+        return 200, {}
+
+    try:
+        (code, answer), w = wallet_change(change)
+    except (reviewdoc.DocError, OSError) as e:
+        return 503, {"error": f"the wallet is busy ({e}); try again"}
+    if code != 200:
+        return code, {**answer, "coins": w["coins"]}
+    view = wallet_view(w)
+    state.emit("wallet", did=action, id=iid, slot=slot, **view)
+    return 200, view
 
 
 # ---------------------------------------------------------------- branches and merging
@@ -3135,6 +3313,7 @@ def review_decide(state, folder, body):
         item = reviewdoc.change(review_doc_path(folder), lambda d: d.decide(str(body.get("id", "")), str(body.get("choice", "")), str(body.get("note", ""))))
     except reviewdoc.DocError as e:
         return (404 if "no such document" in str(e) else 409), {"error": str(e)}
+    reward(state, f"review:{review_doc_path(folder).as_posix()}:{item['id']}", "suggestion", "Suggestion decided")
     doc, _ = review_load(folder)
     answer = {"ok": True, "id": item["id"], "decision": item["decision"], "status": doc.status, "counts": doc.counts(), "started": None}
     if doc.status == "Decided":
@@ -3366,9 +3545,10 @@ def merge_set(state, folder, new, url="", number=0):
                 rec = branch_record(feature)
                 rec["merge"] = {**(rec.get("merge") or {}), "note": note}
                 save_branch(feature, rec)
-        state.emit("milestone", event="merge." + new, label="Request opened" if new == "opened" else "Merged",
-                   tier="small" if new == "opened" else "mid", prefix=feature, qualifier=feature, folder=folder.as_posix(),
-                   route="", skill="", feature=feature, link=feature_link(feature))
+        ev = state.emit("milestone", event="merge." + new, label="Request opened" if new == "opened" else "Merged",
+                        tier="small" if new == "opened" else "mid", prefix=feature, qualifier=feature, folder=folder.as_posix(),
+                        route="", skill="", feature=feature, link=feature_link(feature))
+        reward(state, f"merge:{feature}:{new}", new, ev["label"], milestone=ev["seq"])
     return merge_view(feature)
 
 
@@ -5101,6 +5281,8 @@ def stories_change(state, folder, b):
                 save_layout(folder, layout)
     if action == "add":
         return story_added(state, folder, b, out)
+    if action in ("accept", "reject"):
+        reward(state, f"story:{folder.as_posix()}:{sid}", "story", "Story accepted" if action == "accept" else "Story rejected")
     state.emit("stories", name=folder.name, changed=True)
     return 200, design_view(state, folder)
 
@@ -6198,14 +6380,17 @@ def task_celebrate(state, b, folder, before, after, label, qualifier, tier):
     """Something finished: a milestone, which the tray app's Tatty celebrates by its
     own Animations setting, and the feed shows as a card. Crossing 10, 50 or a
     hundred completed is a big one."""
-    if not b["options"]["celebrate"]:
-        return
     marks = sorted({10, 50, *range(100, after + 1, 100)})
     crossed = next((m for m in reversed(marks) if before < m <= after), None)
     if crossed:
         tier, label = "big", f"{crossed} tasks completed!"
-    state.emit("milestone", event="tasks.done", label=label, tier=tier, prefix=folder.name, qualifier=qualifier,
-               folder="", route="", skill="", feature="", link="#tasks/" + urllib.parse.quote(folder.name, safe=""))
+    kind, key = {"big": "big", "mid": "tasks"}.get(tier, "task"), f"task:{folder.as_posix()}:{qualifier}"
+    if not b["options"]["celebrate"]:
+        reward(state, key, kind, label)
+        return
+    ev = state.emit("milestone", event="tasks.done", label=label, tier=tier, prefix=folder.name, qualifier=qualifier,
+                    folder="", route="", skill="", feature="", link="#tasks/" + urllib.parse.quote(folder.name, safe=""))
+    reward(state, key, kind, label, milestone=ev["seq"])
 
 
 def task_targets(b):
@@ -8297,9 +8482,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             return self.send(200, {"open": True, "mod": st.mod_attached(), "cwd": st.cwd,
                                    "session": st.mod_session, "modes": installed_modes(),
-                                   "hub": {"pending": st.hub_pending}, "project": project_status()})
+                                   "hub": {"pending": st.hub_pending}, "project": project_status(),
+                                   **wallet_glance()})
         if path == "/api/hub":
             return self.send(200, hub_view(st))
+        if path == "/api/wallet":
+            return self.send(200, {**wallet_view(), "catalogue": shop_catalogue()})
         if path == "/api/events":
             since = int(q.get("since", ["0"])[0] or 0)
             with st.cond:
@@ -8571,6 +8759,9 @@ class Handler(BaseHTTPRequestHandler):
             feature = session_feature(st, tag, session)
             st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=feature, link=ask_link(st, tag, feature, qid))
             return self.send(200, {"id": qid})
+        if path == "/api/shop":
+            code, answer = shop_act(st, b)
+            return self.send(code, answer)
         if path == "/api/reply":
             qid = str(b.get("id", ""))
             rec = st.questions.get(qid)
@@ -8587,6 +8778,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(400, {"error": "answers: an object keyed by question"})
                     rec["answers"] = {str(k): str(v) for k, v in ans.items()}
             st.emit("answered", id=qid, declined=rec["declined"], answers=rec["answers"], tag=rec.get("tag", ""))
+            if not rec["declined"]:
+                reward(st, "answer:" + qid, "answer", "Question answered")
             return self.send(200, {"ok": True})
         if path == "/api/say":
             text = str(b.get("text", "")).strip()

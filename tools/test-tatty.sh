@@ -1820,6 +1820,112 @@ ledger build.complete "" Fresh
 waitfor '"prefix": "Fresh"' && ok "but the next milestone is" || bad "but the next milestone is"
 
 fi
+if section coins; then
+echo "# coins and the shop"
+# One wallet in Tatty's home, for every project: it starts with shop.json's welcome gift and
+# Polished Tatty, and the page reads it, with the catalogue, from /api/wallet.
+coins() { get /api/wallet >"$T/w"; pick "$T/w" "d['coins']"; }
+get /api/wallet >"$T/w"
+[ "$(pick "$T/w" "d['log'][0]['amount'] == 100 and d['log'][0]['reason'] == 'Welcome to the shop'")" = True ] &&
+	ok "a new wallet starts with the welcome gift" || bad "a new wallet starts with the welcome gift" "$(head -c 300 "$T/w")"
+[ "$(pick "$T/w" "d['avatar'] == 'polished' and 'polished' in d['owned']")" = True ] &&
+	ok "and Polished Tatty, his to start with" || bad "and Polished Tatty, his to start with" "$(head -c 300 "$T/w")"
+[ "$(pick "$T/w" "len(d['catalogue']['avatars']) == 6 and len(d['catalogue']['items']) > 50")" = True ] &&
+	ok "the catalogue comes with it" || bad "the catalogue comes with it"
+get /api/status >"$T/s"
+[ "$(pick "$T/s" "d['coins']")" = "$(coins)" ] && ok "the status says the balance" || bad "the status says the balance" "$(head -c 300 "$T/s")"
+
+# A milestone pays by its tier, once per ledger key, and says so with a "coins" event.
+coin_row() {
+	mkdir -p "$TT_EVENTS_HOME"
+	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"coins|%s","prefix":"Coins","folder":"%s","route":"full","qualifier":"%s","skill":"tt-execute","approx":false}\n' \
+		"$1" "$2" "$T/coins" "$2" >>"$TT_EVENTS_HOME/events.jsonl"
+}
+coins_wait() { local i; for i in $(seq 1 20); do get /api/events >"$T/ev"; grep -qF -- "$1" "$T/ev" && return 0; sleep 0.5; done; return 1; }
+paid() { $PY -c "import json, sys
+ev = [e for e in json.load(open(sys.argv[1], encoding='utf-8')) if e['type'] == 'coins' and e['key'] == sys.argv[2]]
+print(len(ev), ev[-1]['amount'] if ev else 0, ev[-1]['paid'] if ev else '', ev[-1].get('milestone', 0) > 0 if ev else '')" "$T/ev" "$1"; }
+before=$(coins)
+coin_row build.unit_validated CU1
+coins_wait '"key": "ledger:coins|CU1"' && ok "a milestone pays" || bad "a milestone pays"
+[ "$(paid 'ledger:coins|CU1')" = "1 20 True True" ] && ok "a mid one, 20 coins, from its milestone" || bad "a mid one, 20 coins, from its milestone" "$(paid 'ledger:coins|CU1')"
+[ "$(coins)" = "$((before + 20))" ] && ok "into the wallet" || bad "into the wallet" "$before -> $(coins)"
+has "which remembers it paid" "$TATTY_HOME/wallet.json" '"ledger:coins|CU1"'
+coin_row build.unit_validated CU1  # the same key again
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+[ "$(paid 'ledger:coins|CU1')" = "1 20 True True" ] && [ "$(coins)" = "$((before + 20))" ] &&
+	ok "the same milestone doesn't pay twice" || bad "the same milestone doesn't pay twice" "$(paid 'ledger:coins|CU1') $(coins)"
+# Another window's server (another process, the same wallet) pays nothing more for a key it sees after
+# this one has paid it, though a moment later it still says so, for its own window to show.
+$PY - "$TATTY_HOME" "$root/plugins/tatty/app" <<'PYEOF' >"$T/other" 2>&1
+import json, os, sys, types
+os.environ["TATTY_HOME"], here = sys.argv[1], sys.argv[2]
+sys.argv = ["server.py"]
+sys.path.insert(0, here)
+import importlib.util
+spec = importlib.util.spec_from_file_location("srv", os.path.join(here, "server.py"))
+srv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(srv)
+said = []
+st = types.SimpleNamespace(emit=lambda t, **d: said.append(d) or d)
+srv.reward(st, "ledger:coins|CU1", "mid", "Work unit validated")
+srv.reward(st, "ledger:coins|elsewhere", "small", "Something small")
+print(json.dumps([[d["paid"], d["amount"]] for d in said]))
+PYEOF
+has "another server pays nothing twice, but says so" "$T/other" '[[false, 20], [true, 8]]'
+before=$((before + 28))
+[ "$(coins)" = "$before" ] && ok "and what it did pay is in the one wallet" || bad "and what it did pay is in the one wallet" "$(coins), wanted $before; $(head -c 300 "$T/other")"
+
+# A question answered pays a little; one declined pays nothing.
+Q='{"questions":[{"question":"Coins?","header":"Coins","multiSelect":false,"options":[{"label":"Yes","description":""},{"label":"No","description":""}]}]}'
+echo "$Q" | bash "$W" ask --wait 0 >"$T/out" 2>&1; id=$(sed -n 's/^id=//p' "$T/out")
+post /api/reply "{\"id\":\"$id\",\"answers\":{\"Coins?\":\"Yes\"}}" >/dev/null
+get /api/events >"$T/ev"
+[ "$(paid "answer:$id")" = "1 2 True False" ] && [ "$(coins)" = "$((before + 2))" ] &&
+	ok "a question answered pays 2" || bad "a question answered pays 2" "$(paid "answer:$id") $(coins)"
+echo "$Q" | bash "$W" ask --wait 0 >"$T/out" 2>&1; id=$(sed -n 's/^id=//p' "$T/out")
+post /api/reply "{\"id\":\"$id\",\"declined\":true}" >/dev/null
+get /api/events >"$T/ev"
+[ "$(paid "answer:$id")" = "0 0  " ] && ok "a question declined pays nothing" || bad "a question declined pays nothing" "$(paid "answer:$id")"
+before=$((before + 2))
+
+# The shop: buy (once, with the coins for it), wear what is owned, choose an avatar unlocked.
+shop() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/shop"; }
+shopto() { curl -s -o "$T/shop" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/shop"; }
+[ "$(shop '{"action":"steal","id":"crown"}')" = 400 ] && ok "a shop action it doesn't know is refused" || bad "a shop action it doesn't know is refused"
+[ "$(shop '{"action":"buy","id":"no-such-hat"}')" = 404 ] && ok "so is a thing it doesn't sell" || bad "so is a thing it doesn't sell"
+[ "$(shopto '{"action":"buy","id":"owl"}')" = 409 ] && [ "$(pick "$T/shop" "d['error'] == 'not enough coins' and d['need'] == 600 - $before")" = True ] &&
+	ok "not enough coins: refused, saying how many more" || bad "not enough coins: refused, saying how many more" "$(cat "$T/shop")"
+[ "$(shopto '{"action":"buy","id":"party"}')" = 200 ] && [ "$(pick "$T/shop" "d['coins'] == $before - 40 and 'party' in d['owned']")" = True ] &&
+	ok "a party hat bought for 40" || bad "a party hat bought for 40" "$(cat "$T/shop")"
+[ "$(shop '{"action":"buy","id":"party"}')" = 409 ] && ok "and not bought twice" || bad "and not bought twice"
+[ "$(pick "$TATTY_HOME/wallet.json" "d['log'][-1] == {**d['log'][-1], 'amount': -40, 'reason': 'Bought: Party hat'}")" = True ] &&
+	ok "the purchase is in the wallet's log" || bad "the purchase is in the wallet's log"
+[ "$(shop '{"action":"wear","slot":"hat","id":"crown"}')" = 409 ] && ok "a hat not bought can't be worn" || bad "a hat not bought can't be worn"
+[ "$(shop '{"action":"wear","slot":"neck","id":"party"}')" = 404 ] && ok "nor a hat round the neck" || bad "nor a hat round the neck"
+[ "$(shopto '{"action":"wear","slot":"hat","id":"party"}')" = 200 ] && [ "$(pick "$T/shop" "d['outfit']")" = "{'hat': 'party'}" ] &&
+	ok "the party hat worn" || bad "the party hat worn" "$(cat "$T/shop")"
+get /api/status >"$T/s"
+[ "$(pick "$T/s" "d['look']")" = "polished|hat=party" ] && ok "the status says what he looks like, for the tray app" || bad "the status says what he looks like, for the tray app" "$(head -c 300 "$T/s")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[e['did'] for e in d if e['type'] == 'wallet']")" = "['buy', 'wear']" ] &&
+	ok "each change tells the windows" || bad "each change tells the windows" "$(pick "$T/ev" "[e.get('did') for e in d if e['type'] == 'wallet']")"
+[ "$(shopto '{"action":"wear","slot":"hat","id":""}')" = 200 ] && [ "$(pick "$T/shop" "d['outfit']")" = "{}" ] &&
+	ok "and taken off" || bad "and taken off" "$(cat "$T/shop")"
+[ "$(shop '{"action":"choose","id":"owl"}')" = 409 ] && ok "an avatar not unlocked can't be chosen" || bad "an avatar not unlocked can't be chosen"
+[ "$(shop '{"action":"choose","id":"polished"}')" = 200 ] && ok "the one he starts with can" || bad "the one he starts with can"
+# A wallet edited by hand can't give him what he doesn't own.
+$PY -c "import json, sys; p = sys.argv[1]; w = json.load(open(p)); w.update(coins='lots', outfit={'hat': 'crown'}, avatar='owl'); json.dump(w, open(p, 'w'))" "$TATTY_HOME/wallet.json"
+get /api/wallet >"$T/w"
+[ "$(pick "$T/w" "d['coins'] == 0 and d['outfit'] == {} and d['avatar'] == 'polished'")" = True ] &&
+	ok "a mangled wallet is read safely" || bad "a mangled wallet is read safely" "$(head -c 300 "$T/w")"
+for f in avatar.js avatar.css sfx.js wallet.js shop.js shop.css; do
+	[ "$(code "$U/static/$f")" = 200 ] || bad "$f served"
+done
+ok "the shop's scripts and styles are served"
+
+fi
 if section settings; then
 echo "# settings and updates"
 get /api/settings >"$T/set"

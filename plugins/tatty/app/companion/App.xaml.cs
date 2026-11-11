@@ -599,6 +599,8 @@ namespace TtCompanion
                 // The mode on the page (engineering, design, production): Tatty
                 // himself is drawn in its colour too.
                 case "mode": SetAccent(arg); break;
+                // What he looks like: the avatar chosen in the shop, in what he wears (AvatarArt.cs).
+                case "avatar": tatty.SetAvatar(arg); break;
             }
         }
 

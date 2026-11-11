@@ -1,0 +1,331 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Shapes;
+using System.Xml.Linq;
+
+namespace TtCompanion
+{
+    // What Tatty looks like: the avatar chosen in the shop, in what he wears. The page in
+    // the bubble works it out (avatar.js's bake: the browser has the cascade, so every
+    // colour, stroke and visibility comes already resolved) and sends it as a small
+    // description, laid out in the window's own moving parts:
+    //
+    //   <tatty av="cat"><part name="Root" c="52,100">
+    //     <part name="Body" c=..>the back accessories</part>  (they ride with the body, behind the legs)
+    //     <part name="LegL" c=..>..</part> <part name="LegR" c=..>..</part>
+    //     <part name="Body" c=..> .. <eyes c=..> .. <pupils>..</pupils> .. </eyes> .. <mouth name="neutral">..</mouth>
+    //        <flag c="shoulder" text="x,y">..</flag> <badge at="x,y"/> <g p="Tail" c=..>..</g> .. </part>
+    //   </part><defs>gradients</defs></tatty>
+    //
+    // Shapes are SVG's path, circle, ellipse, rect, line and polygon, each drawn as a WPF
+    // Path in the drawing's own coordinates. TattyWindow.Apply puts the parts into the
+    // canvases TattyWindow.xaml names, so Avatar.cs moves them as it always has; the
+    // parts of an avatar's own that move (a tail, wings, a propeller) get a little idle
+    // motion of their own here (Idle).
+    internal sealed class AvatarArt
+    {
+        public string Id = "";
+        public Point Root = new(52, 100), LegLPivot = new(38, 80), LegRPivot = new(66, 80), BodyPivot = new(52, 90);
+        public Point EyesPivot = new(52, 48), Shoulder = new(18, 58), FlagText = new(22, 9.5), BadgeAt = new(85, 23);
+        public readonly List<UIElement> Back = new(), LegL = new(), LegR = new(), Body = new();
+        public readonly List<UIElement> Eyes = new(), Pupils = new(), Flag = new();
+        public readonly Dictionary<string, UIElement> Mouths = new();
+        // where the window's own Eyes canvas and flag arm go among Body's things
+        public Panel? EyesSlot, FlagSlot;
+        // his own left arm (or paw, or wing), which the flag arm takes the place of in a project's window
+        public UIElement? LeftArm;
+        public readonly List<(string Name, ScaleTransform S, RotateTransform R, TranslateTransform T)> Moving = new();
+
+        private readonly Dictionary<string, Brush> gradients = new();
+        private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+        // ---------------------------------------------------------------- reading
+
+        public static AvatarArt? Read(string text)
+        {
+            try
+            {
+                var doc = XElement.Parse(text);
+                if (doc.Name.LocalName != "tatty") return null;
+                var art = new AvatarArt { Id = (string?)doc.Attribute("av") ?? "" };
+                foreach (var g in doc.Element("defs")?.Elements() ?? Enumerable.Empty<XElement>()) art.Gradient(g);
+                var root = doc.Elements("part").FirstOrDefault(p => (string?)p.Attribute("name") == "Root");
+                if (root == null) return null;
+                art.Root = Pt(root, "c", art.Root);
+                bool backDone = false;
+                foreach (var p in root.Elements())
+                {
+                    string name = (string?)p.Attribute("name") ?? "";
+                    if (p.Name.LocalName != "part") continue;
+                    if (name == "LegL") { art.LegLPivot = Pt(p, "c", art.LegLPivot); art.Kids(p, art.LegL); }
+                    else if (name == "LegR") { art.LegRPivot = Pt(p, "c", art.LegRPivot); art.Kids(p, art.LegR); }
+                    else if (name == "Body" && !backDone && p.ElementsAfterSelf("part").Any(x => (string?)x.Attribute("name") == "LegL"))
+                    { backDone = true; art.Kids(p, art.Back); }
+                    else if (name == "Body") { art.BodyPivot = Pt(p, "c", art.BodyPivot); art.Kids(p, art.Body); }
+                }
+                return art.Body.Count > 0 ? art : null;
+            }
+            catch (Exception)
+            {
+                return null;  // a description that doesn't read leaves him as he was
+            }
+        }
+
+        private void Kids(XElement from, List<UIElement> into)
+        {
+            foreach (var e in from.Elements())
+            {
+                var made = Make(e);
+                if (made != null) into.Add(made);
+            }
+        }
+
+        private Panel KidsCanvas(XElement from)
+        {
+            var c = new Canvas();
+            foreach (var e in from.Elements())
+            {
+                var made = Make(e);
+                if (made != null) c.Children.Add(made);
+            }
+            return c;
+        }
+
+        private UIElement? Make(XElement e)
+        {
+            switch (e.Name.LocalName)
+            {
+                case "eyes":
+                    EyesPivot = Pt(e, "c", EyesPivot);
+                    foreach (var k in e.Elements())
+                    {
+                        if (k.Name.LocalName == "pupils") { Kids(k, Pupils); Eyes.Add(new PupilsMark()); }
+                        else { var m = Make(k); if (m != null) Eyes.Add(m); }
+                    }
+                    EyesSlot = new Canvas();
+                    return EyesSlot;
+                case "flag":
+                    Shoulder = Pt(e, "c", Shoulder);
+                    FlagText = Pt(e, "text", FlagText);
+                    Kids(e, Flag);
+                    FlagSlot = new Canvas();
+                    return FlagSlot;
+                case "badge":
+                    BadgeAt = Pt(e, "at", BadgeAt);
+                    return null;
+                case "mouth":
+                {
+                    // hidden until Avatar.cs shows the one his pose wants (the page's others, such as
+                    // its "o" and wobbly mouths, are for states the tray app doesn't have yet)
+                    var c = KidsCanvas(e);
+                    c.Visibility = Visibility.Collapsed;
+                    Mouths[(string?)e.Attribute("name") ?? ""] = c;
+                    return c;
+                }
+                case "g":
+                {
+                    var c = KidsCanvas(e);
+                    c.RenderTransform = Transform((string?)e.Attribute("transform"));
+                    c.Opacity = Num(e, "opacity", 1);
+                    string? moving = (string?)e.Attribute("p");
+                    if (string.IsNullOrEmpty(moving)) return c;
+                    // a part of his own that moves: a canvas around it to move it by, about its pivot
+                    var at = Pt(e, "c", new Point());
+                    var s = new ScaleTransform(1, 1, at.X, at.Y);
+                    var r = new RotateTransform(0, at.X, at.Y);
+                    var t = new TranslateTransform();
+                    var outer = new Canvas { RenderTransform = new TransformGroup { Children = { s, r, t } } };
+                    outer.Children.Add(c);
+                    Moving.Add((moving!, s, r, t));
+                    if (moving == "ArmL") LeftArm = outer;
+                    return outer;
+                }
+                default:
+                    return Shape(e);
+            }
+        }
+
+        // the window's own Pupils canvas goes here among the eyes' things
+        internal sealed class PupilsMark : UIElement { }
+
+        // ---------------------------------------------------------------- shapes
+
+        private UIElement? Shape(XElement e)
+        {
+            Geometry? g;
+            try
+            {
+                g = e.Name.LocalName switch
+                {
+                    "path" => Geometry.Parse("F1 " + ((string?)e.Attribute("d") ?? "")),
+                    "circle" => new EllipseGeometry(new Point(Num(e, "cx"), Num(e, "cy")), Num(e, "r"), Num(e, "r")),
+                    "ellipse" => new EllipseGeometry(new Point(Num(e, "cx"), Num(e, "cy")), Num(e, "rx"), Num(e, "ry")),
+                    "rect" => new RectangleGeometry(new Rect(Num(e, "x"), Num(e, "y"), Math.Max(0, Num(e, "width")), Math.Max(0, Num(e, "height"))),
+                                                    Num(e, "rx", Num(e, "ry")), Num(e, "ry", Num(e, "rx"))),
+                    "line" => new LineGeometry(new Point(Num(e, "x1"), Num(e, "y1")), new Point(Num(e, "x2"), Num(e, "y2"))),
+                    "polygon" => Geometry.Parse("F1 M " + ((string?)e.Attribute("points") ?? "") + " Z"),
+                    _ => null,
+                };
+            }
+            catch (FormatException) { return null; }
+            if (g == null) return null;
+            var path = new System.Windows.Shapes.Path
+            {
+                Data = g,
+                Fill = Paint((string?)e.Attribute("fill"), Num(e, "fill-opacity", 1)),
+                Opacity = Num(e, "opacity", 1),
+                RenderTransform = Transform((string?)e.Attribute("transform")),
+            };
+            var stroke = Paint((string?)e.Attribute("stroke"), Num(e, "stroke-opacity", 1));
+            if (stroke != null)
+            {
+                path.Stroke = stroke;
+                path.StrokeThickness = Num(e, "stroke-width", 1);
+                var cap = (string?)e.Attribute("stroke-linecap") switch { "round" => PenLineCap.Round, "square" => PenLineCap.Square, _ => PenLineCap.Flat };
+                path.StrokeStartLineCap = path.StrokeEndLineCap = path.StrokeDashCap = cap;
+                path.StrokeLineJoin = (string?)e.Attribute("stroke-linejoin") switch { "round" => PenLineJoin.Round, "bevel" => PenLineJoin.Bevel, _ => PenLineJoin.Miter };
+            }
+            return path;
+        }
+
+        // "#rrggbbaa" (the page's form), "url(#id)" or "none"
+        private Brush? Paint(string? value, double opacity)
+        {
+            if (string.IsNullOrEmpty(value) || value == "none") return null;
+            if (value.StartsWith("url(#", StringComparison.Ordinal))
+            {
+                string id = value.Substring(5).TrimEnd(')');
+                if (!gradients.TryGetValue(id, out var b)) return null;
+                if (opacity >= 1) return b;
+                var faded = b.Clone();
+                faded.Opacity = opacity;
+                return faded;
+            }
+            var c = Colour(value);
+            if (c == null) return null;
+            return new SolidColorBrush(c.Value) { Opacity = opacity };
+        }
+
+        private static Color? Colour(string hex)
+        {
+            if (!hex.StartsWith("#", StringComparison.Ordinal) || (hex.Length != 7 && hex.Length != 9)) return null;
+            byte At(int i) => byte.Parse(hex.Substring(i, 2), NumberStyles.HexNumber, Inv);
+            try { return Color.FromArgb(hex.Length == 9 ? At(7) : (byte)255, At(1), At(3), At(5)); }
+            catch (FormatException) { return null; }
+        }
+
+        private void Gradient(XElement g)
+        {
+            string id = (string?)g.Attribute("id") ?? "";
+            var stops = new GradientStopCollection();
+            foreach (var s in g.Elements("stop"))
+            {
+                var c = Colour((string?)s.Attribute("color") ?? "") ?? Colors.Transparent;
+                c.A = (byte)Math.Round(c.A * Num(s, "opacity", 1));
+                stops.Add(new GradientStop(c, Num(s, "offset")));
+            }
+            if (g.Name.LocalName == "linearGradient")
+                gradients[id] = new LinearGradientBrush(stops, new Point(Num(g, "x1", 0), Num(g, "y1", 0)), new Point(Num(g, "x2", 1), Num(g, "y2", 0)));
+            else if (g.Name.LocalName == "radialGradient")
+                gradients[id] = new RadialGradientBrush(stops);
+        }
+
+        // An SVG transform list ("translate(52 24) scale(.8) rotate(-12)", or the browser's
+        // "matrix(a, b, c, d, e, f)"). SVG applies the last one first, WPF's group the first one.
+        private static readonly Regex Step = new(@"(translate|rotate|scale|matrix)\s*\(([^)]*)\)", RegexOptions.Compiled);
+
+        internal static Transform Transform(string? list)
+        {
+            if (string.IsNullOrWhiteSpace(list)) return System.Windows.Media.Transform.Identity;
+            var group = new TransformGroup();
+            foreach (Match m in Step.Matches(list).Cast<Match>().Reverse())
+            {
+                var a = m.Groups[2].Value.Split(new[] { ' ', ',', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => double.Parse(x.Replace("px", ""), Inv)).ToArray();
+                if (a.Length == 0) continue;
+                switch (m.Groups[1].Value)
+                {
+                    case "translate": group.Children.Add(new TranslateTransform(a[0], a.Length > 1 ? a[1] : 0)); break;
+                    case "rotate": group.Children.Add(a.Length >= 3 ? new RotateTransform(a[0], a[1], a[2]) : new RotateTransform(a[0])); break;
+                    case "scale": group.Children.Add(new ScaleTransform(a[0], a.Length > 1 ? a[1] : a[0])); break;
+                    case "matrix" when a.Length == 6: group.Children.Add(new MatrixTransform(new Matrix(a[0], a[1], a[2], a[3], a[4], a[5]))); break;
+                }
+            }
+            return group.Children.Count == 0 ? System.Windows.Media.Transform.Identity : group;
+        }
+
+        private static double Num(XElement e, string name, double otherwise = 0) =>
+            double.TryParse((string?)e.Attribute(name), NumberStyles.Float, Inv, out var v) ? v : otherwise;
+
+        private static Point Pt(XElement e, string name, Point otherwise)
+        {
+            var parts = ((string?)e.Attribute(name) ?? "").Split(',');
+            return parts.Length == 2 && double.TryParse(parts[0], NumberStyles.Float, Inv, out var x)
+                   && double.TryParse(parts[1], NumberStyles.Float, Inv, out var y) ? new Point(x, y) : otherwise;
+        }
+
+        // ---------------------------------------------------------------- his own parts' idle motion
+
+        // What each of an avatar's own moving parts does while he stands about, kept small: the
+        // page's shop has the full performances; on the desktop these only keep him alive.
+        // (name, what moves, from, to, seconds one way)
+        private static readonly (string Name, string Prop, double From, double To, double Seconds)[] IdleMoves =
+        {
+            ("Tail", "a", -6, 8, 1.0), ("ArmL", "a", 0, 5, 1.6), ("ArmR", "a", 0, -5, 1.6),
+            ("Prop", "sx", 1, -1, 0.12), ("Halo", "y", 0, -2.5, 1.2), ("Tassel", "a", -9, 9, 1.1),
+            ("Jet", "sy", 1, 0.72, 0.16), ("Flame", "sy", 1, 0.78, 0.16), ("Balloon", "a", -5, 5, 2.0),
+            ("WingL", "a", 0, 9, 0.8), ("WingR", "a", 0, -9, 0.8), ("Key", "sy", 1, -1, 1.2), ("Needle", "a", -4, 6, 2.0),
+        };
+
+        public void Idle(bool lively)
+        {
+            var ease = new SineEase { EasingMode = EasingMode.EaseInOut };
+            foreach (var (name, s, r, t) in Moving)
+            {
+                foreach (var m in IdleMoves.Where(x => x.Name == name))
+                {
+                    var anim = lively
+                        ? new DoubleAnimation(m.From, m.To, TimeSpan.FromSeconds(m.Seconds)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = ease }
+                        : null;
+                    switch (m.Prop)
+                    {
+                        case "a": r.BeginAnimation(RotateTransform.AngleProperty, anim); break;
+                        case "sx": s.BeginAnimation(ScaleTransform.ScaleXProperty, anim); break;
+                        case "sy": s.BeginAnimation(ScaleTransform.ScaleYProperty, anim); break;
+                        case "y": t.BeginAnimation(TranslateTransform.YProperty, anim); break;
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- kept between runs
+
+        // The last look the page sent, so the next start shows him as he is from the first frame
+        // rather than in his old clothes until the page has loaded.
+        private static string Where => System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Tatty", "avatar-art.xml");
+
+        public static string? Saved()
+        {
+            try { return System.IO.File.Exists(Where) ? System.IO.File.ReadAllText(Where) : null; } catch (Exception) { return null; }
+        }
+
+        public static void Save(string text)
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Where)!);
+                System.IO.File.WriteAllText(Where, text);
+            }
+            catch (Exception) { }
+        }
+    }
+}

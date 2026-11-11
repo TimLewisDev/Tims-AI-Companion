@@ -233,9 +233,13 @@ namespace TtCompanion
 
         private void Mouth(bool asleep)
         {
-            w.MouthFlat.Visibility = asleep ? Visibility.Visible : Visibility.Collapsed;
-            w.MouthNeutral.Visibility = asleep ? Visibility.Collapsed : Visibility.Visible;
+            w.MouthF.Visibility = asleep ? Visibility.Visible : Visibility.Collapsed;
+            w.MouthN.Visibility = asleep ? Visibility.Collapsed : Visibility.Visible;
+            w.MouthH.Visibility = Visibility.Collapsed;
         }
+
+        // A new drawing (an avatar from the shop, TattyWindow.Apply): its mouths take up the pose.
+        public void Refresh() => Mouth(pose == Pose.Asleep);
 
         // A value animated to and then kept: the pose is where he stays until
         // something changes it, so these hold their end rather than snapping back.
@@ -398,8 +402,8 @@ namespace TtCompanion
         // property to whatever the pose set it to.
         private void Grin(Storyboard act, double from, double to)
         {
-            Swap(act, w.MouthHappy, Visibility.Visible, from, to);
-            Swap(act, w.MouthNeutral, Visibility.Collapsed, from, to);
+            Swap(act, w.MouthH, Visibility.Visible, from, to);
+            Swap(act, w.MouthN, Visibility.Collapsed, from, to);
         }
 
         private static void Swap(Storyboard act, DependencyObject part, object during, double from, double to)
