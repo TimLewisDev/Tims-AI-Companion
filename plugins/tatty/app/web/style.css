@@ -710,6 +710,16 @@ body.asking::after {
   70%, 100% { box-shadow: 0 0 0 9px transparent; } }
 @keyframes go-wipe { 0% { transform: translateX(-130%) skewX(-20deg); } 55%, 100% { transform: translateX(330%) skewX(-20deg); } }
 
+/* Questions wait on the Decide page and the session is paused on them: the way there on the session's panel is the
+   pulsing go button, and the rail's Decisions item breathes a highlight. Neither motion is gated on
+   prefers-reduced-motion (see above). */
+.live-decide { align-self: flex-start; }
+.live-decide[hidden] { display: none; }
+.fnav-item.decide-pulse { animation: rail-pulse 1.8s ease-in-out infinite; }
+@keyframes rail-pulse {
+  0%, 100% { background: transparent; box-shadow: inset 3px 0 0 var(--accent); }
+  50% { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); } }
+
 /* The card a "go" lands on */
 .card.nudge { animation: nudge 2.6s ease-out; }
 @keyframes nudge { 0%, 40% { box-shadow: 0 0 0 4px var(--accent); } 100% { box-shadow: 0 0 0 4px transparent; } }

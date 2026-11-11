@@ -390,6 +390,18 @@ def check_tabs(p):
     p.js("""onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'first thing', ts: Date.now() / 1000 });
             onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'second thing', ts: Date.now() / 1000 }); 1""")
     res["historyNewestFirst"] = p.js("[...document.querySelectorAll('#page-home .card.live ol.activity .act')].map(r => r.innerText.replace(/\\\\s+/g, ' ').trim()).filter(t => /thing/.test(t))")
+    # questions waiting for the person: the panel's button appears (pulsing) with the count, the rail's item pulses; none: both go
+    p.js("""window.__f0 = featureCache.get('Demo');
+            featureCache.set('Demo', { docList: [], notes: [], ...(window.__f0 || {}), name: 'Demo', decide: { open: 2, apply: 0, kinds: ['challenge'] } }); 1""")
+    res["decideButton"] = p.js("""(() => { const b = document.querySelector('#page-home .live-decide'); if (!b) return null; const cs = getComputedStyle(b);
+        return { hidden: b.hidden, text: b.textContent, href: b.getAttribute('href'), pulse: cs.animationName, display: cs.display }; })()""")
+    res["railPulse"] = p.js("""(() => { const nav = featureNav(featureCache.get('Demo'), null, false, { side: true }); document.body.append(nav);
+        const a = nav.querySelector('.fnav-item.decide-pulse'); const r = a ? { text: a.innerText.replace(/\\\\s+/g, ' ').trim(), anim: getComputedStyle(a).animationName } : null;
+        const onIt = featureNav(featureCache.get('Demo'), null, false, { decide: true }).querySelector('.decide-pulse');
+        nav.remove(); return { ...r, notWhenOpen: !onIt }; })()""")
+    p.js("featureCache.set('Demo', { ...featureCache.get('Demo'), decide: null }); 1")
+    res["decideButtonGone"] = p.js("(() => { const b = document.querySelector('#page-home .live-decide'); return { hidden: b.hidden, display: getComputedStyle(b).display }; })()")
+    p.js("if (window.__f0) featureCache.set('Demo', window.__f0); else featureCache.delete('Demo'); 1")
     p.js("onEvent({ type: 'answered', id: 'zz9', tag: 's-t1', answers: { 'Which way?': 'Left' } }); 1")
     res["flight"] = {"ghost": p.js("!!document.querySelector('.abox-ghost')")}
     wait(p, "!document.querySelector('.abox-ghost')")

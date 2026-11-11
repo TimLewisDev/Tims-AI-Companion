@@ -12,7 +12,23 @@ const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-m
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
 const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", tasks: "production", taskboard: "production",
   designs: "design", design: "design", whiteboards: "design", whiteboard: "design" };
-const featureCache = new Map(); // name -> the last /api/feature answer
+// name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
+// decisions are painted from it (paintDecisions).
+const featureCache = new (class extends Map { set(k, v) { super.set(k, v); paintDecisions(v); return this; } })();
+
+// A session's panel has a "Decisions Needed" button, hidden unless questions wait for the feature's person: the
+// workflow is paused on them (the Decide page is where they are answered). It pulses like the way to a question.
+function paintDecideButton(btn, f) {
+  const n = (f && f.decide && f.decide.open) || 0;
+  btn.hidden = !n;
+  if (!n) return;
+  btn.href = featureDecideHref(f.name);
+  btn.textContent = `Decisions Needed (${n})`;
+}
+function paintDecisions(f) {
+  if (!f || !f.name) return;
+  for (const b of document.querySelectorAll(".live-decide[data-feature]")) if (b.dataset.feature === f.name) paintDecideButton(b, f);
+}
 
 // A throbber in the header while anything is being read behind a page already on screen: busy(promise) lights
 // it until the promise settles (and hands the promise back). waitNode() is the big one in an empty frame.
@@ -765,7 +781,8 @@ function featureNav(f, current, board, opts = {}) {
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
     f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
-    f.decide && f.decide.open ? item("Decisions", featureDecideHref(f.name), !!opts.decide, `${f.decide.open} to decide`) : "", // decide-page.js
+    // decide-page.js. While questions wait it pulses to be seen (not on the Decide page itself, where it is already open)
+    f.decide && f.decide.open ? (a => { if (!opts.decide) a.classList.add("decide-pulse"); return a; })(item("Decisions", featureDecideHref(f.name), !!opts.decide, `${f.decide.open} to decide`)) : "",
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -1375,6 +1392,8 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   const agents = el("div", { class: "live-agents", hidden: true });
   const doing = el("div", { class: "dim small live-meta" });
   const questions = el("div", { class: "live-questions" });
+  const decide = el("a", { class: "go-btn waiting live-decide", "data-feature": f.name || "", id: "live-decide", hidden: true });
+  paintDecideButton(decide, featureCache.get(f.name)); // (what is known now; it is painted again whenever the feature is read)
   const list = el("ol", { class: "activity" });
   const rows = new Map();
   const shownAsks = new Set();
@@ -1418,7 +1437,7 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
   const panel = el("section", { class: "card live" }, bar,
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
-    agents, doing, questions,
+    agents, doing, ended() ? "" : decide, questions,
     // the message box under the current question, then the history, newest first
     ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
     list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
