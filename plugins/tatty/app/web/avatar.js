@@ -49,6 +49,7 @@ const STATE_INFO = [
   ["writing", "Writing", "<code>activity</code> tool Edit / Write", "Scribbles on a notepad by his hand, line by line, leaning into it."],
   ["running", "Running", "<code>activity</code> tool Bash", "Jogs on the spot beside a little terminal with a blinking cursor."],
   ["delegating", "Delegating", "session <code>agents</code> &gt; 0", "Two tiny helper bots hop beside him; he looks from one to the other."],
+  ["waiting", "Waiting", "session <code>shells</code> &gt; 0, its turn over", "A shell command runs in the background: he taps his foot and keeps an eye on a little alarm clock, its hands going round."],
   ["needs", "Needs you", "<code>ask</code> open", "Today's ! badge and alert hop, plus wide eyes, a ? bubble and a raised hand."],
   ["oops", "Oops", "<code>activity</code> tool-done with <code>ok: false</code>", "A wobbly mouth, a sweat drop, a puff of smoke and a shake: trying his best."],
   ["celebrate", "Celebrate", "<code>milestone</code>", "Today's squash-and-jump, with confetti and a grin."],
@@ -102,6 +103,15 @@ const STATES = {
     W("Tip.o", .2, .8, 0, 1.2),
     T("ArmL.a", [[45, 0], [45, 1], [0, 1.2], [0, 2.2], [45, 2.4]]),
     T("ArmR.a", [[0, 0], [0, 1], [-45, 1.2], [-45, 2.2], [0, 2.4]])] }),
+  waiting: d => ({ dur: 4, mouth: "flat", bob: [2, 2], tracks: [
+    T("Pupils.x", [[2.5, 0], [2.5, 1.6], [0, 1.9], [0, 2.9], [2.5, 3.2], [2.5, 4]]),
+    T("Pupils.y", [[-2.5, 0], [-2.5, 1.6], [0, 1.9], [0, 2.9], [-2.5, 3.2], [-2.5, 4]]),
+    T("Body.a", [[2, 0], [2, 1.6], [-1.5, 1.9], [-1.5, 2.9], [2, 3.2], [2, 4]]),
+    T("LegL.y", [[0, 0], [-3.5, .14], [0, .28], [0, 1]], 1),
+    L("ClkM.a", 0, 360, 0, 4), L("ClkH.a", 0, 360, 0, 48),
+    T("Clock.a", [[0, 0], [0, 3.6], [-7, 3.7], [7, 3.8], [-4, 3.9], [0, 4]]),
+    T("Clock.y", [[0, 0], [0, 3.6], [-2, 3.75], [0, 4]]),
+    T("ArmL.a", [[28, 0]]), T("ArmR.a", [[-14, 0], [-22, 2], [-14, 4]])] }),
   needs: d => ({ dur: 2.4, mouth: "o", lids: 1.12, tracks: [
     T("Root.y", [[0, 0], [-16, .12], [0, .24], [-16, .36], [0, .5], [0, 2.4]]),
     T("Root.a", [[0, 0], [6, .12], [-6, .3], [4, .42], [0, .56], [0, 2.4]]),
@@ -399,6 +409,15 @@ function props(d) {
     <path d="M${b.x - 11},${b.y - 3} l3,2.2 l-3,2.2" class="fn sg rc" stroke-width="1.4"/>
     <rect data-p="TL" data-c="${b.x - 6},${b.y}" x="${b.x - 6}" y="${b.y - 1.5}" width="16" height="1.6" rx=".8" class="fg" opacity=".7"/>
     <rect data-p="Caret" x="${b.x - 11}" y="${b.y + 4.5}" width="4" height="1.6" class="fg"/></g></g>
+  <g class="prop p-waiting"><g data-p="Clock" data-c="${b.x},${b.y + 11}">
+    <line x1="${b.x - 7}" y1="${b.y + 7}" x2="${b.x - 9.5}" y2="${b.y + 11.5}" stroke="#6B6F76" stroke-width="1.8" class="rc"/>
+    <line x1="${b.x + 7}" y1="${b.y + 7}" x2="${b.x + 9.5}" y2="${b.y + 11.5}" stroke="#6B6F76" stroke-width="1.8" class="rc"/>
+    <path d="M${b.x - 12.5},${b.y - 6} a4.6,4.6 0 0 1 6.6,-5.6 Z" class="fa"/><path d="M${b.x + 12.5},${b.y - 6} a4.6,4.6 0 0 0 -6.6,-5.6 Z" class="fa"/>
+    <circle cx="${b.x}" cy="${b.y}" r="10" fill="#fff" class="sa" stroke-width="2.2"/>
+    ${[0, 90, 180, 270].map(t => `<line x1="${b.x}" y1="${b.y - 8}" x2="${b.x}" y2="${b.y - 6.4}" stroke="#8A8F96" stroke-width="1.2" class="rc" transform="rotate(${t} ${b.x} ${b.y})"/>`).join("")}
+    <line data-p="ClkH" data-c="${b.x},${b.y}" x1="${b.x}" y1="${b.y}" x2="${b.x}" y2="${b.y - 4.6}" stroke="#2F3540" stroke-width="2" class="rc"/>
+    <line data-p="ClkM" data-c="${b.x},${b.y}" x1="${b.x}" y1="${b.y}" x2="${b.x}" y2="${b.y - 7.2}" stroke="#2F3540" stroke-width="1.3" class="rc"/>
+    <circle cx="${b.x}" cy="${b.y}" r="1.4" class="fa"/></g></g>
   <g class="prop p-needs"><g data-p="QB" data-c="${qx},${qy}">
     <path d="M${qx - 10},${qy - 10} h20 a3,3 0 0 1 3,3 v14 a3,3 0 0 1 -3,3 h-12 l-5,5 v-5 h-3 a3,3 0 0 1 -3,-3 v-14 a3,3 0 0 1 3,-3 z" fill="#fff" class="sa" stroke-width="2"/>
     <text x="${qx}" y="${qy + 5.5}" text-anchor="middle" font-size="15" font-weight="800" class="fa" font-family="Segoe UI, sans-serif">?</text></g></g>
@@ -936,7 +955,7 @@ function animate(svgs, id, state = "idle") {
 // It also carries what he does while a session works -- each state's props (the thought
 // bubble, the magnifier, the helpers...) and its tracks, as JSON -- for the window's own
 // player (Activity.cs). Celebrating and sleeping are the window's already (Avatar.cs, Effects.cs).
-const TRAY_STATES = ["thinking", "reading", "writing", "running", "delegating", "needs", "oops"];
+const TRAY_STATES = ["thinking", "reading", "writing", "running", "delegating", "waiting", "needs", "oops"];
 const BAKE_SKIP = /^(Bub\d|Front)$/;
 const SHAPES = new Set(["path", "circle", "ellipse", "rect", "line", "polygon"]);
 const GEOMETRY = ["d", "cx", "cy", "r", "rx", "ry", "x", "y", "width", "height", "x1", "y1", "x2", "y2", "points"];

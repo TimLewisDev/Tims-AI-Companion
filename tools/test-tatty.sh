@@ -1589,6 +1589,21 @@ post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"
 get /api/events >"$T/j"
 pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] in ('turn', 'agents')])" >"$T/f"
 has "neither is a row in the feed" "$T/f" "0"
+# the shell commands running in the background: a turn over while one runs is waiting on it, not on the person
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"shells\",\"shells\":[{\"id\":\"b1\",\"command\":\"bash tools/test-tatty.sh   --parallel\",\"description\":\"Run the suite\"},{\"command\":\"no id\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(x['id'], x['command'], x['description']) for x in [s['shells'] for s in d if s['tag'] == '$TAG'][0]]")" = "[('b1', 'bash tools/test-tatty.sh --parallel', 'Run the suite')]" ] &&
+	ok "a background command is kept, one without an id dropped" || bad "a background command is kept" "$(pick "$T/j" "[s.get('shells') for s in d if s['tag'] == '$TAG'][0]")"
+SHSINCE=$(pick "$T/j" "[x['since'] for x in [s['shells'] for s in d if s['tag'] == '$TAG'][0]][0]")
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"shells\",\"shells\":[{\"id\":\"b1\",\"command\":\"bash tools/test-tatty.sh --parallel\"},{\"id\":\"b2\",\"command\":\"sleep 5\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[x['since'] for x in [s['shells'] for s in d if s['tag'] == '$TAG'][0]][0]")" = "$SHSINCE" ] && ok "a background command keeps the time it was first seen" || bad "a background command keeps the time it was first seen"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"shells\",\"shells\":[]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[s['shells'] for s in d if s['tag'] == '$TAG'][0]")" = "[]" ] && ok "and it goes once it has finished" || bad "and it goes once it has finished"
+get /api/events >"$T/j"
+pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] == 'shells'])" >"$T/f"
+has "nor are the background commands" "$T/f" "0"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"turn","state":"start"}' "$U/api/activity")" = 404 ] &&
 	ok "a turn for an unknown session refused" || bad "a turn for an unknown session refused"
 

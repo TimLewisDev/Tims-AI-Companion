@@ -137,6 +137,32 @@ async function reportAgents($: EngineInterface) {
   }
 }
 
+// The main loop's shell commands running in the background, by task id: a Bash call run in
+// the background, or moved there (Ctrl+B, its timeout). The engine lists no such tasks to a
+// mod, so they are counted here: in when the call answers with its task id, out when the
+// task's notification arrives or it is stopped. A session whose turn is over while one runs
+// is waiting on it, not on the person, and only this says so.
+const shells = new Map<string, { id: string; command: string; description: string }>()
+let lastShells = ''
+
+// reportShells: the background commands, when that changed (or always, after a
+// notification: a mod reloaded since a command started knows nothing of it, so the
+// list it sends then puts right what the window was last told).
+function reportShells($: EngineInterface, always = false) {
+  if (!tag || !attached) return
+  const list = [...shells.values()]
+  const key = JSON.stringify(list.map(s => s.id))
+  if (key === lastShells && !always) return
+  lastShells = key
+  report($, { kind: 'shells', shells: list })
+}
+
+// The task ids a notification is about (each <task-id> in it), finished: a notification
+// is only sent once a task has stopped running.
+function notifiedTasks(text: string): string[] {
+  return [...String(text || '').matchAll(/<task-id>\s*([^<\s]+)\s*<\/task-id>/g)].map(m => m[1])
+}
+
 // The few words that say what a tool call is about.
 function about(e: any): string {
   const v = e.description || e.file_path || e.notebook_path || e.pattern || e.url || e.skill || e.query || e.command || e.prompt || ''
@@ -381,12 +407,27 @@ export const register: Register = on => {
     report($, { kind: 'tool', tool: String(e.tool), text: about(e), id })
     const done = await next(e)
     report($, { kind: 'tool-done', tool: String(e.tool), id, ok: !('deny' in done) && !(done as any).isError })
+    const task = (done as any)?.result?.backgroundTaskId
+    if (e.tool === 'Bash' && task) {
+      shells.set(String(task), { id: String(task), command: String((e as any).command || '').slice(0, 300), description: String((e as any).description || '').slice(0, 120) })
+      reportShells($)
+    } else if (e.tool === 'TaskStop' || e.tool === 'KillShell') {
+      const stopped = String((e as any).task_id || (e as any).shell_id || '')
+      if (stopped && shells.delete(stopped)) reportShells($)
+    }
     return done
   }).catch(($, e, next) => next(e)) // reporting must never stop a tool
 
   // A started session: what the person asked it (typed, or sent from Tatty).
+  // A background task's notification is a prompt too: the command it is about has finished.
   on('prompt.submit', async ($, e, next) => {
-    if (tag) report($, { kind: 'prompt', text: String(e.text || '').slice(0, 400) })
+    if (tag) {
+      report($, { kind: 'prompt', text: String(e.text || '').slice(0, 400) })
+      if ((e as any).origin?.kind === 'task-notification' || String(e.text || '').includes('<task-notification>')) {
+        for (const id of notifiedTasks(String(e.text || ''))) shells.delete(id)
+        reportShells($, true)
+      }
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 

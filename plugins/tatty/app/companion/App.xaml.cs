@@ -242,9 +242,10 @@ namespace TtCompanion
         // subagents it has going, and the tool it is in. Tatty shows the liveliest of it
         // (Activity.cs): a question waiting, then a tool that has just failed, then subagents,
         // then the tool (reading, writing, running a command), then a turn with no tool yet
-        // (thinking), else nothing. Each is let go when it goes quiet, so a session that
+        // (thinking), then a turn over with a command it started still running in the
+        // background (waiting: on the command, not on the person), else nothing. Each is let go when it goes quiet, so a session that
         // stopped telling (closed, or crashed) doesn't leave him working for ever.
-        private sealed class Work { public bool Turn; public int Agents; public string Tool = ""; public DateTime ToolAt, Seen; }
+        private sealed class Work { public bool Turn; public int Agents, Shells; public string Tool = ""; public DateTime ToolAt, Seen; }
         private readonly Dictionary<string, Work> work = new();
         private DateTime oopsUntil = DateTime.MinValue;
         private static readonly TimeSpan Quiet = TimeSpan.FromMinutes(10), ToolQuiet = TimeSpan.FromSeconds(90), Oops = TimeSpan.FromSeconds(2.6);
@@ -274,6 +275,8 @@ namespace TtCompanion
             }
             if (ev.TryGetProperty("agents", out var agents) && agents.ValueKind == JsonValueKind.Array)
                 w.Agents = agents.EnumerateArray().Count(a => a.ValueKind == JsonValueKind.Object && AgentBusy.Contains(Str(a, "status")));
+            if (ev.TryGetProperty("shells", out var shells) && shells.ValueKind == JsonValueKind.Array)
+                w.Shells = shells.GetArrayLength();
         }
 
         private void ActivityEvent(JsonElement ev, bool backlog)
@@ -300,12 +303,13 @@ namespace TtCompanion
             if (openAsks.Count > 0) return "needs";
             if (now < oopsUntil) return "oops";
             var live = work.Values.Where(w => w.Turn || w.Agents > 0).ToList();
+            bool waiting = work.Values.Any(w => !w.Turn && w.Shells > 0);
             if (live.Any(w => w.Agents > 0)) return "delegating";
             var tool = live.Where(w => w.Tool.Length > 0 && now - w.ToolAt < ToolQuiet).OrderByDescending(w => w.ToolAt).Select(w => w.Tool).FirstOrDefault();
             if (tool != null)
                 return Reading.Contains(tool) ? "reading" : Writing.Contains(tool) ? "writing" : Running.Contains(tool) ? "running"
                     : Handing.Contains(tool) ? "delegating" : "thinking";
-            return live.Count > 0 ? "thinking" : "idle";
+            return live.Count > 0 ? "thinking" : waiting ? "waiting" : "idle";
         }
 
         private async Task Poll()

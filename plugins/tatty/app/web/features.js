@@ -1224,12 +1224,21 @@ let redrawSoon = null;
 const TOOL_ICONS = { Read: "📄", Edit: "✏️", Write: "📝", Bash: "⌨️", Grep: "🔎", Glob: "🗂️", Agent: "🤖", Skill: "🧩", WebFetch: "🌐", AskUserQuestion: "❓", TodoWrite: "☑️" };
 
 // What a started session is doing, as [words, chip colour, mode, since (ms), how many]:
-// the mode (starting, thinking, tool, agents, ask, idle, lost, ended) picks the bar's
+// the mode (starting, thinking, tool, agents, waiting, ask, idle, lost, ended) picks the bar's
 // colour and motion (see .statebar in style.css). A mod that reports turns and
 // subagents (s.turn, s.agents) is exact: the main loop may have ended its turn and
 // still be waiting on subagents it started in the background, which is not idle.
 // An older mod reports neither, and the activity feed is all there is to go on.
 const AGENT_ACTIVE = new Set(["pending", "running", "waiting"]);
+// A tool call in words that match what Tatty acts out for it (the desktop Tatty's states,
+// App.xaml.cs's Doing): reading, writing, running a command, delegating.
+const TOOL_KINDS = [
+  [["Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "NotebookRead"], "Reading"],
+  [["Edit", "Write", "MultiEdit", "NotebookEdit"], "Writing"],
+  [["Bash", "BashOutput", "PowerShell", "KillShell", "KillBash"], "Running"],
+  [["Task", "Agent"], "Delegating"],
+];
+const TOOL_DOING = tool => (TOOL_KINDS.find(([tools]) => tools.includes(tool)) || [, "Working"])[1] + ": " + tool;
 const activeAgents = s => (s.agents || []).filter(a => AGENT_ACTIVE.has(a.status));
 
 function sessionStatus(s, events) {
@@ -1244,15 +1253,25 @@ function sessionStatus(s, events) {
   const done = new Set(acts.filter(a => a.kind === "tool-done").map(a => a.id));
   const running = [...acts].reverse().find(a => a.kind === "tool" && !done.has(a.id));
   const agents = activeAgents(s);
-  const toolWords = running && `Working: ${running.tool}${running.text ? " · " + running.text : ""}`;
   if (agents.length) {
     const since = Math.min(...agents.map(a => a.since || Date.now() / 1000)) * 1000;
     const words = agents.length === 1
-      ? `Subagent working: ${agents[0].type || "agent"}${agents[0].description ? " · " + agents[0].description : ""}`
-      : `${agents.length} subagents working`;
+      ? `Delegating to a subagent: ${agents[0].type || "agent"}${agents[0].description ? " · " + agents[0].description : ""}`
+      : `Delegating to ${agents.length} subagents`;
     return [words, "now", "agents", since, agents.length];
   }
-  if (running) return [toolWords, "now", "tool", (running.ts || 0) * 1000, 1];
+  if (running) return [`${TOOL_DOING(running.tool)}${running.text ? " · " + running.text : ""}`, "now", "tool", (running.ts || 0) * 1000, 1];
+  // The turn is over but a command it started in the background is still going: the session
+  // carries on when it finishes, so it is waiting on the command, not on the person.
+  const shells = s.shells || [];
+  if (s.turn === false && shells.length) {
+    const since = Math.min(...shells.map(x => x.since || Date.now() / 1000)) * 1000;
+    const what = x => x.description || x.command || "";
+    const words = shells.length === 1
+      ? `Waiting on a command${what(shells[0]) ? " · " + what(shells[0]) : ""}`
+      : `Waiting on ${shells.length} commands`;
+    return [words, "now", "waiting", since, shells.length];
+  }
   if (s.turn !== undefined) {
     return s.turn ? ["Thinking", "now", "thinking", (s.turnSince || 0) * 1000, 1] : ["Idle: waiting for you", "todo", "idle", 0, 1];
   }
@@ -1264,7 +1283,7 @@ function sessionStatus(s, events) {
 // bar along the card's top edge. Both are repainted only when what they say changes,
 // so their animations aren't restarted by every event.
 
-const MOVING = new Set(["starting", "thinking", "tool", "agents"]);
+const MOVING = new Set(["starting", "thinking", "tool", "agents", "waiting"]);
 
 function elapsed(since) {
   const sec = Math.max(0, Math.floor((Date.now() - since) / 1000));

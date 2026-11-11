@@ -37,7 +37,7 @@
 // sessionEvents, ROUTES and PHASES; models.js's modelPicker.
 "use strict";
 
-const TB_MODE_SHORT = { starting: "opening", thinking: "working", tool: "working", ask: "waiting for you", idle: "idle", lost: "not heard from", ended: "ended" };
+const TB_MODE_SHORT = { starting: "opening", thinking: "working", tool: "working", ask: "waiting for you", waiting: "waiting on a command", idle: "idle", lost: "not heard from", ended: "ended" };
 const TB_WORKFLOW_EVENTS = new Set(["session", "milestone", "ask", "answered"]);
 
 function makeTaskBoard(o) {

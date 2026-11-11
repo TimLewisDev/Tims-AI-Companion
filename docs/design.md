@@ -414,9 +414,10 @@ through a feature, so most of it is in how it looks and sounds.
   a small idle motion there (`AvatarArt.Idle`, only with Animations on).
 - **What he does while a session works, on the desktop.** The description also
   carries the page's working states (thinking, reading, writing, running a command,
-  delegating, needs you, oops): each one's props (`<prop states=…>`: the thought
-  bubble, the magnifier, the notepad, the terminal, the helper bots, the ? bubble,
-  the sweat drop) and, as JSON (`<motion>`, avatar.js's `motionFor`), its loop,
+  delegating, waiting on a command, needs you, oops): each one's props (`<prop
+  states=…>`: the thought bubble, the magnifier, the notepad, the terminal, the
+  helper bots, the alarm clock with its hands going round, the ? bubble, the sweat
+  drop) and, as JSON (`<motion>`, avatar.js's `motionFor`), its loop,
   mouth, lids and tracks. `Activity.cs` plays them with the page's own sums, on a
   layer of its own under each transform `Avatar.cs` animates (`TattyWindow.Layer`),
   so his bob, blink, hops and celebrations carry on through it; a change eases over a
@@ -426,7 +427,8 @@ through a feature, so most of it is in how it looks and sounds.
   then subagents running (a `session` event's `agents` still pending, running or
   waiting), then the tool in hand (Read, Grep, Glob and the web are reading; Edit and
   Write, writing; Bash, running; Task, delegating), then a turn with no tool
-  (`turn`), else nothing. A session quiet for ten minutes, or a tool for ninety
+  (`turn`), then a turn over while a command it started runs in the background
+  (waiting: the `session` event's `shells`), else nothing. A session quiet for ten minutes, or a tool for ninety
   seconds, is let go, so one that stopped telling doesn't leave him working. Asking
   keeps still on the desktop (the window hops once when a question arrives), and
   celebrating and sleeping stay `Avatar.cs`'s and `Effects.cs`'s. The page sends again when the look changes: here (a
@@ -438,6 +440,22 @@ through a feature, so most of it is in how it looks and sounds.
   `Apply` takes each out wherever it is before putting it into the new one: WPF
   refuses an element that still has a parent, and the throw left him with no mouth
   and no flag (0.34.0).
+- **Waiting on a command, not on you.** A session often starts a shell command in
+  the background (a Bash call run in the background, or moved there with Ctrl+B or
+  by its timeout) and ends its turn; it carries on when the command's notification
+  arrives. That is not idle, and "waiting for you" was wrong. The engine lists no
+  background shells to a mod, so the mod counts them itself (`register.tsx`'s
+  `shells`): in when a Bash call answers with a `backgroundTaskId`, out when a
+  prompt whose origin is `task-notification` names the task, or a TaskStop stops it.
+  It reports the list as `activity` `shells` (like `agents`, not a row in the feed;
+  kept by `clean_shells`, each with the time it was first seen), and after every
+  notification sends it whole, so a mod reloaded since a command started puts the
+  list right. The page then says "Waiting on a command · <description>" (a blue chip
+  and one slow, steady comet on the bar), and the desktop Tatty acts out
+  waiting: he taps his foot and keeps glancing at a little alarm clock beside him,
+  its minute hand going round every four seconds. The rest of the page's words
+  follow what he acts out: Thinking, Reading, Writing, Running, Delegating to a
+  subagent (a tool outside those is "Working").
 - **Debug coins and unlocks.** Settings ends with a **Debug** section, locked: with the
   password it awards coins (+10, +100, +1000 or any amount) or takes them away (−10,
   −100, −1000, any amount, or all), in this project's wallet. Awards arrive like any

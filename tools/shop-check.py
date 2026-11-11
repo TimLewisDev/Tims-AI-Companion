@@ -184,7 +184,7 @@ def main(argv):
             '<tatty av="cat"', '<part name="Root"', '<part name="LegL"', '<part name="Body"', "<eyes ", "<pupils>",
             '<mouth name="neutral">', "<numtag ", "<badge ", '<g p="Tail"')))
         check("and what he does while a session works", all(x in baked for x in (
-            '<prop states="thinking"', '<prop states="delegating"', '<prop states="needs"', "<motion><![CDATA[", '"delegating":')))
+            '<prop states="thinking"', '<prop states="delegating"', '<prop states="waiting"', '<prop states="needs"', "<motion><![CDATA[", '"delegating":')))
         # (the collar's band is his own bit at the neck; his number's tag is not, and stays)
         check("and what he wears, with his collar off", "w-neck-bow" in baked and 'd="M35,71 Q52,80 69,71' not in baked)
         out["errors"] = p.js("window.__shopErrs")

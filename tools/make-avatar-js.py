@@ -156,7 +156,7 @@ function animate(svgs, id, state = "idle") {
 // It also carries what he does while a session works -- each state's props (the thought
 // bubble, the magnifier, the helpers...) and its tracks, as JSON -- for the window's own
 // player (Activity.cs). Celebrating and sleeping are the window's already (Avatar.cs, Effects.cs).
-const TRAY_STATES = ["thinking", "reading", "writing", "running", "delegating", "needs", "oops"];
+const TRAY_STATES = ["thinking", "reading", "writing", "running", "delegating", "waiting", "needs", "oops"];
 const BAKE_SKIP = /^(Bub\d|Front)$/;
 const SHAPES = new Set(["path", "circle", "ellipse", "rect", "line", "polygon"]);
 const GEOMETRY = ["d", "cx", "cy", "r", "rx", "ry", "x", "y", "width", "height", "x1", "y1", "x2", "y2", "points"];

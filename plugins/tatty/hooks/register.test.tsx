@@ -346,6 +346,34 @@ test('a started session reports the model each subagent was asked for and the on
   expect(last[1]).toEqual(expect.objectContaining({ id: 'a2', model: 'us.anthropic.claude-sonnet-5-5', asked: 'haiku' }))
 })
 
+test('a started session reports its commands running in the background, until each one is notified or stopped', async ($, on) => {
+  const seen: string[] = []
+  const bodies: any[] = []
+  engine(on, true, {}, seen, 's-1', bodies, false, { result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bg1' } })
+  on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+  await $.session.start(START)
+
+  await $.tool.call({ tool: 'Bash', command: 'bash tools/test-tatty.sh', description: 'Run the suite', run_in_background: true } as any)
+  await waitFor(() => bodies.some(b => b.kind === 'shells'))
+  let lists = bodies.filter(b => b.kind === 'shells').map(b => b.shells)
+  expect(lists).toEqual([[{ id: 'bg1', command: 'bash tools/test-tatty.sh', description: 'Run the suite' }]])
+
+  // the notification says it has finished: the list empties
+  await $.prompt.submit({ text: '<task-notification>\n<task-id>bg1</task-id>\n<status>completed</status>\n</task-notification>',
+    wait: false, origin: { kind: 'task-notification' } } as any)
+  await waitFor(() => bodies.filter(b => b.kind === 'shells').length === 2)
+  lists = bodies.filter(b => b.kind === 'shells').map(b => b.shells)
+  expect(lists[1]).toEqual([])
+  expect(bodies.some(b => b.kind === 'prompt')).toBe(true) // and it is still a row in the feed
+
+  // one stopped by TaskStop goes too
+  await $.tool.call({ tool: 'Bash', command: 'sleep 99', run_in_background: true } as any)
+  await waitFor(() => bodies.filter(b => b.kind === 'shells').length === 3)
+  await $.tool.call({ tool: 'TaskStop', task_id: 'bg1' } as any)
+  await waitFor(() => bodies.filter(b => b.kind === 'shells').length === 4)
+  expect(bodies.filter(b => b.kind === 'shells').map(b => b.shells.length)).toEqual([1, 0, 1, 0])
+})
+
 test('a session Tatty did not start reports no turns or subagents', async ($, on) => {
   const seen: string[] = []
   engine(on, true, {}, seen)

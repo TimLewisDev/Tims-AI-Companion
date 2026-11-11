@@ -5140,6 +5140,24 @@ def clean_agents(agents, before=()):
     return out
 
 
+def clean_shells(shells, before=()):
+    """A session's shell commands running in the background (a Bash call run in the
+    background, or moved there), as the mod reports them, made safe to keep and show: id,
+    command and description, and `since`, when this was first told of it (from `before`,
+    the list it replaces, else now). A session whose turn is over while one runs is
+    waiting on it, not on the person."""
+    first = {s.get("id"): s.get("since") for s in before if isinstance(s, dict)}
+    now = time.time()
+    out = []
+    for s in (shells if isinstance(shells, list) else [])[:24]:
+        if not isinstance(s, dict) or not s.get("id"):
+            continue
+        sid = str(s["id"])[:80]
+        out.append({"id": sid, "command": " ".join(str(s.get("command", "")).split())[:300],
+                    "description": " ".join(str(s.get("description", "")).split())[:120], "since": first.get(sid) or now})
+    return out
+
+
 def clean_usage(body):
     """A session's token usage as the mod reports it, made safe to keep and show:
     counts are whole numbers >= 0; the context and the cost are left out unless given."""
@@ -9017,9 +9035,10 @@ class Handler(BaseHTTPRequestHandler):
                     st.sessions[tag]["usage"] = clean_usage(b.get("usage"))
                 st.session_event(tag)
                 return self.send(200, {"ok": True})
-            if what in ("turn", "agents"):
-                # Not rows in the feed either: whether the main loop is in a turn, and the
-                # session's subagents. They are what the page's status and bar are made of.
+            if what in ("turn", "agents", "shells"):
+                # Not rows in the feed either: whether the main loop is in a turn, the
+                # session's subagents and its shell commands running in the background.
+                # They are what the page's status and bar are made of.
                 if tag not in st.sessions:
                     return self.send(404, {"error": "no such session"})
                 with st.cond:
@@ -9027,12 +9046,14 @@ class Handler(BaseHTTPRequestHandler):
                     if what == "turn":
                         s["turn"] = b.get("state") == "start"
                         s["turnSince"] = time.time()
+                    elif what == "shells":
+                        s["shells"] = clean_shells(b.get("shells"), s.get("shells") or [])
                     else:
                         s["agents"] = clean_agents(b.get("agents"), s.get("agents") or [])
                 st.session_event(tag)
                 return self.send(200, {"ok": True})
             if what not in ("tool", "tool-done", "prompt", "reply", "note"):
-                return self.send(400, {"error": "kind: tool, tool-done, prompt, reply, note, turn, agents or usage"})
+                return self.send(400, {"error": "kind: tool, tool-done, prompt, reply, note, turn, agents, shells or usage"})
             text = str(b.get("text", ""))[:6000 if what == "reply" else 400]
             ev = st.emit("activity", tag=tag, kind=what, tool=str(b.get("tool", ""))[:60], text=text,
                          id=str(b.get("id", ""))[:80], ok=b.get("ok") is not False,

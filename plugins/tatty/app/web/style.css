@@ -481,7 +481,8 @@ ol.activity.more::after { content: ""; display: block; position: sticky; bottom:
    border and following its corners, with comets that sweep left to right while something
    is going on. Colour and motion say what: the model thinking (the accent, one slow
    comet), a tool running (teal, two quick ones), subagents (violet, a comet for each, up
-   to four, staggered: the work fanned out), waiting for you (amber, breathing), opening
+   to four, staggered: the work fanned out), waiting on a command running in the background
+   (blue, one slow steady comet: the clock ticking), waiting for you (amber, breathing), opening
    (grey) and lost (red, dashed, still). Idle and ended show nothing. The motion is not
    gated on prefers-reduced-motion: that is a default here, not a veto (see the notes on
    animations in design.md). */
@@ -507,6 +508,8 @@ ol.activity.more::after { content: ""; display: block; position: sticky; bottom:
 .statebar[data-mode="agents"] i:nth-child(4) { --d: -2.1s; }
 .statebar[data-mode="agents"][data-n="1"] i:nth-child(n+2), .statebar[data-mode="agents"][data-n="2"] i:nth-child(n+3),
 .statebar[data-mode="agents"][data-n="3"] i:nth-child(n+4) { display: none; }
+.statebar[data-mode="waiting"] { --c: #4f7cd9; }
+.statebar[data-mode="waiting"] i:nth-child(1) { display: block; width: 22%; --t: 4s; --ease: linear; }
 .statebar[data-mode="ask"] { --c: var(--warn); animation: sb-breathe 1.8s ease-in-out infinite; }
 .statebar[data-mode="ask"] i:nth-child(1) { display: block; width: 55%; --t: 3.4s; }
 .statebar[data-mode="starting"] { --c: var(--dim); }
@@ -517,6 +520,7 @@ ol.activity.more::after { content: ""; display: block; position: sticky; bottom:
 .chip.m-tool { color: #14a39a; border-color: #14a39a; }
 .chip.m-agents { color: #8b5cf6; border-color: #8b5cf6; }
 .chip.m-ask { color: var(--warn); border-color: var(--warn); }
+.chip.m-waiting { color: #4f7cd9; border-color: #4f7cd9; }
 .live-head .chip, .live-link .chip { display: inline-flex; align-items: baseline; max-width: 100%; min-width: 0; }
 .st-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-dots, .st-time { flex: none; }
@@ -537,10 +541,11 @@ ol.activity.more::after { content: ""; display: block; position: sticky; bottom:
 .agent-chip.warn { border-color: color-mix(in srgb, #d97706 70%, transparent); background: color-mix(in srgb, #d97706 12%, transparent); }
 .agent-chip .agent-model { flex: none; }
 @keyframes st-spin { to { transform: rotate(360deg); } }
-.wdot.m-thinking, .wdot.m-tool, .wdot.m-agents, .wdot.m-starting { animation: st-blink 1.4s ease-in-out infinite; }
+.wdot.m-thinking, .wdot.m-tool, .wdot.m-agents, .wdot.m-starting, .wdot.m-waiting { animation: st-blink 1.4s ease-in-out infinite; }
 .wdot.m-tool { background: #14a39a; }
 .wdot.m-agents { background: #8b5cf6; }
 .wdot.m-ask { background: var(--warn); }
+.wdot.m-waiting { background: #4f7cd9; }
 @keyframes st-blink { 50% { opacity: .35; } }
 
 /* the Features page's tabs: the list of features, then a tab for each workflow session */
