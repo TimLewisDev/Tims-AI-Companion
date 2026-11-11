@@ -82,7 +82,11 @@ function drawShop() {
     el("div", { class: "shop-head" },
       el("div", { class: "shop-title" },
         el("h2", {}, "Tatty's Shop"),
-        el("p", {}, "Spend the coins you earn by finishing things. Whatever you buy is his to keep.")),
+        el("p", {}, "Spend the coins you earn by finishing things. Whatever you buy is his to keep."),
+        // coins and unlocks belong to the project (server.py's "coins and the shop"): another project's Tatty can look different
+        w.project ? el("p", { class: "shop-project small", id: "shop-project" }, "These coins and unlocks are ",
+          el("strong", {}, `${w.project.number ? w.project.number + " · " : ""}${w.project.name}`),
+          "'s: each project has its own, so each can have a different Tatty.") : ""),
       balance,
       el("div", { class: "shop-switches" },
         shopSwitch("Sound", TattySfx.on(), v => TattySfx.set(v)),

@@ -38,6 +38,11 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     exe, url, ledger = argv[0], argv[1], argv[2]
+    # A milestone pays the project whose feature it is (server.py's "coins and the shop"), so a ledger row names a real
+    # feature's folder in the server's root, as the toolbox's rows do.
+    base, _, token = url.partition("#token=")
+    req = urllib.request.Request(base.rstrip("/") + "/api/features", headers={"X-TT-Token": token})
+    feature_folder = json.load(urllib.request.urlopen(req, timeout=20))["features"][0]["folder"]
     shots = argv[argv.index("--shots") + 1] if "--shots" in argv else None
     port = 9800 + os.getpid() % 150
     proc = subprocess.Popen([exe, "--headless=new", "--disable-gpu", "--no-first-run", "--autoplay-policy=no-user-gesture-required",
@@ -91,7 +96,7 @@ def main(argv):
         p.js("document.body.dispatchEvent(new PointerEvent('pointerdown', {clientX: 400, clientY: 400, bubbles: true})); 1")
         with open(ledger, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"v": 1, "ts": "2026-11-11T10:00:00Z", "event": "plan.signed_off", "key": "shop-check|signed",
-                                 "prefix": "Shop", "folder": "nowhere", "route": "full", "qualifier": "", "skill": "tt-adversarial-plan"}) + "\n")
+                                 "prefix": "Shop", "folder": feature_folder, "route": "full", "qualifier": "", "skill": "tt-adversarial-plan"}) + "\n")
         check("coins fly when a milestone pays", wait("document.querySelectorAll('#coin-layer .fly-coin').length > 0", 10))
         time.sleep(0.35)
         shot("1-coins-flying")
@@ -143,7 +148,7 @@ def main(argv):
         with open(ledger, "a", encoding="utf-8") as fh:
             for i in range(8):
                 fh.write(json.dumps({"v": 1, "ts": "2026-11-11T10:00:00Z", "event": "build.complete", "key": f"shop-check|done{i}",
-                                     "prefix": "Shop", "folder": "nowhere", "route": "full", "qualifier": str(i), "skill": "tt-execute"}) + "\n")
+                                     "prefix": "Shop", "folder": feature_folder, "route": "full", "qualifier": str(i), "skill": "tt-execute"}) + "\n")
         check("enough for an avatar", wait("+document.querySelector('.shop-balance .num').textContent.replace(/\\D/g, '') >= 400", 15))
         time.sleep(1.5)
         p.js("[...document.querySelectorAll('.shop-tab')][0].click(); 1")

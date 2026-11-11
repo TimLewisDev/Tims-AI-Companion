@@ -2181,7 +2181,8 @@ def watch_ledger(state):
                 if not ev:
                     continue
                 seen.add(key)
-                reward(state, "ledger:" + key, ev["tier"], ev["label"], milestone=ev["seq"])
+                if ev.get("feature"):  # (the ledger is every project's: only the one whose feature it is pays)
+                    reward(state, "ledger:" + key, ev["tier"], ev["label"], milestone=ev["seq"])
                 state.touch()  # the toolbox is working, so the window is wanted
         except Exception:  # a watcher that dies takes the celebrations with it
             continue
@@ -2578,14 +2579,20 @@ def features_list(state):
 # accessories. shop.json says what is for sale, at what price, and what each
 # kind of reward pays.
 #
-# There is one wallet for the person, not one per project: <home>/wallet.json.
-# Every window's server writes it, so each write is a read-change-write under the
-# cross-process lock reviewdoc.py keeps for its documents. A reward has a key, and
-# the wallet remembers every key it has paid ("paid"): that is what makes a reward
-# once-only, across restarts and across the several servers that follow the one
-# ledger and so all see the same milestone. The server that pays says so with a
-# "coins" event; one that finds it paid a moment ago says so too (paid: false), so
-# every open window shows the coins arriving and none pays them twice.
+# Each project has a wallet of its own, in its record folder (project_home()):
+# coins, what is unlocked and what Tatty wears are the project's, so open projects
+# can have different Tattys. The project that was Tatty's root before the Hub (the
+# "legacy" one) keeps <home>/wallet.json, so nothing is lost; the others start with
+# shop.json's welcome gift in <home>/projects/<id>/wallet.json. Every window of a
+# project writes it (the Hub's server too, for the project opened last), so each
+# write is a read-change-write under the cross-process lock reviewdoc.py keeps for
+# its documents. A reward has a key, and the wallet remembers every key it has paid
+# ("paid"): that is what makes a reward once-only, across restarts and across the
+# several servers that follow the one ledger and so all see the same milestone. A
+# milestone from the ledger pays only the server whose root holds its feature (the
+# ledger is shared by every project; the work is one project's). The server that
+# pays says so with a "coins" event; one that finds it paid a moment ago says so too
+# (paid: false), so every open window shows the coins arriving and none pays them twice.
 
 SHOP_FILE = HERE / "shop.json"
 WALLET_LOG = 40   # the transactions kept, newest last
@@ -2602,7 +2609,8 @@ def shop_catalogue():
 
 
 def wallet_path():
-    return home() / "wallet.json"
+    """This project's wallet (the legacy project's is <home>/wallet.json, as it always was)."""
+    return project_home() / "wallet.json"
 
 
 def wallet_load(cat=None):
@@ -2630,7 +2638,7 @@ def wallet_change(fn):
     """Read, change and write the wallet as one step, across every Tatty process. fn(wallet) changes
     it in place and returns an answer; returns (answer, the wallet after). Raises reviewdoc.DocError
     when another process holds the wallet for too long."""
-    home().mkdir(parents=True, exist_ok=True)
+    wallet_path().parent.mkdir(parents=True, exist_ok=True)
     with reviewdoc.Lock(wallet_path()):
         w = wallet_load()
         answer = fn(w)
@@ -2639,9 +2647,11 @@ def wallet_change(fn):
 
 
 def wallet_view(w=None):
-    """What the page is told: the balance, what is owned and worn, and the last few transactions."""
+    """What the page is told: the balance, what is owned and worn, the last few transactions, and which
+    project the wallet is (None where there is none: the Hub window)."""
     w = w or wallet_load()
-    return {"coins": w["coins"], "owned": w["owned"], "avatar": w["avatar"], "outfit": w["outfit"], "log": w["log"][-10:]}
+    return {"coins": w["coins"], "owned": w["owned"], "avatar": w["avatar"], "outfit": w["outfit"], "log": w["log"][-10:],
+            "project": project_status()}
 
 
 def wallet_glance():
@@ -2715,6 +2725,46 @@ def debug_coins(state, b):
         state.emit("coins", amount=given, reason="Debug coins", kind="debug", key="", paid=True, balance=w["coins"])
     else:
         state.emit("wallet", did="debug", id="", slot="", **view)
+    return 200, {"ok": True, **view}
+
+
+def debug_lock(state, b):
+    """{password, id}: take an unlock away again, so it can be bought again (id "all": every one that is not
+    free). It is taken off Tatty if worn, and if it was the avatar chosen, a free one takes its place. The
+    price is not given back (the debug coins do that). Said with a "wallet" event, like any change.
+    (code, answer)"""
+    if hashlib.sha256(str(b.get("password", "")).encode("utf-8")).hexdigest() != DEBUG_KEY:
+        return 403, {"error": "wrong password"}
+    cat = shop_catalogue()
+    free = [a["id"] for a in cat["avatars"] if not a.get("price")]
+    names = {x["id"]: str(x.get("name") or x["id"]) for x in cat["avatars"] + cat["items"]}
+    iid = str(b.get("id", ""))
+
+    def lock(w):
+        if iid == "all":
+            gone = [x for x in w["owned"] if x not in free]
+        elif iid in free:
+            return 409, {"error": "that one is free: it can't be locked"}
+        elif iid in w["owned"]:
+            gone = [iid]
+        else:
+            return 404, {"error": "that isn't unlocked"}
+        w["owned"] = [x for x in w["owned"] if x not in gone]
+        w["outfit"] = {k: v for k, v in w["outfit"].items() if v not in gone}
+        if w["avatar"] in gone:
+            w["avatar"] = free[0] if free else ""
+        if gone:
+            wallet_log(w, 0, "Debug: locked " + ", ".join(names.get(x, x) for x in gone))
+        return 200, {}
+
+    try:
+        (code, answer), w = wallet_change(lock)
+    except (reviewdoc.DocError, OSError) as e:
+        return 503, {"error": f"the wallet is busy ({e}); try again"}
+    if code != 200:
+        return code, answer
+    view = wallet_view(w)
+    state.emit("wallet", did="debug", id=iid, slot="", **view)
     return 200, {"ok": True, **view}
 
 
@@ -8799,6 +8849,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/debug/coins":
             code, answer = debug_coins(st, b)
+            return self.send(code, answer)
+        if path == "/api/debug/lock":
+            code, answer = debug_lock(st, b)
             return self.send(code, answer)
         if path == "/api/reply":
             qid = str(b.get("id", ""))

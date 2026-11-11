@@ -444,6 +444,31 @@ pget "$PH/servers/$TWO.json" /api/status >"$T/st"; has "the second says its own"
 pget "$PH/servers/$ONE.json" /api/root >"$T/j"; has "the first answers for its own root" "$T/j" "/one\""
 pget "$PH/servers/$TWO.json" /api/root >"$T/j"; has "the second answers for its own" "$T/j" "/two\""
 pget "$PH/servers/$ONE.json" /api/root >"$T/j"; has "the first is unmoved by the second opening" "$T/j" "/one\""
+# Coins and unlocks belong to the project: each window has a wallet of its own (and so its own Tatty).
+pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"
+pick "$T/j" "(d['coins'], d['project']['name'], d['project']['number'])" >"$T/f"
+has "a project's wallet starts with the welcome gift, and says whose it is" "$T/f" "(100, 'One', 1)"
+ppost "$PH/servers/$ONE.json" /api/debug/coins '{"password":"letmein","amount":500}' >/dev/null
+ppost "$PH/servers/$ONE.json" /api/shop '{"action":"buy","id":"party"}' >"$T/j"
+pget "$PH/servers/$TWO.json" /api/wallet >"$T/j"
+pick "$T/j" "(d['coins'], 'party' in d['owned'], d['project']['name'])" >"$T/f"
+has "another project's coins and unlocks are its own" "$T/f" "(100, False, 'Two')"
+pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"
+pick "$T/j" "(d['coins'], 'party' in d['owned'])" >"$T/f"
+has "and the first has what it earned and bought" "$T/f" "(560, True)"
+[ -f "$PH/projects/$ONE/wallet.json" ] && ok "kept in the project's own folder" || bad "kept in the project's own folder"
+ppost "$PH/servers/$TWO.json" /api/debug/coins '{"password":"letmein","amount":-30}' >/dev/null
+pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"; pick "$T/j" "d['coins']" >"$T/f"; has "taking coins in one project leaves the other's" "$T/f" "560"
+# A milestone in the shared ledger pays the project whose feature it is, and only that one.
+mkdir -p "$HW/one/features/F1" "$TT_EVENTS_HOME"
+printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"build.unit_validated","key":"proj|WU1","prefix":"F1","folder":"%s","route":"full","qualifier":"WU1","skill":"tt-execute","approx":false}\n' \
+	"$HW/one/features/F1" >>"$TT_EVENTS_HOME/events.jsonl"
+for i in $(seq 1 12); do
+	pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"; [ "$(pick "$T/j" "d['coins']")" = 580 ] && break; sleep 1
+done
+pick "$T/j" "d['coins']" >"$T/f"; has "a milestone pays the project it belongs to" "$T/f" "580"
+sleep 3
+pget "$PH/servers/$TWO.json" /api/wallet >"$T/j"; pick "$T/j" "d['coins']" >"$T/f"; has "and not another project" "$T/f" "70"
 sleep 3
 [ ! -f "$PH/server.json" ] && ok "the Hub is done with once a project is picked" || bad "the Hub is done with once a project is picked"
 ph status --all >"$T/f" 2>&1
@@ -1833,8 +1858,8 @@ waitfor '"prefix": "Fresh"' && ok "but the next milestone is" || bad "but the ne
 fi
 if section coins; then
 echo "# coins and the shop"
-# One wallet in Tatty's home, for every project: it starts with shop.json's welcome gift and
-# Polished Tatty, and the page reads it, with the catalogue, from /api/wallet.
+# A wallet belongs to a project (the legacy one's is Tatty's home's wallet.json): it starts with shop.json's
+# welcome gift and Polished Tatty, and the page reads it, with the catalogue, from /api/wallet.
 coins() { get /api/wallet >"$T/w"; pick "$T/w" "d['coins']"; }
 get /api/wallet >"$T/w"
 [ "$(pick "$T/w" "d['log'][0]['amount'] == 100 and d['log'][0]['reason'] == 'Welcome to the shop'")" = True ] &&
@@ -1850,7 +1875,7 @@ get /api/status >"$T/s"
 coin_row() {
 	mkdir -p "$TT_EVENTS_HOME"
 	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"coins|%s","prefix":"Coins","folder":"%s","route":"full","qualifier":"%s","skill":"tt-execute","approx":false}\n' \
-		"$1" "$2" "$T/coins" "$2" >>"$TT_EVENTS_HOME/events.jsonl"
+		"$1" "$2" "$DEMO" "$2" >>"$TT_EVENTS_HOME/events.jsonl"  # (a milestone pays the project whose feature it is)
 }
 coins_wait() { local i; for i in $(seq 1 20); do get /api/events >"$T/ev"; grep -qF -- "$1" "$T/ev" && return 0; sleep 0.5; done; return 1; }
 paid() { $PY -c "import json, sys
@@ -1940,6 +1965,21 @@ get /api/events >"$T/ev"
 	ok "a negative amount takes them away" || bad "a negative amount takes them away" "$(coins)"
 [ "$(dbg '{"password":"letmein","amount":"lots"}')" = 400 ] && [ "$(dbg '{"password":"letmein","amount":1000000}')" = 400 ] &&
 	ok "an amount that isn't a sensible number is refused" || bad "an amount that isn't a sensible number is refused"
+# ... and unlocks can be taken away again, to be bought again: but only with the password, never a free one.
+dbl() { curl -s -o "$T/dbl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/debug/lock"; }
+[ "$(dbl '{"password":"nope","id":"party"}')" = 403 ] && ok "debug lock: a wrong password is refused" || bad "debug lock: a wrong password is refused"
+[ "$(dbl '{"password":"letmein","id":"polished"}')" = 409 ] && ok "a free avatar can't be locked" || bad "a free avatar can't be locked" "$(cat "$T/dbl")"
+[ "$(dbl '{"password":"letmein","id":"no-such-thing"}')" = 404 ] && ok "nor something that isn't unlocked" || bad "nor something that isn't unlocked"
+shopto '{"action":"wear","slot":"hat","id":"party"}' >/dev/null
+[ "$(dbl '{"password":"letmein","id":"party"}')" = 200 ] && [ "$(pick "$T/dbl" "'party' not in d['owned'] and d['outfit'] == {}")" = True ] &&
+	ok "an unlock is locked again, and taken off" || bad "an unlock is locked again, and taken off" "$(cat "$T/dbl")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[e['did'] for e in d if e['type'] == 'wallet'][-1]")" = debug ] && ok "and the windows are told" || bad "and the windows are told"
+dbg '{"password":"letmein","amount":3000}' >/dev/null
+[ "$(shop '{"action":"buy","id":"party"}')" = 200 ] && ok "so it can be bought again" || bad "so it can be bought again"
+shop '{"action":"buy","id":"owl"}' >/dev/null; shop '{"action":"choose","id":"owl"}' >/dev/null
+[ "$(dbl '{"password":"letmein","id":"all"}')" = 200 ] && [ "$(pick "$T/dbl" "d['owned'] == ['polished'] and d['avatar'] == 'polished' and d['outfit'] == {}")" = True ] &&
+	ok "all of them, and the avatar chosen falls back to a free one" || bad "all of them, and the avatar chosen falls back to a free one" "$(cat "$T/dbl")"
 hasnt "the password itself isn't in the server" "$root/plugins/tatty/app/server.py" "tatemon"
 # A wallet edited by hand can't give him what he doesn't own.
 $PY -c "import json, sys; p = sys.argv[1]; w = json.load(open(p)); w.update(coins='lots', outfit={'hat': 'crown'}, avatar='owl'); json.dump(w, open(p, 'w'))" "$TATTY_HOME/wallet.json"

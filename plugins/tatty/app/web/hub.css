@@ -25,3 +25,5 @@
 .hub-llm-note { flex-basis: 100%; }
 /* The Hub is the whole window: no pages to go to until a project is open. */
 body.hub-open .pnav, body.hub-open .mode-switch { visibility: hidden; }
+/* ... and there is no purse: coins belong to a project (the Hub has none, and no Tatty) */
+body.hub-open .purse { display: none; }

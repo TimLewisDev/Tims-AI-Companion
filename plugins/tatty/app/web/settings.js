@@ -101,25 +101,57 @@ function debugSettings() {
         el("div", { class: "actions" }, pw, el("button", { type: "button", id: "debug-unlock", onclick: unlock }, "Unlock"), msg));
       return;
     }
-    const amount = el("input", { type: "number", id: "debug-amount", value: "100", step: "1", "aria-label": "Coins to award" });
+    const amount = el("input", { type: "number", id: "debug-amount", value: "100", step: "1", min: "0", "aria-label": "Coins to award or take" });
+    const unlocks = el("div", { id: "debug-unlocks", class: "debug-unlocks" });
+    // a refused password locks the section again; anything else is shown
+    const failed = e => { if (e.status === 403) { sessionStorage.removeItem(DEBUG_PASS); draw(); return; } msg.textContent = e.message; };
+    // n coins in (positive) or out (negative) of this project's wallet
     const give = async n => {
       if (!n) return;
       try {
         const r = await api("/api/debug/coins", { password: pass, amount: n });
         msg.textContent = `Balance: ${r.coins.toLocaleString()}`;
-      } catch (e) {
-        if (e.status === 403) { sessionStorage.removeItem(DEBUG_PASS); draw(); return; }
-        msg.textContent = e.message;
-      }
+      } catch (e) { failed(e); }
+    };
+    const takeAll = async () => {
+      try {
+        const have = (await api("/api/debug/coins", { password: pass, amount: 0 })).coins;
+        if (have) await give(-have); else msg.textContent = "Balance: 0";
+      } catch (e) { failed(e); }
+    };
+    // the unlocks that can be taken away again: the free ones can't be (Tatty is always at least himself)
+    const drawUnlocks = async () => {
+      let w;
+      try { w = await api("/api/wallet"); } catch (e) { unlocks.replaceChildren(el("span", { class: "dim small" }, e.message)); return; }
+      const cat = w.catalogue, free = new Set(cat.avatars.filter(a => !a.price).map(a => a.id));
+      const name = id => (([...cat.avatars, ...cat.items].find(x => x.id === id)) || {}).name || id;
+      const mine = w.owned.filter(id => !free.has(id));
+      const lock = async id => {
+        try {
+          await api("/api/debug/lock", { password: pass, id });
+          msg.textContent = id === "all" ? "Every unlock is locked again." : `${name(id)} is locked again.`;
+          drawUnlocks();
+        } catch (e) { failed(e); }
+      };
+      unlocks.replaceChildren(
+        el("p", { class: "dim small" }, "Unlocked" + (w.project ? ` in ${w.project.name}` : "") + ": " + (mine.length ? "lock one to buy it again." : "nothing to take away.")),
+        mine.length ? el("div", { class: "actions" },
+          ...mine.map(id => el("button", { type: "button", class: "debug-relock", "data-id": id, title: "Take this unlock away (no refund)", onclick: () => lock(id) }, `Lock ${name(id)}`)),
+          el("button", { type: "button", id: "debug-relock-all", onclick: () => lock("all") }, "Lock all")) : "");
     };
     box.replaceChildren(head(),
-      el("p", { class: "dim small" }, "Award Tatty coins: they arrive in the purse like any others. A negative number takes them away."),
+      el("p", { class: "dim small" }, "Award or take Tatty coins in this project's wallet: they arrive in the purse like any others. Coins and unlocks belong to the project."),
       el("div", { class: "actions" },
         ...[10, 100, 1000].map(n => el("button", { type: "button", class: "debug-give", onclick: () => give(n) }, `+${n}`)),
+        ...[10, 100, 1000].map(n => el("button", { type: "button", class: "debug-take", onclick: () => give(-n) }, `−${n}`)),
         amount,
-        el("button", { type: "button", id: "debug-award", class: "primary", onclick: () => give(parseInt(amount.value, 10) || 0) }, "Award"),
+        el("button", { type: "button", id: "debug-award", class: "primary", onclick: () => give(Math.abs(parseInt(amount.value, 10)) || 0) }, "Award"),
+        el("button", { type: "button", id: "debug-take", onclick: () => give(-Math.abs(parseInt(amount.value, 10)) || 0) }, "Take"),
+        el("button", { type: "button", id: "debug-take-all", onclick: takeAll }, "Take all"),
         el("button", { type: "button", id: "debug-lock", onclick: () => { sessionStorage.removeItem(DEBUG_PASS); draw(); } }, "Lock"),
-        msg));
+        msg),
+      unlocks);
+    drawUnlocks();
   };
   draw();
   return box;

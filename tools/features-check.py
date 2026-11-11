@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -28,6 +28,8 @@ leaving Scope, Plan and Review out and putting them back. It writes the feature'
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --decide      only the Decide page and its overview line (the page's api() stood in for: nothing is written);
+--debug       only Settings' Debug section (coins in and out, unlocks locked again) and the shop's line saying whose wallet it is (the page's api() stood in: nothing is written);
+--modes       only the top bar's modes while in the shop: choosing one leaves it for that mode's home page (modes set on the page);
 --launcher    only the Hub as a launcher that stays: Open on a card, a second project, a window closed elsewhere, the form left
 alone (the page's api() stood in for: nothing is opened);
 --suggestions only the Review step on the page: the tracker's chips, the link rows and the Review page (the page's api() stood in for: nothing is written);
@@ -1715,6 +1717,81 @@ def check_decide(p):
     return res
 
 
+def check_debug(p):
+    """Settings' Debug section (unlocked) with the page's api() stood in: coins out as well as in (fixed amounts, a typed
+    amount, all of them), and the unlocks that can be locked again, each one and all, with what each sends; and the shop
+    saying whose wallet it is. Nothing is written."""
+    res = {}
+    p.js("""window.__real = { api: window.api }; window.__calls = [];
+            window.__w = { coins: 250, owned: ['polished', 'owl', 'party'], avatar: 'owl', outfit: { hat: 'party' }, log: [], project: { id: 'p1', name: 'Alpha', number: 1 },
+              catalogue: { welcome: 100, rewards: {}, slots: [{ id: 'hat' }], avatars: [{ id: 'polished', name: 'Polished Tatty' }, { id: 'owl', name: 'Owl', price: 600 }],
+                           items: [{ id: 'party', name: 'Party hat', slot: 'hat', price: 40 }] } };
+            window.api = async (path, body) => {
+              if (path === '/api/wallet') return JSON.parse(JSON.stringify(window.__w));
+              if (path === '/api/debug/coins') { window.__calls.push({ coins: body.amount }); window.__w.coins = Math.max(0, window.__w.coins + body.amount); return { ok: true, ...window.__w }; }
+              if (path === '/api/debug/lock') {
+                window.__calls.push({ lock: body.id });
+                window.__w.owned = body.id === 'all' ? ['polished'] : window.__w.owned.filter(x => x !== body.id);
+                if (body.id === 'all' || body.id === 'owl') window.__w.avatar = 'polished';
+                return { ok: true, ...window.__w };
+              }
+              return window.__real.api(path, body);
+            };
+            sessionStorage.setItem('tt-debug', 'x'); location.hash = '#settings'; 1""")
+    wait(p, "!!document.querySelector('#debug-unlocks .debug-relock')")
+    res["controls"] = p.js("""({ give: [...document.querySelectorAll('.debug-give')].map(b => b.textContent), take: [...document.querySelectorAll('.debug-take')].map(b => b.textContent),
+                              buttons: ['debug-award', 'debug-take', 'debug-take-all', 'debug-relock-all'].map(id => !!document.getElementById(id)),
+                              unlocks: [...document.querySelectorAll('.debug-relock')].map(b => b.textContent), blurb: document.querySelector('#debug-unlocks p').innerText })""")
+    p.js("document.querySelectorAll('.debug-take')[1].click(); 1")                       # −100
+    wait(p, "window.__calls.length === 1")
+    p.js("document.getElementById('debug-amount').value = '30'; document.getElementById('debug-take').click(); 1")   # Take 30
+    wait(p, "window.__calls.length === 2")
+    p.js("document.getElementById('debug-amount').value = '-7'; document.getElementById('debug-award').click(); 1")   # a minus sign is not a take
+    wait(p, "window.__calls.length === 3")
+    p.js("document.getElementById('debug-take-all').click(); 1")   # asks the balance (0), then takes all of it
+    wait(p, "window.__calls.length === 5")
+    res["coins"] = {"sent": p.js("window.__calls"), "balance": p.js("window.__w.coins"), "said": p.js("document.getElementById('debug-said').textContent")}
+    p.js("document.querySelector('.debug-relock[data-id=\"owl\"]').click(); 1")
+    wait(p, "!document.querySelector('.debug-relock[data-id=\"owl\"]')")
+    res["lockOne"] = {"sent": p.js("window.__calls[5]"), "left": p.js("[...document.querySelectorAll('.debug-relock')].map(b => b.textContent)"), "said": p.js("document.getElementById('debug-said').textContent")}
+    p.js("document.getElementById('debug-relock-all').click(); 1")
+    wait(p, "!document.querySelector('.debug-relock')")
+    res["lockAll"] = {"sent": p.js("window.__calls[6]"), "text": p.js("document.querySelector('#debug-unlocks p').innerText")}
+    # the shop says whose wallet it is
+    p.js("window.__w.owned = ['polished', 'owl']; location.hash = '#shop'; 1")
+    wait(p, "!!document.querySelector('#shop-project')")
+    res["shop"] = p.js("document.querySelector('#shop-project').innerText")
+    p.js("window.api = window.__real.api; sessionStorage.removeItem('tt-debug'); location.hash = '#home'; 1")
+    return res
+
+
+def check_modes(p):
+    """Choosing a mode in the top bar while in the shop leaves the shop for that mode's home page, the mode it was
+    entered from included; on a mode's own home page, choosing the mode it is in does nothing. Modes are set on the
+    page (three installed), so this needs no plugins. Nothing is written."""
+    res = {}
+    seg = label = "[...document.querySelectorAll('.mode-switch .mode-seg')].find(b => b.offsetParent !== null && b.textContent === '%s')"
+    click = lambda name: p.js((seg % name) + ".click(); 1")
+    p.js("setInstalledModes(['engineering', 'design', 'production']); applyMode('engineering'); location.hash = '#shop'; 1")
+    wait(p, "document.querySelector('#page-shop').classList.contains('on')")
+    res["inShop"] = p.js("({ hash: location.hash, mode: currentMode, shop: document.querySelector('#page-shop').classList.contains('on') })")
+    click("Engineering")  # the mode it is already in
+    wait(p, "document.querySelector('#page-mode').classList.contains('on')")
+    res["sameModeLeavesShop"] = p.js("({ hash: location.hash, mode: currentMode, home: document.querySelector('#page-mode').classList.contains('on'), shop: document.querySelector('#page-shop').classList.contains('on') })")
+    p.js("location.hash = '#shop'; 1")
+    wait(p, "document.querySelector('#page-shop').classList.contains('on')")
+    click("Design")
+    wait(p, "document.querySelector('#page-mode').classList.contains('on') && currentMode === 'design'")
+    res["otherModeLeavesShop"] = p.js("({ hash: location.hash, mode: currentMode, colour: document.body.dataset.mode, home: document.querySelector('#page-mode').classList.contains('on'), shop: document.querySelector('#page-shop').classList.contains('on') })")
+    # on a home page, the mode it is in is a no-op (nothing is redrawn)
+    p.js("window.__marker = document.querySelector('#page-mode').firstChild; 1")
+    click("Design")
+    time.sleep(0.4)
+    res["sameModeOnHomeIsQuiet"] = p.js("({ hash: location.hash, same: document.querySelector('#page-mode').firstChild === window.__marker })")
+    p.js("applyMode('engineering'); location.hash = '#home'; 1")
+    return res
+
+
 def check_launcher(p):
     """The Hub stays the launcher: with the page's api() stood in, Open on a card asks for the project's window without
     closeHub, the page stays on the Hub (no turning into a project's page), the card shows it open with a note, a second
@@ -2138,10 +2215,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--launcher", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--launcher", "--modes", "--debug", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--launcher": check_launcher, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

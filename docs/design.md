@@ -145,7 +145,9 @@ optional default code repo. The registry is `<home>/hub.json`
   **Projects…** in a project's tray menu (`hub_window`). Picking a project there opens its
   window (or brings it forward) and the Hub stays exactly as it was, still pending and still
   showing the projects, so several can be opened one after another. It goes only when it is
-  closed, or when a caller asks for `closeHub` (the CLI; the page no longer does).
+  closed, or when a caller asks for `closeHub` (the CLI; the page no longer does). The Hub's
+  tray app has no Tatty: no avatar window is shown or placed (`HasAvatar` in `App.xaml.cs`),
+  its panel sits in the corner, and his items are left off its menu. A project's window has him.
   `tatty.sh status --all` and `close --all` list and stop every
   window; `--project <id|name>` picks one; `open` in a folder inside a project is that
   project's window.
@@ -322,10 +324,17 @@ through a feature, so most of it is in how it looks and sounds.
   question decided (3), a review suggestion decided (3), a story accepted or
   rejected (2). `/api/milestone` and `tatty.sh cheer` pay nothing, or they would be
   a tap to fill the purse from.
-- **One wallet** for the person, not one per project: `<home>/wallet.json`, holding
-  the balance, what is owned and worn, the avatar chosen, the last forty
-  transactions and every reward key paid. A new one holds the welcome gift
-  (`welcome`, 100) and Polished Tatty, who is free. Each window's server writes it,
+- **A wallet per project**, so open projects can have different Tattys:
+  `wallet_path()` is `project_home()/wallet.json`. The project that was Tatty's root
+  before the Hub (the legacy one) keeps `<home>/wallet.json`, so nothing is lost; the
+  others have `<home>/projects/<id>/wallet.json`. It holds the balance, what is owned
+  and worn, the avatar chosen, the last forty transactions and every reward key paid.
+  A new one holds the welcome gift (`welcome`, 100) and Polished Tatty, who is free.
+  The shop says whose it is (`project` in `/api/wallet`), and the Hub window, which
+  has no Tatty, hides the purse. A milestone in the ledger, which every project's
+  server follows, pays only the server whose root holds the row's feature
+  (`watch_ledger`); every other reward comes from a request to the project's own
+  server. Each window of a project's server writes its wallet,
   so every change is a read-change-write under the cross-process lock
   `reviewdoc.Lock` already keeps for the Review Suggestions document
   (`wallet_change`). A wallet edited by hand is read safely: a balance that isn't a
@@ -406,11 +415,16 @@ through a feature, so most of it is in how it looks and sounds.
   `Apply` takes each out wherever it is before putting it into the new one: WPF
   refuses an element that still has a parent, and the throw left him with no mouth
   and no flag (0.34.0).
-- **Debug coins.** Settings ends with a **Debug** section, locked: with the password
-  it awards coins (+10, +100, +1000 or any amount; a negative one takes them away),
-  which arrive like any reward, flying from the button into the purse
-  (`POST /api/debug/coins {password, amount}`, `debug_coins`; amount 0 only checks
-  the password). The server keeps only the password's SHA-256 (`DEBUG_KEY`;
+- **Debug coins and unlocks.** Settings ends with a **Debug** section, locked: with the
+  password it awards coins (+10, +100, +1000 or any amount) or takes them away (−10,
+  −100, −1000, any amount, or all), in this project's wallet. Awards arrive like any
+  reward, flying from the button into the purse
+  (`POST /api/debug/coins {password, amount}`, `debug_coins`; a negative amount takes
+  coins away, and amount 0 only checks the password). It also lists what is unlocked in
+  this project and **Lock**s one, or all, so they can be bought again
+  (`POST /api/debug/lock {password, id | "all"}`, `debug_lock`): a free avatar can't be
+  locked, it is taken off Tatty if worn, a chosen avatar falls back to a free one, and
+  the price is not given back. The server keeps only the password's SHA-256 (`DEBUG_KEY`;
   `TATTY_DEBUG_KEY` replaces it, which is how the tests use a password of their
   own), and the page remembers an accepted one for the window's life
   (sessionStorage) until **Lock**.

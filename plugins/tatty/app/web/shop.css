@@ -152,3 +152,7 @@
 
 /* Motion off: the shop stands still */
 .shop-page.still *, .shop-page.still *::before, .shop-page.still *::after { animation: none !important; transition: none !important; }
+
+/* whose coins and unlocks these are: each project has its own wallet */
+.shop-title .shop-project { font-size: 12px; }
+.shop-title .shop-project strong { color: var(--ink); }

@@ -24,7 +24,8 @@ namespace TtCompanion
     // Every project has one of these (--project <id>), with a server of its own
     // (servers/<id>.json), its own mutex and wake event, its own panel bounds, and its
     // own Tatty, who holds up a flag with the project's number. Without --project it
-    // is the Hub's: the window the projects are picked in, which goes once one is.
+    // is the Hub's: the launcher the projects are picked in, which stays when one is opened and
+    // has no Tatty of its own (HasAvatar).
     public partial class App : Application
     {
         private Mutex? single;
@@ -51,6 +52,9 @@ namespace TtCompanion
         private int failures;
         private bool polling;
         private bool tattyPlaced;
+        // The Hub, the window the projects are launched from, has no Tatty: he is not drawn, not placed, and
+        // not on its menu. A project's window has him (and the flag with its number).
+        private bool HasAvatar => project.Length > 0;
         private bool demoPulse; // the pulses, asked for from his menu rather than by a question
         private bool alertWaiting; // something called for the person that they have not opened yet
 
@@ -280,7 +284,7 @@ namespace TtCompanion
                 if (++failures >= 3)
                 {
                     poll.Stop();
-                    // The Hub goes once a project is picked, which is no news; a project's window closing is.
+                    // The Hub's server stopping (it is closed, or asked to) is no news; a project's window closing is.
                     if (project.Length > 0)
                     {
                         tray.ShowBalloonTip(3000, "Tatty", "Tatty's window closed. /tatty open brings me back.", Forms.ToolTipIcon.Info);
@@ -483,13 +487,16 @@ namespace TtCompanion
         private void PopUp(bool activate)
         {
             tuck.Stop();
-            if (!tatty.IsVisible) tatty.Show();
-            if (!tattyPlaced) PlaceTatty();
+            if (HasAvatar && !tatty.IsVisible) tatty.Show();
+            if (HasAvatar && !tattyPlaced) PlaceTatty();
             if (!bubble.IsVisible) bubble.Show();
             if (Native.IsMinimised(bubble)) bubble.Restore();
             if (!bubble.IsExpanded) PlaceBubble();
-            tatty.Poke(); // being brought out is something happening: wake up
-            tatty.Hop();
+            if (HasAvatar)
+            {
+                tatty.Poke(); // being brought out is something happening: wake up
+                tatty.Hop();
+            }
             bubble.Post("shown");
             if (activate) bubble.Activate();
         }
@@ -635,6 +642,14 @@ namespace TtCompanion
         private void PlaceBubbleOnce()
         {
             if (bubble.IsExpanded) return;
+            if (!HasAvatar)
+            {
+                // Nobody to stand beside: the corner of the screen the pointer is on, as Tatty himself would take.
+                var area = Native.WorkAreaUnderPointer();
+                var size = Native.Rect(bubble);
+                Native.MoveTo(bubble, Math.Max(area.Left, area.Right - size.Width - 24), Math.Max(area.Top, area.Bottom - size.Height - 8));
+                return;
+            }
             var wa = Native.WorkAreaOf(tatty);
             var t = Native.Rect(tatty);
             var b = Native.Rect(bubble);
@@ -692,32 +707,36 @@ namespace TtCompanion
             });
             menu.Items.Add("Hide until something happens", null, (_, _) => OnPageMessage("hide"));
             menu.Items.Add(new Forms.ToolStripSeparator());
-            menu.Items.Add(PreviewMenu());
-            menu.Items.Add(new Forms.ToolStripSeparator());
-            // What Tatty is like to have around: whether he moves, whether he
-            // makes a noise, whether he throws confetti, and whether he goes away
-            // when there is nothing on. Animations starts as the OS's own answer
-            // and is the person's for good as soon as they click it (Motion).
-            menu.Items.Add(Choice("Animations", () => Motion.On, on =>
+            // The Hub has no Tatty (see HasAvatar), so nothing about him is on its menu.
+            if (HasAvatar)
             {
-                settings.Lively = on;
-                Motion.Chosen = on;
-                if (on) tatty.Hop();
-            }));
-            menu.Items.Add(Choice("Sound", () => settings.Sound, on =>
-            {
-                settings.Sound = sounds.Enabled = on;
-                if (on) sounds.Preview(Sounds.Cue.Blip); // so the choice is audible
-            }));
-            menu.Items.Add(Choice("Effects", () => settings.Effects, on => settings.Effects = effects.Enabled = on));
-            menu.Items.Add(Choice("Keep Tatty on the desktop", () => settings.StayVisible, on =>
-            {
-                settings.StayVisible = on;
-                if (!on || tatty.IsVisible) return;
-                tatty.Show();
-                PlaceTatty();
-            }));
-            menu.Items.Add(new Forms.ToolStripSeparator());
+                menu.Items.Add(PreviewMenu());
+                menu.Items.Add(new Forms.ToolStripSeparator());
+                // What Tatty is like to have around: whether he moves, whether he
+                // makes a noise, whether he throws confetti, and whether he goes away
+                // when there is nothing on. Animations starts as the OS's own answer
+                // and is the person's for good as soon as they click it (Motion).
+                menu.Items.Add(Choice("Animations", () => Motion.On, on =>
+                {
+                    settings.Lively = on;
+                    Motion.Chosen = on;
+                    if (on) tatty.Hop();
+                }));
+                menu.Items.Add(Choice("Sound", () => settings.Sound, on =>
+                {
+                    settings.Sound = sounds.Enabled = on;
+                    if (on) sounds.Preview(Sounds.Cue.Blip); // so the choice is audible
+                }));
+                menu.Items.Add(Choice("Effects", () => settings.Effects, on => settings.Effects = effects.Enabled = on));
+                menu.Items.Add(Choice("Keep Tatty on the desktop", () => settings.StayVisible, on =>
+                {
+                    settings.StayVisible = on;
+                    if (!on || tatty.IsVisible) return;
+                    tatty.Show();
+                    PlaceTatty();
+                }));
+                menu.Items.Add(new Forms.ToolStripSeparator());
+            }
             menu.Items.Add("Close Tatty's window", null, async (_, _) => await StopServer());
             menu.Items.Add("Quit Tatty", null, (_, _) => Quit());
             return menu;

@@ -251,13 +251,15 @@ async function route() {
 
 // The top bar's radio (modes.js): the mode changes, and a page of another
 // mode's own -- or the landing page, where picking a mode means going into it --
-// gives way to the new mode's home page.
+// gives way to the new mode's home page. The shop is no mode's page, but a place visited
+// from outside them all: choosing a mode there, even the one it was entered from, leaves it
+// for that mode's home page.
 function switchMode(id) {
-  if (id === currentMode) return;
-  applyMode(id);
   const r = parseRoute();
+  if (id === currentMode && r.page !== "shop") return;
+  applyMode(id);
   const owner = PAGE_MODE[r.page];
-  if (r.page === "modes" || (owner && owner !== id)) {
+  if (r.page === "modes" || r.page === "shop" || (owner && owner !== id)) {
     if (location.hash === "#mode") route(); else location.hash = "#mode";
     return;
   }
