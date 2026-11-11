@@ -57,6 +57,8 @@
   </nav>
   <div class="where dim" id="cwd"></div>
   <div class="badges">
+    <!-- Lit while a page is being read behind what is on screen (features.js's busy). -->
+    <span class="throbber" id="busy" role="status" aria-label="Loading" title="Reading the latest…" hidden></span>
     <span class="badge" id="conn" title="Connection to the window server">connecting…</span>
     <a href="#settings" id="settings-link" class="gear" title="Settings" aria-label="Settings">⚙<span class="dot" hidden></span></a>
     <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>

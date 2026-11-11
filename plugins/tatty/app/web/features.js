@@ -13,6 +13,19 @@ const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-m
 const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", tasks: "production", taskboard: "production",
   designs: "design", design: "design", whiteboards: "design", whiteboard: "design" };
 const featureCache = new Map(); // name -> the last /api/feature answer
+
+// A throbber in the header while anything is being read behind a page already on screen: busy(promise) lights
+// it until the promise settles (and hands the promise back). waitNode() is the big one in an empty frame.
+let busyCount = 0;
+function busy(promise) {
+  const node = $("#busy");
+  busyCount++;
+  if (node) node.hidden = false;
+  const done = () => { busyCount = Math.max(0, busyCount - 1); if (!busyCount && node) node.hidden = true; };
+  promise.then(done, done);
+  return promise;
+}
+const waitNode = () => el("div", { class: "throbber-wait", role: "status", "aria-label": "Loading" }, el("span", { class: "throbber big" }));
 let homeTimer = null;
 
 // ------------------------------------------------------------- words
@@ -349,7 +362,7 @@ async function renderHome(quiet) {
         el("button", { type: "button", class: "primary", onclick: () => newFeatureForm.toggle() }, "New feature…"),
         el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),
       homeNote);
-    if (!data) { put(head, el("div", { class: "fsec-wait", "aria-busy": "true" })); return; }
+    if (!data) { put(head, el("div", { class: "fsec-wait", "aria-busy": "true" }, waitNode())); return; }
     // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
     const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
       el("strong", {}, "Tatty can't find the TT toolbox. "),
@@ -369,7 +382,7 @@ async function renderHome(quiet) {
   };
   if (!quiet) drawList(homeData);
   let data;
-  try { data = await api("/api/features"); } catch (e) { if (mine === homeDraw && onFeatureList()) put(el("p", { class: "st missing pad" }, String(e))); return; }
+  try { data = await busy(api("/api/features")); } catch (e) { if (mine === homeDraw && onFeatureList()) put(el("p", { class: "st missing pad" }, String(e))); return; }
   if (mine !== homeDraw || !onFeatureList()) return; // (the person has moved on: a tab, a chat or another page)
   if (!data.root.isSet || !data.root.exists) { homeData = null; homeJson = ""; location.hash = "#hub"; return; } // no project open yet: the Hub is where one is picked
   const json = JSON.stringify(data);
@@ -462,8 +475,8 @@ async function renderWorkflowTab(tag) {
   tabsActive = tag;
   const mine = ++homeDraw;
   // A tab the page already knows is drawn at once, and the strip is read again behind it.
-  if (tabList.has(tag)) loadTabs();
-  else { await loadTabs(); if (mine !== homeDraw) return; }
+  if (tabList.has(tag)) busy(loadTabs());
+  else { await busy(loadTabs()); if (mine !== homeDraw) return; }
   const s = tabList.get(tag);
   if (!s) {
     box.replaceChildren(workflowTabs(tag, false), el("div", { class: "pad" },
@@ -478,7 +491,7 @@ async function renderWorkflowTab(tag) {
   if (info.feature) {
     const known = featureCache.get(info.feature);
     rail = documentsRail(known ? featureNav(known, null, false, { side: true })
-      : el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, info.feature)), info.feature);
+      : el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, info.feature, " ", el("span", { class: "throbber", role: "status", "aria-label": "Loading" }))), info.feature);
   }
   const ended = info.status === "ended";
   const panel = sessionPanel({ name: info.feature }, info, () => { location.hash = featureHref(info.feature); }, ended, "Open feature");
@@ -648,8 +661,8 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     featureView = null;
     box.replaceChildren(el("div", { class: "fpage loading", "aria-busy": "true" },
       documentsRail(el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, name)), name),
-      el("div", { class: "fmain" })));
-    try { f = await api("/api/feature?name=" + encodeURIComponent(name)); featureCache.set(name, f); } catch (e) {
+      el("div", { class: "fmain" }, waitNode())));
+    try { f = await busy(api("/api/feature?name=" + encodeURIComponent(name))); featureCache.set(name, f); } catch (e) {
       if (mine !== routeSeq) return;
       box.replaceChildren(el("p", { class: "st missing pad" }, `Can't read ${name}: ${e.message || e}`), el("p", { class: "pad" }, el("a", { href: "#home" }, "Back to features")));
       return;
@@ -688,7 +701,7 @@ const decideSig = f => `${(f.decide || {}).open || 0}/${(f.decide || {}).apply |
 async function refreshFeature(name) {
   const seq = routeSeq;
   let fresh;
-  try { fresh = await api("/api/feature?name=" + encodeURIComponent(name)); } catch { return; }
+  try { fresh = await busy(api("/api/feature?name=" + encodeURIComponent(name))); } catch { return; }
   const old = featureCache.get(name);
   featureCache.set(name, fresh);
   const v = featureView;
@@ -802,7 +815,7 @@ async function refreshRail() {
   if (!old) return;
   railBusy = true;
   let f;
-  try { f = await api("/api/feature?name=" + encodeURIComponent(name)); featureCache.set(name, f); } catch { return; } finally { railBusy = false; }
+  try { f = await busy(api("/api/feature?name=" + encodeURIComponent(name))); featureCache.set(name, f); } catch { return; } finally { railBusy = false; }
   if (!old.isConnected) return;
   const top = old.scrollTop, fresh = featureNav(f, null, false, { side: true, notesOpen: !!(old.querySelector(".fnav-notes") || {}).open });
   old.replaceWith(fresh);

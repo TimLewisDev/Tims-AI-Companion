@@ -271,6 +271,14 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .fsec-live .fsec-head h3 { color: var(--accent); font-size: 18px; }
 .fsec-live .fsec-count { color: var(--accent); border-color: var(--accent); background: var(--panel); }
 .fsec-empty { margin: 4px 0 12px; font-size: 13px; font-style: italic; }
+/* The radial throbber: something is being read. Its motion is not gated on prefers-reduced-motion (this
+   machine has the OS animations off, and a throbber that doesn't turn says nothing is happening). */
+.throbber { display: inline-block; flex: none; box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; vertical-align: -2px;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); animation: throb .8s linear infinite; }
+.throbber[hidden] { display: none; }
+.throbber.big { width: 30px; height: 30px; border-width: 3px; }
+.throbber-wait { display: flex; align-items: center; justify-content: center; padding: 56px 0; }
+@keyframes throb { to { transform: rotate(360deg); } }
 .fsec-wait { min-height: 220px; }  /* the list is on its way: the frame holds its place */
 .fpage.loading .fmain { min-height: 240px; }
 .fsec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding-bottom: 16px; }

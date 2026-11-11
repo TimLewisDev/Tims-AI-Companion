@@ -1687,6 +1687,7 @@ def check_loading(p):
                                       back: !!document.querySelector('#page-feature .fnav-back'), main: (document.querySelector('#page-feature .fmain') || { innerText: null }).innerText,
                                       overview: !!document.querySelector('#page-feature .overview'), reading: /Reading the feature|Looking for features/.test(document.body.innerText),
                                       decisions: [...document.querySelectorAll('#page-feature .fnav-item')].some(a => a.textContent.startsWith('Decisions')),
+                                      throbber: !!document.querySelector('#page-feature .fmain .throbber'), busy: !document.querySelector('#busy').hidden,
                                       button: !!document.querySelector('#page-feature #decide-waiting') });
             1""")
     # a feature not seen before: the frame at once, then the data
@@ -1715,6 +1716,9 @@ def check_loading(p):
     p.js("window.__open = 2; window.__auto = true; pollDecisions(); 1")
     wait(p, "window.__frame().decisions")
     res["pickedUp"] = p.js("window.__frame()")
+    wait(p, "document.querySelector('#busy').hidden")
+    res["busyAtRest"] = p.js("window.__frame().busy")
+    res["throbberTurns"] = p.js("(() => { const t = document.createElement('span'); t.className = 'throbber'; document.body.append(t); const a = getComputedStyle(t).animationName; t.remove(); return a; })()")
     res["railItem"] = p.js("[...document.querySelectorAll('#page-feature .fnav-item')].find(a => a.textContent.startsWith('Decisions')).innerText.replace(/\\\\s+/g, ' ').trim()")
     # and the way to the Decide page is the page it says
     p.js("document.querySelector('#decide-waiting').click(); 1")

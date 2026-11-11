@@ -28,6 +28,7 @@ async function decidePage(f, main) {
   const head = el("h2", {}, "Decisions");
   const back = el("a", { href: featureHref(f.name) }, "← Overview");
   let items;
+  put(head, waitNode());
   try { items = (await api("/api/decide?name=" + enc(f.name))).items; }
   catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
   if (!items.length) { put(head, el("p", { class: "dim" }, "Nothing is waiting for a decision."), back); return; }
@@ -68,7 +69,7 @@ async function decidePage(f, main) {
   // a request that fails altogether leaves every choice kept, and the last item's button tries again.
   const send = async () => {
     const todo = items.filter(x => decided.has(keyOf(x)) && !decided.get(keyOf(x)).sent);
-    put(head, el("p", { class: "dim", id: "dc-sending" }, `Sending ${todo.length} decision${todo.length === 1 ? "" : "s"}…`));
+    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${todo.length} decision${todo.length === 1 ? "" : "s"}…`));
     let r;
     try {
       r = await api("/api/decide", { name: f.name, answers: todo.map(x => { const v = decided.get(keyOf(x)); return { doc: x.doc, id: x.id, choice: v.key, note: v.note }; }) });
@@ -99,6 +100,7 @@ async function decidePage(f, main) {
   const draw = async () => {
     const i = items[at];
     if (!shown.has(keyOf(i))) {
+      put(head, waitNode()); // (read by a script: a few seconds when it was not read ahead)
       try { await load(i); }
       catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
     }
