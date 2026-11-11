@@ -264,6 +264,7 @@ class State:
         self.mod_seen = 0.0
         self.mod_session = ""
         self.sessions = {}  # tag -> a session Start opened (see start_session)
+        self.work = {}  # tag -> what the session is doing, for Tatty's avatar: {running: {id: (tool, when)}, oopsAt, activeAt} (see "what the session is doing")
         self.update = {"status": "idle", "running": plugin_version(), "installed": "", "available": "",
                        "checked": 0.0, "message": "", "plugins": []}  # see "updates" below
         self.baseline = {}  # plugin name -> the version it was at when this server first looked
@@ -2185,6 +2186,89 @@ def watch_ledger(state):
                     reward(state, "ledger:" + key, ev["tier"], ev["label"], milestone=ev["seq"])
                 state.touch()  # the toolbox is working, so the window is wanted
         except Exception:  # a watcher that dies takes the celebrations with it
+            continue
+
+
+# ---------------------------------------------------------------- what the session is doing, for Tatty
+# The avatar board (docs/avatar/concepts.html, and avatar.js's STATE_INFO) says what Tatty does when a session
+# works: thinking (a turn has started and no tool yet), reading (Read, Grep, Glob, WebFetch), writing (Edit,
+# Write), running (Bash), delegating (subagents going), "needs you" (a question is open) and, for a moment,
+# oops (a tool failed). The tray app plays them (Avatar.cs's SetState). This works out which one from the
+# sessions Start opened, and says so with an "avatar" event only when it changes.
+
+AVATAR_TOOLS = {"Read": "reading", "Grep": "reading", "Glob": "reading", "WebFetch": "reading", "WebSearch": "reading",
+                "Edit": "writing", "Write": "writing", "MultiEdit": "writing", "NotebookEdit": "writing",
+                "Bash": "running", "PowerShell": "running"}
+AVATAR_AGENT_ACTIVE = ("pending", "running", "waiting")  # (as features.js has them)
+AVATAR_OOPS = 3.0     # seconds a failed tool shows as "oops"
+AVATAR_STALE = 600.0  # a tool that never reported finishing is not still running after this long
+AVATAR_POLL = 0.5
+
+
+def note_work(state, tag, kind="", tool="", item="", ok=True):
+    """Remember what a session just did (an activity, a question): its tools running, when one last failed,
+    and when it was last active, which is how the most recent session is told from the others."""
+    if not tag:
+        return
+    now = time.time()
+    with state.cond:
+        w = state.work.setdefault(tag, {"running": {}, "oopsAt": 0.0, "activeAt": 0.0})
+        w["activeAt"] = now
+        if kind == "tool":
+            w["running"][item or tool] = (tool, now)
+        elif kind == "tool-done":
+            w["running"].pop(item or tool, None)
+            if not ok:
+                w["oopsAt"] = now
+
+
+def session_avatar_state(state, s, now):
+    """What one session has Tatty doing: idle, thinking, reading, writing, running, delegating, needs or oops."""
+    status = state.session_view(s)["status"]
+    if status in ("ended", "unseen", "lost"):
+        return "idle"
+    if status == "starting":
+        return "thinking"
+    tag = s.get("tag", "")
+    if any(q.get("tag") == tag and q.get("answers") is None and not q.get("declined") for q in state.questions.values()):
+        return "needs"
+    w = state.work.get(tag) or {}
+    if now - w.get("oopsAt", 0.0) < AVATAR_OOPS:
+        return "oops"
+    if any(a.get("status") in AVATAR_AGENT_ACTIVE for a in s.get("agents") or []):
+        return "delegating"
+    tools = [(when, tool) for tool, when in (w.get("running") or {}).values() if now - when < AVATAR_STALE]
+    if tools:
+        return AVATAR_TOOLS.get(max(tools)[1], "thinking")
+    return "thinking" if s.get("turn") else "idle"
+
+
+def avatar_state(state):
+    """(state, the session it is for): a question waiting is the most pressing; else the busy session most
+    recently active; else idle. The most recent one speaks for the project."""
+    now = time.time()
+    with state.cond:
+        rows = [((state.work.get(s.get("tag", "")) or {}).get("activeAt", s.get("started", 0.0)), session_avatar_state(state, s, now), s)
+                for s in state.sessions.values()]
+    pool = [r for r in rows if r[1] == "needs"] or [r for r in rows if r[1] != "idle"] or rows
+    if not pool:
+        return "idle", None
+    when, what, s = max(pool, key=lambda r: r[0])
+    return what, s
+
+
+def watch_avatar(state):
+    """Say what Tatty should be doing whenever it changes. The first look is said too, so a tray app that
+    starts later (and reads only the latest) knows where it stands."""
+    last = None
+    while True:
+        time.sleep(AVATAR_POLL)
+        try:
+            what, s = avatar_state(state)
+            if what != last:
+                last = what
+                state.emit("avatar", state=what, tag=(s or {}).get("tag", ""), feature=(s or {}).get("feature", ""))
+        except Exception:  # a watcher that dies takes the avatar's moods with it
             continue
 
 
@@ -8825,6 +8909,7 @@ class Handler(BaseHTTPRequestHandler):
                         s["turnSince"] = time.time()
                     else:
                         s["agents"] = clean_agents(b.get("agents"), s.get("agents") or [])
+                note_work(st, tag)
                 st.session_event(tag)
                 return self.send(200, {"ok": True})
             if what not in ("tool", "tool-done", "prompt", "reply", "note"):
@@ -8833,6 +8918,7 @@ class Handler(BaseHTTPRequestHandler):
             ev = st.emit("activity", tag=tag, kind=what, tool=str(b.get("tool", ""))[:60], text=text,
                          id=str(b.get("id", ""))[:80], ok=b.get("ok") is not False,
                          feature=session_feature(st, tag, session) if what == "reply" else "")
+            note_work(st, tag, what, str(b.get("tool", ""))[:60], str(b.get("id", ""))[:80], b.get("ok") is not False)
             if tag in st.sessions and what in ("tool", "prompt"):
                 st.sessions[tag]["doing"] = (str(b.get("tool", "")) + " " + text).strip()[:200]
             return self.send(200, {"seq": ev["seq"]})
@@ -8855,6 +8941,7 @@ class Handler(BaseHTTPRequestHandler):
                 source = st.sessions[tag]["name"]
             feature = session_feature(st, tag, session)
             st.emit("ask", id=qid, questions=qs, source=source, tag=tag, feature=feature, link=ask_link(st, tag, feature, qid))
+            note_work(st, tag)
             return self.send(200, {"id": qid})
         if path == "/api/shop":
             code, answer = shop_act(st, b)
@@ -9216,6 +9303,7 @@ def serve(cwd, bash):
 
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=watch_ledger, args=(state,), daemon=True).start()
+    threading.Thread(target=watch_avatar, args=(state,), daemon=True).start()
     threading.Thread(target=watch_updates, args=(state,), daemon=True).start()
     threading.Thread(target=watch_designs, args=(state,), daemon=True).start()
     threading.Thread(target=watch_tasks, args=(state,), daemon=True).start()

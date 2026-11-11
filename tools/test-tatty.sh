@@ -1538,6 +1538,40 @@ has "neither is a row in the feed" "$T/f" "0"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"turn","state":"start"}' "$U/api/activity")" = 404 ] &&
 	ok "a turn for an unknown session refused" || bad "a turn for an unknown session refused"
 
+# What the session is doing, for Tatty's avatar: the server works out the state the avatar board names for it
+# (thinking, reading, writing, running, delegating, needs you, oops, else idle) and says so with an "avatar" event
+# when it changes, which the tray app plays. The most recent busy session speaks for the project.
+avatar_is() { local i; for i in $(seq 1 20); do get /api/events >"$T/ev"; [ "$(pick "$T/ev" "([e['state'] for e in d if e['type'] == 'avatar'] or [''])[-1]")" = "$1" ] && return 0; sleep 0.5; done; return 1; }
+avatar_as() { avatar_is "$1" && ok "the avatar: $2" || bad "the avatar: $2" "wanted $1, was $(pick "$T/ev" "([e['state'] for e in d if e['type'] == 'avatar'] or [''])[-1]")"; }
+avatar_as delegating "subagents going: delegating"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[]}" >/dev/null
+avatar_as idle "nothing running: idle"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"turn\",\"state\":\"start\"}" >/dev/null
+avatar_as thinking "a turn started and no tool yet: thinking"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool\",\"tool\":\"Grep\",\"text\":\"x\",\"id\":\"av1\"}" >/dev/null
+avatar_as reading "Grep: reading"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool-done\",\"tool\":\"Grep\",\"id\":\"av1\",\"ok\":true}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool\",\"tool\":\"Edit\",\"text\":\"x\",\"id\":\"av2\"}" >/dev/null
+avatar_as writing "Edit: writing"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool-done\",\"tool\":\"Edit\",\"id\":\"av2\",\"ok\":true}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool\",\"tool\":\"Bash\",\"text\":\"x\",\"id\":\"av3\"}" >/dev/null
+avatar_as running "Bash: running"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool-done\",\"tool\":\"Bash\",\"id\":\"av3\",\"ok\":false}" >/dev/null
+avatar_as oops "a tool that failed: oops"
+avatar_as thinking "and then back to the turn: thinking"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool\",\"tool\":\"TodoWrite\",\"text\":\"x\",\"id\":\"av4\"}" >/dev/null
+avatar_as thinking "a tool the board has no state for: thinking"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool-done\",\"tool\":\"TodoWrite\",\"id\":\"av4\",\"ok\":true}" >/dev/null
+post /api/ask "{\"tag\":\"$TAG\",\"questions\":[{\"question\":\"Which way?\",\"header\":\"Way\",\"multiSelect\":false,\"options\":[{\"label\":\"Left\",\"description\":\"\"},{\"label\":\"Right\",\"description\":\"\"}]}]}" >"$T/j"
+AVQ=$(pick "$T/j" "d['id']")
+avatar_as needs "a question open: needs you"
+post /api/reply "{\"id\":\"$AVQ\",\"answers\":{\"Which way?\":\"Left\"}}" >/dev/null
+avatar_as thinking "answered: back to the turn"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"turn\",\"state\":\"end\"}" >/dev/null
+avatar_as idle "the turn over: idle"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'avatar' and e['tag'] == '$TAG'])")" -ge 9 ] && ok "each change said once, for the session it is about" || bad "each change said once"
+
 # code diff: the file edits a subagent makes, kept under the task in progress. The
 # copies of Demo's documents in $FX are changed here and put back at the end.
 DEMOD="$FX/features/Demo"

@@ -21,6 +21,9 @@
        and each leg has a lift and a fold of its own, so he can shift his weight
        from foot to foot and fold them under to sit. -->
   <Canvas Width="104" Height="176">
+    <!-- what stands behind him while a session works (the helper bots): an avatar's props with the layer "back".
+         The ones that ride with his body, or all of him, go in Body and Robot (TattyWindow.Apply). -->
+    <Canvas x:Name="PropsBack" Canvas.Top="44" Width="104" Height="120" />
     <Canvas x:Name="Robot" Canvas.Top="44" Width="104" Height="120">
       <Canvas.RenderTransform>
         <TransformGroup>

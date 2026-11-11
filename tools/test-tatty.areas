@@ -13,6 +13,7 @@ ignore	plugins/tatty/tsconfig.json	-
 ignore	tools/features-check.py	-
 ignore	tools/page-check.py	-
 ignore	tools/shop-check.py	-
+ignore	tools/avatar-states-check.py	-
 ignore	tools/make-avatar-js.py	-
 ignore	tools/window-check.py	-
 ignore	tools/whiteboard-perf.py	-

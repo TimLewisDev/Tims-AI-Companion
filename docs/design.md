@@ -257,6 +257,32 @@ the noise.
   throws confetti and plays the flourish; the page adds a card and confetti of
   its own (`milestoneCard` and `confetti` in `app.js`). `tatty.sh cheer [<event>]`
   does the lot on demand, which is how it is tried out and tested.
+- **What the session is doing.** The avatar board (`docs/avatar/concepts.html`, `STATE_INFO` in `avatar.js`)
+  names the states Tatty shows while a session works and what triggers each: *thinking* (a turn has started and
+  no tool yet), *reading* (Read, Grep, Glob, WebFetch), *writing* (Edit, Write), *running* (Bash), *delegating*
+  (subagents going), *needs you* (a question is open) and, for three seconds, *oops* (a tool failed); idle is
+  nothing running. The server works the state out from the sessions Start opened (`avatar_state`: what each
+  session's tools, turn, subagents and open questions say, kept in `State.work` by `note_work`; a question
+  waiting is the most pressing, else the busy session most recently active speaks for the project) and
+  `watch_avatar` says it with an `avatar` event (`state`, `tag`, `feature`) whenever it changes, the first look
+  included. The tray app reads the last such event of each poll (the backlog counts: it is a state, not news).
+  The drawing of it all is the page's: `avatar.js`'s `bake` sends, with the avatar, each state's **props** (the
+  thought bubble, magnifier, notepad, terminal, helper bots, "?", sweat and smoke, as `<prop state layer>`
+  groups baked with the browser's cascade, `layer` being where one rides: behind him, with his body, or with
+  all of him) and its **tracks** (`<state>` with `<track>`s, this avatar's own extras such as the cat's tail
+  and the owl's brows among them). `AvatarArt.cs` reads them (`Props`, `States`) and `TattyWindow.Apply`
+  puts each prop where it rides, hidden (`PropsBack`, `Body`, `Robot`). `Avatar.SetState` plays a state: his
+  parts ease to its first frame in a third of a second and then its tracks go round as looping WPF
+  animations (the page's own function sampled thirty times a second, `AvatarArt.Eval`), on the same
+  transforms the performances use, so a performance that cuts in (the alert hop, a celebration) is
+  followed by the state going round again (`Resume`). While a state is on he does not fidget or doze. With
+  the animations off (`Motion`) he shows what he is doing and keeps still: the props held at a frame that
+  reads, and the state's mouth. Every state can be watched on purpose from **Preview ▸ At work**
+  (`PreviewState`, eight seconds, then back to what the session is doing). `TtCompanion.exe --render-states
+  <description.xml> <out folder>` draws each state at four moments into contact sheets without showing a
+  window, and `--render-live <description.xml> <out.png> [states] [--interrupt]` (with `TATTY_ANIMATE=1`) plays
+  them for real out of sight and draws four frames of each: `tools/avatar-states-check.py` runs both for all six
+  avatars, which is how the port is looked at against the page's own.
 - **What is calling, and where it goes.** A question, a finished milestone and a
   Claude reply each carry a `link`: the page route they are about (`#feature/<name>`,
   or `#tasks/<board>` for a task board's milestone), empty when nothing links

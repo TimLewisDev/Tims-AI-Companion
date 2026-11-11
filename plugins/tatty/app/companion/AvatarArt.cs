@@ -25,6 +25,10 @@ namespace TtCompanion
     //        <numtag text="x,y" size=.. fill=..>..</numtag> <badge at="x,y"/> <g p="Tail" c=..>..</g> .. </part>
     //   </part><defs>gradients</defs></tatty>
     //
+    // After the parts the description carries what he does while a session works: <props> (a <prop state=
+    // layer=> group of drawing for each state's thought bubble, magnifier, notepad ...) and <states> (a <state
+    // id= dur= mouth= lids= bob=> with its <track p="Part.prop" k= ..>s): see Props, States and Avatar.SetState.
+    //
     // Shapes are SVG's path, circle, ellipse, rect, line and polygon, each drawn as a WPF
     // Path in the drawing's own coordinates. TattyWindow.Apply puts the parts into the
     // canvases TattyWindow.xaml names, so Avatar.cs moves them as it always has; the
@@ -44,7 +48,58 @@ namespace TtCompanion
         public readonly Dictionary<string, UIElement> Mouths = new();
         // where the window's own Eyes canvas and number badge go among the drawing's things
         public Panel? EyesSlot, NumSlot;
-        public readonly List<(string Name, ScaleTransform S, RotateTransform R, TranslateTransform T)> Moving = new();
+        public readonly List<(string Name, ScaleTransform S, RotateTransform R, TranslateTransform T, Canvas Outer)> Moving = new();
+
+        // What he does while a session works (avatar.js's bake: <props> and <states>, the board's own data).
+        // Each prop is a canvas of drawing, hidden until its state is on; Layer says where it rides: "back"
+        // (behind him), "body" (with his body) or "root" (with all of him). PropParts are the names of the
+        // moving parts inside props, which a state sets in place where his own parts are eased.
+        public readonly List<(string State, string Layer, Canvas Canvas)> Props = new();
+        public readonly HashSet<string> PropParts = new();
+        public readonly Dictionary<string, StateDef> States = new();
+
+        // One number moved over time, as avatar.js has it: k "f" frames of (value, seconds) eased into each
+        // other, "l" a straight run from a to b that wraps, "w" a swell from a to b and back; ph a phase
+        // (a fraction of its length) and Dur a length of its own (else the state's).
+        internal sealed class Track
+        {
+            public string Part = "", Prop = "";
+            public char Kind = 'f';
+            public double A, B, Ph, Dur;
+            public (double V, double T)[] Frames = Array.Empty<(double, double)>();
+        }
+
+        internal sealed class StateDef
+        {
+            public string Id = "", Mouth = "neutral";
+            public double Dur = 2, Lids = 1, BobRise = 4, BobSeconds = 1.6;
+            public bool Blink = true;
+            public readonly List<Track> Tracks = new();
+        }
+
+        private static double Frac(double x) => ((x % 1) + 1) % 1;
+        private static double Ease(double u) => (1 - Math.Cos(Math.PI * u)) / 2;
+
+        // The value of a track t seconds into a state of length dur: avatar.js's evalTrack, so he moves as the page's does.
+        internal static double Eval(Track tr, double t, double dur)
+        {
+            double d = tr.Dur > 0 ? tr.Dur : dur, lt = ((t % d) + d) % d;
+            if (tr.Kind == 'l') return tr.A + (tr.B - tr.A) * Frac(lt / d + tr.Ph);
+            if (tr.Kind == 'w') return tr.A + (tr.B - tr.A) * Math.Sin(Math.PI * Frac(lt / d + tr.Ph));
+            var f = tr.Frames;
+            if (f.Length == 0) return 0;
+            if (f.Length == 1 || lt <= f[0].T) return f[0].V;
+            for (int i = 1; i < f.Length; i++)
+            {
+                if (lt <= f[i].T)
+                {
+                    var (v0, t0) = f[i - 1];
+                    var (v1, t1) = f[i];
+                    return v0 + (v1 - v0) * Ease(t1 > t0 ? (lt - t0) / (t1 - t0) : 1);
+                }
+            }
+            return f[^1].V;
+        }
 
         private readonly Dictionary<string, Brush> gradients = new();
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -73,11 +128,52 @@ namespace TtCompanion
                     { backDone = true; art.Kids(p, art.Back); }
                     else if (name == "Body") { art.BodyPivot = Pt(p, "c", art.BodyPivot); art.Kids(p, art.Body); }
                 }
-                return art.Body.Count > 0 ? art : null;
+                if (art.Body.Count == 0) return null;
+                try { art.ReadStates(doc); }
+                catch (Exception) { art.Props.Clear(); art.States.Clear(); }  // the states are an extra: without them he is still himself
+                return art;
             }
             catch (Exception)
             {
                 return null;  // a description that doesn't read leaves him as he was
+            }
+        }
+
+        // The working states' props and tracks (see Props and States).
+        private void ReadStates(XElement doc)
+        {
+            foreach (var pr in doc.Element("props")?.Elements("prop") ?? Enumerable.Empty<XElement>())
+            {
+                int before = Moving.Count;
+                var canvas = (Canvas)KidsCanvas(pr);
+                canvas.Visibility = Visibility.Collapsed;
+                Props.Add(((string?)pr.Attribute("state") ?? "", (string?)pr.Attribute("layer") ?? "", canvas));
+                for (int i = before; i < Moving.Count; i++) PropParts.Add(Moving[i].Name);
+            }
+            foreach (var st in doc.Element("states")?.Elements("state") ?? Enumerable.Empty<XElement>())
+            {
+                var def = new StateDef
+                {
+                    Id = (string?)st.Attribute("id") ?? "", Mouth = (string?)st.Attribute("mouth") ?? "neutral",
+                    Dur = Math.Max(0.1, Num(st, "dur", 2)), Lids = Num(st, "lids", 1), Blink = Num(st, "blink", 1) != 0,
+                };
+                var bob = ((string?)st.Attribute("bob") ?? "").Split(',');
+                if (bob.Length == 2 && double.TryParse(bob[0], NumberStyles.Float, Inv, out var rise) && double.TryParse(bob[1], NumberStyles.Float, Inv, out var secs))
+                { def.BobRise = rise; def.BobSeconds = Math.Max(0.2, secs); }
+                foreach (var t in st.Elements("track"))
+                {
+                    var at = ((string?)t.Attribute("p") ?? "").Split('.');
+                    if (at.Length != 2) continue;
+                    var tr = new Track { Part = at[0], Prop = at[1], Kind = ((string?)t.Attribute("k") ?? "f")[0], A = Num(t, "a"), B = Num(t, "b"), Ph = Num(t, "ph"), Dur = Num(t, "dur") };
+                    if (tr.Kind == 'f')
+                    {
+                        tr.Frames = ((string?)t.Attribute("v") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(x => x.Split(',')).Where(x => x.Length == 2)
+                            .Select(x => (double.Parse(x[0], Inv), double.Parse(x[1], Inv))).ToArray();
+                    }
+                    def.Tracks.Add(tr);
+                }
+                if (def.Id.Length > 0) States[def.Id] = def;
             }
         }
 
@@ -126,8 +222,8 @@ namespace TtCompanion
                     return null;
                 case "mouth":
                 {
-                    // hidden until Avatar.cs shows the one his pose wants (the page's others, such as
-                    // its "o" and wobbly mouths, are for states the tray app doesn't have yet)
+                    // hidden until Avatar.cs shows the one his pose or state wants (neutral, happy and flat for
+                    // the poses; the "o" and the wobbly one belong to the states)
                     var c = KidsCanvas(e);
                     c.Visibility = Visibility.Collapsed;
                     Mouths[(string?)e.Attribute("name") ?? ""] = c;
@@ -147,8 +243,25 @@ namespace TtCompanion
                     var t = new TranslateTransform();
                     var outer = new Canvas { RenderTransform = new TransformGroup { Children = { s, r, t } } };
                     outer.Children.Add(c);
-                    Moving.Add((moving!, s, r, t));
+                    Moving.Add((moving!, s, r, t, outer));
                     return outer;
+                }
+                case "text":
+                {
+                    // a prop's words (the "?"): drawn the way the project number is, its baseline at (x, y)
+                    double size = Num(e, "size", 10);
+                    bool middle = (string?)e.Attribute("anchor") == "middle";
+                    var tb = new TextBlock
+                    {
+                        Text = e.Value, FontSize = size, FontFamily = new FontFamily("Segoe UI"),
+                        FontWeight = Num(e, "weight", 400) >= 700 ? FontWeights.ExtraBold : FontWeights.Normal,
+                        Foreground = Paint((string?)e.Attribute("fill"), 1) ?? Brushes.Black,
+                        Width = 40, TextAlignment = middle ? TextAlignment.Center : TextAlignment.Left,
+                        Opacity = Num(e, "opacity", 1), RenderTransform = Transform((string?)e.Attribute("transform")),
+                    };
+                    Canvas.SetLeft(tb, Num(e, "x") - (middle ? 20 : 0));
+                    Canvas.SetTop(tb, Num(e, "y") - size * 1.05);
+                    return tb;
                 }
                 default:
                     return Shape(e);
@@ -290,7 +403,7 @@ namespace TtCompanion
         public void Idle(bool lively)
         {
             var ease = new SineEase { EasingMode = EasingMode.EaseInOut };
-            foreach (var (name, s, r, t) in Moving)
+            foreach (var (name, s, r, t, _) in Moving)
             {
                 foreach (var m in IdleMoves.Where(x => x.Name == name))
                 {

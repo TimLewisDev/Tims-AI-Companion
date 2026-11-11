@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -43,6 +45,18 @@ namespace TtCompanion
         private Storyboard? running;
         private DateTime busyUntil, poked, nextFidget, sitUntil;
         private Pose pose = Pose.Stand;
+
+        // What a working session has him doing (see SetState): the state on show, what the session says it
+        // is (wanted) and a state picked off his menu to watch (previewing, for a few seconds). Everything a
+        // state moves is kept in `driven`, so it can be put back when the state ends.
+        private AvatarArt.StateDef? state;
+        private string? wanted, previewing;
+        private double baseLids = 1;
+        private DispatcherTimer? settle, previewEnd;
+        private double? freezeAt;  // set only by SnapState: every part held at this moment of the state (the render check)
+        private readonly List<Driven> driven = new();
+
+        private sealed record Driven(IAnimatable Target, DependencyProperty Prop, double Rest, bool OfProp, AvatarArt.Track Track);
 
         public Avatar(TattyWindow window) => w = window;
 
@@ -95,6 +109,8 @@ namespace TtCompanion
         // happens (any Poke, including a hand reaching for him).
         public void Preview(Pose held)
         {
+            previewing = null;
+            Show(null);
             poked = DateTime.UtcNow;
             sitUntil = DateTime.UtcNow + Seconds(600);
             Set(held);
@@ -126,7 +142,7 @@ namespace TtCompanion
 
         private void Tick()
         {
-            if (!Lively) return;
+            if (!Lively || state != null) return;  // (working, he doesn't fidget or doze off)
             var now = DateTime.UtcNow;
             double quiet = Quiet;
             if (quiet >= SleepAfter) Set(Pose.Asleep);
@@ -177,7 +193,7 @@ namespace TtCompanion
         // BodyShift.Y, so it survives every performance underneath it.
         private void Bob()
         {
-            (double rise, double seconds) = pose switch
+            (double rise, double seconds) = state != null && pose == Pose.Stand ? (state.BobRise, state.BobSeconds) : pose switch
             {
                 Pose.Sit => (3.0, 2.2),
                 Pose.Doze => (3.0, 2.6),
@@ -196,7 +212,7 @@ namespace TtCompanion
         private void Blink()
         {
             w.Blink.BeginAnimation(ScaleTransform.ScaleYProperty,
-                new DoubleAnimation(1, 0.1, TimeSpan.FromMilliseconds(90)) { AutoReverse = true });
+                new DoubleAnimation(baseLids, 0.1, TimeSpan.FromMilliseconds(90)) { AutoReverse = true });
             blink.Interval = Seconds(3 + random.NextDouble() * 4);
         }
 
@@ -216,13 +232,254 @@ namespace TtCompanion
             w.MouthH.Visibility = Visibility.Collapsed;
         }
 
-        // A new drawing (an avatar from the shop, TattyWindow.Apply): its mouths take up the pose.
-        public void Refresh() => Mouth(pose == Pose.Asleep);
+        // A new drawing (an avatar from the shop, TattyWindow.Apply): its mouths take up the pose, and the
+        // state he was in is played again in it (the old drawing's parts are gone, and what was driven with them).
+        public void Refresh()
+        {
+            settle?.Stop();
+            driven.Clear();
+            state = null;
+            baseLids = 1;
+            Mouth(pose == Pose.Asleep);
+            Show(previewing ?? wanted);
+        }
 
         // A value animated to and then kept: the pose is where he stays until
         // something changes it, so these hold their end rather than snapping back.
         private static void Hold(IAnimatable part, DependencyProperty prop, double to, double seconds) =>
             part.BeginAnimation(prop, new DoubleAnimation(to, Seconds(seconds)) { EasingFunction = Ease });
+
+        // ------------------------------------------------------------ what the session is doing
+
+        // The server's say (an "avatar" event): thinking, reading, writing, running, delegating, needs or
+        // oops, or idle / nothing. He plays the state until it changes. A performance (the alert for a
+        // question, a celebration) cuts in and he goes back to it.
+        public void SetState(string? id)
+        {
+            wanted = string.IsNullOrEmpty(id) || id == "idle" ? null : id;
+            if (previewing == null) Show(wanted);
+        }
+
+        // Every part of a state held at one moment of it, with nothing running: for drawing a state to a picture
+        // (App.RenderStates), which is how the port is checked against the page's own.
+        internal void SnapState(string id, double t)
+        {
+            freezeAt = null;
+            Show(null);
+            freezeAt = t;
+            Show(id);
+        }
+
+        // One asked for by name from his menu: shown for a few seconds whatever the session is doing, then
+        // back to what it is doing.
+        public void PreviewState(string id)
+        {
+            previewing = id;
+            poked = DateTime.UtcNow;
+            previewEnd ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+            previewEnd.Stop();
+            previewEnd.Tick -= EndPreview;
+            previewEnd.Tick += EndPreview;
+            previewEnd.Start();
+            Show(id);
+        }
+
+        private void EndPreview(object? sender, EventArgs e)
+        {
+            previewEnd?.Stop();
+            previewing = null;
+            Show(wanted);
+        }
+
+        private void Show(string? id)
+        {
+            var art = w.Art;
+            var next = id != null && art != null && art.States.TryGetValue(id, out var def) ? def : null;
+            if (next == state) return;
+            EndState();
+            state = next;
+            poked = DateTime.UtcNow;
+            if (next != null) BeginState();
+        }
+
+        private void BeginState()
+        {
+            var st = state!;
+            var art = w.Art!;
+            if (pose != Pose.Stand) Set(Pose.Stand);
+            foreach (var (which, _, canvas) in art.Props) canvas.Visibility = which == st.Id ? Visibility.Visible : Visibility.Collapsed;
+            ShowMouth(st.Mouth);
+            baseLids = st.Lids;
+            // later tracks win over earlier ones for the same part, as on the page
+            var tracks = new Dictionary<string, AvatarArt.Track>();
+            foreach (var tr in st.Tracks) tracks[tr.Part + "." + tr.Prop] = tr;
+            foreach (var tr in tracks.Values)
+            {
+                foreach (var (target, prop, rest, ofProp) in Targets(tr, art))
+                {
+                    driven.Add(new Driven(target, prop, rest, ofProp, tr));
+                    if (freezeAt != null)
+                    {
+                        target.BeginAnimation(prop, null);
+                        ((DependencyObject)target).SetValue(prop, AvatarArt.Eval(tr, freezeAt.Value, st.Dur));
+                    }
+                    else if (ofProp)
+                    {
+                        // a prop's parts are set where they start (or, with the animations off, where they look right
+                        // held still): the prop appears in place rather than flying in from where it was last
+                        target.BeginAnimation(prop, null);
+                        ((DependencyObject)target).SetValue(prop, AvatarArt.Eval(tr, Lively ? 0 : st.Dur * 0.5, st.Dur));
+                    }
+                    else if (Lively)
+                    {
+                        double from = AvatarArt.Eval(tr, 0, st.Dur);
+                        target.BeginAnimation(prop, new DoubleAnimation(from, Seconds(0.3)) { EasingFunction = Ease });
+                    }
+                }
+            }
+            if (freezeAt != null)
+            {
+                double t = freezeAt.Value, u = (t % (2 * st.BobSeconds)) / st.BobSeconds;
+                w.Blink.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                w.Blink.ScaleY = st.Lids;
+                w.BodyShift.BeginAnimation(TranslateTransform.YProperty, null);
+                w.BodyShift.Y = -st.BobRise * ((1 - Math.Cos(Math.PI * (u <= 1 ? u : 2 - u))) / 2);
+                return;
+            }
+            if (!Lively) return;  // with the animations off he shows what he is doing and stays still
+            Lids(st.Lids);
+            Bob();
+            if (!st.Blink) blink.Stop();
+            settle ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(0.3) };
+            settle.Stop();
+            settle.Tick -= Settled;
+            settle.Tick += Settled;
+            settle.Start();
+        }
+
+        // He has eased into the state's first frame: from here the tracks go round.
+        private void Settled(object? sender, EventArgs e)
+        {
+            settle?.Stop();
+            Resume();
+        }
+
+        // The tracks, going round (from their start): when a state has settled in, and again when a performance
+        // that cut in has finished, since it took over the parts it moved.
+        private void Resume()
+        {
+            if (state == null || !Lively || (settle?.IsEnabled ?? false)) return;
+            foreach (var d in driven) d.Target.BeginAnimation(d.Prop, Loop(d.Track, state.Dur));
+            Lids(baseLids);
+        }
+
+        private void EndState()
+        {
+            settle?.Stop();
+            foreach (var d in driven)
+            {
+                if (d.OfProp) { d.Target.BeginAnimation(d.Prop, null); ((DependencyObject)d.Target).SetValue(d.Prop, d.Rest); }
+                else Hold(d.Target, d.Prop, d.Rest, 0.3);
+            }
+            bool was = state != null;
+            driven.Clear();
+            state = null;
+            baseLids = 1;
+            var art = w.Art;
+            if (art != null)
+            {
+                foreach (var (_, _, canvas) in art.Props) canvas.Visibility = Visibility.Collapsed;
+                art.Idle(Lively);  // his own parts' idle motion, which a state's track may have replaced
+            }
+            if (!was) return;
+            // back to how his pose has him: the mouth, the lids, the bob, and the blink
+            var held = pose;
+            pose = Pose.Stand;
+            Set(held);
+            Mouth(held == Pose.Asleep);
+            Lids(LidsFor(held));
+            Bob();
+            if (held == Pose.Stand || held == Pose.Sit) blink.Start();
+        }
+
+        // Show the one mouth a state asks for among the drawing's own, and none of the others.
+        private void ShowMouth(string name)
+        {
+            var art = w.Art;
+            if (art == null) return;
+            foreach (var m in art.Mouths.Values) m.Visibility = Visibility.Collapsed;
+            if (art.Mouths.TryGetValue(name, out var show) || art.Mouths.TryGetValue("neutral", out show)) show.Visibility = Visibility.Visible;
+        }
+
+        // What "Part.prop" of a track moves: the window's own transforms for the parts it has, and the drawing's
+        // moving parts by name for the rest (the arms, a tail, a prop's pieces). x, y and a are a shift and a
+        // turn, s, sx and sy a scale, o an opacity; the body's bob and the eyes' lids are not the tracks' (the
+        // state has its own). Rest is the value the part has when nothing moves it.
+        private (IAnimatable Target, DependencyProperty Prop, double Home, bool OfProp)[] Targets(AvatarArt.Track tr, AvatarArt art)
+        {
+            var found = new List<(IAnimatable, DependencyProperty, double, bool)>();
+            void Add(IAnimatable t, DependencyProperty p, double rest, bool ofProp = false) => found.Add((t, p, rest, ofProp));
+            void Scale(ScaleTransform s, bool ofProp = false)
+            {
+                if (tr.Prop == "sx" || tr.Prop == "s") Add(s, ScaleTransform.ScaleXProperty, 1, ofProp);
+                if (tr.Prop == "sy" || tr.Prop == "s") Add(s, ScaleTransform.ScaleYProperty, 1, ofProp);
+            }
+            switch (tr.Part)
+            {
+                case "Root":
+                    if (tr.Prop == "x") Add(w.RootLift, TranslateTransform.XProperty, 0);
+                    else if (tr.Prop == "y") Add(w.RootLift, TranslateTransform.YProperty, 0);
+                    else if (tr.Prop == "a") Add(w.RootLean, RotateTransform.AngleProperty, 0);
+                    else Scale(w.RootSquash);
+                    break;
+                case "Body":
+                    if (tr.Prop == "a") Add(w.BodySway, RotateTransform.AngleProperty, 0);
+                    else if (tr.Prop == "x") Add(w.BodyShift, TranslateTransform.XProperty, 0);
+                    break;
+                case "LegL": case "LegR":
+                {
+                    bool left = tr.Part == "LegL";
+                    if (tr.Prop == "y") Add(left ? w.LegLLift : w.LegRLift, TranslateTransform.YProperty, 0);
+                    else if (tr.Prop == "x") Add(left ? w.LegLLift : w.LegRLift, TranslateTransform.XProperty, 0);
+                    else if (tr.Prop == "a") Add(left ? w.LegLFold : w.LegRFold, RotateTransform.AngleProperty, 0);
+                    break;
+                }
+                case "Pupils":
+                    if (tr.Prop == "x") Add(w.PupilShift, TranslateTransform.XProperty, 0);
+                    else if (tr.Prop == "y") Add(w.PupilShift, TranslateTransform.YProperty, 0);
+                    break;
+                case "Eyes": case "Tip": break;
+                default:
+                    foreach (var m in art.Moving.Where(x => x.Name == tr.Part))
+                    {
+                        bool ofProp = art.PropParts.Contains(tr.Part);
+                        if (tr.Prop == "x") Add(m.T, TranslateTransform.XProperty, 0, ofProp);
+                        else if (tr.Prop == "y") Add(m.T, TranslateTransform.YProperty, 0, ofProp);
+                        else if (tr.Prop == "a") Add(m.R, RotateTransform.AngleProperty, 0, ofProp);
+                        else if (tr.Prop == "o") Add(m.Outer, UIElement.OpacityProperty, 1, ofProp);
+                        else Scale(m.S, ofProp);
+                    }
+                    break;
+            }
+            return found.ToArray();
+        }
+
+        // A track as a looping animation: the page's own function sampled thirty times a second, which is
+        // the same curve whatever its kind (a run that wraps, a swell, or frames eased into each other).
+        private static AnimationTimeline Loop(AvatarArt.Track tr, double stateDur)
+        {
+            double d = tr.Dur > 0 ? tr.Dur : stateDur;
+            if (tr.Kind == 'f' && tr.Frames.Length <= 1)  // held still
+                return new DoubleAnimation(AvatarArt.Eval(tr, 0, stateDur), Seconds(0.05));
+            int n = Math.Max(2, (int)Math.Ceiling(d * 30));
+            var loop = new DoubleAnimationUsingKeyFrames { Duration = Seconds(d), RepeatBehavior = RepeatBehavior.Forever };
+            for (int i = 0; i <= n; i++)
+            {
+                double at = d * i / n, sample = i == n ? d - 1e-4 : at;  // (the last frame is the end of the round, not the start of the next)
+                loop.KeyFrames.Add(new LinearDoubleKeyFrame(AvatarArt.Eval(tr, sample, stateDur), KeyTime.FromTimeSpan(Seconds(at))));
+            }
+            return loop;
+        }
 
         // ------------------------------------------------------------ playing
 
@@ -237,6 +494,7 @@ namespace TtCompanion
                 running = null;
                 busyUntil = DateTime.MinValue;
                 if (pose == Pose.Stand || pose == Pose.Sit) blink.Start();
+                Resume();
             };
             running = act;
             act.Begin(w, isControllable: true);

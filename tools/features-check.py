@@ -7,7 +7,7 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --bake | --diff]
        features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
@@ -28,6 +28,7 @@ leaving Scope, Plan and Review out and putting them back. It writes the feature'
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --decide      only the Decide page and its overview line (the page's api() stood in for: nothing is written);
+--bake        only what avatar.js's bake sends the tray app for each avatar (well-formed, the working states' props and tracks);
 --debug       only Settings' Debug section (coins in and out, unlocks locked again) and the shop's line saying whose wallet it is (the page's api() stood in: nothing is written);
 --modes       only the top bar's modes while in the shop: choosing one leaves it for that mode's home page (modes set on the page);
 --launcher    only the Hub as a launcher that stays: Open on a card, a second project, a window closed elsewhere, the form left
@@ -1744,6 +1745,23 @@ def check_decide(p):
     return res
 
 
+def check_bake(p):
+    """What avatar.js's bake sends the tray app, for each of the six avatars: the description reads as XML, carries the
+    seven working states' props (where each rides: back, body or root) and their tracks, and the mouths the states
+    need (o and wobble). Per avatar, the numbers; wellFormed and complete say whether all is as it should be."""
+    res = p.js("""Object.fromEntries(TattyAvatar.ids.map(id => {
+        const xml = TattyAvatar.bake(id, {}, '#3B6EA8'), doc = new DOMParser().parseFromString(xml, 'application/xml');
+        const wanted = ['thinking', 'reading', 'writing', 'running', 'delegating', 'needs', 'oops'];
+        const props = [...doc.querySelectorAll('props > prop')].map(x => x.getAttribute('state') + ':' + x.getAttribute('layer'));
+        const states = [...doc.querySelectorAll('states > state')].map(x => x.getAttribute('id'));
+        const mouths = [...doc.querySelectorAll('mouth')].map(x => x.getAttribute('name'));
+        return [id, { wellFormed: !doc.querySelector('parsererror'), props: props.join(' '), states: states.join(' '),
+                      tracks: doc.querySelectorAll('state > track').length, mouths: mouths.join(' '),
+                      complete: wanted.every(w => states.includes(w) && props.some(x => x.startsWith(w + ':'))) && mouths.includes('o') && mouths.includes('wobble') }];
+      }))""")
+    return res
+
+
 def check_debug(p):
     """Settings' Debug section (unlocked) with the page's api() stood in: coins out as well as in (fixed amounts, a typed
     amount, all of them), and the unlocks that can be locked again, each one and all, with what each sends; and the shop
@@ -2242,10 +2260,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--launcher", "--modes", "--debug", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--launcher", "--modes", "--debug", "--bake", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--bake": check_bake, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

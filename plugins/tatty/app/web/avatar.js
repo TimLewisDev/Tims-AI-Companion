@@ -933,6 +933,20 @@ function animate(svgs, id, state = "idle") {
 // the project number's badge, the "!" badge, and any part of his own that moves, such as a tail), every
 // colour, stroke and visibility already worked out here by the browser, which has the
 // cascade. accent: the mode's colour as the tray app draws it (its TtAccent).
+//
+// It also carries what he does while a session works: each working state's props (the thought
+// bubble, the magnifier, the notepad, the terminal, the helper bots, the "?", the sweat and the
+// smoke) as <prop state layer> groups, and each state's tracks and mouth as <state> data, with
+// this avatar's own extras (the cat's tail, the owl's brows) in with them, for the tray app to
+// play (AvatarArt.cs's States, Avatar.cs's State). The tracks are the page's own, so they move
+// him the same way here and there.
+const TRAY_STATES = ["thinking", "reading", "writing", "running", "delegating", "needs", "oops"];
+const trackXml = tr => {
+  const dur = tr.dur ? ` dur="${+tr.dur}"` : "";
+  if (tr.lin) return `<track p="${tr.p}" k="l" a="${tr.lin[0]}" b="${tr.lin[1]}" ph="${tr.ph || 0}"${dur}/>`;
+  if (tr.tri) return `<track p="${tr.p}" k="w" a="${tr.tri[0]}" b="${tr.tri[1]}" ph="${tr.ph || 0}"${dur}/>`;
+  return `<track p="${tr.p}" k="f"${dur} v="${tr.f.map(([v, t]) => v + "," + t).join(" ")}"/>`;
+};
 const BAKE_SKIP = /^(Tip|Bub\d|Back|Front)$/;
 const SHAPES = new Set(["path", "circle", "ellipse", "rect", "line", "polygon"]);
 const GEOMETRY = ["d", "cx", "cy", "r", "rx", "ry", "x", "y", "width", "height", "x1", "y1", "x2", "y2", "points"];
@@ -966,6 +980,7 @@ function bake(id, outfit, accent) {
   for (const n of svg.querySelectorAll(".mouth, .numtag, .badge")) n.style.display = "inline";
   const gradients = new Set();
   const out = [];
+  let sink = out;  // where walk writes: the drawing, or (for the props) a group of its own
   const shown = n => getComputedStyle(n).display !== "none";
   const transformOf = (n, cs) => n.getAttribute("transform") || (cs.transform && cs.transform !== "none" ? cs.transform : "");
   const paint = (el, cs) => {
@@ -993,7 +1008,14 @@ function bake(id, outfit, accent) {
     if (+cs.opacity !== 1) common.push(`opacity="${n(+cs.opacity)}"`);
     if (SHAPES.has(tag)) {
       const geo = GEOMETRY.filter(k => node.hasAttribute(k)).map(k => `${k}="${xmlAttr(node.getAttribute(k))}"`);
-      out.push(`<${tag} ${[...geo, ...paint(node, cs), ...common].join(" ")}/>`);
+      const shape = `<${tag} ${[...geo, ...paint(node, cs), ...common].join(" ")}/>`;
+      // a shape that moves on its own (a notepad's line, the screen face's scan line) is a group of one
+      sink.push(p ? `<g p="${p}" c="${node.dataset.c || "0,0"}">${shape}</g>` : shape);
+      return;
+    }
+    if (tag === "text" && sink !== out) { // (a prop's words, such as the "?": the drawing's own text is the number and the "!", which the window writes)
+      const t = node.getAttribute.bind(node);
+      sink.push(`<text x="${t("x")}" y="${t("y")}" size="${t("font-size")}" weight="${t("font-weight") || 400}" anchor="${t("text-anchor") || "start"}" fill="${rgba(cs.fill)}"${common.length ? " " + common.join(" ") : ""}>${xmlAttr(node.textContent)}</text>`);
       return;
     }
     if (tag !== "g") return; // (text is the project number and the badge's "!", which the window writes itself)
@@ -1008,18 +1030,35 @@ function bake(id, outfit, accent) {
       close = "</numtag>";
     } else if (node.classList.contains("badge")) {
       const c = node.querySelector("circle");
-      out.push(`<badge at="${c.getAttribute("cx")},${c.getAttribute("cy")}"/>`);
+      sink.push(`<badge at="${c.getAttribute("cx")},${c.getAttribute("cy")}"/>`);
       return;
     } else if (node.classList.contains("mouth") && m) { open = `<mouth name="${m.slice(2)}"`; close = "</mouth>"; }
     else if (["Root", "LegL", "LegR", "Body"].includes(p) && depth <= 2) { open = `<part name="${p}" c="${node.dataset.c}"`; close = "</part>"; }
     else if (p) open = `<g p="${p}" c="${node.dataset.c || "0,0"}"`;
     else open = "<g";
-    out.push(`${open}${common.length ? " " + common.join(" ") : ""}>`);
+    sink.push(`${open}${common.length ? " " + common.join(" ") : ""}>`);
     for (const k of node.children) walk(k, depth + 1);
-    out.push(close);
+    sink.push(close);
   }
   const dress = svg.querySelector(".dress");
   for (const k of dress.children) walk(k, 0);
+  // the working states: the props each brings (shown by the state's class, so the browser's cascade has
+  // made them visible), where they ride (behind him, with his body, or with all of him), and the tracks
+  const props = [], states = [];
+  for (const sid of TRAY_STATES) {
+    svg.setAttribute("class", svg.getAttribute("class").replace(/st-\S+/, "st-" + sid));
+    for (const g of svg.querySelectorAll(`.prop.p-${sid}`)) {
+      const layer = g.closest('[data-p="Back"]') ? "back" : g.closest('[data-p="Body"]') ? "body" : g.closest('[data-p="Root"]') ? "root" : "";
+      if (!layer) continue;
+      const mark = [];
+      sink = mark;
+      for (const k of g.children) walk(k, 3);
+      sink = out;
+      props.push(`<prop state="${sid}" layer="${layer}">${mark.join("")}</prop>`);
+    }
+    const st = STATES[sid](d), tracks = st.tracks.concat(d.extra ? d.extra(sid, st) : []);
+    states.push(`<state id="${sid}" dur="${st.dur}" mouth="${st.mouth}" lids="${st.lids ?? 1}" bob="${(st.bob || [4, 1.6]).join(",")}" blink="${st.blink === false ? 0 : 1}">${tracks.map(trackXml).join("")}</state>`);
+  }
   // the gradients the paint names, from the page's own (avatar.css colours their stops)
   const defs = [...gradients].map(gid => {
     const g = document.getElementById(gid);
@@ -1032,7 +1071,7 @@ function bake(id, outfit, accent) {
     return `<${g.tagName} id="${gid}" ${attrs}>${stops}</${g.tagName}>`;
   }).join("");
   holder.remove();
-  return `<tatty av="${d.id}" outfit="${xmlAttr(dressClass(outfit))}">${out.join("")}<defs>${defs}</defs></tatty>`;
+  return `<tatty av="${d.id}" outfit="${xmlAttr(dressClass(outfit))}">${out.join("")}<defs>${defs}</defs><props>${props.join("")}</props><states>${states.join("")}</states></tatty>`;
 }
 
 window.TattyAvatar = {

@@ -32,6 +32,10 @@ namespace TtCompanion
         internal UIElement MouthN, MouthH, MouthF;
         private Canvas? backBody; // what he wears on his back: behind his legs, riding with his body
         private AvatarArt? art;
+        private readonly List<UIElement> rootProps = new(); // props riding with all of him (the notepad), in Robot
+
+        // The drawing now on him, for Avatar.cs to find the parts, props and states of.
+        internal AvatarArt? Art => art;
         private int number;
 
         public TattyWindow()
@@ -127,6 +131,17 @@ namespace TtCompanion
             foreach (var e in a.Body) Body.Children.Add(e);
             if (!Replace(a.EyesSlot, Eyes)) Body.Children.Add(Eyes);
             if (!Replace(a.NumSlot, NumTag)) Body.Children.Add(NumTag);
+            // The working states' props, hidden until Avatar.cs shows them: behind him, on his body (sway and
+            // bob with it, in front of his face), or on all of him (over his body, with the lean and squash).
+            PropsBack.Children.Clear();
+            foreach (var old in rootProps) Robot.Children.Remove(old);
+            rootProps.Clear();
+            foreach (var (_, layer, canvas) in a.Props)
+            {
+                if (layer == "back") PropsBack.Children.Add(canvas);
+                else if (layer == "body") Body.Children.Add(canvas);
+                else if (layer == "root") { Robot.Children.Add(canvas); rootProps.Add(canvas); }
+            }
             Canvas.SetLeft(Badge, a.BadgeAt.X - 11);
             Canvas.SetTop(Badge, a.BadgeAt.Y - 11);
             Body.Children.Add(Badge);
@@ -186,9 +201,27 @@ namespace TtCompanion
         // A section is finished; big for a plan signed off or a build complete.
         public void Celebrate(bool big) => avatar.Perform(big ? Act.CelebrateBig : Act.Celebrate);
 
+        // For the render check: the drawing from a file, not kept as his look and not the saved one.
+        internal bool ApplyForRender(string text)
+        {
+            var a = AvatarArt.Read(text);
+            if (a == null) return false;
+            Apply(a);
+            return true;
+        }
+
+        internal void SnapState(string id, double t) => avatar.SnapState(id, t);
+        internal double StateDuration(string id) => art != null && art.States.TryGetValue(id, out var s) ? s.Dur : 2;
+
+        // What the session is doing (the server's "avatar" event): thinking, reading, writing, running,
+        // delegating, needs, oops, or idle / null for none. He plays it until it changes.
+        public void SetState(string? id) => avatar.SetState(id);
+
         // Do this one now, because somebody picked it off his menu to watch it.
         internal void Preview(Act act) => avatar.Preview(act);
         internal void Preview(Pose pose) => avatar.Preview(pose);
+        internal void PreviewState(string id) => avatar.PreviewState(id);
+        internal IEnumerable<string> StateIds => art?.States.Keys ?? Enumerable.Empty<string>();
 
         private void OnMouseDown(object sender, MouseButtonEventArgs e)
         {

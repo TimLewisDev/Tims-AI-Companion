@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -63,6 +64,8 @@ namespace TtCompanion
             base.OnStartup(e);
             if (Array.IndexOf(e.Args, "--pick-folder") >= 0) { PickFolderAndExit(e.Args); return; }
             if (Array.IndexOf(e.Args, "--pick-file") >= 0) { PickFileAndExit(e.Args); return; }
+            if (Array.IndexOf(e.Args, "--render-states") >= 0) { RenderStatesAndExit(e.Args); return; }
+            if (Array.IndexOf(e.Args, "--render-live") >= 0) { RenderLiveAndExit(e.Args); return; }
             project = Arg(e.Args, "--project") ?? "";
             single = new Mutex(true, @"Local\tatty-companion" + Suffix, out bool first);
             if (!first) { Shutdown(0); return; }
@@ -255,6 +258,7 @@ namespace TtCompanion
                 bool first = since < 0;
                 bool question = false, anything = false;
                 string? finished = null; // the loudest milestone in this batch
+                string? mood = null;     // what the session is doing, by the last "avatar" event: a state, not news, so the backlog counts
                 foreach (var ev in events.EnumerateArray())
                 {
                     since = ev.GetProperty("seq").GetInt32();
@@ -263,7 +267,9 @@ namespace TtCompanion
                     if (type == "ask") { openAsks.Add(ev.GetProperty("id").GetString() ?? ""); question = true; }
                     else if (type == "answered") openAsks.Remove(ev.GetProperty("id").GetString() ?? "");
                     else if (type == "milestone") finished = Louder(finished, Tier(ev));
+                    else if (type == "avatar") mood = ev.TryGetProperty("state", out var st) ? st.GetString() ?? "idle" : "idle";
                 }
+                if (mood != null && HasAvatar) tatty.SetState(mood);
                 // The first poll is the backlog, not the news: it says what is
                 // still waiting and nothing else, or a window opened beside a
                 // day's work would arrive mid-party.
@@ -458,6 +464,122 @@ namespace TtCompanion
         // dialog, for the window server when the page is in a browser. Writes the
         // chosen folder (empty when cancelled) to --out. An invisible topmost
         // owner brings the dialog to the front even though another app has the focus.
+        // --render-states <avatar description.xml> <out folder> [scale]: draw each working state at four moments of
+        // it into contact sheets (PNG), without showing a window or touching his saved look, to see what the port
+        // makes of the page's states. The description is avatar.js's bake, as the page sends it.
+        private void RenderStatesAndExit(string[] args)
+        {
+            int at = Array.IndexOf(args, "--render-states");
+            try
+            {
+                string xml = File.ReadAllText(args[at + 1]), outDir = args[at + 2];
+                double scale = args.Length > at + 3 ? double.Parse(args[at + 3], System.Globalization.CultureInfo.InvariantCulture) : 1.5;
+                Directory.CreateDirectory(outDir);
+                var win = new TattyWindow();
+                if (!win.ApplyForRender(xml)) { Console.Error.WriteLine("render: the description did not read"); Shutdown(2); return; }
+                var ids = new[] { "thinking", "reading", "writing", "running", "delegating", "needs", "oops" }.Where(i => win.StateIds.Contains(i)).ToArray();
+                var root = (FrameworkElement)win.Content;
+                const int W = 104, H = 176, Cols = 4;
+                string name = System.IO.Path.GetFileNameWithoutExtension(args[at + 1]);
+                for (int sheet = 0; sheet * 4 < ids.Length; sheet++)
+                {
+                    var rows = ids.Skip(sheet * 4).Take(4).ToArray();
+                    var dv = new DrawingVisual();
+                    using (var dc = dv.RenderOpen())
+                    {
+                        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0xE6, 0xE8, 0xEE)), null, new Rect(0, 0, W * Cols, H * rows.Length));
+                        for (int r = 0; r < rows.Length; r++)
+                        {
+                            double dur = win.StateDuration(rows[r]);
+                            for (int c = 0; c < Cols; c++)
+                            {
+                                win.SnapState(rows[r], dur * c / Cols);
+                                root.Measure(new Size(W, H));
+                                root.Arrange(new Rect(0, 0, W, H));
+                                root.UpdateLayout();
+                                // (drawn to a picture of its own now: a brush of the live drawing would show the last one in every cell)
+                                var cell = new RenderTargetBitmap((int)(W * scale), (int)(H * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
+                                cell.Render(root);
+                                dc.DrawImage(cell, new Rect(c * W, r * H, W, H));
+                            }
+                            var label = new FormattedText(rows[r], System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                                new Typeface("Segoe UI"), 11, Brushes.Black, 1.0);
+                            dc.DrawText(label, new Point(3, r * H + H - 16));
+                        }
+                    }
+                    var bmp = new RenderTargetBitmap((int)(W * Cols * scale), (int)(H * rows.Length * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
+                    bmp.Render(dv);
+                    var enc = new PngBitmapEncoder();
+                    enc.Frames.Add(BitmapFrame.Create(bmp));
+                    using var fs = File.Create(System.IO.Path.Combine(outDir, $"{name}-{sheet + 1}.png"));
+                    enc.Save(fs);
+                }
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("render: " + ex);
+                Shutdown(2);
+            }
+        }
+
+        // --render-live <avatar description.xml> <out png> [state ...]: play each state for real (the animations as
+        // they run in the app, with TATTY_ANIMATE=1) in a window shown out of sight, and draw four frames of it a
+        // third of a second apart. A picture whose frames differ is a state that moves; the plumbing of easing in,
+        // looping and coming back after a performance (--interrupt) is what this checks, not the drawing.
+        private async void RenderLiveAndExit(string[] args)
+        {
+            int at = Array.IndexOf(args, "--render-live");
+            try
+            {
+                string xml = File.ReadAllText(args[at + 1]), outFile = args[at + 2];
+                var ids = args.Skip(at + 3).Where(a => !a.StartsWith("--")).ToArray();
+                bool interrupt = args.Contains("--interrupt");
+                if (ids.Length == 0) ids = new[] { "thinking", "reading", "writing", "running", "delegating", "needs", "oops" };
+                var win = new TattyWindow { Left = -5000, Top = 0, ShowActivated = false };
+                if (!win.ApplyForRender(xml)) { Console.Error.WriteLine("render: the description did not read"); Shutdown(2); return; }
+                win.Show();
+                await Task.Delay(500);
+                const int W = 104, H = 176, Cols = 4;
+                var root = (FrameworkElement)win.Content;
+                var dv = new DrawingVisual();
+                using (var dc = dv.RenderOpen())
+                {
+                    dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0xE6, 0xE8, 0xEE)), null, new Rect(0, 0, W * Cols, H * ids.Length));
+                    for (int r = 0; r < ids.Length; r++)
+                    {
+                        win.SetState(ids[r]);
+                        await Task.Delay(700);  // eases in (0.3 s) and starts its rounds
+                        for (int c = 0; c < Cols; c++)
+                        {
+                            if (interrupt && c == 2) { win.Alert(); await Task.Delay(1100); }  // an alert cuts in; the state should be back after it
+                            var cell = new RenderTargetBitmap(W, H, 96, 96, PixelFormats.Pbgra32);
+                            cell.Render(root);
+                            dc.DrawImage(cell, new Rect(c * W, r * H, W, H));
+                            await Task.Delay(330);
+                        }
+                        var label = new FormattedText(ids[r], System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                            new Typeface("Segoe UI"), 11, Brushes.Black, 1.0);
+                        dc.DrawText(label, new Point(3, r * H + H - 16));
+                        win.SetState(null);
+                        await Task.Delay(500);
+                    }
+                }
+                var bmp = new RenderTargetBitmap(W * Cols, H * ids.Length, 96, 96, PixelFormats.Pbgra32);
+                bmp.Render(dv);
+                var enc = new PngBitmapEncoder();
+                enc.Frames.Add(BitmapFrame.Create(bmp));
+                using (var fs = File.Create(outFile)) enc.Save(fs);
+                win.Close();
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("render: " + ex);
+                Shutdown(2);
+            }
+        }
+
         private void PickFolderAndExit(string[] args)
         {
             var owner = new Window
@@ -794,6 +916,13 @@ namespace TtCompanion
             Holds("Doze", Pose.Doze);
             Holds("Fall asleep (Z's and all)", Pose.Asleep);
             Line();
+            // What he does while a session works, one at a time for a few seconds (the real thing is the server's
+            // "avatar" event as the session reads, writes, runs, delegates, asks or trips up).
+            var states = new List<Forms.ToolStripItem>();
+            foreach (var (id, what) in new[] { ("thinking", "Thinking"), ("reading", "Reading"), ("writing", "Writing"), ("running", "Running a command"),
+                                              ("delegating", "Delegating to helpers"), ("needs", "Needs you"), ("oops", "Oops: something failed") })
+                states.Add(items.Add("At work: " + what, null, (_, _) => tatty.PreviewState(id)));
+            Line();
             items.Add("Confetti", null, (_, _) => effects.Confetti(big: false));
             items.Add("Confetti, the big one", null, (_, _) => effects.Confetti(big: true));
             // The pulses are a state and not a one-off: the poll would put them
@@ -819,7 +948,8 @@ namespace TtCompanion
             {
                 foreach (Forms.ToolStripItem item in items) item.Enabled = Motion.On;
                 foreach (var noise in noises) noise.Enabled = sounds.Enabled;
-                preview.Enabled = Motion.On || sounds.Enabled;
+                foreach (var item in states) item.Enabled = true;  // (with the animations off a state shows its props and mouth, held still)
+                preview.Enabled = true;
             };
             return preview;
         }
