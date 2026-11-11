@@ -3541,11 +3541,18 @@ if [ -f "$DECIDE_SH" ]; then
 		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"-A1"}')" = 400 ] && ok "a key can't start with a dash" || bad "a key can't start with a dash"
 		has "and the refusal names the key" "$T/dj" "choice (an option key"
 		# a page's decisions arrive together: one request, each recorded, one that is refused doesn't stop the others
-		BODY='{"name":"Decide Draft","answers":[{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"opt-2"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q3","choice":"No-2","note":"too long"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q9","choice":"A1"}]}'
+		BODY='{"name":"Decide Draft","batch":"tb1","answers":[{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"opt-2"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q3","choice":"No-2","note":"too long"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q9","choice":"A1"}]}'
 		[ "$(dpost "$BODY")" = 200 ] && ok "a batch of decisions" || bad "a batch of decisions" "$(cat "$T/dj")"
 		pick "$T/dj" "([(r['id'], bool(r.get('ok'))) for r in d['results']], d['open'])" >"$T/f"
 		has "each is recorded and the unknown one refused" "$T/f" "([('Q2', True), ('Q3', True), ('Q9', False)], 0)"
 		has "a later choice replaces an earlier one" "$QLIST" "opt-2"
+		# the page draws how far a send has got from a "decided" event per choice (its batch is the page's own id for the
+		# send), and the coins of a new decision come after its event, so the bar moves and then the coins arrive
+		get /api/events >"$T/ev"
+		pick "$T/ev" "[(e['n'], e['total'], e['ok'], e['id']) for e in d if e['type'] == 'decided' and e['batch'] == 'tb1']" >"$T/f"
+		has "each choice of a send is said as it is recorded" "$T/f" "[(1, 3, True, 'Q2'), (2, 3, True, 'Q3'), (3, 3, False, 'Q9')]"
+		[ "$(pick "$T/ev" "next(e['seq'] for e in d if e['type'] == 'decided' and e['batch'] == 'tb1' and e['id'] == 'Q3') < next(e['seq'] for e in d if e['type'] == 'coins' and e['key'].endswith(':Q3'))")" = True ] &&
+			ok "and its coins come after" || bad "and its coins come after"
 		[ "$(dpost '{"name":"Decide Draft","answers":[]}')" = 400 ] && ok "a batch needs answers" || bad "a batch needs answers"
 	fi
 	# choices left on the Decide page (a draft) are kept in Tatty's home, so they outlive a reload and a restart

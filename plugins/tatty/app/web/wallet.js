@@ -9,7 +9,8 @@
 // switch, kept in localStorage as tt-juice): the count then just changes, and the
 // sounds (sfx.js) still play unless they are off too.
 // window.TattyWallet: sync(coins), earn(event), spend(amount, balance, toNode, fromNode),
-// onChange(fn), coins(), motion(), setMotion(on), burst(point, n), say(text, point, cls), COIN.
+// onChange(fn), coins(), motion(), setMotion(on), burst(point, n), say(text, point, cls), COIN, and
+// source: a function a page sets to say where an event's coins come from (see earn).
 // Uses app.js's el and pageOpened, and sfx.js's TattySfx.
 "use strict";
 
@@ -155,7 +156,10 @@
     }
     const to = centre(ico);
     const recent = lastPointer && Date.now() - lastPointer.at < 6000;
-    const from = BY_HAND.has(ev.kind) && recent ? { x: lastPointer.x, y: lastPointer.y } : { x: innerWidth / 2, y: innerHeight * 0.38 };
+    // a page that knows where these coins come from (the Decide page's progress bar) says so; else where the person
+    // last clicked, for what they did by hand, else the middle of the screen
+    const named = typeof window.TattyWallet.source === "function" ? window.TattyWallet.source(ev) : null;
+    const from = named || (BY_HAND.has(ev.kind) && recent ? { x: lastPointer.x, y: lastPointer.y } : { x: innerWidth / 2, y: innerHeight * 0.38 });
     const count = Math.max(1, Math.min(14, amount));
     TattySfx.play("coin");
     if (ev.reason) say(ev.reason, { x: from.x, y: from.y - 18 }, "why");
@@ -216,6 +220,8 @@
   });
 
   window.TattyWallet = {
+    // source(event) -> {x, y} | null: where a "coins" event's coins fly from, set by the page that knows (null: the default)
+    source: null,
     // what the server last said (the status poll): the balance, and what Tatty looks like
     sync(n, lk) {
       if (typeof n === "number" && !flights && n !== target) rollTo(n);

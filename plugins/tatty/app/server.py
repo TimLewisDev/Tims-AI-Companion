@@ -2370,10 +2370,12 @@ def decide_item(state, folder, name, item):
 DECIDE_ID = re.compile(r"[A-Za-z]{1,4}\d+")
 DECIDE_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,39}")
 DECIDE_BATCH_MAX = 200
+DECIDE_BATCH_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
 
 
 def decide_record(state, folder, body):
-    """Record one choice through decide.sh set: (code, {said} or {error}). Nothing after it: see decide_after."""
+    """Record one choice through decide.sh set: (code, {said, pay} or {error}). `pay` is the reward key for the
+    decision, for the caller to pay (decide_pay) once it has said what happened. Nothing after it: see decide_after."""
     doc = decide_doc(folder, str(body.get("doc", "")))
     if not doc:
         return 404, {"error": "no such decision document"}
@@ -2393,8 +2395,12 @@ def decide_record(state, folder, body):
         for pre in ("decide.sh: ", "challenges.sh: ", "proposals.sh: ", "questions.sh: "):
             msg = msg.removeprefix(pre)
         return (409 if p.returncode == 1 else 400), {"error": msg}
-    reward(state, f"decide:{doc.as_posix()}:{item}", "decision", "Decision made")
-    return 200, {"said": p.stdout.strip()}
+    return 200, {"said": p.stdout.strip(), "pay": f"decide:{doc.as_posix()}:{item}"}
+
+
+def decide_pay(state, key):
+    """The coins for a decision recorded (once per decision: a later change pays nothing more)."""
+    reward(state, key, "decision", "Decision made")
 
 
 def decide_after(state, folder, docs):
@@ -2423,6 +2429,7 @@ def decide_set(state, folder, body):
     code, answer = decide_record(state, folder, body)
     if code != 200:
         return code, answer
+    decide_pay(state, answer.pop("pay"))
     return 200, {**answer, **decide_after(state, folder, [str(body.get("doc", ""))])}
 
 
@@ -2472,17 +2479,22 @@ def decide_draft_write(folder, entries, drop=()):
     return keep
 
 
-def decide_batch(state, folder, answers):
+def decide_batch(state, folder, answers, batch=""):
     """Record a page's worth of choices, each through decide.sh set, then look once at what is left and (with
     nothing open) nudge the session once: (code, {results: [{doc, id, ok | error}], open, apply, nudged}).
-    One that is refused does not stop the rest: the page puts only it back to its person."""
+    One that is refused does not stop the rest: the page puts only it back to its person. As each is recorded a
+    "decided" event says so (batch: the page's own id for this send, n of total), and then its coins are paid, so
+    the page can draw how far it has got and bring each decision's coins in with it."""
     if not isinstance(answers, list) or not answers or len(answers) > DECIDE_BATCH_MAX or not all(isinstance(a, dict) for a in answers):
         return 400, {"error": f"answers: a list of 1 to {DECIDE_BATCH_MAX} choices ({{doc, id, choice, note}}) is required"}
     results = []
-    for a in answers:
+    for n, a in enumerate(answers, 1):
         code, answer = decide_record(state, folder, a)
         r = {"doc": str(a.get("doc", "")), "id": str(a.get("id", ""))}
         results.append({**r, "ok": True} if code == 200 else {**r, "error": answer["error"], "code": code})
+        state.emit("decided", name=folder.name, batch=batch, n=n, total=len(answers), ok=code == 200, **r)
+        if code == 200:
+            decide_pay(state, answer["pay"])
     recorded = [r["doc"] for r in results if r.get("ok")]
     try:  # what is recorded is no longer a draft
         decide_draft_write(folder, decide_draft_read(folder), drop={f"{r['doc']}#{r['id']}" for r in results if r.get("ok")})
@@ -9108,7 +9120,9 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             b = b if isinstance(b, dict) else {}
-            code, answer = decide_batch(st, folder, b["answers"]) if "answers" in b else decide_set(st, folder, b)
+            batch = str(b.get("batch", ""))
+            code, answer = (decide_batch(st, folder, b["answers"], batch if DECIDE_BATCH_ID.fullmatch(batch) else "")
+                            if "answers" in b else decide_set(st, folder, b))
             return self.send(code, answer)
         if path == "/api/stages":
             folder = feature_dir(str(b.get("name", "")))

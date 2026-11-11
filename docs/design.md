@@ -436,6 +436,24 @@ through a feature, so most of it is in how it looks and sounds.
   own), and the page remembers an accepted one for the window's life
   (sessionStorage) until **Lock**.
 
+## The Decide page
+
+`#feature/<name>/decide` (`web/decide-page.js`) puts the questions a workflow session wrote down (challenges,
+proposals, question lists) to the person one at a time. Deciding is instant: **Decide** only keeps the choice,
+the next question is already read (`prefetch`), and the choices are sent together after the last.
+
+- **Drafts.** Every pick, note keystroke and Decide is written at once to the browser and, 0.4 s later, to
+  `<home>/decide-drafts/` (`POST /api/decide/draft`; a closing window flushes it with `keepalive`), so a reload or
+  a restart of Tatty loses nothing. The page asks for it with `GET /api/decide?drafts=1` and takes the newer copy.
+- **The send** is one `POST /api/decide {answers, batch}` (`decide_batch`): each choice goes through
+  `decide.sh set`; one that is refused doesn't stop the rest and comes back to its question with the reason.
+- **Progress.** The page makes up a `batch` id for the send. As the server records each choice it says so with a
+  `decided` event (`batch`, `n` of `total`, `ok`, `doc`, `id`) and then pays that decision's coins (`decide_pay`,
+  once per decision), so the order is always the bar, then the coins. The page draws a bar of how many are sent and
+  how many are to go from those events (the answer to the request completes it if one was missed), and sets
+  `TattyWallet.source` (`wallet.js`) so that decision coins fly from the bar's leading edge into the purse. It holds
+  the full bar for half a second so the last coins leave from it.
+
 ## Modes and colour
 
 A **mode** is one of the toolbox's discipline plugins: engineering, design or

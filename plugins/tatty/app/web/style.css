@@ -218,6 +218,10 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
   overflow: hidden; margin: 6px 0; }
 .bar span { display: block; height: 100%; background: var(--accent); opacity: .35; }
 .bar em { position: absolute; inset: 0; font-style: normal; font-size: 11px; line-height: 14px; padding-left: 8px; color: var(--ink); }
+/* the Decide page sending its decisions: how many have gone and how many are left (decide-page.js) */
+.bar.send-bar { height: 22px; max-width: 520px; margin: 10px 0; }
+.bar.send-bar span { opacity: .6; transition: width .35s ease-out; }
+.bar.send-bar em { line-height: 20px; font-size: 12px; }
 .bar.warn span { background: var(--warn); opacity: .45; }
 .bar.bad span { background: var(--bad); opacity: .45; }
 

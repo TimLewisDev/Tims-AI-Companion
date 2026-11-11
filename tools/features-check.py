@@ -1629,6 +1629,13 @@ def check_decide(p):
                 // the toolbox refuses what window.__refuse names, once
                 const results = body.answers.map(a => { const why = window.__refuse[a.doc + '#' + a.id]; delete window.__refuse[a.doc + '#' + a.id];
                                                          return why ? { doc: a.doc, id: a.id, error: why, code: 409 } : { doc: a.doc, id: a.id, ok: true }; });
+                // as the server does: "decided" as each is recorded, then its coins (window.__slow ms apart)
+                for (const [i, a] of body.answers.entries()) {
+                  if (window.__slow) await new Promise(r => setTimeout(r, window.__slow));
+                  const bad = results[i].error;
+                  document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'decided', batch: body.batch, n: i + 1, total: body.answers.length, ok: !bad, doc: a.doc, id: a.id, ts: Date.now() / 1000 } }));
+                  if (window.__slow && !bad) document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'coins', amount: 3, reason: 'Decision made', kind: 'decision', key: 'decide:' + a.id, paid: true, balance: 100 + 3 * (i + 1), ts: Date.now() / 1000 } }));
+                }
                 const left = results.some(r => !r.ok) ? 1 : 0;
                 return { results, open: left, apply: 1, nudged: left ? null : { tag: 's-test9999', name: 'Demo : Planning' } };
               }
@@ -1675,7 +1682,7 @@ def check_decide(p):
                                go: document.querySelector('#dc-go').textContent, draft: Object.keys(JSON.parse(localStorage.getItem('tatty.decide.Demo') || '{}')) })""")
     # choose again: only P2 is sent this time
     p.js("document.querySelector('.rv-opt[data-key=\"A\"] input').click(); document.querySelector('#dc-go').click(); 1")
-    wait(p, "!document.querySelector('#dc-item')")
+    wait(p, "document.querySelector('#dc-main').innerText.includes('Every one is decided')")  # (the bar holds a moment first)
     res["sentAgain"] = p.js("window.__sent.slice(1).map(b => b.answers)")
     res["draftAfter"] = p.js("localStorage.getItem('tatty.decide.Demo')")
     res["finished"] = p.js("""(() => { const a = document.querySelector('#dc-main a[href^="#workflows/"]');
@@ -1701,6 +1708,26 @@ def check_decide(p):
     wait(p, "!!document.querySelector('#dc-item')")
     res["decidedKept"] = p.js("""({ now: document.querySelector('#dc-item').dataset.id, dots: [...document.querySelectorAll('.rv-dot')].map(d => d.textContent),
                                     sent: window.__sent.length, entries: Object.values(window.__drafted[window.__drafted.length - 1].entries).map(v => [v.key, v.decided]) })""")
+    # Sending shows how far it has got: a bar of how many are sent and how many are to go, which the server's "decided"
+    # events fill one by one, and each decision's coins leave from the bar's leading edge as it moves.
+    p.js("""window.__sent = []; window.__refuse = {}; window.__slow = 500; window.__drafted = []; window.__serverDraft = {};
+            localStorage.removeItem('tatty.decide.Demo'); TattyWallet.setMotion(true); window.__redo(); 1""")
+    wait(p, "!!document.querySelector('#dc-item')")
+    for ident, key in (("CH1", "accept"), ("CH2", "accept"), ("P2", "A"), ("Q1", "passed")):
+        wait(p, f"document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === '{ident}'")
+        p.js(f"document.querySelector('.rv-opt[data-key=\"{key}\"] input').click(); document.querySelector('#dc-go').click(); 1")
+    wait(p, "!!document.querySelector('#dc-bar')")
+    res["barAtStart"] = p.js("({ label: document.querySelector('#dc-bar em').textContent, width: document.querySelector('#dc-bar span').style.width, line: document.querySelector('#dc-sending').innerText.trim() })")
+    wait(p, "document.querySelector('#dc-bar') && document.querySelector('#dc-bar em').textContent.startsWith('2 of 4')")
+    res["barHalfway"] = p.js("""(() => { const bar = document.querySelector('#dc-bar'), t = bar.getBoundingClientRect(), head = t.left + t.width * 2 / 4;
+        const coins = [...document.querySelectorAll('#coin-layer .fly-coin')].map(c => parseFloat(c.style.left));
+        const src = TattyWallet.source({ kind: 'decision' }), other = TattyWallet.source({ kind: 'big' });
+        return { label: bar.querySelector('em').textContent, width: bar.querySelector('span').style.width, coinsFlying: coins.length,
+                 coinFromTheHead: coins.some(x => Math.abs(x - head) < 3), sourceAtHead: Math.abs(src.x - head) < 3 && Math.abs(src.y - (t.top + t.height / 2)) < 2, otherKindsUnchanged: other === null }; })()""")
+    wait(p, "!document.querySelector('#dc-bar')", tries=60)
+    res["barDone"] = {"sourceGivenBack": p.js("TattyWallet.source === null"), "finished": p.js("document.querySelector('#dc-main').innerText.includes('Every one is decided')"),
+                      "sent": p.js("window.__sent.map(b => [b.batch.length > 3, b.answers.length])")}
+    p.js("window.__slow = 0; 1")
     # the overview line and the rail item
     res["overview"] = p.js("""(() => {
         const f = { name: "Demo", phase: "planning", route: "full", stages: [], merge: {}, review: {}, rows: [], sessions: [], toolbox: true, unitList: [], events: [], docList: [], notes: [], tasks: { done: 0, total: 0 }, units: { done: 0, total: 0 },

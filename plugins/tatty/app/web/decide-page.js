@@ -99,15 +99,47 @@ async function decidePage(f, main) {
   // a request that fails altogether leaves every choice kept, and the last item's button tries again.
   const send = async () => {
     const todo = items.filter(x => decided.has(keyOf(x)) && !decided.get(keyOf(x)).sent);
-    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${todo.length} decision${todo.length === 1 ? "" : "s"}…`));
+    // How far it has got: the server says "decided" as it records each one (its batch is this send's own id), and
+    // pays that decision's coins straight after, which fly from the bar's leading edge into the purse: so the bar
+    // and the coins go together. The answer to the request completes the bar if an event was missed.
+    const total = todo.length, batch = "b" + Math.random().toString(36).slice(2, 12);
+    const meter = bar(0, total, "");
+    meter.id = "dc-bar"; meter.classList.add("send-bar");
+    const fill = meter.firstChild, words = meter.querySelector("em");
+    let sentN = 0, refused = 0;
+    const paint = () => {
+      fill.style.width = `${Math.round(100 * sentN / total)}%`;
+      words.textContent = `${sentN} of ${total} sent` + (refused ? ` (${refused} refused)` : "") + ` · ${total - sentN} to go`;
+    };
+    paint();
+    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${total} decision${total === 1 ? "" : "s"}…`), meter);
+    const onProgress = e => {
+      const ev = e.detail;
+      if (ev.type !== "decided" || ev.batch !== batch) return;
+      sentN = Math.max(sentN, ev.n);
+      if (!ev.ok) refused++;
+      paint();
+    };
+    const was = window.TattyWallet && TattyWallet.source;
+    if (window.TattyWallet) TattyWallet.source = ev => {
+      if (ev.kind === "decision" && meter.isConnected) { const t = meter.getBoundingClientRect(); return { x: t.left + t.width * sentN / total, y: t.top + t.height / 2 }; }
+      return was ? was(ev) : null;
+    };
+    document.addEventListener("tt-event", onProgress);
+    const done = () => { document.removeEventListener("tt-event", onProgress); if (window.TattyWallet) TattyWallet.source = was || null; };
     let r;
     try {
-      r = await api("/api/decide", { name: f.name, answers: todo.map(x => { const v = decided.get(keyOf(x)); return { doc: x.doc, id: x.id, choice: v.key, note: v.note }; }) });
+      r = await api("/api/decide", { name: f.name, batch, answers: todo.map(x => { const v = decided.get(keyOf(x)); return { doc: x.doc, id: x.id, choice: v.key, note: v.note }; }) });
     } catch (e) {
+      done();
       const last = todo[todo.length - 1] || items[items.length - 1];
       errs.set(keyOf(last), "Your decisions are kept, but they could not be sent: " + String(e.message || e) + ". Press the button to try again.");
       at = items.indexOf(last); draw(); return;
     }
+    // the bar fills if events were missed, and holds a moment so the last decision's coins leave from it
+    sentN = total; paint();
+    await new Promise(res => setTimeout(res, 500));
+    done();
     refreshFeature(f.name); // (features.js: the rail's count and the overview are read again behind this page)
     const bad = new Map((r.results || []).filter(x => !x.ok).map(x => [x.doc + "#" + x.id, x.error]));
     todo.forEach(x => { const k = keyOf(x); if (bad.has(k)) { decided.delete(k); errs.set(k, bad.get(k)); } else decided.get(k).sent = true; });
