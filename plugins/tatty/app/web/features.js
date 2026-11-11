@@ -151,6 +151,8 @@ function showPage(which) {
   clearInterval(homeTimer);
 }
 
+let routeSeq = 0; // counts the routes taken: a page that was slow to read must not be drawn over one chosen after it
+
 async function route() {
   if (companion && !document.body.classList.contains("expanded")) return; // the bubble shows the feed only
   const r = parseRoute();
@@ -159,6 +161,7 @@ async function route() {
   if (hubPending && r.page !== "hub") { location.hash = "#hub"; return; }
   if (paneLeaveBlocked(r)) return; // (split.js: an unsaved edit in the documents pane)
   lastHash = location.hash;
+  routeSeq++;
   // The page is drawn again: its live panels are gone (each draws its own).
   livePanels.clear();
   usageViews.clear();
@@ -324,43 +327,55 @@ function goToTarget(main, at) {
 // ------------------------------------------------------------- home
 
 let homeDraw = 0; // counts the draws of the Features page (the list and each workflow tab), so a slow one can't land on a newer
+// The last /api/features answer. The list takes a while to read (a script runs for each feature), so a
+// page that has been shown before is drawn from it at once and drawn again only if the answer differs.
+let homeData = null, homeJson = "";
+
 async function renderHome(quiet) {
   const box = pageEls.home;
   const mine = ++homeDraw;
   const put = (...nodes) => box.replaceChildren(workflowTabs(""), ...nodes);
-  if (!quiet) put(el("p", { class: "dim pad" }, "Looking for features…"));
+  // data null: the page's frame (title, buttons) with no list yet; the list goes in when it is read
+  const drawList = data => {
+    const r = data && data.root;
+    const live = data ? data.features.filter(f => f.live) : [], rest = data ? data.features.filter(f => !f.live) : [];
+    const n = data ? data.features.length : 0;
+    const head = el("div", { class: "fhead" },
+      el("div", { class: "fhead-title" }, el("h2", {}, "Features"),
+        data ? el("p", { class: "fhead-sub dim" }, `${n} feature${n === 1 ? "" : "s"} · ${live.length} live`) : "",
+        data ? el("div", { class: "fhead-root dim small" }, "Root: ", copyable(r.root),
+          el("button", { type: "button", class: "primary", title: "Pick another project, or make a new one", onclick: () => { location.hash = "#hub"; } }, "Switch project…")) : ""),
+      el("div", { class: "fhead-actions" },
+        el("button", { type: "button", class: "primary", onclick: () => newFeatureForm.toggle() }, "New feature…"),
+        el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),
+      homeNote);
+    if (!data) { put(head, el("div", { class: "fsec-wait", "aria-busy": "true" })); return; }
+    // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
+    const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
+      el("strong", {}, "Tatty can't find the TT toolbox. "),
+      "Tatty shows the toolbox's workflow, so install the toolbox (its core and engineering plugins) and Tatty will show where each feature stands. ",
+      el("span", { class: "dim" }, "For development, set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout."));
+    const form = newFeatureForm.node();
+    if (!data.features.length) {
+      put(missing, head, form, el("div", { class: "card empty-state" },
+        el("p", {}, "No features yet. ", el("strong", {}, "New feature…"), " makes one here and starts it with the workflow."),
+        el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")), archivedSection(data.archived));
+      return;
+    }
+    put(missing, head, form,
+      featureSection("live", "Live Features", live, "No feature has a workflow running right now."),
+      rest.length ? featureSection("rest", "Other Features", rest) : "",
+      archivedSection(data.archived)); // archive.js
+  };
+  if (!quiet) drawList(homeData);
   let data;
   try { data = await api("/api/features"); } catch (e) { if (mine === homeDraw && onFeatureList()) put(el("p", { class: "st missing pad" }, String(e))); return; }
   if (mine !== homeDraw || !onFeatureList()) return; // (the person has moved on: a tab, a chat or another page)
-  const r = data.root;
-  if (!r.isSet || !r.exists) { location.hash = "#hub"; return; } // no project open yet: the Hub is where one is picked
-  // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
-  const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
-    el("strong", {}, "Tatty can't find the TT toolbox. "),
-    "Tatty shows the toolbox's workflow, so install the toolbox (its core and engineering plugins) and Tatty will show where each feature stands. ",
-    el("span", { class: "dim" }, "For development, set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout."));
-  const live = data.features.filter(f => f.live), rest = data.features.filter(f => !f.live);
-  const n = data.features.length;
-  const head = el("div", { class: "fhead" },
-    el("div", { class: "fhead-title" }, el("h2", {}, "Features"),
-      el("p", { class: "fhead-sub dim" }, `${n} feature${n === 1 ? "" : "s"} · ${live.length} live`),
-      el("div", { class: "fhead-root dim small" }, "Root: ", copyable(r.root),
-        el("button", { type: "button", class: "primary", title: "Pick another project, or make a new one", onclick: () => { location.hash = "#hub"; } }, "Switch project…"))),
-    el("div", { class: "fhead-actions" },
-      el("button", { type: "button", class: "primary", onclick: () => newFeatureForm.toggle() }, "New feature…"),
-      el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),
-    homeNote);
-  const form = newFeatureForm.node();
-  if (!data.features.length) {
-    put(missing, head, form, el("div", { class: "card empty-state" },
-      el("p", {}, "No features yet. ", el("strong", {}, "New feature…"), " makes one here and starts it with the workflow."),
-      el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")), archivedSection(data.archived));
-    return;
-  }
-  put(missing, head, form,
-    featureSection("live", "Live Features", live, "No feature has a workflow running right now."),
-    rest.length ? featureSection("rest", "Other Features", rest) : "",
-    archivedSection(data.archived)); // archive.js
+  if (!data.root.isSet || !data.root.exists) { homeData = null; homeJson = ""; location.hash = "#hub"; return; } // no project open yet: the Hub is where one is picked
+  const json = JSON.stringify(data);
+  const drawn = !quiet && json === homeJson; // (what is on screen is already this answer)
+  homeData = data; homeJson = json;
+  if (!drawn) drawList(data);
 }
 
 // ------------------------------------------------------------- workflow tabs
@@ -446,8 +461,9 @@ async function renderWorkflowTab(tag) {
   const box = pageEls.home;
   tabsActive = tag;
   const mine = ++homeDraw;
-  await loadTabs();
-  if (mine !== homeDraw) return;
+  // A tab the page already knows is drawn at once, and the strip is read again behind it.
+  if (tabList.has(tag)) loadTabs();
+  else { await loadTabs(); if (mine !== homeDraw) return; }
   const s = tabList.get(tag);
   if (!s) {
     box.replaceChildren(workflowTabs(tag, false), el("div", { class: "pad" },
@@ -456,10 +472,13 @@ async function renderWorkflowTab(tag) {
     return;
   }
   const info = sessionInfo.get(tag) || s;
+  // The documents rail is the slow part (the feature is read by scripts): it is drawn from what is known, or
+  // as its frame alone, and filled in (refreshRail) once the feature has been read.
   let rail = "";
   if (info.feature) {
-    try { const f = await featureOf(info.feature); rail = documentsRail(featureNav(f, null, false, { side: true }), f.name); } catch { /* the workflow is still there without it */ }
-    if (mine !== homeDraw) return;
+    const known = featureCache.get(info.feature);
+    rail = documentsRail(known ? featureNav(known, null, false, { side: true })
+      : el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, info.feature)), info.feature);
   }
   const ended = info.status === "ended";
   const panel = sessionPanel({ name: info.feature }, info, () => { location.hash = featureHref(info.feature); }, ended, "Open feature");
@@ -469,6 +488,7 @@ async function renderWorkflowTab(tag) {
   markRail();
   clearInterval(homeTimer);
   homeTimer = setInterval(refreshRail, 20000);
+  if (info.feature) refreshRail();
   const r = parseRoute();
   if (r.tag === tag && r.ask) focusAsk(r.ask);
 }
@@ -556,6 +576,7 @@ async function useRoot(path) {
   try {
     const r = await api("/api/root", { path, create: true });
     note(`Tatty's root is now ${r.root}. Features live in ${r.features}.`);
+    homeData = null; homeJson = ""; featureCache.clear(); // (another root's features are not these)
     if (parseRoute().page !== "home") location.hash = "#home";
     else renderHome();
   } catch (e) { note(String(e.message || e), true); renderHome(true); }
@@ -618,16 +639,30 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     return;
   }
   shown = null;
+  const mine = routeSeq;
   let f = featureCache.get(name);
-  if (!f || !doc) {
-    if (!f) box.replaceChildren(el("p", { class: "dim pad" }, "Reading the feature…"));
+  const cached = !!f;
+  if (!f) {
+    // Reading a feature takes a few seconds (scripts run): the page's frame is drawn now, empty, and
+    // what is read goes into it.
+    featureView = null;
+    box.replaceChildren(el("div", { class: "fpage loading", "aria-busy": "true" },
+      documentsRail(el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, name)), name),
+      el("div", { class: "fmain" })));
     try { f = await api("/api/feature?name=" + encodeURIComponent(name)); featureCache.set(name, f); } catch (e) {
+      if (mine !== routeSeq) return;
       box.replaceChildren(el("p", { class: "st missing pad" }, `Can't read ${name}: ${e.message || e}`), el("p", { class: "pad" }, el("a", { href: "#home" }, "Back to features")));
       return;
     }
+    if (mine !== routeSeq) return; // (the person has gone elsewhere while it was read)
   }
   const main = el("div", { class: "fmain" });
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, { commit, suggestions, diff, decide }), f.name), main));
+  const opts = { commit, suggestions, diff, decide };
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name), main));
+  featureView = { name, doc, board, opts, overview: !doc && !board && !commit && !suggestions && !diff && !decide, sig: decideSig(f) };
+  // What is drawn is what was read last time; it is read again behind the page, and the page is
+  // redrawn if anything changed (a decision written, a session started).
+  if (!doc && cached) refreshFeature(name);
   if (decide) await decidePage(f, main); // decide-page.js
   else if (suggestions) await reviewPage(f, main); // review-page.js
   else if (commit) await commitPage(f, main); // commit.js
@@ -641,6 +676,57 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
   } else main.append(overview(f));
 }
+
+// What the feature page on screen is showing: { name, doc, board, opts (commit, suggestions, diff, decide), overview
+// (the overview, which is redrawn when the feature changes), sig (the decisions it was drawn with) }.
+let featureView = null;
+const decideSig = f => `${(f.decide || {}).open || 0}/${(f.decide || {}).apply || 0}`;
+
+// Reads the feature again and, when it has changed, redraws what shows it: the rail always, the overview too
+// unless the person is in the middle of something on it (a Start panel, a form, "More options" open), in which
+// case it is tried again at the next look. The page on screen is left alone if the person has moved on.
+async function refreshFeature(name) {
+  const seq = routeSeq;
+  let fresh;
+  try { fresh = await api("/api/feature?name=" + encodeURIComponent(name)); } catch { return; }
+  const old = featureCache.get(name);
+  featureCache.set(name, fresh);
+  const v = featureView;
+  if (seq !== routeSeq || !v || v.name !== name || !pageEls.feature.classList.contains("on")) return;
+  if (old && JSON.stringify(old) === JSON.stringify(fresh) && v.sig === decideSig(fresh)) return;
+  const nav = pageEls.feature.querySelector(".fnav");
+  if (nav) {
+    const top = nav.scrollTop, next = featureNav(fresh, v.doc, v.board, { ...v.opts, notesOpen: !!(nav.querySelector(".fnav-notes") || {}).open });
+    nav.replaceWith(next);
+    next.scrollTop = top;
+  }
+  const main = pageEls.feature.querySelector(".fmain");
+  if (v.overview) {
+    if (!main || main.querySelector("input, textarea, select, .more-options[open], .action-slot > *")) return; // (busy: sig stays, so the next look tries again)
+    const top = main.scrollTop;
+    main.replaceChildren(overview(fresh));
+    main.scrollTop = top;
+  }
+  v.sig = decideSig(fresh);
+}
+
+// A workflow session writes its questions into the feature's documents while its page is open. Asking whether
+// any wait is cheap (the server answers from the documents' modified times), so it is asked every few seconds
+// and the feature read again only when the count differs from what the page shows.
+async function pollDecisions() {
+  if (document.hidden) return;
+  const onFeature = pageEls.feature.classList.contains("on") && featureView;
+  const rail = !onFeature && pageEls.home.classList.contains("on") ? document.querySelector("#page-home .frail[data-feature]") : null;
+  const name = onFeature ? featureView.name : rail ? rail.dataset.feature : "";
+  if (!name) return;
+  let items;
+  try { items = (await api("/api/decide?name=" + encodeURIComponent(name))).items || []; } catch { return; }
+  const open = items.filter(i => i.state === "open").length;
+  const sig = `${open}/${items.length - open}`;
+  if (onFeature) { if (featureView && featureView.name === name && featureView.sig !== sig) refreshFeature(name); }
+  else { const f = featureCache.get(name); if (!f || decideSig(f) !== sig) refreshRail(); }
+}
+setInterval(pollDecisions, 6000);
 
 // The feature's left rail: its overview, whiteboard, documents and working notes.
 // On a workflow tab (opts.side) the documents open in the side panel (split.js)
@@ -708,14 +794,15 @@ function markRail() {
 }
 
 // A workflow tab's rail is read again now and then: the workflow writes documents.
+let railBusy = false;
 async function refreshRail() {
   const rail = document.querySelector("#page-home .frail[data-feature]");
-  if (!rail || document.hidden) return;
+  if (!rail || document.hidden || railBusy) return;
   const name = rail.dataset.feature, old = rail.querySelector(".fnav");
   if (!old) return;
-  featureCache.delete(name);
+  railBusy = true;
   let f;
-  try { f = await featureOf(name); } catch { return; }
+  try { f = await api("/api/feature?name=" + encodeURIComponent(name)); featureCache.set(name, f); } catch { return; } finally { railBusy = false; }
   if (!old.isConnected) return;
   const top = old.scrollTop, fresh = featureNav(f, null, false, { side: true, notesOpen: !!(old.querySelector(".fnav-notes") || {}).open });
   old.replaceWith(fresh);
@@ -1066,7 +1153,7 @@ document.addEventListener("tt-event", e => {
   const r = parseRoute();
   if (moved && r.page === "feature" && !r.doc && ev.feature === r.name) {
     clearTimeout(redrawSoon);
-    redrawSoon = setTimeout(() => { featureCache.delete(r.name); route(); }, 300);
+    redrawSoon = setTimeout(() => refreshFeature(r.name), 300); // (read again behind the page: not the page thrown away, as the Decide page's answers would be)
   }
 });
 let redrawSoon = null;
@@ -1526,7 +1613,7 @@ function overview(f) {
             if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
           } }, "Cancel workflow") : "",
         stagesButton(f), // stages.js
-        el("button", { type: "button", onclick: () => { featureCache.delete(f.name); route(); } }, "Refresh"),
+        el("button", { type: "button", onclick: () => route() }, "Refresh"), // (drawn from what is known at once, read again behind it)
         archiveCombo(f))), // archive.js
     el("div", { class: "dim small" }, copyable(f.folder)),
     tracker(f),

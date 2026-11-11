@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -1660,6 +1660,71 @@ def check_decide(p):
     return res
 
 
+def check_loading(p):
+    """A feature's page is drawn before it is read: the page's api() is stood in for with a feature that takes as
+    long as the test says. The frame (the rail's "← Features" and the name, an empty main, no "Reading…") is on
+    screen at once; the data goes in when it arrives; a page chosen later is not overwritten by a slower one chosen
+    earlier; a visit to a feature seen before is drawn from what is known; a decision written while the page is open
+    is picked up (the rail's Decisions item and the overview's Decisions Needed button). Nothing is written."""
+    res = {}
+    p.js("""window.__real = { api: window.api }; window.__gate = {}; window.__calls = []; window.__open = 0; window.__auto = false;
+            window.__feat = (name, open) => ({ name, folder: '/x/' + name, phase: 'planning', route: 'full', stage: '', text: '', next: '', updated: Date.now() / 1000,
+              docs: 0, units: { done: 0, total: 0 }, tasks: { done: 0, total: 0 }, merge: {}, review: {}, stages: [], rows: [], sessions: [], toolbox: true, unitList: [], events: [],
+              docList: [], notes: [], profile: null, project: '', projectFrom: '', liteFirst: false, task: null, ticket: '', ticketOnly: false, live: null,
+              decide: open ? { open, apply: 0, kinds: ['challenge'] } : null,
+              action: open ? { kind: 'decide', label: 'Decisions Needed', count: open, href: '#feature/' + name + '/decide' } : { kind: 'none' } });
+            window.api = (path, body) => {
+              window.__calls.push(path);
+              if (path.startsWith('/api/feature?')) {
+                const name = decodeURIComponent(path.split('name=')[1]);
+                return new Promise(res => { const go = () => res(window.__feat(name, window.__open)); window.__gate[name] = go; if (window.__auto) go(); });
+              }
+              if (path.startsWith('/api/decide?')) return Promise.resolve({ items: Array.from({ length: window.__open }, (_, i) =>
+                ({ doc: 'x - Challenges.md', kind: 'challenge', id: 'CH' + (i + 1), state: 'open', group: '', severity: 'minor', title: 'a question' })) });
+              return window.__real.api(path, body);
+            };
+            window.__frame = () => ({ loading: !!document.querySelector('#page-feature .fpage.loading'), name: (document.querySelector('#page-feature .fnav h3') || {}).textContent || null,
+                                      back: !!document.querySelector('#page-feature .fnav-back'), main: (document.querySelector('#page-feature .fmain') || { innerText: null }).innerText,
+                                      overview: !!document.querySelector('#page-feature .overview'), reading: /Reading the feature|Looking for features/.test(document.body.innerText),
+                                      decisions: [...document.querySelectorAll('#page-feature .fnav-item')].some(a => a.textContent.startsWith('Decisions')),
+                                      button: !!document.querySelector('#page-feature #decide-waiting') });
+            1""")
+    # a feature not seen before: the frame at once, then the data
+    p.js("location.hash = '#feature/Alpha'; 1")
+    wait(p, "window.__gate.Alpha")
+    res["frameAtOnce"] = p.js("window.__frame()")
+    p.js("window.__gate.Alpha(); 1")
+    wait(p, "document.querySelector('#page-feature .overview')")
+    res["loaded"] = p.js("window.__frame()")
+    # the same feature again: drawn from what is known without waiting for the read, which comes after
+    p.js("location.hash = '#home'; 1")
+    time.sleep(0.5)
+    p.js("window.__gate = {}; window.__calls = []; location.hash = '#feature/Alpha'; 1")
+    wait(p, "window.__gate.Alpha")
+    res["fromCache"] = p.js("window.__frame()")
+    # a slow read of Alpha must not land on Beta, chosen after it
+    p.js("location.hash = '#feature/Beta'; 1")
+    wait(p, "window.__gate.Beta")
+    p.js("window.__gate.Alpha(); 1")
+    time.sleep(0.5)
+    res["slowAlphaThenBeta"] = p.js("window.__frame()")
+    p.js("window.__gate.Beta(); 1")
+    wait(p, "document.querySelector('#page-feature .overview')")
+    res["beta"] = p.js("window.__frame()")
+    # a decision written while the page is open: found without a reload
+    p.js("window.__open = 2; window.__auto = true; pollDecisions(); 1")
+    wait(p, "window.__frame().decisions")
+    res["pickedUp"] = p.js("window.__frame()")
+    res["railItem"] = p.js("[...document.querySelectorAll('#page-feature .fnav-item')].find(a => a.textContent.startsWith('Decisions')).innerText.replace(/\\\\s+/g, ' ').trim()")
+    # and the way to the Decide page is the page it says
+    p.js("document.querySelector('#decide-waiting').click(); 1")
+    wait(p, "location.hash.endsWith('/decide')")
+    time.sleep(0.5)
+    res["decideRoute"] = p.js("({ hash: location.hash, onDecide: !!document.querySelector('#page-feature .dc-page'), name: (document.querySelector('#page-feature .fnav h3') || {}).textContent })")
+    p.js("window.api = window.__real.api; location.hash = '#home'; 1")
+    return res
+
+
 def check_new_panel(p, page, button, form):
     """The list page's "create new": no form on the page, the cards first, and the
     form in a panel from the right that Esc, x and the dimmed page each close."""
@@ -1968,10 +2033,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

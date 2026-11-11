@@ -77,7 +77,7 @@ async function decidePage(f, main) {
       errs.set(keyOf(last), "Your decisions are kept, but they could not be sent: " + String(e.message || e) + ". Press the button to try again.");
       at = items.indexOf(last); draw(); return;
     }
-    featureCache.delete(f.name);
+    refreshFeature(f.name); // (features.js: the rail's count and the overview are read again behind this page)
     const bad = new Map((r.results || []).filter(x => !x.ok).map(x => [x.doc + "#" + x.id, x.error]));
     todo.forEach(x => { const k = keyOf(x); if (bad.has(k)) { decided.delete(k); errs.set(k, bad.get(k)); } else decided.get(k).sent = true; });
     saveDraft();

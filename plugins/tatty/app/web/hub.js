@@ -43,6 +43,7 @@ function openedProject(data, p, msg) {
   if (data.locked || data.self === p.id) {
     hubPending = false;
     featureCache.clear();
+    homeData = null; homeJson = ""; // (features.js: the list of the project left)
     leaveHub();
     return;
   }
