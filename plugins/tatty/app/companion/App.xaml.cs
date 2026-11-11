@@ -30,7 +30,7 @@ namespace TtCompanion
     public partial class App : Application
     {
         private Mutex? single;
-        private EventWaitHandle? wake;
+        private EventWaitHandle? wake, leave;
         private TattyWindow tatty = null!;
         private BubbleWindow bubble = null!;
         private Effects effects = null!;
@@ -142,6 +142,7 @@ namespace TtCompanion
             Native.StopForegroundHook();
             if (tray != null) { tray.Visible = false; tray.Icon?.Dispose(); tray.Dispose(); }
             wake?.Dispose();
+            leave?.Dispose();
             single?.Dispose();
             base.OnExit(e);
         }
@@ -417,6 +418,16 @@ namespace TtCompanion
             new Thread(() =>
             {
                 try { while (handle.WaitOne()) Dispatcher.BeginInvoke(new Action(() => PopUp(activate: true))); }
+                catch (ObjectDisposedException) { }
+            }) { IsBackground = true }.Start();
+
+            // A server started on a newer Tatty rings this one (server.py's quit_companion) when it
+            // has built that version's tray app, to start it in this one's place.
+            leave = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\tatty-companion-quit" + Suffix);
+            var asked = leave;
+            new Thread(() =>
+            {
+                try { if (asked.WaitOne()) Dispatcher.BeginInvoke(new Action(() => Quit())); }
                 catch (ObjectDisposedException) { }
             }) { IsBackground = true }.Start();
         }

@@ -9424,6 +9424,7 @@ def serve(cwd, bash):
     threading.Thread(target=watch_updates, args=(state,), daemon=True).start()
     threading.Thread(target=watch_designs, args=(state,), daemon=True).start()
     threading.Thread(target=watch_tasks, args=(state,), daemon=True).start()
+    threading.Thread(target=replace_old_companion, daemon=True).start()
     try:
         httpd.serve_forever(poll_interval=0.5)
     finally:
@@ -9639,11 +9640,12 @@ def companion_ready():
 
 
 def companion_names(project=None):
-    """The named mutex a project's tray app holds, and the event that brings it forward. The
-    Hub's (project '') keep the names Tatty always had; project None: this process's own."""
+    """The named mutex a project's tray app holds, the event that brings it forward, and the one
+    that asks it to leave. The Hub's (project '') keep the names Tatty always had; project None:
+    this process's own."""
     pid = instance_id() if project is None else project
     suffix = f"-{pid}" if pid else ""
-    return f"Local\\tatty-companion{suffix}", f"Local\\tatty-companion-show{suffix}"
+    return f"Local\\tatty-companion{suffix}", f"Local\\tatty-companion-show{suffix}", f"Local\\tatty-companion-quit{suffix}"
 
 
 def companion_running(project=None):
@@ -9655,6 +9657,156 @@ def companion_running(project=None):
     if h:
         k32.CloseHandle(h)
     return bool(h)
+
+
+# ---------------------------------------------------------------- an older tray app
+# An update's restart starts this server on the new Tatty, and the tray app that was up
+# follows it to its new port (App.xaml.cs's FollowNewServer), but it is still the old
+# exe: whatever the new one draws or does, he wouldn't. So a server that starts and finds
+# its project's tray app running from an older version's folder builds this version's,
+# asks the old one to leave, and starts the new one in its place.
+
+def companion_args(cmdline):
+    """A tray app's command line as (exe, {flag: value}): its --home, --project and the
+    pickers' --pick-folder / --pick-file (a flag with no value is "")."""
+    import shlex
+    try:
+        parts = [p[1:-1] if len(p) > 1 and p[0] == p[-1] == '"' else p for p in shlex.split(cmdline or "", posix=False)]
+    except ValueError:
+        return "", {}
+    if not parts:
+        return "", {}
+    flags, i = {}, 1
+    while i < len(parts):
+        if parts[i].startswith("--"):
+            value = parts[i + 1] if i + 1 < len(parts) and not parts[i + 1].startswith("--") else ""
+            flags[parts[i]] = value
+            i += 2 if value else 1
+        else:
+            i += 1
+    return parts[0], flags
+
+
+def older_companions(rows, project, home_dir, version):
+    """Of the tray apps running ([(pid, exe path, command line)]), the ones that are
+    `project`'s window ('' the Hub's) for Tatty home `home_dir`, run from the folder of a
+    version older than `version` (...\\companion\\<version>\\bin\\TtCompanion.exe): their pids.
+    Another home's (a test's, say) is never one, and nor is a newer one: no going back."""
+    from pathlib import PureWindowsPath
+    want = os.path.normcase(os.path.normpath(str(home_dir)))
+    out = []
+    for pid, exe, cmd in rows:
+        _, flags = companion_args(cmd)
+        if "--pick-folder" in flags or "--pick-file" in flags or flags.get("--project", "") != project:
+            continue
+        if not flags.get("--home") or os.path.normcase(os.path.normpath(flags["--home"])) != want:
+            continue
+        theirs = version_key(PureWindowsPath(exe or "").parent.parent.name)
+        if theirs and theirs < version_key(version):
+            out.append(pid)
+    return out
+
+
+def running_companions():
+    """Every TtCompanion.exe running: [(pid, exe path, command line)], asked of Windows
+    (CIM, through PowerShell). [] when it can't say."""
+    if os.name != "nt":
+        return []
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='TtCompanion.exe'\" | "
+          "ForEach-Object { \"$($_.ProcessId)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }")
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=60,
+                           stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows = []
+    for line in (p.stdout or "").splitlines():
+        bits = line.split("\t", 2)
+        if len(bits) == 3 and bits[0].strip().isdigit():
+            rows.append((int(bits[0]), bits[1].strip(), bits[2].strip()))
+    return rows
+
+
+def quit_companion(project, pid):
+    """Ask a project's tray app to leave, by its quit event (it saves where its windows were
+    and goes). One older than that event has nothing listening, and is ended instead."""
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    k32.OpenEventW.restype = ctypes.c_void_p
+    k32.OpenEventW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+    k32.SetEvent.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    h = k32.OpenEventW(0x0002, False, companion_names(project)[2])  # EVENT_MODIFY_STATE
+    if h:
+        k32.SetEvent(h)
+        k32.CloseHandle(h)
+        for _ in range(50):  # five seconds to go
+            if not companion_running(project):
+                return
+            time.sleep(0.1)
+    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, stdin=subprocess.DEVNULL,
+                   timeout=30, creationflags=NO_WINDOW)
+
+
+class BuildLock:
+    """One build of a version's exes at a time, across the servers that may all restart onto
+    it together: a directory beside the build. One a crash left goes after ten minutes."""
+
+    def __init__(self, build):
+        self.dir = Path(build).parent / (Path(build).name + ".building")
+
+    def __enter__(self):
+        self.dir.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(1200):  # ten minutes, the longest a build is given
+            try:
+                self.dir.mkdir()
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.dir.stat().st_mtime > 600:
+                        self.dir.rmdir()
+                except OSError:
+                    pass
+                time.sleep(0.5)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.dir.rmdir()
+        except OSError:
+            pass
+
+
+def replace_old_companion(wait=3.0):
+    """Started with the server: when its project's tray app is running from an older Tatty's
+    folder, build this version's, have the old one leave, and start the new one. True if it did."""
+    project = instance_id()
+    if os.name != "nt" or os.environ.get("TATTY_NO_UI") == "1" or os.environ.get("TATTY_UI", "auto") not in ("auto", "companion"):
+        return False
+    time.sleep(wait)  # the old server hands over, and its tray app comes across
+    if not companion_running(project):
+        return False
+    old = older_companions(running_companions(), project, home(), plugin_version())
+    if not old:
+        return False
+    with BuildLock(BUILD):
+        ready = companion_ready()
+    if not ready:
+        print(f"the tray app couldn't be built for {plugin_version()}: the old one carries on", file=sys.stderr)
+        return False
+    for pid in old:
+        quit_companion(project, pid)
+    for _ in range(100):
+        if not companion_running(project):
+            break
+        time.sleep(0.1)
+    else:
+        print("the old tray app didn't leave: it carries on", file=sys.stderr)
+        return False
+    info = load_info() or {}
+    show_ui({"url": info.get("url", "")}, project)
+    print(f"the tray app was replaced by {plugin_version()}'s", file=sys.stderr)
+    return True
 
 
 def show_ui(info, project=None):

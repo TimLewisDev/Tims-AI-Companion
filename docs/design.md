@@ -611,8 +611,15 @@ folders and Claude Code's own install records; see
   `server.json` and says hello again under the same tag) move over without a
   gap. A browser tab needs reopening: the token and port are new. Questions
   still open and background work (chats, Jira, Stories) are lost, and the
-  button asks first when there are any. The tray app's own build updates the
-  next time it is started.
+  button asks first when there are any. The tray app that followed is still the
+  old exe, though, so whatever the new one draws (the activity animations, say)
+  wouldn't show. A server that starts therefore looks for its project's tray app
+  (the Hub's, for the Hub's server) running from an older version's folder
+  (`replace_old_companion`: the running `TtCompanion.exe`s, asked of Windows, with
+  the same `--home` and `--project`; a picker, another home's and a newer one are
+  left alone). It builds this version's, asks the old one to leave by its quit
+  event (`Local\tatty-companion-quit-<id>`; one too old to have it is ended), and
+  starts the new one in its place.
 - **Branches and merging:** two workflows in one repository must not trample
   each other's files, and finished work mustn't sit uncommitted and forgotten.
   Neither is the toolbox's business (its skills never create a branch or commit),

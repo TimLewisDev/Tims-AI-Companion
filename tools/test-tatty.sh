@@ -566,6 +566,31 @@ has "the prebuilt folder is found" "$T/f" "found: True"
 has "a prebuilt exe is put where it is expected" "$T/f" "copied: True True"
 has "a missing prebuilt exe is refused" "$T/f" "missing one: False"
 
+# An update's restart leaves the old tray app following the new server: a server that starts finds its
+# project's, if it runs from an older version's folder, to replace (never another home's, a picker, or a newer one).
+$PY - "$SRV" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+exe = lambda v: "C:\\Users\\me\\AppData\\Local\\Tatty\\companion\\" + v + "\\bin\\TtCompanion.exe"
+home = "C:\\Users\\me\\.claude\\tatty"
+print("args:", m.companion_args('"C:\\Program Files\\T\\TtCompanion.exe" --home "C:\\My Home\\tatty" --project ab12'))
+rows = [(1, exe("0.34.6"), exe("0.34.6") + " --home " + home + " --project ab12"),
+        (2, exe("0.34.6"), exe("0.34.6") + " --home " + home + " --project cd34"),
+        (3, exe("0.34.6"), exe("0.34.6") + " --home C:\\elsewhere --project ab12"),
+        (4, exe("0.34.6"), exe("0.34.6") + " --pick-folder --home " + home + " --project ab12"),
+        (5, exe("0.36.0"), exe("0.36.0") + " --home " + home + " --project ab12"),
+        (6, exe("0.35.2"), exe("0.35.2") + " --home " + home + " --project ab12"),
+        (7, exe("0.34.6"), exe("0.34.6") + " --home " + home)]
+print("older:", m.older_companions(rows, "ab12", home, "0.35.2"))
+print("the hub's:", m.older_companions(rows, "", home.replace("\\", "/"), "0.35.2"))
+print("names:", m.companion_names("ab12"))
+EOF
+has "a tray app's command line is read" "$T/f" "args: ('C:\\\\Program Files\\\\T\\\\TtCompanion.exe', {'--home': 'C:\\\\My Home\\\\tatty', '--project': 'ab12'})"
+has "only this project's older tray app, of this home, is replaced" "$T/f" "older: [1]"
+has "the Hub's is told apart from a project's" "$T/f" "the hub's: [7]"
+has "it has a quit event to be asked to leave by" "$T/f" "tatty-companion-quit-ab12"
+
 fi
 if section notoolbox; then
 echo "# without the toolbox"
