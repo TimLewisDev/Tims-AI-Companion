@@ -34,6 +34,14 @@ namespace TtCompanion
         private AvatarArt? art;
         private int number;
 
+        // What he does while a session works (Activity.cs): a layer of its own under each of the
+        // transforms Avatar.cs animates, so the two never fight; the ground behind him (helpers
+        // stand there) and what moves with all of him outside his body (a notepad).
+        private readonly Dictionary<string, Activity.Part> layers = new();
+        private Canvas? ground, rootExtras;
+        private Activity? activity;
+        private string doing = "idle";
+
         public TattyWindow()
         {
             InitializeComponent();
@@ -41,6 +49,12 @@ namespace TtCompanion
             MouthH = MouthHappy;
             MouthF = MouthFlat;
             avatar = new Avatar(this);
+            Layer("Root", (TransformGroup)Robot.RenderTransform);
+            Layer("Body", (TransformGroup)Body.RenderTransform);
+            Layer("LegL", (TransformGroup)LegL.RenderTransform);
+            Layer("LegR", (TransformGroup)LegR.RenderTransform);
+            Eyes.RenderTransform = Layer("Eyes", new TransformGroup { Children = { Eyes.RenderTransform } });
+            Pupils.RenderTransform = Layer("Pupils", new TransformGroup { Children = { Pupils.RenderTransform } });
             // As he was last time, from the first frame (the page says again once it has loaded).
             var saved = AvatarArt.Saved();
             var last = saved == null ? null : AvatarArt.Read(saved);
@@ -57,6 +71,32 @@ namespace TtCompanion
         // The number he wears: the project this Tatty is for, or none (the Hub's Tatty has no
         // project, and so no number). It sits where it suits the avatar (Apply); two digits get a
         // smaller type, and past 99 it says so rather than overflowing.
+        // What a session of this project is doing: "idle", "thinking", "reading", "writing",
+        // "running", "delegating", "needs" or "oops" (App.xaml.cs works it out).
+        public void SetActivity(string state)
+        {
+            doing = state;
+            activity?.Set(state);
+        }
+
+        // A layer for Activity.cs, under (applied before) the transforms already in the group.
+        private TransformGroup Layer(string name, TransformGroup group)
+        {
+            var part = new Activity.Part { S = new ScaleTransform(), R = new RotateTransform(), T = new TranslateTransform() };
+            group.Children.Insert(0, part.T);
+            group.Children.Insert(0, part.R);
+            group.Children.Insert(0, part.S);
+            layers[name] = part;
+            return group;
+        }
+
+        private void Pivot(string name, Point at)
+        {
+            var p = layers[name];
+            p.S.CenterX = p.R.CenterX = at.X;
+            p.S.CenterY = p.R.CenterY = at.Y;
+        }
+
         public void SetNumber(int number)
         {
             this.number = number;
@@ -109,6 +149,22 @@ namespace TtCompanion
             Fill(backBody, a.Back);
             Fill(LegL, a.LegL);
             Fill(LegR, a.LegR);
+            if (ground == null)
+            {
+                ground = new Canvas();
+                Canvas.SetTop(ground, TopInset);
+                var top = (Panel)Robot.Parent;
+                top.Children.Insert(top.Children.IndexOf(Robot), ground);
+                rootExtras = new Canvas();
+                Robot.Children.Add(rootExtras);
+            }
+            Fill(ground, a.Ground);
+            Fill(rootExtras!, a.RootExtras);
+            Pivot("Root", a.Root);
+            Pivot("Body", a.BodyPivot);
+            Pivot("LegL", a.LegLPivot);
+            Pivot("LegR", a.LegRPivot);
+            Pivot("Eyes", a.EyesPivot);
 
             // The window's own elements may sit deep in the last drawing (the number's badge
             // inside a wrapper, or in a leg), not just in Body: take each out wherever it is, or
@@ -137,6 +193,20 @@ namespace TtCompanion
             MouthF = a.Mouths.GetValueOrDefault("flat") ?? new Canvas();
             avatar.Refresh();
             a.Idle(Motion.On);
+
+            // what he does while a session works, for this look
+            activity?.Halt();
+            var parts = layers.ToDictionary(kv => kv.Key, kv => new List<Activity.Part> { kv.Value });
+            foreach (var (name, s, r, t, outer, o0) in a.Moving)
+            {
+                if (!parts.TryGetValue(name, out var list)) parts[name] = list = new List<Activity.Part>();
+                list.Add(new Activity.Part { S = s, R = r, T = t, Fade = outer, O0 = o0 });
+            }
+            activity = new Activity(a.Motion, parts, a.Mouths, a.Props,
+                idle: () => { foreach (var m in a.Mouths.Values) m.Visibility = Visibility.Collapsed; avatar.Refresh(); a.Idle(Motion.On); },
+                busy: () => a.Idle(false),
+                lively: () => Motion.On);
+            activity.Set(doing);
         }
 
         private static void Fill(Panel panel, IEnumerable<UIElement> kids)

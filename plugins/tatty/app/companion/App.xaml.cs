@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -235,6 +236,77 @@ namespace TtCompanion
             return true;
         }
 
+        // ---------------------------------------------------------------- what the sessions are doing
+        // From the session and activity events: whether each session is in a turn, how many
+        // subagents it has going, and the tool it is in. Tatty shows the liveliest of it
+        // (Activity.cs): a question waiting, then a tool that has just failed, then subagents,
+        // then the tool (reading, writing, running a command), then a turn with no tool yet
+        // (thinking), else nothing. Each is let go when it goes quiet, so a session that
+        // stopped telling (closed, or crashed) doesn't leave him working for ever.
+        private sealed class Work { public bool Turn; public int Agents; public string Tool = ""; public DateTime ToolAt, Seen; }
+        private readonly Dictionary<string, Work> work = new();
+        private DateTime oopsUntil = DateTime.MinValue;
+        private static readonly TimeSpan Quiet = TimeSpan.FromMinutes(10), ToolQuiet = TimeSpan.FromSeconds(90), Oops = TimeSpan.FromSeconds(2.6);
+        private static readonly HashSet<string> Reading = new(StringComparer.OrdinalIgnoreCase) { "Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "NotebookRead" };
+        private static readonly HashSet<string> Writing = new(StringComparer.OrdinalIgnoreCase) { "Edit", "Write", "MultiEdit", "NotebookEdit" };
+        private static readonly HashSet<string> Running = new(StringComparer.OrdinalIgnoreCase) { "Bash", "BashOutput", "PowerShell", "KillShell", "KillBash" };
+        private static readonly HashSet<string> Handing = new(StringComparer.OrdinalIgnoreCase) { "Task", "Agent" };
+        private static readonly HashSet<string> AgentBusy = new() { "pending", "running", "waiting" };
+
+        private Work WorkOf(string tag)
+        {
+            if (!work.TryGetValue(tag, out var w)) work[tag] = w = new Work();
+            w.Seen = DateTime.UtcNow;
+            return w;
+        }
+
+        private void SessionEvent(JsonElement ev)
+        {
+            string tag = Str(ev, "tag");
+            if (tag.Length == 0) return;
+            if (Str(ev, "status") == "ended") { work.Remove(tag); return; }
+            var w = WorkOf(tag);
+            if (ev.TryGetProperty("turn", out var turn) && (turn.ValueKind == JsonValueKind.True || turn.ValueKind == JsonValueKind.False))
+            {
+                w.Turn = turn.GetBoolean();
+                if (!w.Turn) w.Tool = "";
+            }
+            if (ev.TryGetProperty("agents", out var agents) && agents.ValueKind == JsonValueKind.Array)
+                w.Agents = agents.EnumerateArray().Count(a => a.ValueKind == JsonValueKind.Object && AgentBusy.Contains(Str(a, "status")));
+        }
+
+        private void ActivityEvent(JsonElement ev, bool backlog)
+        {
+            string tag = Str(ev, "tag");
+            if (tag.Length == 0) return;
+            var w = WorkOf(tag);
+            string kind = Str(ev, "kind");
+            if (kind == "tool") { w.Tool = Str(ev, "tool"); w.ToolAt = DateTime.UtcNow; }
+            else if (kind == "tool-done")
+            {
+                w.Tool = "";
+                if (!backlog && ev.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False) oopsUntil = DateTime.UtcNow + Oops;
+            }
+        }
+
+        private static string Str(JsonElement ev, string name) =>
+            ev.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+
+        private string Doing()
+        {
+            var now = DateTime.UtcNow;
+            foreach (var tag in work.Where(kv => now - kv.Value.Seen > Quiet).Select(kv => kv.Key).ToList()) work.Remove(tag);
+            if (openAsks.Count > 0) return "needs";
+            if (now < oopsUntil) return "oops";
+            var live = work.Values.Where(w => w.Turn || w.Agents > 0).ToList();
+            if (live.Any(w => w.Agents > 0)) return "delegating";
+            var tool = live.Where(w => w.Tool.Length > 0 && now - w.ToolAt < ToolQuiet).OrderByDescending(w => w.ToolAt).Select(w => w.Tool).FirstOrDefault();
+            if (tool != null)
+                return Reading.Contains(tool) ? "reading" : Writing.Contains(tool) ? "writing" : Running.Contains(tool) ? "running"
+                    : Handing.Contains(tool) ? "delegating" : "thinking";
+            return live.Count > 0 ? "thinking" : "idle";
+        }
+
         private async Task Poll()
         {
             if (polling) return;
@@ -263,6 +335,8 @@ namespace TtCompanion
                     if (type == "ask") { openAsks.Add(ev.GetProperty("id").GetString() ?? ""); question = true; }
                     else if (type == "answered") openAsks.Remove(ev.GetProperty("id").GetString() ?? "");
                     else if (type == "milestone") finished = Louder(finished, Tier(ev));
+                    else if (type == "session") SessionEvent(ev);
+                    else if (type == "activity") ActivityEvent(ev, first);
                 }
                 // The first poll is the backlog, not the news: it says what is
                 // still waiting and nothing else, or a window opened beside a
@@ -271,6 +345,7 @@ namespace TtCompanion
                 if (anything) tatty.Poke();
                 if (question || finished != null) alertWaiting = true;
                 tatty.HasBadge = openAsks.Count > 0;
+                tatty.SetActivity(Doing());
                 if (question || finished != null) PopUp(activate: false);
                 if (finished != null) Celebrate(finished == "big");
                 else if (question) Asked();

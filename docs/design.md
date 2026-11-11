@@ -411,9 +411,25 @@ through a feature, so most of it is in how it looks and sounds.
   window's own elements, placed where the avatar has them, so both arms always move
   with him. The parts
   of an avatar's own that move (a tail, wings, a propeller, a jetpack's flames) get
-  a small idle motion there (`AvatarArt.Idle`, only with Animations on); the
-  states the page has and the tray app hasn't (thinking, reading and the rest)
-  aren't drawn there yet. The page sends again when the look changes: here (a
+  a small idle motion there (`AvatarArt.Idle`, only with Animations on).
+- **What he does while a session works, on the desktop.** The description also
+  carries the page's working states (thinking, reading, writing, running a command,
+  delegating, needs you, oops): each one's props (`<prop states=…>`: the thought
+  bubble, the magnifier, the notepad, the terminal, the helper bots, the ? bubble,
+  the sweat drop) and, as JSON (`<motion>`, avatar.js's `motionFor`), its loop,
+  mouth, lids and tracks. `Activity.cs` plays them with the page's own sums, on a
+  layer of its own under each transform `Avatar.cs` animates (`TattyWindow.Layer`),
+  so his bob, blink, hops and celebrations carry on through it; a change eases over a
+  third of a second, and with Animations off it shows the props and the mouth, still.
+  `App.xaml.cs` works out the state from the events (`Doing`): a question waiting,
+  then a tool that failed in the last few seconds (`tool-done` with `ok: false`),
+  then subagents running (a `session` event's `agents` still pending, running or
+  waiting), then the tool in hand (Read, Grep, Glob and the web are reading; Edit and
+  Write, writing; Bash, running; Task, delegating), then a turn with no tool
+  (`turn`), else nothing. A session quiet for ten minutes, or a tool for ninety
+  seconds, is let go, so one that stopped telling doesn't leave him working. Asking
+  keeps still on the desktop (the window hops once when a question arrives), and
+  celebrating and sleeping stay `Avatar.cs`'s and `Effects.cs`'s. The page sends again when the look changes: here (a
   `wallet` event), in another window (the status poll's `look`), or with the mode.
   The last description is kept (`%LOCALAPPDATA%\Tatty\avatar-art.xml`), so he is
   right from the first frame; one that doesn't read changes nothing. A look arrives

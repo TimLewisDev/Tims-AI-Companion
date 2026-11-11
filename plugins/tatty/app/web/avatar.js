@@ -933,7 +933,11 @@ function animate(svgs, id, state = "idle") {
 // the project number's badge, the "!" badge, and any part of his own that moves, such as a tail), every
 // colour, stroke and visibility already worked out here by the browser, which has the
 // cascade. accent: the mode's colour as the tray app draws it (its TtAccent).
-const BAKE_SKIP = /^(Tip|Bub\d|Back|Front)$/;
+// It also carries what he does while a session works -- each state's props (the thought
+// bubble, the magnifier, the helpers...) and its tracks, as JSON -- for the window's own
+// player (Activity.cs). Celebrating and sleeping are the window's already (Avatar.cs, Effects.cs).
+const TRAY_STATES = ["thinking", "reading", "writing", "running", "delegating", "needs", "oops"];
+const BAKE_SKIP = /^(Bub\d|Front)$/;
 const SHAPES = new Set(["path", "circle", "ellipse", "rect", "line", "polygon"]);
 const GEOMETRY = ["d", "cx", "cy", "r", "rx", "ry", "x", "y", "width", "height", "x1", "y1", "x2", "y2", "points"];
 let paintBox = null;
@@ -963,7 +967,7 @@ function bake(id, outfit, accent) {
   holder.innerHTML = svgFor(d, 1, null, "", dressClass(outfit));
   document.body.append(holder);
   const svg = holder.querySelector("svg");
-  for (const n of svg.querySelectorAll(".mouth, .numtag, .badge")) n.style.display = "inline";
+  for (const n of svg.querySelectorAll([".mouth", ".numtag", ".badge", ".prog", ...TRAY_STATES.map(st => ".p-" + st)].join(", "))) n.style.display = "inline";
   const gradients = new Set();
   const out = [];
   const shown = n => getComputedStyle(n).display !== "none";
@@ -982,21 +986,31 @@ function bake(id, outfit, accent) {
     }
     return a;
   };
+  const shape = (node, cs, tf, op) => {
+    const geo = GEOMETRY.filter(k => node.hasAttribute(k)).map(k => `${k}="${xmlAttr(node.getAttribute(k))}"`);
+    return `<${node.tagName} ${[...geo, ...paint(node, cs), ...(tf ? [`transform="${xmlAttr(tf)}"`] : []), ...(op !== 1 ? [`opacity="${n(op)}"`] : [])].join(" ")}/>`;
+  };
+  // a line of text (the "?" in the question bubble): where its middle and baseline are, how big, what colour
+  const text = (node, cs, op) => `<text at="${node.getAttribute("x")},${node.getAttribute("y")}" size="${parseFloat(cs.fontSize) || 12}" fill="${rgba(cs.fill)}"${op !== 1 ? ` opacity="${n(op)}"` : ""}>${xmlAttr(node.textContent)}</text>`;
   // One element and what is under it, as the tray app's description has it.
-  function walk(node, depth) {
+  function walk(node, depth, inNumber) {
     if (!(node instanceof SVGElement) || !shown(node)) return;
     const tag = node.tagName, cs = getComputedStyle(node), p = node.dataset.p || "";
-    if (BAKE_SKIP.test(p) || node.classList.contains("prop")) return;
-    const common = [];
-    const tf = transformOf(node, cs);
-    if (tf) common.push(`transform="${xmlAttr(tf)}"`);
-    if (+cs.opacity !== 1) common.push(`opacity="${n(+cs.opacity)}"`);
-    if (SHAPES.has(tag)) {
-      const geo = GEOMETRY.filter(k => node.hasAttribute(k)).map(k => `${k}="${xmlAttr(node.getAttribute(k))}"`);
-      out.push(`<${tag} ${[...geo, ...paint(node, cs), ...common].join(" ")}/>`);
+    if (BAKE_SKIP.test(p)) return;
+    const prop = [...node.classList].find(c => /^p-/.test(c));
+    if (node.classList.contains("prop") && !(prop && TRAY_STATES.includes(prop.slice(2)))) return;
+    const op = +cs.opacity, tf = transformOf(node, cs);
+    if (SHAPES.has(tag) || tag === "text") {
+      if (tag === "text" && inNumber) return; // (the project number: the window writes it)
+      const one = tag === "text" ? text(node, cs, p ? 1 : op) : shape(node, cs, tf, p ? 1 : op);
+      // a moving part that is one shape (a dot, a caret, the antenna's glow) gets a group to move it by, with its opacity
+      out.push(p ? `<g p="${p}" c="${node.dataset.c || "0,0"}"${op !== 1 ? ` opacity="${n(op)}"` : ""}>${one}</g>` : one);
       return;
     }
-    if (tag !== "g") return; // (text is the project number and the badge's "!", which the window writes itself)
+    if (tag !== "g") return;
+    const common = [];
+    if (tf) common.push(`transform="${xmlAttr(tf)}"`);
+    if (op !== 1) common.push(`opacity="${n(op)}"`);
     let open, close = "</g>";
     const m = [...node.classList].find(c => /^m-/.test(c));
     if (p === "Eyes") { open = `<eyes c="${node.dataset.c}"`; close = "</eyes>"; }
@@ -1011,11 +1025,13 @@ function bake(id, outfit, accent) {
       out.push(`<badge at="${c.getAttribute("cx")},${c.getAttribute("cy")}"/>`);
       return;
     } else if (node.classList.contains("mouth") && m) { open = `<mouth name="${m.slice(2)}"`; close = "</mouth>"; }
-    else if (["Root", "LegL", "LegR", "Body"].includes(p) && depth <= 2) { open = `<part name="${p}" c="${node.dataset.c}"`; close = "</part>"; }
+    else if (node.classList.contains("prop")) { open = `<prop states="${prop.slice(2)}"`; close = "</prop>"; }
+    else if (node.classList.contains("prog")) { open = `<prop states="${WORKING.join(" ")}"`; close = "</prop>"; }
+    else if (["Root", "LegL", "LegR", "Body", "Back"].includes(p) && depth <= 2) { open = `<part name="${p}" c="${node.dataset.c || "0,0"}"`; close = "</part>"; }
     else if (p) open = `<g p="${p}" c="${node.dataset.c || "0,0"}"`;
     else open = "<g";
     out.push(`${open}${common.length ? " " + common.join(" ") : ""}>`);
-    for (const k of node.children) walk(k, depth + 1);
+    for (const k of node.children) walk(k, depth + 1, inNumber || node.classList.contains("numtag"));
     out.push(close);
   }
   const dress = svg.querySelector(".dress");
@@ -1032,7 +1048,24 @@ function bake(id, outfit, accent) {
     return `<${g.tagName} id="${gid}" ${attrs}>${stops}</${g.tagName}>`;
   }).join("");
   holder.remove();
-  return `<tatty av="${d.id}" outfit="${xmlAttr(dressClass(outfit))}">${out.join("")}<defs>${defs}</defs></tatty>`;
+  const motion = JSON.stringify(motionFor(d));
+  return `<tatty av="${d.id}" outfit="${xmlAttr(dressClass(outfit))}">${out.join("")}<defs>${defs}</defs><motion><![CDATA[${motion}]]></motion></tatty>`;
+}
+
+// Each state the tray app plays, as data: its loop, mouth and lids, and its tracks (a part's
+// "x", "y", "a", "s", "sx", "sy" or "o"; frames of [value, seconds], or lin/tri with a phase).
+// A question's state keeps still (the window hops once when one arrives), and the
+// accessories' own motion is the window's (AvatarArt.Idle).
+function motionFor(d) {
+  const out = {};
+  for (const id of TRAY_STATES) {
+    const st = STATES[id](d);
+    const tracks = st.tracks.concat(d.extra ? d.extra(id, st) : [])
+      .filter(t => !(id === "needs" && t.p.startsWith("Root.")) && !/^(Cf|Z)\d/.test(t.p));
+    out[id] = { dur: st.dur, mouth: st.mouth, lids: st.lids ?? null,
+      tracks: tracks.map(t => ({ p: t.p, f: t.f || null, lin: t.lin || null, tri: t.tri || null, ph: t.ph || 0, dur: t.dur || 0 })) };
+  }
+  return out;
 }
 
 window.TattyAvatar = {

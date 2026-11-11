@@ -40,11 +40,18 @@ namespace TtCompanion
         public double? NumberSize;
         public Brush? NumberPaint;
         public readonly List<UIElement> Back = new(), LegL = new(), LegR = new(), Body = new();
+        // what stands on the ground behind him (the helpers), and what moves with all of him but outside
+        // his body (the notepad he writes on)
+        public readonly List<UIElement> Ground = new(), RootExtras = new();
+        // what each working state brings (Activity.cs shows them): the thought bubble, the magnifier...
+        public readonly List<(string[] States, UIElement Box)> Props = new();
+        public string? Motion;  // each state's loop, mouth, lids and tracks, as JSON (avatar.js's motionFor)
         public readonly List<UIElement> Eyes = new(), Pupils = new(), NumTag = new();
         public readonly Dictionary<string, UIElement> Mouths = new();
         // where the window's own Eyes canvas and number badge go among the drawing's things
         public Panel? EyesSlot, NumSlot;
-        public readonly List<(string Name, ScaleTransform S, RotateTransform R, TranslateTransform T)> Moving = new();
+        // every part that moves: his own (a tail, wings) and the props' (a dot, a pencil); Outer carries its opacity
+        public readonly List<(string Name, ScaleTransform S, RotateTransform R, TranslateTransform T, UIElement Outer, double O0)> Moving = new();
 
         private readonly Dictionary<string, Brush> gradients = new();
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -59,6 +66,9 @@ namespace TtCompanion
                 if (doc.Name.LocalName != "tatty") return null;
                 var art = new AvatarArt { Id = (string?)doc.Attribute("av") ?? "" };
                 foreach (var g in doc.Element("defs")?.Elements() ?? Enumerable.Empty<XElement>()) art.Gradient(g);
+                art.Motion = doc.Element("motion")?.Value;
+                var ground = doc.Elements("part").FirstOrDefault(p => (string?)p.Attribute("name") == "Back");
+                if (ground != null) art.Kids(ground, art.Ground);
                 var root = doc.Elements("part").FirstOrDefault(p => (string?)p.Attribute("name") == "Root");
                 if (root == null) return null;
                 art.Root = Pt(root, "c", art.Root);
@@ -66,7 +76,7 @@ namespace TtCompanion
                 foreach (var p in root.Elements())
                 {
                     string name = (string?)p.Attribute("name") ?? "";
-                    if (p.Name.LocalName != "part") continue;
+                    if (p.Name.LocalName != "part") { var made = art.Make(p); if (made != null) art.RootExtras.Add(made); continue; }
                     if (name == "LegL") { art.LegLPivot = Pt(p, "c", art.LegLPivot); art.Kids(p, art.LegL); }
                     else if (name == "LegR") { art.LegRPivot = Pt(p, "c", art.LegRPivot); art.Kids(p, art.LegR); }
                     else if (name == "Body" && !backDone && p.ElementsAfterSelf("part").Any(x => (string?)x.Attribute("name") == "LegL"))
@@ -126,12 +136,35 @@ namespace TtCompanion
                     return null;
                 case "mouth":
                 {
-                    // hidden until Avatar.cs shows the one his pose wants (the page's others, such as
-                    // its "o" and wobbly mouths, are for states the tray app doesn't have yet)
+                    // hidden until Avatar.cs shows the one his pose wants (or Activity.cs the one a
+                    // working state wants: its "o" while thinking, the wobbly one when a tool fails)
                     var c = KidsCanvas(e);
                     c.Visibility = Visibility.Collapsed;
                     Mouths[(string?)e.Attribute("name") ?? ""] = c;
                     return c;
+                }
+                case "prop":
+                {
+                    // what a working state brings, hidden until Activity.cs plays that state
+                    var c = KidsCanvas(e);
+                    c.Visibility = Visibility.Collapsed;
+                    Props.Add((((string?)e.Attribute("states") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries), c));
+                    return c;
+                }
+                case "text":
+                {
+                    // a line of text (the "?" in a question's bubble): centred on its point, its baseline there
+                    var at = Pt(e, "at", new Point());
+                    double size = Num(e, "size", 12);
+                    var tb = new TextBlock
+                    {
+                        Text = e.Value, FontSize = size, FontWeight = FontWeights.ExtraBold, FontFamily = new FontFamily("Segoe UI"),
+                        Foreground = Paint((string?)e.Attribute("fill"), 1) ?? Brushes.Black, Width = size * 3, TextAlignment = TextAlignment.Center,
+                        Opacity = Num(e, "opacity", 1),
+                    };
+                    Canvas.SetLeft(tb, at.X - size * 1.5);
+                    Canvas.SetTop(tb, at.Y - size * 1.05);
+                    return tb;
                 }
                 case "g":
                 {
@@ -145,9 +178,10 @@ namespace TtCompanion
                     var s = new ScaleTransform(1, 1, at.X, at.Y);
                     var r = new RotateTransform(0, at.X, at.Y);
                     var t = new TranslateTransform();
-                    var outer = new Canvas { RenderTransform = new TransformGroup { Children = { s, r, t } } };
+                    var outer = new Canvas { RenderTransform = new TransformGroup { Children = { s, r, t } }, Opacity = c.Opacity };
+                    c.Opacity = 1; // (its opacity is the moving canvas's, so a track can fade it in from nothing)
                     outer.Children.Add(c);
-                    Moving.Add((moving!, s, r, t));
+                    Moving.Add((moving!, s, r, t, outer, outer.Opacity));
                     return outer;
                 }
                 default:
@@ -290,7 +324,7 @@ namespace TtCompanion
         public void Idle(bool lively)
         {
             var ease = new SineEase { EasingMode = EasingMode.EaseInOut };
-            foreach (var (name, s, r, t) in Moving)
+            foreach (var (name, s, r, t, _, _) in Moving)
             {
                 foreach (var m in IdleMoves.Where(x => x.Name == name))
                 {

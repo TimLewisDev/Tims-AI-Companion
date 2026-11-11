@@ -89,7 +89,7 @@ def main(argv):
 
         p.call("Page.navigate", url=url)
         check("connected", wait("document.querySelector('#conn') && document.querySelector('#conn').textContent === 'connected'"))
-        check("a purse beside the gear", wait("!!document.querySelector('#wallet-link + #settings-link') && /\\d/.test(document.querySelector('.purse-count').textContent)"))
+        check("a purse beside the gear", wait("!!document.querySelector('#wallet-link + #settings-link') && /\\d/.test(document.querySelector('.purse-count').textContent)", 30))  # (a slow start fills it at the next status poll)
         out["purse"] = p.js("document.querySelector('.purse-count').textContent")
 
         # coins earned: a milestone in the ledger, paid by the server, flown into the purse
@@ -183,6 +183,8 @@ def main(argv):
         check("the tray app's description has his parts", all(x in baked for x in (
             '<tatty av="cat"', '<part name="Root"', '<part name="LegL"', '<part name="Body"', "<eyes ", "<pupils>",
             '<mouth name="neutral">', "<numtag ", "<badge ", '<g p="Tail"')))
+        check("and what he does while a session works", all(x in baked for x in (
+            '<prop states="thinking"', '<prop states="delegating"', '<prop states="needs"', "<motion><![CDATA[", '"delegating":')))
         # (the collar's band is his own bit at the neck; his number's tag is not, and stays)
         check("and what he wears, with his collar off", "w-neck-bow" in baked and 'd="M35,71 Q52,80 69,71' not in baked)
         out["errors"] = p.js("window.__shopErrs")
