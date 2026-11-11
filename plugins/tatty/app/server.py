@@ -1675,9 +1675,10 @@ def project_cwd(p):
 
 
 def hub_open(state, ref, close_hub=False, window=True):
-    """Open a project in a window of its own (one already open is brought forward). With
-    close_hub, and this being the Hub window, the Hub is done with once that window is up and
-    goes away. The project is also noted as the root setting, for the toolbox's skills. With
+    """Open a project in a window of its own (one already open is brought forward). The Hub
+    window is the launcher and stays as it is; only with close_hub, and this being the Hub
+    window, is the Hub done with once that window is up and goes away. The project is also
+    noted as the root setting, for the toolbox's skills. With
     TATTY_ROOT set there are no windows to open: the server just carries on with that root,
     as it always did; so it does without window (the shell's `hub open` with nothing running).
     (code, answer)"""
@@ -1703,13 +1704,12 @@ def hub_open(state, ref, close_hub=False, window=True):
     if not ok:
         return 500, {"error": said}
     if not instance_id():
-        # The Hub has done its job. With close_hub its server stops a moment after answering, and
-        # its window (which follows its server) goes with it; a project's window is left as it is.
-        state.hub_pending = False
-        if close_hub and state.httpd:  # no "hub" event: the page says it is closing, not that it is done
+        # The Hub is the launcher: the project has a window of its own now, and the Hub is left exactly as it
+        # was (still up, still showing the projects) for the next pick. Only when asked (close_hub) does its
+        # server stop a moment after answering, and its window (which follows its server) goes with it.
+        if close_hub and state.httpd:
+            state.hub_pending = False  # (no "hub" event: the page says it is closing, not that it is done)
             threading.Timer(1.0, state.httpd.shutdown).start()
-        else:
-            state.emit("hub", pending=False, active=p["id"])
     else:
         state.hub_pending = False
     return 200, {"project": hub_project_view(p), "hub": hub_view(state), "window": said}

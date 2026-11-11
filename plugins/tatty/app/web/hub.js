@@ -1,8 +1,10 @@
 // The Hub: the page Tatty opens on, where a project is picked. A project is its own
 // root folder (features, design, tasks, archive) and, optionally, a default code
-// repo its sessions start in. Opening one opens a window of its own for it (and the Hub,
-// the window this page is in at launch, closes); each project is numbered in the order it was
-// added, and its Tatty holds that number up on a flag.
+// repo its sessions start in. Opening one opens a window of its own for it (or brings
+// that one forward) and the Hub, the window this page is in at launch, stays: it is the
+// launcher, so several projects can be opened one after another. Which are open is watched
+// (hubWatch), since their windows are opened and closed on their own. Each project is
+// numbered in the order it was added, and its Tatty holds that number up on a flag.
 // Uses app.js's $, el, api, token, companion, tell, host, pageOpened and hubPending, features.js's pageEls, ago,
 // copyable, pickFolder, openSidePanel and featureCache, and modes.js's currentMode. See server.py's "the Hub".
 "use strict";
@@ -38,8 +40,9 @@ if (host) host.addEventListener("message", m => {
 
 // What to do once the server has answered an open: this window is the project's own (or the
 // server has no windows to open: TATTY_ROOT fixes the root), so it carries on into the project;
-// otherwise the project is in a window of its own now, and the Hub (this window) is done with.
-function openedProject(data, p, msg) {
+// otherwise the project is in a window of its own now and this window is left as it is (the
+// Hub as the launcher, or another project's window): the cards are drawn again, with the news.
+function openedProject(data, p, redraw) {
   if (data.locked || data.self === p.id) {
     hubPending = false;
     featureCache.clear();
@@ -47,18 +50,15 @@ function openedProject(data, p, msg) {
     leaveHub();
     return;
   }
-  msg.className = "home-note small dim";
-  msg.textContent = data.self ? `${p.name} is open in its own window.` : `${p.name} is open in its own window; this one closes.`;
-  if (!data.self && !companion) setTimeout(() => window.close(), 1500); // a browser tab the page opened itself can close; others stay
+  redraw(`${p.name} is open in its own window.`);
 }
 
 async function openProject(p, data, msg, redraw) {
   msg.className = "home-note small dim";
   msg.textContent = "Opening…";
   try {
-    await api("/api/hub", { action: "open", id: p.id, closeHub: !data.self });
-    openedProject(data, p, msg);
-    if (data.self && data.self !== p.id) redraw();
+    await api("/api/hub", { action: "open", id: p.id });
+    openedProject(data, p, redraw);
   } catch (e) { msg.className = "home-note small st missing"; msg.textContent = String(e.message || e); }
 }
 
@@ -115,9 +115,8 @@ function hubNewForm(data, msg, redraw) {
     e.preventDefault();
     if (!name.value.trim() && !root.value.trim()) { msg.className = "home-note small st missing"; msg.textContent = "Give the project a name."; return; }
     try {
-      const got = await api("/api/hub", { action: "add", name: name.value.trim(), root: root.value.trim(), repo: repo.value.trim(), create: true, open: true, closeHub: !data.self });
-      openedProject(data, got.project, msg);
-      if (data.self && data.self !== got.project.id) redraw();
+      const got = await api("/api/hub", { action: "add", name: name.value.trim(), root: root.value.trim(), repo: repo.value.trim(), create: true, open: true });
+      openedProject(data, got.project, redraw);
     } catch (err) { msg.className = "home-note small st missing"; msg.textContent = String(err.message || err); }
   } },
   el("h3", {}, "New project"),
@@ -179,16 +178,33 @@ async function hubLlmCard(msg, firstRun) {
   return card;
 }
 
-async function renderHub(box) {
+// The projects' windows are opened and closed on their own, so while the Hub is on show it looks which are
+// open every few seconds, and draws the cards again only if that changed (and not while the person is in the
+// middle of something: a side panel, or the New project form with something typed in it).
+let hubSeen = "";
+const hubSig = d => JSON.stringify(d.projects.map(p => [p.id, p.open, p.name, p.number, p.exists]));
+async function hubWatch() {
+  if (document.hidden || !pageEls.hub.classList.contains("on") || sidePanelNodes.length) return;
+  if ([...pageEls.hub.querySelectorAll(".hub-new input")].some(i => i.value)) return;
+  let data;
+  try { data = await api("/api/hub"); } catch { return; }
+  if (pageEls.hub.classList.contains("on") && hubSig(data) !== hubSeen) renderHub(pageEls.hub);
+}
+setInterval(hubWatch, 5000);
+
+// note: a line to show under the cards once they are drawn (what has just happened)
+async function renderHub(box, note = "") {
   const mine = ++hubDraw;
   const msg = el("p", { class: "home-note small" });
-  const redraw = () => renderHub(box);
+  const redraw = said => renderHub(box, typeof said === "string" ? said : "");
   let data;
   try { data = await api("/api/hub"); } catch (e) {
     box.replaceChildren(el("p", { class: "st missing pad" }, "The Hub didn't load: " + String(e.message || e) + " (Is the Tatty server older than this page? Restart Tatty.)"));
     return;
   }
   if (mine !== hubDraw) return;
+  hubSeen = hubSig(data);
+  if (note) { msg.className = "home-note small dim"; msg.textContent = note; }
   hubPending = data.pending;
   const first = !data.projects.length;
   const llm = await hubLlmCard(msg, first);

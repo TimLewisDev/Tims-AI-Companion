@@ -141,9 +141,12 @@ optional default code repo. The registry is `<home>/hub.json`
   project opened last, for the toolbox's skills; `TATTY_ROOT` still fixes the root, skips
   the Hub and opens no windows (the tests, development). `hub_load` registers whatever
   `root` already names, as `legacy` when `hub.json` didn't exist yet.
-- **The Hub is a window too**, shown at launch (`boot`) and by **Projects…** in a
-  project's tray menu (`hub_window`); picking a project there opens its window and the
-  Hub's goes (`closeHub`). `tatty.sh status --all` and `close --all` list and stop every
+- **The Hub is a window too, and it is the launcher**: shown at launch (`boot`) and by
+  **Projects…** in a project's tray menu (`hub_window`). Picking a project there opens its
+  window (or brings it forward) and the Hub stays exactly as it was, still pending and still
+  showing the projects, so several can be opened one after another. It goes only when it is
+  closed, or when a caller asks for `closeHub` (the CLI; the page no longer does).
+  `tatty.sh status --all` and `close --all` list and stop every
   window; `--project <id|name>` picks one; `open` in a folder inside a project is that
   project's window.
 - **A project's number** is its place in `hub.json` (`hub_number`, the order added, shown
@@ -162,7 +165,10 @@ optional default code repo. The registry is `<home>/hub.json`
   Claude's config folder.
 - **The page** (`web/hub.js`, `hub.css`): `boot` posts `/api/hub {action: "show"}` to the
   Hub's server, which makes the Hub *pending*; the page then opens on it instead of the
-  mode chooser, and **Open** opens the project's window and closes the Hub. In a project's
+  mode chooser, and **Open** opens the project's window and leaves the Hub as the launcher.
+  Windows are opened and closed on their own, so while the Hub is on show it looks which are
+  open every 5 s (`hubWatch` in `hub.js`) and draws the cards again only if that changed,
+  not while a side panel is open or the New project form has something typed in it. In a project's
   window the header names the project and its number (`setProject` in `app.js`). The tray
   menu's **Projects…** (`App.xaml.cs`) posts `show` to its own server, which opens the
   Hub's window. The page ignores stale SSE replays. `--no-hub` and `--project` skip it.

@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -28,6 +28,8 @@ leaving Scope, Plan and Review out and putting them back. It writes the feature'
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --decide      only the Decide page and its overview line (the page's api() stood in for: nothing is written);
+--launcher    only the Hub as a launcher that stays: Open on a card, a second project, a window closed elsewhere, the form left
+alone (the page's api() stood in for: nothing is opened);
 --suggestions only the Review step on the page: the tracker's chips, the link rows and the Review page (the page's api() stood in for: nothing is written);
 --diff only the Code Diff section: it puts T03 In Progress in the Demo feature's Task Status (and puts it back), starts a
 session (no terminal opens) that reports one edit, and reports the rail item, the red and green cells, the progress bar
@@ -1713,6 +1715,52 @@ def check_decide(p):
     return res
 
 
+def check_launcher(p):
+    """The Hub stays the launcher: with the page's api() stood in, Open on a card asks for the project's window without
+    closeHub, the page stays on the Hub (no turning into a project's page), the card shows it open with a note, a second
+    project opens straight after, a window closed elsewhere turns its card back (the page looks every few seconds), and
+    that look leaves a half-typed New project form alone. Nothing is opened."""
+    res = {}
+    card = lambda n: "{ chip: (c => c ? c.textContent : null)(document.querySelector('.hub-card[data-project=\"%s\"] .chip')), button: document.querySelector('.hub-card[data-project=\"%s\"] .actions .primary').textContent, active: document.querySelector('.hub-card[data-project=\"%s\"]').classList.contains('hub-active') }" % (n, n, n)
+    p.js("""window.__real = { api: window.api }; window.__calls = [];
+            const mk = (id, name, number) => ({ id, name, root: '/t/' + name, repo: '', created: 1, lastOpened: 10 - number, number, open: false, exists: true, features: 2, repoExists: false });
+            window.__hub = { projects: [mk('p1', 'Alpha', 1), mk('p2', 'Beta', 2)], active: '', pending: true, locked: false, self: '', default: '/t/Tatty', picker: false };
+            window.api = async (path, body) => {
+              if (path === '/api/hub' && body === undefined) return JSON.parse(JSON.stringify(window.__hub));
+              if (path === '/api/hub') {
+                window.__calls.push(body);
+                const q = window.__hub.projects.find(x => x.id === body.id); if (q) q.open = true;
+                return { project: q, hub: window.__hub, window: 'started' };
+              }
+              if (path === '/api/llm-setup') return { tools: [], toolbox: true, winget: true };
+              return window.__real.api(path, body);
+            };
+            hubPending = true; location.hash = '#hub'; 1""")
+    wait(p, "document.querySelectorAll('#page-hub .hub-card').length === 2")
+    res["before"] = {"alpha": p.js("(" + card("p1") + ")"), "beta": p.js("(" + card("p2") + ")")}
+    p.js("document.querySelector('.hub-card[data-project=\"p1\"] .actions .primary').click(); 1")
+    wait(p, "document.querySelector('.hub-card[data-project=\"p1\"]').classList.contains('hub-active')")
+    res["afterOpen"] = {"alpha": p.js("(" + card("p1") + ")"), "sent": p.js("window.__calls[0]"), "hash": p.js("location.hash"),
+                        "hubOpen": p.js("document.body.classList.contains('hub-open')"), "onHubPage": p.js("document.querySelector('#page-hub').classList.contains('on')"),
+                        "note": p.js("(document.querySelector('#page-hub .home-note') || { textContent: '' }).textContent")}
+    p.js("document.querySelector('.hub-card[data-project=\"p2\"] .actions .primary').click(); 1")
+    wait(p, "document.querySelector('.hub-card[data-project=\"p2\"]').classList.contains('hub-active')")
+    res["secondOpens"] = {"alpha": p.js("(" + card("p1") + ")"), "beta": p.js("(" + card("p2") + ")"), "calls": p.js("window.__calls.map(c => c.id)")}
+    # Alpha's window is closed on its own: the Hub notices
+    p.js("window.__hub.projects[0].open = false; 1")
+    res["noticesClosed"] = wait(p, "!document.querySelector('.hub-card[data-project=\"p1\"]').classList.contains('hub-active')", tries=40)
+    res["alphaBack"] = p.js("(" + card("p1") + ")")
+    # something half typed is not wiped by that look
+    p.js("""const i = document.querySelector('.hub-new input'); i.value = 'half typed'; i.dispatchEvent(new Event('input', { bubbles: true }));
+            window.__hub.projects[1].open = false; 1""")
+    time.sleep(7)
+    res["formKept"] = {"value": p.js("document.querySelector('.hub-new input').value"), "betaStillShownOpen": p.js("document.querySelector('.hub-card[data-project=\"p2\"]').classList.contains('hub-active')")}
+    p.js("document.querySelector('.hub-new input').value = ''; 1")
+    res["thenCaughtUp"] = wait(p, "!document.querySelector('.hub-card[data-project=\"p2\"]').classList.contains('hub-active')", tries=40)
+    p.js("window.api = window.__real.api; hubPending = false; location.hash = '#home'; 1")
+    return res
+
+
 def check_loading(p):
     """A feature's page is drawn before it is read: the page's api() is stood in for with a feature that takes as
     long as the test says. The frame (the rail's "← Features" and the name, an empty main, no "Reading…") is on
@@ -2090,10 +2138,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--launcher", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--launcher": check_launcher, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

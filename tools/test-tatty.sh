@@ -393,7 +393,7 @@ ALPHA=$(hget /api/hub | $PY -c "import json,sys; print([p['id'] for p in json.lo
 hpost /api/hub "{\"action\":\"open\",\"id\":\"$BETA\"}" >"$T/j"
 has "opening answers with the project" "$T/j" '"name": "Beta"'
 hget /api/status >"$T/st"
-has "opening ends the pending Hub" "$T/st" '"pending": false'
+has "opening leaves the Hub pending: it is the launcher" "$T/st" '"pending": true'
 has "the root moved" "$HH/root" "beta"
 hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"name\":\"Alpha 2\"}" >"$T/j"
 has "a project is renamed" "$T/j" '"name": "Alpha 2"'
@@ -424,10 +424,19 @@ pick "$T/j" "[(p['number'], p['open']) for p in d['projects'] if p['name'] in ('
 has "projects are numbered in the order they were added" "$T/f" "(1, False)"
 pget "$PH/server.json" /api/status >"$T/st"
 has "the Hub has no project" "$T/st" '"project": null'
+ppost "$PH/server.json" /api/hub '{"action":"show"}' >/dev/null   # as a launch from the shortcut does: the Hub is up, waiting for a pick
 ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$ONE\"}" >"$T/j"
 has "opening a project starts its window" "$T/j" '"window": "started"'
 [ -f "$PH/servers/$ONE.json" ] && ok "the project's server writes servers/<id>.json" || bad "the project's server writes servers/<id>.json"
 [ -f "$PH/server.json" ] && ok "opening one leaves the Hub up (it closes only when asked)" || bad "opening one leaves the Hub up"
+# the Hub is the launcher: after a project is opened it is still showing the projects, ready for the next pick
+pget "$PH/server.json" /api/status >"$T/st"; has "the Hub is still the launcher after an open" "$T/st" '"hub": {"pending": true}'
+pget "$PH/server.json" /api/hub >"$T/j"
+pick "$T/j" "[(p['name'], p['open']) for p in d['projects'] if p['name'] in ('One','Two')]" >"$T/f"
+has "and shows the project as open" "$T/f" "('One', True)"
+ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$ONE\"}" >"$T/j"
+has "an open project is brought forward, not started again" "$T/j" '"window": "open"'
+pget "$PH/server.json" /api/status >"$T/st"; has "(and the Hub is still the launcher)" "$T/st" '"hub": {"pending": true}'
 ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$TWO\",\"closeHub\":true}" >"$T/j"
 has "a second project opens beside the first" "$T/j" '"window": "started"'
 pget "$PH/servers/$ONE.json" /api/status >"$T/st"; has "the first says its number and name" "$T/st" '"project": {"id": "'"$ONE"'", "name": "One", "number": 1}'
