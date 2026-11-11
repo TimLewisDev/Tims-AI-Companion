@@ -769,7 +769,8 @@ async function pollDecisions() {
   const open = items.filter(i => i.state === "open").length;
   const sig = `${open}/${items.length - open}`;
   if (onFeature) { if (featureView && featureView.name === name && featureView.sig !== sig) refreshFeature(name); }
-  else { const f = featureCache.get(name); if (!f || decideSig(f) !== sig) refreshRail(); }
+  // (a workflow tab's rail: against what it was drawn with, not the cache, which may be newer than the rail)
+  else { const nav = rail.querySelector(".fnav"); if (!nav || nav.dataset.sig !== sig) refreshRail(); }
 }
 setInterval(pollDecisions, 6000);
 
@@ -789,7 +790,7 @@ function featureNav(f, current, board, opts = {}) {
   const groups = new Map();
   for (const n of f.notes) { if (!groups.has(n.group)) groups.set(n.group, []); groups.get(n.group).push(n); }
   const notesOpen = opts.notesOpen ?? f.notes.some(n => n.file === current);
-  return el("nav", { class: "fnav" },
+  return el("nav", { class: "fnav", "data-sig": decideSig(f) }, // (the decisions it is drawn with: pollDecisions)
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
     f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
@@ -840,21 +841,27 @@ function markRail() {
   }
 }
 
-// A workflow tab's rail is read again now and then: the workflow writes documents.
-let railBusy = false;
+// A workflow tab's rail is read again now and then: the workflow writes documents. A call made while a read is
+// going is not dropped: it runs again once that read is back (the tab may have been drawn again meanwhile, from a
+// cache older than the read). What is read goes into the rail on screen then, if it is still that feature's.
+let railBusy = false, railAgain = false;
 async function refreshRail() {
+  if (railBusy) { railAgain = true; return; }
   const rail = document.querySelector("#page-home .frail[data-feature]");
-  if (!rail || document.hidden || railBusy) return;
-  const name = rail.dataset.feature, old = rail.querySelector(".fnav");
-  if (!old) return;
+  if (!rail || document.hidden || !rail.querySelector(".fnav")) return;
+  const name = rail.dataset.feature;
   railBusy = true;
-  let f;
-  try { f = await busy(api("/api/feature?name=" + encodeURIComponent(name))); featureCache.set(name, f); } catch { return; } finally { railBusy = false; }
-  if (!old.isConnected) return;
-  const top = old.scrollTop, fresh = featureNav(f, null, false, { side: true, notesOpen: !!(old.querySelector(".fnav-notes") || {}).open });
-  old.replaceWith(fresh);
-  fresh.scrollTop = top;
-  markRail();
+  railAgain = false;
+  let f = null;
+  try { f = await busy(api("/api/feature?name=" + encodeURIComponent(name))); featureCache.set(name, f); } catch { /* tried again at the next look */ } finally { railBusy = false; }
+  const now = document.querySelector("#page-home .frail[data-feature]"), old = now && now.querySelector(".fnav");
+  if (f && old && now.dataset.feature === name) {
+    const top = old.scrollTop, fresh = featureNav(f, null, false, { side: true, notesOpen: !!(old.querySelector(".fnav-notes") || {}).open });
+    old.replaceWith(fresh);
+    fresh.scrollTop = top;
+    markRail();
+  }
+  if (railAgain) { railAgain = false; refreshRail(); }
 }
 
 // A feature's whiteboard (#feature/<name>/whiteboard): its documents as cards on

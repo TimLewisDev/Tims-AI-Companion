@@ -1728,6 +1728,20 @@ def check_decide(p):
     res["barDone"] = {"sourceGivenBack": p.js("TattyWallet.source === null"), "finished": p.js("document.querySelector('#dc-main').innerText.includes('Every one is decided')"),
                       "sent": p.js("window.__sent.map(b => [b.batch.length > 3, b.answers.length])")}
     p.js("window.__slow = 0; 1")
+    # Sending drops the feature as it was read before (it says the decisions still wait), and the Decisions Needed
+    # buttons on screen take the count the server gave back at once.
+    p.js("""window.__sent = []; window.__refuse = {}; window.__drafted = []; window.__serverDraft = {}; localStorage.removeItem('tatty.decide.Demo');
+            featureCache.set('Demo', { name: 'Demo', docList: [], notes: [], decide: { open: 4, apply: 0, kinds: ['challenge'] } });
+            window.__liveBtn = document.createElement('a'); window.__liveBtn.className = 'live-decide'; window.__liveBtn.dataset.feature = 'Demo'; document.body.append(window.__liveBtn);
+            paintDecideButton(window.__liveBtn, featureCache.get('Demo')); window.__redo(); 1""")
+    res["staleBefore"] = p.js("({ cached: (featureCache.get('Demo') || {}).decide, button: window.__liveBtn.hidden ? null : window.__liveBtn.textContent })")
+    wait(p, "!!document.querySelector('#dc-item')")
+    for ident, key in (("CH1", "accept"), ("CH2", "accept"), ("P2", "A"), ("Q1", "passed")):
+        wait(p, f"document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === '{ident}'")
+        p.js(f"document.querySelector('.rv-opt[data-key=\"{key}\"] input').click(); document.querySelector('#dc-go').click(); 1")
+    wait(p, "document.querySelector('#dc-main').innerText.includes('Every one is decided')", tries=60)
+    res["afterSend"] = p.js("""(() => { const f = featureCache.get('Demo'); const r = { cachedOpen: f && f.decide ? f.decide.open : null, buttonHidden: window.__liveBtn.hidden };
+                                window.__liveBtn.remove(); return r; })()""")
     # the overview line and the rail item
     res["overview"] = p.js("""(() => {
         const f = { name: "Demo", phase: "planning", route: "full", stages: [], merge: {}, review: {}, rows: [], sessions: [], toolbox: true, unitList: [], events: [], docList: [], notes: [], tasks: { done: 0, total: 0 }, units: { done: 0, total: 0 },
@@ -1930,6 +1944,29 @@ def check_loading(p):
     wait(p, "location.hash.endsWith('/decide')")
     time.sleep(0.5)
     res["decideRoute"] = p.js("({ hash: location.hash, onDecide: !!document.querySelector('#page-feature .dc-page'), name: (document.querySelector('#page-feature .fnav h3') || {}).textContent })")
+    # Back on a workflow tab once everything is decided: a rail drawn from the cache before the decisions were sent
+    # is read again and drawn anew, even when the cache has caught up already (the poll compares with what the rail
+    # was drawn with, not with the cache).
+    p.js("location.hash = '#home'; 1")
+    wait(p, "document.querySelector('#page-home').classList.contains('on') && !document.querySelector('#page-feature').classList.contains('on')")
+    wait(p, "document.querySelector('#page-home').children.length > 0 && document.querySelector('#busy').hidden")  # (the features list drawn: it would draw over the rail)
+    time.sleep(1)
+    p.js("""window.__auto = true; window.__open = 2;
+            window.__tabRail = f => { const r = documentsRail(featureNav(f, null, false, { side: true }), f.name); document.querySelector('#page-home').replaceChildren(r); return r; };
+            window.__railDecide = () => { const a = [...document.querySelectorAll('#page-home .fnav-item')].find(a => a.textContent.startsWith('Decisions')); return a ? a.innerText.replace(/\\\\s+/g, ' ').trim() : null; };
+            window.__tabRail(window.__feat('Beta', 2)); window.__open = 0; featureCache.set('Beta', window.__feat('Beta', 0)); pollDecisions(); 1""")
+    res["tabRailStale"] = {"caughtUp": wait(p, "!!document.querySelector('#page-home .frail .fnav') && !window.__railDecide()"), "decide": p.js("window.__railDecide()"),
+                           "sig": p.js("((document.querySelector('#page-home .fnav') || {}).dataset || {}).sig || null")}
+    # A read asked for while one is going is not lost, and what comes back goes into the rail on screen then (the tab
+    # was drawn again from the old cache meanwhile), not the one it was asked for.
+    p.js("""window.__auto = false; window.__gate = {}; window.__calls = []; window.__tabRail(window.__feat('Beta', 2)); refreshRail(); 1""")
+    wait(p, "window.__gate.Beta")
+    p.js("""window.__first = window.__gate.Beta; window.__gate = {}; window.__tabRail(window.__feat('Beta', 2)); refreshRail(); window.__first(); 1""")
+    res["tabRailRedrawn"] = {"caughtUp": wait(p, "!!document.querySelector('#page-home .frail .fnav') && !window.__railDecide()"), "decide": p.js("window.__railDecide()")}
+    res["tabRailAskedAgain"] = wait(p, "!!window.__gate.Beta")
+    p.js("window.__auto = true; if (window.__gate.Beta) window.__gate.Beta(); 1")
+    time.sleep(0.3)
+    res["tabRailAfter"] = {"decide": p.js("window.__railDecide()"), "reads": p.js("window.__calls.filter(c => c.startsWith('/api/feature?')).length")}
     p.js("window.api = window.__real.api; location.hash = '#home'; 1")
     return res
 

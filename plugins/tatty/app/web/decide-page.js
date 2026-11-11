@@ -138,9 +138,14 @@ async function decidePage(f, main) {
     }
     // the bar fills if events were missed, and holds a moment so the last decision's coins leave from it
     sentN = total; paint();
+    // The feature as read before these decisions says they still wait: nothing is drawn from it again (a workflow
+    // tab opened next draws its rail once the feature is read anew), and the Decisions Needed buttons on screen
+    // take the count the server has just given (features.js).
+    featureCache.delete(f.name);
+    paintDecisions({ name: f.name, decide: { open: r.open || 0, apply: r.apply || 0 } });
+    refreshFeature(f.name); // (features.js: the rail's count and the overview are read again behind this page)
     await new Promise(res => setTimeout(res, 500));
     done();
-    refreshFeature(f.name); // (features.js: the rail's count and the overview are read again behind this page)
     const bad = new Map((r.results || []).filter(x => !x.ok).map(x => [x.doc + "#" + x.id, x.error]));
     todo.forEach(x => { const k = keyOf(x); if (bad.has(k)) { decided.delete(k); errs.set(k, bad.get(k)); } else decided.get(k).sent = true; });
     saveDraft();
