@@ -2357,16 +2357,25 @@ def decide_item(state, folder, name, item):
     return 200, {"doc": name, "fields": fields, "options": options}
 
 
-def decide_set(state, folder, body):
-    """Record one choice through decide.sh set: (code, {open, apply, nudged}). With the folder's last open item
-    decided, the feature's running session (if one is open) is told to carry on."""
+# an item's id (CH3, P2, Q1) and an option's key: the toolbox's writers accept letters, digits and "-"
+# in a key (a question list's own keys can be A1 or opt-2), and a key never starts with "-" (it would
+# read as a flag to decide.sh)
+DECIDE_ID = re.compile(r"[A-Za-z]{1,4}\d+")
+DECIDE_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,39}")
+DECIDE_BATCH_MAX = 200
+
+
+def decide_record(state, folder, body):
+    """Record one choice through decide.sh set: (code, {said} or {error}). Nothing after it: see decide_after."""
     doc = decide_doc(folder, str(body.get("doc", "")))
     if not doc:
         return 404, {"error": "no such decision document"}
     item, choice = str(body.get("id", "")), str(body.get("choice", ""))
     note = str(body.get("note", "")).strip()[:2000]
-    if not re.fullmatch(r"[A-Za-z]{1,4}\d+", item) or not re.fullmatch(r"[A-Za-z]+(-[a-z]+)*", choice):
-        return 400, {"error": "id (such as CH3) and choice (an option key) are required"}
+    if not DECIDE_ID.fullmatch(item):
+        return 400, {"error": f"id (such as CH3) is required, not {item[:40]!r}"}
+    if not DECIDE_KEY.fullmatch(choice):
+        return 400, {"error": f"choice (an option key: letters, digits and -) is required, not {choice[:40]!r}"}
     args = ["set", doc.as_posix(), item, choice] + (["--note", note] if note else [])
     p = decide_run(state, folder, *args)
     if p is None:
@@ -2374,25 +2383,54 @@ def decide_set(state, folder, body):
     if p.returncode:
         said = (p.stderr or p.stdout).strip().splitlines()
         msg = (said[-1] if said else "decide.sh refused it")
-        for pre in ("decide.sh: ", "challenges.sh: "):
+        for pre in ("decide.sh: ", "challenges.sh: ", "proposals.sh: ", "questions.sh: "):
             msg = msg.removeprefix(pre)
         return (409 if p.returncode == 1 else 400), {"error": msg}
+    return 200, {"said": p.stdout.strip()}
+
+
+def decide_after(state, folder, docs):
+    """{open, apply, nudged} once choices are recorded (docs: the names they were recorded in). With the
+    folder's last open item decided, the feature's running session (if one is open) is told to carry on."""
     items = decide_pending(state, folder) or []
     left = sum(i["state"] == "open" for i in items)
     nudged = None
-    if not left:
+    if not left and docs:  # (no docs: nothing was recorded, so there is nothing to carry on with)
         live = next((s for s in sessions_of(state, folder) if s["status"] == "running"), None)
         if live:
-            kinds = sorted({i["kind"] for i in items}) or [
-                "question" if DECIDE_LIST.fullmatch(str(body.get("doc", ""))) else
-                "proposal" if doc.name.endswith(" - Tech Proposals.md") else "challenge"]
+            kinds = sorted({i["kind"] for i in items}) or sorted({
+                "question" if DECIDE_LIST.fullmatch(d) else "proposal" if d.endswith(" - Tech Proposals.md") else "challenge"
+                for d in docs})
             text = DECIDE_NUDGE.format(what=" and ".join(k + "s" for k in kinds))
             with state.cond:
                 state.inbox[live["tag"]].append(text)
                 state.cond.notify_all()
             state.emit("say", text=text, tag=live["tag"])
             nudged = {"tag": live["tag"], "name": live.get("name", "")}
-    return 200, {"said": p.stdout.strip(), "open": left, "apply": sum(i["state"] == "apply" for i in items), "nudged": nudged}
+    return {"open": left, "apply": sum(i["state"] == "apply" for i in items), "nudged": nudged}
+
+
+def decide_set(state, folder, body):
+    """Record one choice: (code, {said, open, apply, nudged})."""
+    code, answer = decide_record(state, folder, body)
+    if code != 200:
+        return code, answer
+    return 200, {**answer, **decide_after(state, folder, [str(body.get("doc", ""))])}
+
+
+def decide_batch(state, folder, answers):
+    """Record a page's worth of choices, each through decide.sh set, then look once at what is left and (with
+    nothing open) nudge the session once: (code, {results: [{doc, id, ok | error}], open, apply, nudged}).
+    One that is refused does not stop the rest: the page puts only it back to its person."""
+    if not isinstance(answers, list) or not answers or len(answers) > DECIDE_BATCH_MAX or not all(isinstance(a, dict) for a in answers):
+        return 400, {"error": f"answers: a list of 1 to {DECIDE_BATCH_MAX} choices ({{doc, id, choice, note}}) is required"}
+    results = []
+    for a in answers:
+        code, answer = decide_record(state, folder, a)
+        r = {"doc": str(a.get("doc", "")), "id": str(a.get("id", ""))}
+        results.append({**r, "ok": True} if code == 200 else {**r, "error": answer["error"], "code": code})
+    recorded = [r["doc"] for r in results if r.get("ok")]
+    return 200, {"results": results, **decide_after(state, folder, recorded)}
 
 
 def stages_of(plan_text, events, left_out=()):
@@ -8723,7 +8761,8 @@ class Handler(BaseHTTPRequestHandler):
             folder = feature_dir(str(b.get("name", "")))
             if not folder:
                 return self.send(404, {"error": "no such feature"})
-            code, answer = decide_set(st, folder, b if isinstance(b, dict) else {})
+            b = b if isinstance(b, dict) else {}
+            code, answer = decide_batch(st, folder, b["answers"]) if "answers" in b else decide_set(st, folder, b)
             return self.send(code, answer)
         if path == "/api/stages":
             folder = feature_dir(str(b.get("name", "")))

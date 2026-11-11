@@ -33,9 +33,57 @@ async function decidePage(f, main) {
   if (!items.length) { put(head, el("p", { class: "dim" }, "Nothing is waiting for a decision."), back); return; }
   const keyOf = x => x.doc + "#" + x.id; // two question lists can both have a Q1
   const shown = new Map(); // item -> {fields, options} once read
-  const decided = new Map(); // item -> {label, key}: what was chosen on this page
+  const loading = new Map(); // item -> the read in flight (or done)
+  // item -> {key, note, label, sent}: what was chosen on this page. A choice is kept here, and in this browser
+  // (a draft, so the page can be left and come back to), until the last one is decided; then all are sent together.
+  const decided = new Map();
+  const errs = new Map(); // item -> why the toolbox refused it when they were sent
   const isDone = i => i.state !== "open" || decided.has(keyOf(i));
-  let at = Math.max(0, items.findIndex(i => i.state === "open"));
+  const draftKey = "tatty.decide." + f.name;
+  const saveDraft = () => {
+    try {
+      const d = {};
+      decided.forEach((v, k) => { if (!v.sent) d[k] = { key: v.key, note: v.note, label: v.label }; });
+      if (Object.keys(d).length) localStorage.setItem(draftKey, JSON.stringify(d)); else localStorage.removeItem(draftKey);
+    } catch (e) { /* no storage: the choices are kept only while the page is open */ }
+  };
+  try { // a draft from an earlier visit, for the items still waiting
+    const d = JSON.parse(localStorage.getItem(draftKey) || "{}");
+    items.forEach(i => { const v = d[keyOf(i)]; if (i.state === "open" && v && typeof v.key === "string") decided.set(keyOf(i), { key: v.key, note: String(v.note || ""), label: String(v.label || v.key), sent: false }); });
+  } catch (e) { /* an unreadable draft is no draft */ }
+  let at = Math.max(0, items.findIndex(i => !isDone(i)));
+  // Reading an item runs a script on the server, so the rest are read in the background, one at a time,
+  // and the next question is on screen the moment Decide is pressed.
+  const load = i => {
+    const k = keyOf(i);
+    if (!loading.has(k)) loading.set(k, api(`/api/decide/item?name=${enc(f.name)}&doc=${enc(i.doc)}&id=${enc(i.id)}`)
+      .then(v => { shown.set(k, v); return v; }, e => { loading.delete(k); throw e; }));
+    return loading.get(k);
+  };
+  const prefetch = async () => {
+    for (const x of items.slice(at).concat(items.slice(0, at))) if (x.state === "open" && !shown.has(keyOf(x))) await load(x).catch(() => {});
+  };
+
+  // All the choices not yet sent go in one request. A refused one is put back to its person with the reason;
+  // a request that fails altogether leaves every choice kept, and the last item's button tries again.
+  const send = async () => {
+    const todo = items.filter(x => decided.has(keyOf(x)) && !decided.get(keyOf(x)).sent);
+    put(head, el("p", { class: "dim", id: "dc-sending" }, `Sending ${todo.length} decision${todo.length === 1 ? "" : "s"}…`));
+    let r;
+    try {
+      r = await api("/api/decide", { name: f.name, answers: todo.map(x => { const v = decided.get(keyOf(x)); return { doc: x.doc, id: x.id, choice: v.key, note: v.note }; }) });
+    } catch (e) {
+      const last = todo[todo.length - 1] || items[items.length - 1];
+      errs.set(keyOf(last), "Your decisions are kept, but they could not be sent: " + String(e.message || e) + ". Press the button to try again.");
+      at = items.indexOf(last); draw(); return;
+    }
+    featureCache.delete(f.name);
+    const bad = new Map((r.results || []).filter(x => !x.ok).map(x => [x.doc + "#" + x.id, x.error]));
+    todo.forEach(x => { const k = keyOf(x); if (bad.has(k)) { decided.delete(k); errs.set(k, bad.get(k)); } else decided.get(k).sent = true; });
+    saveDraft();
+    if (bad.size) { at = items.findIndex(x => bad.has(keyOf(x))); draw(); return; }
+    finished(r);
+  };
 
   const finished = r => {
     const said = r && r.nudged
@@ -51,18 +99,20 @@ async function decidePage(f, main) {
   const draw = async () => {
     const i = items[at];
     if (!shown.has(keyOf(i))) {
-      try { shown.set(keyOf(i), await api(`/api/decide/item?name=${enc(f.name)}&doc=${enc(i.doc)}&id=${enc(i.id)}`)); }
+      try { await load(i); }
       catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
     }
     const { fields, options } = shown.get(keyOf(i));
+    if (decided.has(keyOf(i)) && !options.some(o => o.key === decided.get(keyOf(i)).key)) decided.delete(keyOf(i)); // a stale draft
     // decided earlier and waiting to be applied: show what was chosen (a challenge's accept, a proposal's option)
     const before = fields.state !== "apply" ? "" : i.kind === "proposal"
       ? ((fields.chosen || "").match(/^Option ([A-Z]):/) || [])[1] || ((fields.chosen || "").startsWith("Other:") ? "other" : "")
       : i.kind === "question" ? fields.decision || "" : "accept";
     let choice = decided.has(keyOf(i)) ? decided.get(keyOf(i)).key : before;
     const note = el("textarea", { id: "dc-note", rows: 2, "aria-label": "note" });
+    note.value = decided.has(keyOf(i)) ? decided.get(keyOf(i)).note : "";
     const go = el("button", { type: "button", class: "primary", id: "dc-go" });
-    const msg = el("div", { class: "small st missing", id: "dc-msg" });
+    const msg = el("div", { class: "small st missing", id: "dc-msg" }, errs.get(keyOf(i)) || "");
     const opts = [];
     const needsNote = () => { const o = options.find(x => x.key === choice); return !!(o && o.needsNote); };
     const sync = () => {
@@ -85,17 +135,14 @@ async function decidePage(f, main) {
     };
     note.addEventListener("input", sync);
     const move = to => { at = Math.max(0, Math.min(items.length - 1, to)); draw(); };
-    go.addEventListener("click", async () => {
-      go.disabled = true; msg.textContent = "";
-      try {
-        const r = await api("/api/decide", { name: f.name, doc: i.doc, id: i.id, choice, note: note.value });
-        featureCache.delete(f.name);
-        const o = options.find(x => x.key === choice);
-        decided.set(keyOf(i), { label: (o ? o.title : choice) + (note.value.trim() ? ` (${note.value.trim()})` : ""), key: choice });
-        if (!items.some(x => !isDone(x))) { finished(r); return; }
-        const nextOne = items.findIndex((x, n) => n > at && !isDone(x));
-        move(nextOne >= 0 ? nextOne : items.findIndex(x => !isDone(x)));
-      } catch (e) { msg.textContent = String(e.message || e); sync(); }
+    go.addEventListener("click", () => {
+      const o = options.find(x => x.key === choice), words = note.value.trim();
+      errs.delete(keyOf(i));
+      decided.set(keyOf(i), { key: choice, note: words, label: (o ? o.title : choice) + (words ? ` (${words})` : ""), sent: false });
+      saveDraft();
+      if (!items.some(x => !isDone(x))) { send(); return; } // the last one: everything goes now
+      const nextOne = items.findIndex((x, n) => n > at && !isDone(x));
+      move(nextOne >= 0 ? nextOne : items.findIndex(x => !isDone(x)));
     });
     const done = items.filter(isDone).length;
     const list = el("div", { class: "rv-list", role: "list" }, items.map((x, n) => el("button", {
@@ -123,10 +170,10 @@ async function decidePage(f, main) {
       el("div", { class: "start-actions" }, go,
         el("button", { type: "button", id: "dc-prev", disabled: at === 0, onclick: () => move(at - 1) }, "Back"),
         el("button", { type: "button", id: "dc-skip", disabled: at === items.length - 1, onclick: () => move(at + 1) }, "Next")));
-    put(head, el("div", { class: "small dim" }, "Written down by the workflow for you to decide here, instead of one at a time in the terminal. ", back),
+    put(head, el("div", { class: "small dim" }, "Written down by the workflow for you to decide here, instead of one at a time in the terminal. Your choices are kept in this browser and sent together with the last one. ", back),
       el("div", { class: "rv-progress" }, bar(done, items.length, `${done} of ${items.length} decided`)), list, card);
     if (typeof linkIds === "function") linkIds(card, f.name);
     pick(choice);
   };
-  draw();
+  draw().then(prefetch);
 }

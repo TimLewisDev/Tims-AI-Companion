@@ -1560,7 +1560,8 @@ def check_decide(p):
     sends), the label on the last one, and the page saying the open session was told to carry on. The
     overview's "questions wait" line and the rail item. Nothing is written."""
     res = {}
-    p.js("""window.__real = { api: window.api }; window.__sent = [];
+    p.js("""window.__real = { api: window.api }; window.__sent = []; localStorage.removeItem('tatty.decide.Demo');
+            window.__refuse = { 'Demo - Tech Proposals.md#P2': 'P2 has been applied; it can\\'t be decided again' };
             window.__items = [
               { doc: 'Demo - Challenges.md', kind: 'challenge', id: 'CH1', state: 'open', group: 'Requirements', severity: 'blocking', title: 'A repeated trigger' },
               { doc: 'Demo - Challenges.md', kind: 'challenge', id: 'CH2', state: 'open', group: 'Requirements', severity: 'minor', title: 'Wording of R1' },
@@ -1589,8 +1590,11 @@ def check_decide(p):
               if (path.startsWith('/api/decide?')) return { items: window.__items };
               if (path === '/api/decide') {
                 window.__sent.push(body);
-                const left = window.__sent.length < 4 ? 1 : 0;
-                return { open: left, apply: 1, nudged: left ? null : { tag: 's-test9999', name: 'Demo : Planning' } };
+                // the toolbox refuses what window.__refuse names, once
+                const results = body.answers.map(a => { const why = window.__refuse[a.doc + '#' + a.id]; delete window.__refuse[a.doc + '#' + a.id];
+                                                         return why ? { doc: a.doc, id: a.id, error: why, code: 409 } : { doc: a.doc, id: a.id, ok: true }; });
+                const left = results.some(r => !r.ok) ? 1 : 0;
+                return { results, open: left, apply: 1, nudged: left ? null : { tag: 's-test9999', name: 'Demo : Planning' } };
               }
               return window.__real.api(path, body);
             };
@@ -1609,26 +1613,35 @@ def check_decide(p):
     res["rebutWithReason"] = p.js("document.querySelector('#dc-go').disabled")
     p.js("document.querySelector('#dc-go').click(); 1")
     wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'CH2'")
-    res["sent1"] = p.js("window.__sent[0]")
+    res["sentAfter1"] = p.js("window.__sent.length")
     res["second"] = p.js("""({ facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()), go: document.querySelector('#dc-go').textContent,
                               opts: [...document.querySelectorAll('.rv-opt')].map(o => o.dataset.key) })""")
     p.js("document.querySelector('.rv-opt[data-key=\"dismiss\"] input').click(); document.querySelector('#dc-go').click(); 1")
     wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'P2'")
-    res["sent2"] = p.js("window.__sent[1]")
+    res["sentAfter2"] = p.js("window.__sent.length")
     res["proposal"] = p.js("""({ context: (document.querySelector('.dc-context') || {}).innerText, facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()),
                                 take: (document.querySelector('.dc-take') || {}).innerText, doc: (document.querySelector('#dc-doc') || {}).innerText,
                                 opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()), go: document.querySelector('#dc-go').textContent })""")
     p.js("document.querySelector('.rv-opt[data-key=\"B\"] input').click(); document.querySelector('#dc-go').click(); 1")
     wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'Q1'")
-    res["sent3"] = p.js("window.__sent[2]")
+    res["sentAfter3"] = p.js("window.__sent.length")
     res["question"] = p.js("""({ chips: document.querySelector('#dc-item .rv-chips').innerText.replace(/\\s+/g, ' ').trim(),
                                 context: [...document.querySelectorAll('.dc-context > div')].map(x => x.innerText),
                                 opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()) })""")
     p.js("document.querySelector('.rv-opt[data-key=\"failed\"] input').click(); 1")
     res["failedNeedsWords"] = p.js("({ disabled: document.querySelector('#dc-go').disabled, placeholder: document.querySelector('#dc-note').placeholder })")
     p.js("(() => { const t = document.querySelector('#dc-note'); t.value = 'a beep, no toast'; t.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#dc-go').click(); })()")
+    # the last one sends all four together; the toolbox refuses P2, which comes back with its reason
+    wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'P2' && !!document.querySelector('#dc-msg').textContent")
+    res["sentAll"] = p.js("window.__sent.map(b => b.answers)")
+    res["refused"] = p.js("""({ id: document.querySelector('#dc-item').dataset.id, msg: document.querySelector('#dc-msg').textContent,
+                               picked: [...document.querySelectorAll('.rv-opt.picked')].map(o => o.dataset.key), dots: [...document.querySelectorAll('.rv-dot')].map(d => d.textContent),
+                               go: document.querySelector('#dc-go').textContent, draft: Object.keys(JSON.parse(localStorage.getItem('tatty.decide.Demo') || '{}')) })""")
+    # choose again: only P2 is sent this time
+    p.js("document.querySelector('.rv-opt[data-key=\"A\"] input').click(); document.querySelector('#dc-go').click(); 1")
     wait(p, "!document.querySelector('#dc-item')")
-    res["sent4"] = p.js("window.__sent[3]")
+    res["sentAgain"] = p.js("window.__sent.slice(1).map(b => b.answers)")
+    res["draftAfter"] = p.js("localStorage.getItem('tatty.decide.Demo')")
     res["finished"] = p.js("""(() => { const a = document.querySelector('#dc-main a[href^="#workflows/"]');
                                 return { text: document.querySelector('#dc-main').innerText.replace(/\\s+/g, ' ').trim().slice(0, 200), link: a ? a.getAttribute('href') : null }; })()""")
     # the overview line and the rail item

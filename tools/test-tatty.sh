@@ -3359,6 +3359,18 @@ if [ -f "$DECIDE_SH" ]; then
 		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed"}')" = 409 ] && ok "an option that needs words, without them" || bad "an option that needs words, without them" "$(cat "$T/dj")"
 		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed","note":"a beep"}')" = 200 ] && ok "answer a question" || bad "answer a question" "$(cat "$T/dj")"
 		has "the list records it" "$QLIST" "- **Note:** a beep"
+		# a list's option keys are letters, digits and -: A1 and No-2 are as good as a word (they were refused before)
+		printf 'title: Which toast wording\nref: WU1 check 2\noption: A1 | Short | One line | recommended\noption: opt-2 | Long | Two lines\n---\ntitle: A third\nref: WU1 check 3\noption: Yes-1 | Yes | y | recommended\noption: No-2 | No | n\n' | bash "$QSH" add "$QLIST" >/dev/null
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"A1"}')" = 200 ] && ok "an option key with a digit" || bad "an option key with a digit" "$(cat "$T/dj")"
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"-A1"}')" = 400 ] && ok "a key can't start with a dash" || bad "a key can't start with a dash"
+		has "and the refusal names the key" "$T/dj" "choice (an option key"
+		# a page's decisions arrive together: one request, each recorded, one that is refused doesn't stop the others
+		BODY='{"name":"Decide Draft","answers":[{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"opt-2"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q3","choice":"No-2","note":"too long"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q9","choice":"A1"}]}'
+		[ "$(dpost "$BODY")" = 200 ] && ok "a batch of decisions" || bad "a batch of decisions" "$(cat "$T/dj")"
+		pick "$T/dj" "([(r['id'], bool(r.get('ok'))) for r in d['results']], d['open'])" >"$T/f"
+		has "each is recorded and the unknown one refused" "$T/f" "([('Q2', True), ('Q3', True), ('Q9', False)], 0)"
+		has "a later choice replaces an earlier one" "$QLIST" "opt-2"
+		[ "$(dpost '{"name":"Decide Draft","answers":[]}')" = 400 ] && ok "a batch needs answers" || bad "a batch needs answers"
 	fi
 	post /api/bye "{\"tag\":\"$DTAG\"}" >/dev/null
 	rm -rf "$DDIR"
