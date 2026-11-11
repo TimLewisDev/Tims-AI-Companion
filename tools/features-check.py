@@ -1576,7 +1576,7 @@ def check_decide(p):
     sends), the label on the last one, and the page saying the open session was told to carry on. The
     overview's "questions wait" line and the rail item. Nothing is written."""
     res = {}
-    p.js("""window.__real = { api: window.api }; window.__sent = []; localStorage.removeItem('tatty.decide.Demo');
+    p.js("""window.__real = { api: window.api }; window.__sent = []; window.__drafted = []; window.__serverDraft = {}; localStorage.removeItem('tatty.decide.Demo');
             window.__refuse = { 'Demo - Tech Proposals.md#P2': 'P2 has been applied; it can\\'t be decided again' };
             window.__items = [
               { doc: 'Demo - Challenges.md', kind: 'challenge', id: 'CH1', state: 'open', group: 'Requirements', severity: 'blocking', title: 'A repeated trigger' },
@@ -1603,7 +1603,8 @@ def check_decide(p):
                                { key: 'failed', title: 'Failed', detail: 'Say what you saw', recommended: false, needsNote: true }] } };
             window.api = async (path, body) => {
               if (path.startsWith('/api/decide/item')) { const id = new URLSearchParams(path.split('?')[1]).get('id'); return window.__show[id]; }
-              if (path.startsWith('/api/decide?')) return { items: window.__items };
+              if (path.startsWith('/api/decide?')) return { items: window.__items, drafts: window.__serverDraft || {} };
+              if (path === '/api/decide/draft') { window.__drafted.push(body); return { kept: Object.keys(body.entries).length }; }
               if (path === '/api/decide') {
                 window.__sent.push(body);
                 // the toolbox refuses what window.__refuse names, once
@@ -1660,6 +1661,27 @@ def check_decide(p):
     res["draftAfter"] = p.js("localStorage.getItem('tatty.decide.Demo')")
     res["finished"] = p.js("""(() => { const a = document.querySelector('#dc-main a[href^="#workflows/"]');
                                 return { text: document.querySelector('#dc-main').innerText.replace(/\\s+/g, ' ').trim().slice(0, 200), link: a ? a.getAttribute('href') : null }; })()""")
+    # Choices survive leaving. A pick (Decide not pressed) is held at once in the browser and written to Tatty's home a
+    # moment later; a restart of Tatty (a new port, so no browser storage) brings it back from the home; Decide's choice too.
+    p.js("""window.__drafted = []; window.__serverDraft = {}; localStorage.removeItem('tatty.decide.Demo');
+            window.__redo = () => { const m = document.querySelector('#dc-main'); m.replaceChildren(); decidePage({ name: 'Demo' }, m); };
+            window.__redo(); 1""")
+    wait(p, "!!document.querySelector('#dc-item')")
+    p.js("document.querySelector('.rv-opt[data-key=\"defer\"] input').click(); 1")
+    res["pickHeld"] = p.js("Object.values(JSON.parse(localStorage.getItem('tatty.decide.Demo') || '{}')).map(v => [v.key, v.decided])")
+    time.sleep(0.9)
+    res["pickInHome"] = p.js("window.__drafted.length ? Object.values(window.__drafted[window.__drafted.length - 1].entries).map(v => [v.key, v.decided]) : null")
+    p.js("window.__serverDraft = window.__drafted[window.__drafted.length - 1].entries; localStorage.removeItem('tatty.decide.Demo'); window.__redo(); 1")
+    wait(p, "!!document.querySelector('#dc-item')")
+    res["afterRestart"] = p.js("""({ id: document.querySelector('#dc-item').dataset.id, picked: [...document.querySelectorAll('.rv-opt.picked')].map(o => o.dataset.key),
+                                    goDisabled: document.querySelector('#dc-go').disabled })""")
+    p.js("document.querySelector('#dc-go').click(); 1")  # Decide: instant, and kept too
+    wait(p, "document.querySelector('#dc-item').dataset.id === 'CH2'")
+    time.sleep(0.9)
+    p.js("window.__serverDraft = window.__drafted[window.__drafted.length - 1].entries; localStorage.removeItem('tatty.decide.Demo'); window.__redo(); 1")
+    wait(p, "!!document.querySelector('#dc-item')")
+    res["decidedKept"] = p.js("""({ now: document.querySelector('#dc-item').dataset.id, dots: [...document.querySelectorAll('.rv-dot')].map(d => d.textContent),
+                                    sent: window.__sent.length, entries: Object.values(window.__drafted[window.__drafted.length - 1].entries).map(v => [v.key, v.decided]) })""")
     # the overview line and the rail item
     res["overview"] = p.js("""(() => {
         const f = { name: "Demo", phase: "planning", route: "full", stages: [], merge: {}, review: {}, rows: [], sessions: [], toolbox: true, unitList: [], events: [], docList: [], notes: [], tasks: { done: 0, total: 0 }, units: { done: 0, total: 0 },

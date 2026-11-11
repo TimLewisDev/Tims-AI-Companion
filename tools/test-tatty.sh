@@ -3372,6 +3372,26 @@ if [ -f "$DECIDE_SH" ]; then
 		has "a later choice replaces an earlier one" "$QLIST" "opt-2"
 		[ "$(dpost '{"name":"Decide Draft","answers":[]}')" = 400 ] && ok "a batch needs answers" || bad "a batch needs answers"
 	fi
+	# choices left on the Decide page (a draft) are kept in Tatty's home, so they outlive a reload and a restart
+	drpost() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/decide/draft"; }
+	[ "$(drpost '{"name":"Decide Draft","entries":{"Decide Draft - Challenges.md#CH3":{"key":"accept","note":"yes","label":"Accept","decided":true,"at":5},"x#Q1":{"key":"-bad","note":"","at":1},"y#Q2":{"key":"A1","note":"n","decided":false,"at":2}}}')" = 200 ] && ok "a draft is kept" || bad "a draft is kept" "$(cat "$T/dj")"
+	has "an option key that could read as a flag is dropped" "$T/dj" '"kept": 2'
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "sorted((k, v['key'], v['decided']) for k, v in d['drafts'].items())" >"$T/f"
+	has "the page gets its draft back" "$T/f" "[('Decide Draft - Challenges.md#CH3', 'accept', True), ('y#Q2', 'A1', False)]"
+	get "/api/decide?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "'drafts' in d" >"$T/f"
+	has "the poll doesn't carry it" "$T/f" "False"
+	[ "$(drpost '{"name":"No Such","entries":{}}')" = 404 ] && ok "a draft needs a feature" || bad "a draft needs a feature"
+	# what is sent is no longer a draft
+	[ "$(dpost '{"name":"Decide Draft","answers":[{"doc":"Decide Draft - Challenges.md","id":"CH3","choice":"accept"}]}')" = 200 ] && ok "send the drafted choice" || bad "send the drafted choice" "$(cat "$T/dj")"
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "sorted(d['drafts'])" >"$T/f"
+	has "it leaves the draft" "$T/f" "['y#Q2']"
+	[ "$(drpost '{"name":"Decide Draft","entries":{}}')" = 200 ] && ok "an empty draft" || bad "an empty draft"
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "d['drafts']" >"$T/f"
+	has "clears it" "$T/f" "{}"
 	post /api/bye "{\"tag\":\"$DTAG\"}" >/dev/null
 	rm -rf "$DDIR"
 else

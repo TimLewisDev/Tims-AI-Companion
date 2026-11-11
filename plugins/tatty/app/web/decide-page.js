@@ -27,31 +27,61 @@ async function decidePage(f, main) {
   const put = (...nodes) => main.replaceChildren(el("div", { class: "rv-page dc-page" }, ...nodes));
   const head = el("h2", {}, "Decisions");
   const back = el("a", { href: featureHref(f.name) }, "← Overview");
-  let items;
+  let items, kept = {};
   put(head, waitNode());
-  try { items = (await api("/api/decide?name=" + enc(f.name))).items; }
+  try { const got = await api("/api/decide?drafts=1&name=" + enc(f.name)); items = got.items; kept = got.drafts || {}; }
   catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
   if (!items.length) { put(head, el("p", { class: "dim" }, "Nothing is waiting for a decision."), back); return; }
   const keyOf = x => x.doc + "#" + x.id; // two question lists can both have a Q1
   const shown = new Map(); // item -> {fields, options} once read
   const loading = new Map(); // item -> the read in flight (or done)
-  // item -> {key, note, label, sent}: what was chosen on this page. A choice is kept here, and in this browser
-  // (a draft, so the page can be left and come back to), until the last one is decided; then all are sent together.
+  // item -> {key, note, label, sent, at}: what was decided on this page (Decide pressed). It is kept here until the
+  // last one is decided; then all are sent together.
   const decided = new Map();
+  // item -> {key, note, at}: picked on its question, but Decide not pressed yet.
+  const held = new Map();
   const errs = new Map(); // item -> why the toolbox refused it when they were sent
   const isDone = i => i.state !== "open" || decided.has(keyOf(i));
+  // Neither is lost by leaving: every pick and every Decide is written down at once in this browser (it answers
+  // nothing, so the page stays instant) and a moment later in Tatty's home, which outlives a restart of Tatty
+  // (the browser's own storage belongs to the server's port, and that is new each start).
   const draftKey = "tatty.decide." + f.name;
+  const entries = () => {
+    const d = {};
+    held.forEach((v, k) => { d[k] = { key: v.key, note: v.note, label: "", decided: false, at: v.at }; });
+    decided.forEach((v, k) => { if (!v.sent) d[k] = { key: v.key, note: v.note, label: v.label, decided: true, at: v.at }; });
+    return d;
+  };
+  let draftTimer = null;
+  const flushDraft = hiding => {
+    clearTimeout(draftTimer); draftTimer = null;
+    const body = { name: f.name, entries: entries() };
+    if (hiding) fetch("/api/decide/draft", { method: "POST", keepalive: true, headers: { "X-TT-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
+    else api("/api/decide/draft", body).catch(() => { /* the browser still has it */ });
+  };
   const saveDraft = () => {
     try {
-      const d = {};
-      decided.forEach((v, k) => { if (!v.sent) d[k] = { key: v.key, note: v.note, label: v.label }; });
+      const d = entries();
       if (Object.keys(d).length) localStorage.setItem(draftKey, JSON.stringify(d)); else localStorage.removeItem(draftKey);
-    } catch (e) { /* no storage: the choices are kept only while the page is open */ }
+    } catch (e) { /* no storage: Tatty's home still has it */ }
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => flushDraft(false), 400);
   };
-  try { // a draft from an earlier visit, for the items still waiting
-    const d = JSON.parse(localStorage.getItem(draftKey) || "{}");
-    items.forEach(i => { const v = d[keyOf(i)]; if (i.state === "open" && v && typeof v.key === "string") decided.set(keyOf(i), { key: v.key, note: String(v.note || ""), label: String(v.label || v.key), sent: false }); });
-  } catch (e) { /* an unreadable draft is no draft */ }
+  const leaving = () => { if (draftTimer) flushDraft(true); }; // a reload or a closed window must not drop the last pick
+  window.addEventListener("pagehide", leaving);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) leaving(); });
+  let local = {};
+  try { local = JSON.parse(localStorage.getItem(draftKey) || "{}") || {}; } catch (e) { /* an unreadable draft is no draft */ }
+  const both = { ...kept };
+  for (const k of Object.keys(local)) if (!both[k] || (+local[k].at || 0) >= (+both[k].at || 0)) both[k] = local[k]; // the newer copy wins
+  items.forEach(i => { // the choices an earlier visit left, for the items still waiting
+    const v = both[keyOf(i)];
+    if (i.state !== "open" || !v || typeof v.key !== "string") return;
+    const base = { key: v.key, note: String(v.note || ""), at: +v.at || Date.now() };
+    if (v.decided === false) held.set(keyOf(i), base);
+    else decided.set(keyOf(i), { ...base, label: String(v.label || v.key), sent: false });
+  });
+  if (Object.keys(both).length !== decided.size + held.size) saveDraft(); // (some belonged to items no longer waiting)
   let at = Math.max(0, items.findIndex(i => !isDone(i)));
   // Reading an item runs a script on the server, so the rest are read in the background, one at a time,
   // and the next question is on screen the moment Decide is pressed.
@@ -105,14 +135,18 @@ async function decidePage(f, main) {
       catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
     }
     const { fields, options } = shown.get(keyOf(i));
-    if (decided.has(keyOf(i)) && !options.some(o => o.key === decided.get(keyOf(i)).key)) decided.delete(keyOf(i)); // a stale draft
+    // a stale draft (an option the item no longer has)
+    if (decided.has(keyOf(i)) && !options.some(o => o.key === decided.get(keyOf(i)).key)) decided.delete(keyOf(i));
+    if (held.has(keyOf(i)) && !options.some(o => o.key === held.get(keyOf(i)).key)) held.delete(keyOf(i));
     // decided earlier and waiting to be applied: show what was chosen (a challenge's accept, a proposal's option)
     const before = fields.state !== "apply" ? "" : i.kind === "proposal"
       ? ((fields.chosen || "").match(/^Option ([A-Z]):/) || [])[1] || ((fields.chosen || "").startsWith("Other:") ? "other" : "")
       : i.kind === "question" ? fields.decision || "" : "accept";
-    let choice = decided.has(keyOf(i)) ? decided.get(keyOf(i)).key : before;
+    // what the person last did here: a pick not yet decided, else the decision, else what the document says
+    const mine = held.get(keyOf(i)) || decided.get(keyOf(i));
+    let choice = mine ? mine.key : before;
     const note = el("textarea", { id: "dc-note", rows: 2, "aria-label": "note" });
-    note.value = decided.has(keyOf(i)) ? decided.get(keyOf(i)).note : "";
+    note.value = mine ? mine.note : "";
     const go = el("button", { type: "button", class: "primary", id: "dc-go" });
     const msg = el("div", { class: "small st missing", id: "dc-msg" }, errs.get(keyOf(i)) || "");
     const opts = [];
@@ -124,7 +158,10 @@ async function decidePage(f, main) {
       const left = items.filter(x => !isDone(x) && x !== i).length;
       go.textContent = left ? "Decide" : "Decide, and carry on";
     };
-    const pick = k => { choice = k; opts.forEach(o => o.node.classList.toggle("picked", o.key === k)); sync(); if (needsNote()) note.focus(); };
+    const show = k => { choice = k; opts.forEach(o => o.node.classList.toggle("picked", o.key === k)); sync(); };
+    // the person's pick: shown, held and written down (not sent: Decide does that), all without waiting for anything
+    const hold = () => { if (choice) { held.set(keyOf(i), { key: choice, note: note.value, at: Date.now() }); saveDraft(); } };
+    const pick = k => { show(k); hold(); if (needsNote()) note.focus(); };
     const option = o => {
       const radio = el("input", { type: "radio", name: "dc-choice", value: o.key, "aria-label": o.title });
       radio.checked = choice === o.key;
@@ -135,12 +172,13 @@ async function decidePage(f, main) {
       opts.push({ key: o.key, node });
       return node;
     };
-    note.addEventListener("input", sync);
+    note.addEventListener("input", () => { sync(); hold(); });
     const move = to => { at = Math.max(0, Math.min(items.length - 1, to)); draw(); };
     go.addEventListener("click", () => {
       const o = options.find(x => x.key === choice), words = note.value.trim();
       errs.delete(keyOf(i));
-      decided.set(keyOf(i), { key: choice, note: words, label: (o ? o.title : choice) + (words ? ` (${words})` : ""), sent: false });
+      decided.set(keyOf(i), { key: choice, note: words, label: (o ? o.title : choice) + (words ? ` (${words})` : ""), sent: false, at: Date.now() });
+      held.delete(keyOf(i));
       saveDraft();
       if (!items.some(x => !isDone(x))) { send(); return; } // the last one: everything goes now
       const nextOne = items.findIndex((x, n) => n > at && !isDone(x));
@@ -175,7 +213,8 @@ async function decidePage(f, main) {
     put(head, el("div", { class: "small dim" }, "Written down by the workflow for you to decide here, instead of one at a time in the terminal. Your choices are kept in this browser and sent together with the last one. ", back),
       el("div", { class: "rv-progress" }, bar(done, items.length, `${done} of ${items.length} decided`)), list, card);
     if (typeof linkIds === "function") linkIds(card, f.name);
-    pick(choice);
+    show(choice); // (drawing is not a pick: nothing is held until the person picks)
+    if (needsNote()) note.focus();
   };
   draw().then(prefetch);
 }

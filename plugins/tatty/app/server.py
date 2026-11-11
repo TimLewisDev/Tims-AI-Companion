@@ -2418,6 +2418,52 @@ def decide_set(state, folder, body):
     return 200, {**answer, **decide_after(state, folder, [str(body.get("doc", ""))])}
 
 
+# Choices made on the Decide page and not yet sent (a "draft"), kept in Tatty's home so that they outlive a reload
+# and a restart of Tatty: a page's own storage belongs to its address, and the server's port is random each start.
+# <home>/decide-drafts/<hash of the feature's name>.json: "<doc>#<id>" -> {key, note, label, decided, at}. "decided"
+# is a choice the person confirmed with Decide; otherwise it is only picked so far. Nothing here is the workflow's
+# record: the documents are written by decide.sh, when the choices are sent.
+DECIDE_DRAFT_MAX = 200
+
+
+def decide_draft_path(folder):
+    return home() / "decide-drafts" / (hashlib.sha1(folder.name.lower().encode("utf-8")).hexdigest()[:16] + ".json")
+
+
+def decide_draft_clean(raw):
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in list(raw.items())[:DECIDE_DRAFT_MAX]:
+        if not isinstance(k, str) or len(k) > 300 or not isinstance(v, dict) or not DECIDE_KEY.fullmatch(str(v.get("key", ""))):
+            continue
+        try:
+            at = int(v.get("at") or 0)
+        except (TypeError, ValueError):
+            at = 0
+        out[k] = {"key": str(v["key"]), "note": str(v.get("note", ""))[:2000], "label": str(v.get("label", ""))[:600],
+                  "decided": bool(v.get("decided")), "at": at}
+    return out
+
+
+def decide_draft_read(folder):
+    return decide_draft_clean(read_json(decide_draft_path(folder), {}))
+
+
+def decide_draft_write(folder, entries, drop=()):
+    """Keep entries (less the keys in drop) as the folder's draft; none left removes the file."""
+    keep = {k: v for k, v in decide_draft_clean(entries).items() if k not in drop}
+    path = decide_draft_path(folder)
+    if keep:
+        write_json(path, keep)
+    else:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    return keep
+
+
 def decide_batch(state, folder, answers):
     """Record a page's worth of choices, each through decide.sh set, then look once at what is left and (with
     nothing open) nudge the session once: (code, {results: [{doc, id, ok | error}], open, apply, nudged}).
@@ -2430,6 +2476,10 @@ def decide_batch(state, folder, answers):
         r = {"doc": str(a.get("doc", "")), "id": str(a.get("id", ""))}
         results.append({**r, "ok": True} if code == 200 else {**r, "error": answer["error"], "code": code})
     recorded = [r["doc"] for r in results if r.get("ok")]
+    try:  # what is recorded is no longer a draft
+        decide_draft_write(folder, decide_draft_read(folder), drop={f"{r['doc']}#{r['id']}" for r in results if r.get("ok")})
+    except OSError:
+        pass
     return 200, {"results": results, **decide_after(state, folder, recorded)}
 
 
@@ -8371,7 +8421,10 @@ class Handler(BaseHTTPRequestHandler):
             items = decide_pending(st, folder)
             if items is None and decide_docs(folder) and not toolbox_script("tt-common/scripts/decide.sh"):
                 return self.send(409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."})
-            return self.send(200, {"items": items or []})
+            answer = {"items": items or []}
+            if q.get("drafts", [""])[0] == "1":  # the Decide page also asks for the choices it was left with
+                answer["drafts"] = decide_draft_read(folder)
+            return self.send(200, answer)
         if path == "/api/review/suggestions":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -8757,6 +8810,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "The request's link should start with http:// or https://"})
                 return self.send(200, merge_set(st, folder, action, url))
             return self.send(400, {"error": "action is check, opened or merged"})
+        if path == "/api/decide/draft":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            try:
+                kept = decide_draft_write(folder, b.get("entries") if isinstance(b, dict) else {})
+            except OSError as e:
+                return self.send(500, {"error": f"couldn't keep the choices: {e}"})
+            return self.send(200, {"kept": len(kept)})
         if path == "/api/decide":
             folder = feature_dir(str(b.get("name", "")))
             if not folder:
