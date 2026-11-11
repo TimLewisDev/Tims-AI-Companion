@@ -1466,8 +1466,7 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     agents, doing, ended() ? "" : decide, questions,
     // the message box under the current question, then the history, newest first
     ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
-    list.childElementCount || !ended() ? [el("div", { class: "act-head small dim" }, el("span", {}, "Latest first"), el("span", { class: "act-arrow", "aria-hidden": "true" }, "↓")), list]
-      : el("p", { class: "dim small" }, "Nothing was reported."),
+    list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
     history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();

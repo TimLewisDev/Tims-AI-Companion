@@ -390,9 +390,9 @@ def check_tabs(p):
     p.js("""onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'first thing', ts: Date.now() / 1000 });
             onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'second thing', ts: Date.now() / 1000 }); 1""")
     res["historyNewestFirst"] = p.js("[...document.querySelectorAll('#page-home .card.live ol.activity .act')].map(r => r.innerText.replace(/\\\\s+/g, ' ').trim()).filter(t => /thing/.test(t))")
-    # How the history reads: a caption says "Latest first", the newest row is marked, a row arriving now is animating and lit,
-    # older rows are fainter, and a fade along the foot shows while there is more below and goes at the end.
-    res["historyHead"] = p.js("(document.querySelector('#page-home .card.live .act-head') || { innerText: null }).innerText.replace(/\\\\s+/g, ' ').trim()")
+    # How the history reads: no caption between the message box and the list, the newest row is marked, a row arriving now is
+    # animating and lit, older rows are fainter, and a fade rising from the foot shows while there is more below and goes at the end.
+    res["noCaption"] = p.js("!document.querySelector('#page-home .card.live .act-head') && document.querySelector('#page-home .card.live .live-say').nextElementSibling.classList.contains('activity')")
     p.js("onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'arriving now', ts: Date.now() / 1000 }); 1")
     res["arrival"] = p.js("""(() => { const li = document.querySelector('#page-home .card.live ol.activity > .act'); return { text: li.innerText.replace(/\\\\s+/g, ' ').trim(),
         animating: li.getAnimations().length > 0, lit: li.classList.contains('fresh'), marked: getComputedStyle(li).boxShadow !== 'none' }; })()""")

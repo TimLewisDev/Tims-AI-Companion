@@ -434,20 +434,17 @@ button.action-main:not(.primary) { background: var(--panel); }
 .abox-ghost { position: fixed; z-index: 60; margin: 0; overflow: hidden; pointer-events: none; border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0,0,0,.25); background: var(--panel); }
 ol.activity { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
-/* The history reads newest first: a caption says so, the newest row is marked, the rows grow fainter with age, and
-   a fade along the foot says the rest below are old and need nothing (it goes when the end is in view). A new
-   row opens out at the top and is lit for a moment. None of the motion is gated on prefers-reduced-motion. */
-.act-head { display: flex; align-items: center; gap: 6px; margin-bottom: -4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-.act-arrow { color: var(--accent); font-weight: 700; animation: act-nudge 2.4s ease-in-out infinite; }
-@keyframes act-nudge { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(3px); } }
+/* The history reads newest first: the newest row is marked, the rows grow fainter with age, and a fade rising from
+   the foot says the rest below are old and need nothing (it goes when the end is in view). A new row opens out
+   at the top and is lit for a moment. None of the motion is gated on prefers-reduced-motion. */
 ol.activity > .act:first-child:not(.dim) { box-shadow: inset 3px 0 0 var(--accent); }
 ol.activity > .act:nth-child(n+5) { opacity: .86; }
 ol.activity > .act:nth-child(n+8) { opacity: .7; }
 ol.activity > .act:nth-child(n+12) { opacity: .55; }
 ol.activity > .act { transition: opacity .2s; }
 ol.activity > .act:hover { opacity: 1; }
-ol.activity.more::after { content: ""; display: block; position: sticky; bottom: 0; height: 44px; margin-top: -44px; pointer-events: none;
-  background: linear-gradient(to bottom, transparent, var(--bg) 85%); }
+ol.activity.more::after { content: ""; display: block; position: sticky; bottom: 0; height: 150px; margin-top: -150px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--bg) 92%, transparent) 90%); }
 .act.fresh { animation: act-fresh 2.2s ease-out; }
 @keyframes act-fresh { 0% { background: color-mix(in srgb, var(--accent) 38%, transparent); } } /* (ends on the row's own background) */
 .act { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
