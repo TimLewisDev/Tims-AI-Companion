@@ -299,6 +299,12 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .hcard-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; min-width: 0; }
 .hcard-name { font-size: 15px; min-width: 0; overflow-wrap: anywhere; }
 .hcard-top .chip { flex: none; }
+/* a feature named by an ID: its title, as a subheading (the card, the page's head and rail, Archived) */
+.hcard-title { margin-top: -4px; font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+.ov-title { display: block; font-size: 13px; font-weight: normal; color: var(--dim); }
+.fnav-title { margin: -6px 0 10px; overflow-wrap: anywhere; }
+.arow-title { font-weight: normal; color: var(--dim); }
+.tprefix { width: 9em; text-transform: uppercase; }
 .hcard-phase { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .hcard-text { margin: 0; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
 .hcard-foot { margin-top: auto; padding-top: 6px; border-top: 1px solid var(--line); }

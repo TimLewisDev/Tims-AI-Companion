@@ -389,6 +389,7 @@ async function renderHome(quiet) {
         el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),
       homeNote);
     if (!data) { put(head, el("div", { class: "fsec-wait", "aria-busy": "true" }, waitNode())); return; }
+    newFeatureForm.next = data.nextId || ""; // the ID New feature… would give
     // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
     const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
       el("strong", {}, "Tatty can't find the TT toolbox. "),
@@ -553,6 +554,7 @@ function featureTile(f) {
   return el("a", { class: "hcard hcard-" + f.route + (f.live ? " hcard-live" : ""), href: featureHref(f.name) },
     el("span", { class: "hcard-stripe", "aria-hidden": "true" }),
     el("div", { class: "hcard-top" }, el("strong", { class: "hcard-name" }, f.name), chip(ROUTES[f.route] || f.route, "route")),
+    f.title ? el("div", { class: "hcard-title" }, f.title) : "",
     f.live ? el("div", { class: "hcard-livemark" }, chip(`● Live: ${f.live.name}`, "live")) : "",
     el("div", { class: "hcard-phase" }, chip(phaseWord(f), phaseDone(f) ? "done" : f.phase === "empty" ? "todo" : "now"),
       f.stage && f.phase !== "complete" ? el("span", { class: "dim small" }, " · " + f.stage) : ""),
@@ -572,35 +574,39 @@ function featureSection(kind, title, list, emptyText) {
 }
 
 // ------------------------------------------------------------- a new feature
-// New feature… makes <root>/features/<name> and opens its page, where Start Workflow
-// and Start Workflow Lite are the two ways to begin it.
+// New feature… makes <root>/features/<ID> and opens its page, where Start Workflow
+// and Start Workflow Lite are the two ways to begin it. The ID is the next number under
+// the project's short name (TAT-0001, set on the Hub); what is typed is the feature's title.
 
 const newFeatureForm = (() => {
   let shown = false, node = null;
+  const form = {
+    next: "",
+    node: () => (shown ? draw() : ""),
+    toggle() { shown = !shown; if (shown) { const head = document.querySelector("#page-home .fhead"); if (head) head.after(draw()); } else if (node) node.remove(); },
+  };
   const draw = () => {
-    const input = el("input", { placeholder: "a name for the feature, e.g. Settings page", "aria-label": "Feature name" });
+    const input = el("input", { placeholder: "what the feature is, e.g. Settings page", "aria-label": "Feature title" });
     const msg = el("span", { class: "small st missing" });
     node = el("form", { class: "card new-feature", onsubmit: async e => {
       e.preventDefault();
       try {
-        const r = await api("/api/new-feature", { name: input.value });
+        const r = await api("/api/new-feature", { title: input.value });
         shown = false;
         featureCache.delete(r.name);
         location.hash = featureHref(r.name);
       } catch (err) { msg.textContent = String(err.message || err); }
     } },
-      el("strong", {}, "New feature"),
+      el("strong", {}, "New feature", form.next ? el("span", { class: "dim", id: "new-feature-id" }, " " + form.next) : ""),
       el("div", { class: "row" }, input, el("button", { type: "submit", class: "primary" }, "Create"),
         el("button", { type: "button", onclick: () => { shown = false; node.remove(); } }, "Cancel")),
-      el("p", { class: "dim small" }, "Makes a folder for it in Tatty's features folder. Then Start Workflow or Start Workflow Lite begins it."),
+      el("p", { class: "dim small" }, `Makes a folder ${form.next ? `named ${form.next} ` : ""}for it in Tatty's features folder, with what you type as its title. `,
+        "The number comes from the project's short name, which you can change on the Hub. Then Start Workflow or Start Workflow Lite begins it."),
       msg);
     setTimeout(() => input.focus(), 0);
     return node;
   };
-  return {
-    node: () => (shown ? draw() : ""),
-    toggle() { shown = !shown; if (shown) { const head = document.querySelector("#page-home .fhead"); if (head) head.after(draw()); } else if (node) node.remove(); },
-  };
+  return form;
 })();
 
 // ------------------------------------------------------------- the root folder
@@ -786,6 +792,7 @@ function featureNav(f, current, board, opts = {}) {
   return el("nav", { class: "fnav" },
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
+    f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
     item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
@@ -1038,13 +1045,22 @@ function kindToggle(onChange) {
 
 // begin: "full" or "lite" for the first Start of a feature with nothing written yet (the Start Workflow and
 // Start Workflow Lite buttons): the person says what it is, and for Lite whether it is a bug or a feature.
+// What its sessions are called before " : <stage>": "<name> · <title cut at a word to 40>", as the server names them (start_session).
+function featureCalled(f) {
+  let t = f.title || "";
+  if (t.length > 40) t = (t.slice(0, 40).replace(/\s+\S*$/, "").replace(/[ ,.;:\-–]+$/, "") || t.slice(0, 40)) + "…";
+  return t ? `${f.name} · ${t}` : f.name;
+}
+
 function startPanel(f, row, index, close, begin) {
   const cmd = begin ? "" : command(row);
   const inputs = begin ? [] : placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
   const idea = begin ? el("textarea", { class: "start-idea", rows: "3", placeholder: "an idea, a spec or a ticket", "aria-label": "What is it? An idea, a spec or a ticket" }) : null;
   const kinds = begin === "lite" ? kindToggle(() => refresh()) : null;
   const preview = el("code", {});
-  const name = begin ? `${f.name} : ${begin === "full" ? "Start" : "Lite"}` : `${row.prefix || f.name} : ${row.stage || "Next"}`;
+  const called = featureCalled(f);
+  const name = begin ? `${called} : ${begin === "full" ? "Start" : "Lite"}`
+    : `${!row.prefix || row.prefix === f.name ? called : row.prefix} : ${row.stage || "Next"}`;
   const result = el("div", { class: "start-result" });
   const picker = modelPicker("start-" + (begin || index));
   const go = el("button", { type: "button", class: "primary" }, "Start session");
@@ -1671,7 +1687,7 @@ function overview(f) {
   }
   return el("div", { class: "overview" },
     el("div", { class: "ov-head" },
-      el("h2", {}, f.name), chip(ROUTES[f.route] || f.route, "route"),
+      el("h2", {}, f.name, f.title ? el("span", { class: "ov-title" }, f.title) : ""), chip(ROUTES[f.route] || f.route, "route"),
       chip(phaseWord(f), phaseDone(f) ? "done" : "now"),
       el("span", { class: "dim small" }, "updated " + ago(f.updated)),
       el("span", { class: "ov-acts" },

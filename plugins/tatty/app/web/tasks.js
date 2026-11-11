@@ -72,12 +72,21 @@ const { renderTasks, renderTaskBoard } = (() => {
   function newBoardForm(d, msg) {
     const name = el("input", { id: "task-board-name", placeholder: "a name for the board, e.g. My Game", "aria-label": "Board name" });
     const cols = el("input", { id: "task-board-columns", value: d.columns.join(", "), "aria-label": "Columns" });
+    // The prefix its tasks are numbered with (IDEA-0001): the name's initials until it is typed in
+    const prefix = el("input", { id: "task-board-prefix", class: "tprefix", maxlength: 10, "aria-label": "Task prefix" });
+    let typed = false;
+    const initials = () => {
+      const w = name.value.match(/[A-Za-z0-9]+/g) || [];
+      return (w.length > 1 ? w.map(x => x[0]).join("") : w.join("")).toUpperCase().replace(/^[0-9]+/, "").slice(0, 4);
+    };
+    name.addEventListener("input", () => { if (!typed) prefix.value = initials(); });
+    prefix.addEventListener("input", () => { typed = true; prefix.value = prefix.value.toUpperCase(); });
     const go = el("button", { type: "submit", class: "primary" }, "Create board");
     return el("form", { class: "card new-feature", id: "new-task-board-form", onsubmit: async e => {
       e.preventDefault();
       go.disabled = true;
       try {
-        const r = await send("/api/tasks/new-board", { name: name.value, columns: cols.value.split(",").map(s => s.trim()).filter(Boolean) });
+        const r = await send("/api/tasks/new-board", { name: name.value, prefix: prefix.value.trim(), columns: cols.value.split(",").map(s => s.trim()).filter(Boolean) });
         location.hash = tasksHref(r.name);
       } catch (err) {
         msg.className = "home-note small st missing";
@@ -87,6 +96,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     } },
       el("strong", {}, "New board"),
       el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Name"), name),
+      el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Task prefix: tasks are numbered IDEA-0001, … and each board has its own"), prefix),
       el("label", { class: "tfield" }, el("span", { class: "dim small" }, "Columns, left to right (the last one is for done)"), cols),
       el("div", { class: "row" }, go),
       el("p", { class: "dim small" }, "Makes ", el("code", {}, d.folder + "/<name>"),
@@ -168,13 +178,15 @@ const { renderTasks, renderTaskBoard } = (() => {
       "aria-current": st().view === v ? "page" : null }, label);
     t.tabs = { backlog: tab("backlog", ""), completed: tab("completed", "") };
     t.clear = el("button", { type: "button", id: "tasks-clear", onclick: clearDone });
+    t.prefix = el("button", { type: "button", id: "tasks-prefix", class: "small", onclick: changePrefix,
+      title: "Task prefix… What this board's new tasks are numbered with. A workflow started from a task is named by its ID, so each board has its own." });
     const head = el("div", { class: "board-bar tasks-bar" },
       el("a", { href: "#tasks" }, "← All boards"), el("h2", {}, t.name),
       el("nav", { class: "ttabs", "aria-label": "Lists" }, tab("board", "Board"), t.tabs.backlog, t.tabs.completed),
       el("span", { class: "spacer" }), t.tb.filterField(),
       el("button", { type: "button", class: "primary", id: "tasks-new", title: "A new task (n)",
         onclick: () => { location.hash = tasksHref(t.name, st().view, "new"); } }, "+ New task"),
-      st().view === "board" ? t.clear : "");
+      st().view === "board" ? t.clear : "", t.prefix);
     t.problems = el("div", {});
     t.tb.frame(head, t.problems);
     drawHead();
@@ -192,6 +204,7 @@ const { renderTasks, renderTaskBoard } = (() => {
     t.clear.textContent = `Clear done (${n})`;
     t.clear.disabled = !n;
     t.clear.title = done ? `Send everything in ${done.name} to Completed` : "";
+    t.prefix.textContent = `${d.prefix || "T"}-…`;
     t.problems.replaceChildren(d.problems.length ? problemsNote(d.problems) : "");
   }
 
@@ -248,6 +261,18 @@ const { renderTasks, renderTaskBoard } = (() => {
       await refresh();
     });
     return el("div", { class: "tquick-row" }, input, type);
+  }
+
+  // Task prefix…: what new tasks are numbered with; the tasks there are keep their IDs.
+  async function changePrefix() {
+    const was = data().prefix || "T";
+    const got = prompt(`Number this board's new tasks with (now ${was}-). Tasks it has keep their IDs; no other board may use the same prefix.`, was);
+    if (got === null || got.trim().toUpperCase().replace(/-+$/, "") === was) return;
+    try {
+      const r = await send("/api/tasks/prefix", { name: t.name, prefix: got });
+      stripSay(`New tasks on ${t.name} are numbered ${r.prefix}-0001 on.`);
+    } catch (e) { stripSay(String(e.message || e), true); }
+    await refresh();
   }
 
   async function clearDone() {
@@ -717,12 +742,11 @@ const { renderTasks, renderTaskBoard } = (() => {
   // server makes the folder, writes the task in as its Ticket, starts the
   // session and moves the task to the board's start column (taskboard.js draws it).
   function startSection(d) {
-    const clean = s => s.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").replace(/^[ .]+|[ .]+$/g, "");
     const start = columnOf(data().options.startColumn);
     return t.tb.startSection({
       id: d.id,
       started: d.feature || (data().started || {})[d.id],
-      name: clean(d.title) ? `${d.id} - ${clean(d.title)}`.slice(0, 70).replace(/[ .-]+$/, "") : d.id,
+      name: d.id, // the feature is named by the task's ID; its title is the feature's subheading
       project: data().options.project || "",
       workdir: data().options.workdir || "",
       moves: start ? `${d.id} moves to ${start.name}.` : "",

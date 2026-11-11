@@ -24,11 +24,8 @@ const jiraBusy = job => !!jiraNow && (jiraNow.busy || []).includes(job);
 const jiraIssue = key => (jiraNow && jiraNow.issues || []).find(i => i.key === key);
 // A status's column id, as the server makes it (jira_status_key).
 const jiraStatusKey = s => String(s || "").toLowerCase().split(/\s+/).filter(Boolean).join(" ");
-// The folder name the server gives a ticket's feature when none is typed.
-const jiraName = i => {
-  const s = (i.summary || "").replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").replace(/^[ .]+|[ .]+$/g, "");
-  return s ? `${i.key} - ${s}`.slice(0, 70).replace(/[ .-]+$/, "") : i.key;
-};
+// The folder name the server gives a ticket's feature when none is typed: the key (the summary is its subheading).
+const jiraName = i => i.key;
 const typeClass = t => /bug/i.test(t) ? "bad" : /story/i.test(t) ? "done" : "now";
 // How long a job has been running, counted up each second (the server says when it began).
 const jiraSince = job => el("span", { class: "jsince", "data-since": String((jiraNow.since || {})[job] || Date.now() / 1000) });

@@ -103,7 +103,7 @@ function archivedSection(list) {
   const d = el("details", { class: "card archived", id: "archived-section" },
     el("summary", {}, el("strong", {}, `Archived (${list.length})`), el("span", { class: "dim small" }, "kept, not shown above")),
     el("div", { class: "arows" }, list.map(a => el("div", { class: "arow", "data-name": a.name },
-      el("strong", {}, a.name),
+      el("strong", {}, a.name, a.title ? el("span", { class: "arow-title" }, " · " + a.title) : ""),
       el("span", { class: "dim small" }, `archived ${ago(a.archivedAt)} · ${a.docs} document${a.docs === 1 ? "" : "s"}`),
       el("span", { class: "arow-acts" },
         el("button", { type: "button", class: "restore-btn", onclick: () => restoreFeature(a.name) }, "Restore"),

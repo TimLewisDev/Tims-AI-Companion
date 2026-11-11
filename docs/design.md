@@ -530,6 +530,20 @@ folders and Claude Code's own install records; see
   that names an ID (an ID link, or a wikilink to `^r12` or `CH3 — …`) shows the
   card, positioned from JS because the CSP refuses inline styles; `findId`
   focuses the item when the link is followed.
+- **Feature names are IDs.** A feature is named by an ID: a task's (`T-0047`),
+  a Jira ticket's key (`STAR-50176`), or, for **New feature…**, the next number
+  under the project's short name (`TAT-0001`; the short name is set on the Hub,
+  else made from the project's name; `next_feature_id` never hands a number out
+  twice, `<project home>/feature-ids.json`). The name is the folder, the
+  documents' prefix and the key of every record kept by name, so it stays short.
+  The title (the task's, the ticket's summary, what was typed) is only a
+  subheading, kept in `<project home>/titles.json` (`feature_title`, which falls
+  back to the Ticket document's heading): it shows on the feature's card, its
+  page's head and rail, in Archived and in its session names
+  (`<ID> · <title> : <stage>`), and its first words follow the ID in a new
+  branch's name. Features named before this keep their long names. Each Tasks
+  board numbers its tasks with a prefix of its own (`board_prefixes`; set on the
+  new-board form, changed with the board bar's prefix button for new tasks only).
 - **New feature…** makes the folder. A feature page then offers one thing
   first, chosen by `primary_action` in `server.py` from where the feature stands,
   as large buttons: **Start Workflow** and **Start Workflow Lite** while nothing
@@ -1012,7 +1026,7 @@ rules it keeps are in the toolbox contract's "Jira" section; how it is built:
   asked for.
 - **Start workflow** and **Start lite** (`POST /api/jira/start`, `jira_start`,
   with the same `card_start_target` and `card_start_session` as a task's Start):
-  1. makes `<KEY> - <summary>` with `new_feature` (a second Start is a 409
+  1. makes `<KEY>` with `new_feature`, the summary as its title (a second Start is a 409
      naming the feature);
   2. writes the ticket into it as `<name> - Ticket.md`, with a `## Working
      folder` section when `workdir` is another folder than `project` (the
@@ -1142,7 +1156,7 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   that happens while it is open, since the event stream replays old events on
   every load.
 - **Start workflow** (`/api/tasks/start`), as from a Jira ticket: the feature
-  `<ID> - <title>`, the task written into it as `<name> - Ticket.md`, the
+  `<ID>` (its title the task's), the task written into it as `<name> - Ticket.md`, the
   workflow's own first step started on it, and the task moved on to the
   board's start column (the option, else the first column that sounds under
   way). The task's file and board.json name the feature before the session

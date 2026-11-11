@@ -1527,7 +1527,7 @@ def project_home():
     return home() / "projects" / active["id"]
 
 
-def hub_register(root, name="", repo=""):
+def hub_register(root, name="", repo="", key=""):
     """List a root as a project (or update the one that is listed): the project."""
     with HUB_LOCK:
         d = hub_load()
@@ -1540,6 +1540,8 @@ def hub_register(root, name="", repo=""):
         else:
             found = hub_new_project(root, name, repo)
             d["projects"].append(found)
+        if key:
+            found["key"] = key
         hub_save(d)
         return found
 
@@ -1575,8 +1577,29 @@ def hub_project_view(p, d=None):
         count = sum(1 for x in features.iterdir() if x.is_dir() and not x.name.startswith(".")) if features.is_dir() else 0
     except OSError:
         count = 0
-    return {**p, "number": hub_number(d, p), "open": project_window_up(p["id"]), "exists": root.is_dir(), "features": count,
-            "repoExists": bool(p.get("repo")) and os.path.isdir(p["repo"])}
+    return {**p, "key": project_key(p), "number": hub_number(d, p), "open": project_window_up(p["id"]), "exists": root.is_dir(),
+            "features": count, "repoExists": bool(p.get("repo")) and os.path.isdir(p["repo"])}
+
+
+SHORT_KEY = re.compile(r"[A-Z][A-Z0-9]{0,9}")
+
+
+def short_key(text, fallback):
+    """A short name in capitals made from text: the first 3 letters and digits (Tatty -> TAT), else fallback."""
+    s = re.sub(r"[^A-Za-z0-9]", "", str(text or "")).upper()
+    s = re.sub(r"^[0-9]+", "", s)[:3]
+    return s if SHORT_KEY.fullmatch(s) else fallback
+
+
+def key_refused(key):
+    """Why a short name (a project's, a Tasks board's prefix) can't be used, or ''."""
+    return "" if SHORT_KEY.fullmatch(key) else "A short name is a capital letter then up to 9 capitals or digits, e.g. TAT or STAR."
+
+
+def project_key(p):
+    """The project's short name: what its new features are numbered under (TAT-0001). Set on the Hub, else made from its name."""
+    k = str((p or {}).get("key") or "")
+    return k if SHORT_KEY.fullmatch(k) else short_key((p or {}).get("name"), "FEAT")
 
 
 def hub_view(state=None):
@@ -1624,6 +1647,9 @@ def hub_add(state, b):
     repo, why = hub_clean_repo(b.get("repo"))
     if why:
         return 400, {"error": why}
+    key = str(b.get("key") or "").strip().upper()
+    if key and key_refused(key):
+        return 400, {"error": key_refused(key)}
     p = Path(root)
     if p.exists() and not p.is_dir():
         return 400, {"error": f"{root} is a file, not a folder."}
@@ -1633,7 +1659,7 @@ def hub_add(state, b):
         (p / "features").mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return 400, {"error": f"Couldn't create {root}: {e}"}
-    got = hub_register(p.resolve().as_posix() if p.exists() else root, name, repo)
+    got = hub_register(p.resolve().as_posix() if p.exists() else root, name, repo, key)
     if b.get("open"):
         return hub_open(state, got["id"], bool(b.get("closeHub")), not b.get("noWindow"))
     return 200, {"project": hub_project_view(got), "hub": hub_view(state)}
@@ -1786,7 +1812,14 @@ def hub_update(state, b):
         repo, why = hub_clean_repo(b.get("repo", p.get("repo")))
         if why:
             return 400, {"error": why}
+        key = str(b.get("key", p.get("key") or "")).strip().upper()
+        if key and key_refused(key):
+            return 400, {"error": key_refused(key)}
         p["name"], p["repo"] = name, repo
+        if key:
+            p["key"] = key
+        else:
+            p.pop("key", None)  # made from the name again
         hub_save(d)
     return 200, {"project": hub_project_view(p), "hub": hub_view(state)}
 
@@ -2539,7 +2572,7 @@ def feature_summary(state, folder, detail=False):
     status = first_doc(docs, "Task Status")
     units, tasks = progress_of(read_doc(folder, status)) if status else ([], {"done": 0, "total": 0})
     stamps = [d["updated"] for d in docs + notes] or [lp(folder).stat().st_mtime]
-    out = {"name": folder.name, "folder": folder.as_posix(), "phase": primary.get("phase", ""),
+    out = {"name": folder.name, "title": feature_title(folder.name, folder), "folder": folder.as_posix(), "phase": primary.get("phase", ""),
            "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
@@ -2580,7 +2613,7 @@ def features_list(state):
     with ThreadPoolExecutor(max_workers=6) as pool:
         found = list(pool.map(lambda d: feature_summary(state, d), folders))
     return {"root": info, "features": sorted(found, key=lambda f: -f["updated"]), "toolbox": toolbox,
-            "archived": archived_list()}
+            "archived": archived_list(), "nextId": next_feature_id(peek=True)}
 
 
 # ---------------------------------------------------------------- coins and the shop
@@ -2900,9 +2933,15 @@ def save_branch(feature, rec):
 
 
 def branch_name(repo, feature):
-    """The new branch's name: the prefix setting and the feature's name made safe for a ref; -2, -3 ... if taken."""
+    """The new branch's name: the prefix setting and the feature's name made safe for a ref; -2, -3 ... if taken.
+    A feature with a title (one named by an ID) has the title's first words after its ID, 40 characters at most."""
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", feature)
     slug = re.sub(r"\.{2,}", ".", slug).strip("-.")[:60].strip("-.")
+    words = re.findall(r"[a-z0-9]+", feature_title(feature).lower())
+    for w in words:
+        if len(slug) + 1 + len(w) > 40:
+            break
+        slug += "-" + w
     slug = re.sub(r"\.lock$", "", slug) or "work"
     base = load_settings()["branchPrefix"] + slug
     name, n = base, 2
@@ -3135,7 +3174,7 @@ def suggest_commit_message(folder, repo, branch, titles, applied=None):
     """A message from the feature's name and the style of the repo's recent commits (a conventional
     `feat:` prefix and a trailing [KEY] only where they use them), with the workflow's tasks as the body.
     After a review's changes were made (applied: their summaries) it says that instead."""
-    name = re.sub(r"^[A-Za-z]+-\d+\s*[-–:]\s*", "", folder.name).strip() or folder.name
+    name = feature_title(folder.name, folder) or re.sub(r"^[A-Za-z]+-\d+\s*[-–:]\s*", "", folder.name).strip() or folder.name
     kind = "feat"
     if applied is not None:
         name, kind, titles = "address review suggestions", "fix", applied
@@ -4050,10 +4089,14 @@ def start_session(state, folder, body):
     if row.get("phase") == "merge":  # its context names the branch, which may have just been recorded
         row = merge_row(folder)
         cmd = command(row)
+    # <name> · <title> : <stage>: the title (cut short) only where the name is the feature's own
+    title = short_title(feature_title(folder.name, folder))
+    called = f"{folder.name} · {title}" if title else folder.name
     if row.get("phase") in ("empty", "workflow", "lite"):
-        base = f"{folder.name} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite"}[row["phase"]]
+        base = f"{called} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite"}[row["phase"]]
     else:
-        base = f"{row.get('prefix') or folder.name} : {row.get('stage') or 'Next'}"
+        prefix = row.get("prefix") or folder.name
+        base = f"{called if prefix == folder.name else prefix} : {row.get('stage') or 'Next'}"
     name = session_name(base)
     # The new session carries a tag naming it (TATTY_SESSION): Tatty's mod there
     # joins this window and reports what it does, for this feature's page.
@@ -4077,9 +4120,11 @@ def start_session(state, folder, body):
 NAME_REFUSED = re.compile(r'^\.{1,2}$|[/\\:*?"<>|]')  # the names workflow.sh new refuses
 
 
-def new_feature(name):
+def new_feature(name, title="", clash=""):
     """Make <root>/features/<name> for a new feature: (http code, answer). The
-    workflow takes it from there (Start Workflow or Start Workflow Lite, see begin_row)."""
+    workflow takes it from there (Start Workflow or Start Workflow Lite, see begin_row).
+    A title is kept as the feature's subheading (see "feature titles"); `clash` is
+    what a 409 adds when the name is taken."""
     name = " ".join(str(name).split())
     if not name or NAME_REFUSED.search(name):
         return 400, {"error": "Not a usable folder name (no / \\ : * ? \" < > |)."}
@@ -4088,9 +4133,107 @@ def new_feature(name):
         return 400, {"error": "Set Tatty's root folder first."}
     d = base / name
     if d.exists() and (not d.is_dir() or any(d.iterdir())):
-        return 409, {"error": f"{name} already exists and isn't empty."}
+        return 409, {"error": f"{name} is already a feature. {clash}".strip() if clash else f"{name} already exists and isn't empty."}
     d.mkdir(parents=True, exist_ok=True)
-    return 200, {"name": name, "folder": d.as_posix()}
+    said = clean_title(title)
+    title = set_feature_title(name, "" if said.lower() in name.lower() else said)  # (a typed name may say its title already)
+    return 200, {"name": name, "folder": d.as_posix(), "title": title}
+
+
+def new_numbered_feature(title):
+    """New feature…: a feature named by the next number under the project's short name
+    (TAT-0001), with what the person typed as its title. (http code, answer)."""
+    title = clean_title(title)
+    if not title:
+        return 400, {"error": "Say what the feature is, e.g. Settings page."}
+    root = tatty_root()[0]  # (a title is never a path: anything may be typed)
+    if not (root / "features").is_dir():
+        return 400, {"error": "Set Tatty's root folder first."}
+    return new_feature(next_feature_id(), title)
+
+
+# ---------------------------------------------------------------- feature titles
+# A feature is named by an ID (T-0047, STAR-50176, TAT-0001): its folder, its documents'
+# prefix and every record kept by its name. Its title is only a subheading: shown on its
+# card and its page and in its session names, and kept here by name (<project home>/titles.json).
+
+_TITLES_LOCK = threading.Lock()
+
+
+def feature_titles_file():
+    return project_home() / "titles.json"
+
+
+def clean_title(title):
+    return " ".join(str(title or "").split())[:200]
+
+
+def set_feature_title(name, title):
+    """Keep (or, with none, forget) a feature's title. The title kept."""
+    title = clean_title(title)
+    with _TITLES_LOCK:
+        rows = read_json(feature_titles_file(), {})
+        if title:
+            rows[name] = title
+        elif rows.pop(name, None) is None:
+            return ""
+        write_json(feature_titles_file(), rows)
+    return title
+
+
+def feature_title(name, folder=None, rows=None):
+    """A feature's subheading: the title kept for it, else (a feature named by a bare key)
+    the title in its Ticket document's heading ("# KEY: title"). '' when there is none:
+    a typed name, or an older feature whose name says its title already."""
+    got = (rows if rows is not None else read_json(feature_titles_file(), {})).get(name)
+    if isinstance(got, str) and got.strip():
+        return got.strip()
+    if not TASK_ID.match(name):
+        return ""
+    folder = folder or feature_dir(name)
+    try:
+        with open(lp(folder / f"{name} - Ticket.md"), encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+    except (OSError, TypeError):
+        return ""
+    m = re.match(rf"#\s*{re.escape(name)}\s*:\s*(.+)", first.strip())
+    return clean_title(m.group(1)) if m else ""
+
+
+def short_title(title, most=40):
+    """The title cut at a word to at most `most` characters (with … when cut)."""
+    if len(title) <= most:
+        return title
+    cut = title[:most].rsplit(" ", 1)[0].rstrip(" ,.;:-–") or title[:most]
+    return cut + "…"
+
+
+def next_feature_id(peek=False):
+    """The next <KEY>-NNNN of the active project: past every one used by a folder in
+    features/ or archive/, and past every one handed out before (so a deleted feature's
+    number is never used again: <project home>/feature-ids.json). peek: only say it."""
+    try:
+        key = project_key(hub_active(hub_load()))
+    except OSError:
+        key = "FEAT"
+    root = tatty_root()[0]
+    pat = re.compile(rf"^{re.escape(key)}-(\d+)\b", re.I)
+    with _TITLES_LOCK:
+        rec = read_json(project_home() / "feature-ids.json", {})
+        n = rec.get(key) if isinstance(rec.get(key), int) else 1
+        for area in ("features", "archive"):
+            try:
+                names = [d.name for d in (root / area).iterdir()]
+            except OSError:
+                names = []
+            for x in names:
+                m = pat.match(x)
+                if m:
+                    n = max(n, int(m.group(1)) + 1)
+        if not peek:
+            rec[key] = n + 1
+            write_json(project_home() / "feature-ids.json", rec)
+    return f"{key}-{n:04d}"
 
 
 def sessions_of(state, folder):
@@ -4732,9 +4875,8 @@ def jira_view(state):
 
 
 def jira_name(issue):
-    """The feature folder's name for a ticket: <KEY> - <summary>, as a folder may be named."""
-    summary = re.sub(r"\s+", " ", re.sub(r'[/\\:*?"<>|]', " ", issue.get("summary", ""))).strip(" .")
-    return f"{issue['key']} - {summary}"[:70].rstrip(" .-") if summary else issue["key"]
+    """The feature folder's name for a ticket: its key (its summary is the feature's title)."""
+    return issue["key"]
 
 
 def ticket_md(issue, d, work=""):
@@ -4781,7 +4923,8 @@ def jira_start(state, body):
     if refused:
         return refused
     project, workdir, lite = got
-    code, made = new_feature(str(body.get("feature") or body.get("name") or "").strip() or jira_name(issue))
+    code, made = new_feature(str(body.get("feature") or body.get("name") or "").strip() or jira_name(issue),
+                             detail.get("summary") or issue.get("summary", ""), "Type another name for the feature.")
     if code != 200:
         return code, made
     folder = feature_dir(made["name"])
@@ -6648,14 +6791,57 @@ def task_column_name(b, v, keep=""):
     return name, None
 
 
-def new_task_board(name, columns):
+def board_prefixes(skip=""):
+    """Task ID prefix -> the board using it, for every Tasks board but `skip`. A feature started
+    from a task is named by the task's ID, so no two boards may number their tasks alike."""
+    out, base = {}, tasks_root()
+    for d in sorted(base.iterdir()) if base.is_dir() else []:
+        folder = tasks_dir(d.name) if d.is_dir() and not d.name.startswith(".") and d.name != skip else None
+        if folder:
+            try:
+                out.setdefault(task_board(folder)["prefix"], d.name)
+            except OSError:
+                continue
+    return out
+
+
+def board_prefix_default(name, taken):
+    """A new board's prefix when none is given: T while no board has it, else the board name's
+    initials (or a one-word name's first 4 letters), with 2, 3 ... added if another board has it."""
+    if "T" not in taken:
+        return "T"
+    words = re.findall(r"[A-Za-z0-9]+", name)
+    s = "".join(w[0] for w in words) if len(words) > 1 else "".join(words)
+    s = re.sub(r"^[0-9]+", "", s.upper())[:4]
+    s = s if SHORT_KEY.fullmatch(s) else "B"
+    got, n = s, 2
+    while got in taken:
+        got, n = f"{s}{n}", n + 1
+    return got
+
+
+def board_prefix_refused(prefix, taken):
+    """Why a Tasks board can't number its tasks with `prefix`, or ''."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9]*", prefix) or len(prefix) > 10:
+        return "A task prefix is a capital letter then up to 9 capitals or digits, e.g. IDEA."
+    if prefix in taken:
+        return f"The {taken[prefix]} board numbers its tasks {prefix}- already: give this board a prefix of its own."
+    return ""
+
+
+def new_task_board(name, columns, prefix=""):
     name = " ".join(str(name).split())
     if not name or NAME_REFUSED.search(name) or name.startswith("."):
         return 400, {"error": "Not a usable folder name (no / \\ : * ? \" < > |)."}
     root, is_set = tatty_root()
     if not is_set or not root.is_dir():
         return 400, {"error": "Set Tatty's root folder first."}
-    b = task_board_fill({"columns": []})
+    taken = board_prefixes(name)
+    prefix = str(prefix or "").strip().upper().rstrip("-") or board_prefix_default(name, taken)
+    why = board_prefix_refused(prefix, taken)
+    if why:
+        return 400, {"error": why}
+    b = task_board_fill({"columns": [], "prefix": prefix})
     for n in (columns if isinstance(columns, list) and columns else TASK_COLUMNS):
         if not task_line(n):
             continue
@@ -6671,7 +6857,23 @@ def new_task_board(name, columns):
     (d / "items").mkdir(parents=True, exist_ok=True)
     with task_store(d)["lock"]:
         task_board_save(d, b)
-    return 200, {"name": name, "folder": d.as_posix()}
+    return 200, {"name": name, "folder": d.as_posix(), "prefix": prefix}
+
+
+def task_prefix(state, folder, body, client):
+    """Task prefix…: what the board's new tasks are numbered with. The tasks it has keep their IDs
+    (the next number is counted per prefix, so a new prefix starts at 1)."""
+    prefix = str(body.get("prefix") or "").strip().upper().rstrip("-")
+    with task_store(folder)["lock"]:
+        b = task_board(folder, strict=True)
+        if prefix != b["prefix"]:
+            why = board_prefix_refused(prefix, board_prefixes(folder.name))
+            if why:
+                return 400, {"error": why}
+            b["prefix"], b["nextId"] = prefix, 1  # (task_next_id goes past any task already numbered with it)
+            task_board_save(folder, b)
+    task_said(state, folder, client, [])
+    return 200, task_board_view(folder, state)
 
 
 def task_create(state, folder, body, client):
@@ -7001,8 +7203,8 @@ def task_auto_complete(state, folder):
 
 
 def task_feature_name(t):
-    title = " ".join(re.sub(r'[/\\:*?"<>|]', " ", t["title"]).split()).strip(" .")
-    return f"{t['id']} - {title}"[:70].rstrip(" .-") if title else t["id"]
+    """The feature folder's name for a task: its ID (its title is the feature's title)."""
+    return t["id"]
 
 
 def work_folder_note(project, workdir):
@@ -7094,7 +7296,8 @@ def task_start(state, folder, body, client):
             return refused
         project, workdir, lite = got
         detail = task_detail(folder, t)
-        code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t))
+        code, made = new_feature(str(body.get("feature") or "").strip() or task_feature_name(t), t["title"],
+                                 "Give this board its own task prefix (⋯ ▸ Task prefix…) or type another name.")
         if code != 200:
             return code, made
         feature = feature_dir(made["name"])
@@ -7262,13 +7465,13 @@ def archived_list():
     base = tatty_root()[0] / "archive"
     if not base.is_dir():
         return []
-    when, out = archived_at(), []
+    when, out, titles = archived_at(), [], read_json(feature_titles_file(), {})
     for d in base.iterdir():
         if not d.is_dir() or d.name.startswith("."):
             continue
         docs = docs_of(d)
         updated = max([x["updated"] for x in docs] or [d.stat().st_mtime])
-        out.append({"name": d.name, "folder": d.as_posix(), "docs": len(docs), "updated": updated,
+        out.append({"name": d.name, "title": feature_title(d.name, d, titles), "folder": d.as_posix(), "docs": len(docs), "updated": updated,
                     "archivedAt": when.get(d.name, updated)})
     return sorted(out, key=lambda a: -a["archivedAt"])
 
@@ -7375,8 +7578,8 @@ def rekey_feature(old, new, old_board):
 
 
 def forget_feature_records(name):
-    """Drop what Tatty keeps per feature name: the model and effort its workflow started on and
-    its branch record. (The git branch itself is left: Tatty never deletes one.)"""
+    """Drop what Tatty keeps per feature name: the model and effort its workflow started on,
+    its branch record and its title. (The git branch itself is left: Tatty never deletes one.)"""
     with BRANCH_LOCK:
         rows = branch_records()
         if rows.pop(name.lower(), None) is not None:
@@ -7384,6 +7587,7 @@ def forget_feature_records(name):
     models = read_json(feature_models_file(), {})
     if isinstance(models, dict) and models.pop(name, None) is not None:
         write_json(feature_models_file(), models)
+    set_feature_title(name, "")
 
 
 def remove_feature_worktree(name):
@@ -7750,7 +7954,7 @@ def task_write_cancel(state, folder, b, client):
 
 TASK_POSTS = {"/api/tasks/create": task_create, "/api/tasks/save": task_save, "/api/tasks/move": task_move,
               "/api/tasks/columns": task_columns, "/api/tasks/clear": task_clear, "/api/tasks/delete": task_delete,
-              "/api/tasks/adopt": task_adopt, "/api/tasks/start": task_start,
+              "/api/tasks/adopt": task_adopt, "/api/tasks/start": task_start, "/api/tasks/prefix": task_prefix,
               "/api/tasks/write": task_write_start, "/api/tasks/write-cancel": task_write_cancel}
 
 
@@ -7758,7 +7962,7 @@ def tasks_post(st, path, b):
     if not isinstance(b, dict):
         return 400, {"error": "a JSON object, please"}
     if path == "/api/tasks/new-board":
-        code, answer = new_task_board(b.get("name", ""), b.get("columns"))
+        code, answer = new_task_board(b.get("name", ""), b.get("columns"), b.get("prefix", ""))
         if code == 200:
             st.emit("tasks", list=True, client=str(b.get("client", ""))[:40])
         return code, answer
@@ -8987,7 +9191,8 @@ class Handler(BaseHTTPRequestHandler):
             chosen = pick_folder(st, str(b.get("start", "")), str(b.get("title", ""))[:100], kind="file")
             return self.send(200, {"path": chosen} if chosen else {"cancelled": True})
         if path == "/api/new-feature":
-            code, answer = new_feature(b.get("name", ""))
+            # {title}: named by the next number under the project's short name; {name} (an older page): as typed
+            code, answer = new_numbered_feature(b["title"]) if "title" in b else new_feature(b.get("name", ""))
             return self.send(code, answer)
         if path == "/api/new-design":
             code, answer = new_design(st, b.get("name", ""), b.get("intake", ""))

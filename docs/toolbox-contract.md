@@ -362,7 +362,7 @@ toolbox has no part in it. What it does, and the limits it keeps:
   notes); and any status the person picks in the ticket panel's **Move to** row
   or drops the ticket's card on. A ticket already in the status is left alone.
 - **One document written.** Start workflow, or Start lite, makes
-  `<root>/features/<KEY> - <summary>` (refused if it exists and isn't empty)
+  `<root>/features/<KEY>` (refused if it exists and isn't empty)
   and writes `<name> - Ticket.md` in it: the ticket's fields, its description,
   sub-tasks and links, and, when the work is done in another folder than the
   one the session runs in, a `## Working folder` section. The workflow plans
@@ -392,7 +392,7 @@ has no part in it:
   haiku for the no-tools run), `TATTY_TASKS_BUDGET` (default 1),
   `TATTY_TASKS_BUDGET_PROJECT` (default 2) and `TATTY_TASKS_TIMEOUT`.
 - **One document written for the toolbox.** **Start workflow** makes
-  `<root>/features/<ID> - <title>` (refused if it exists and isn't empty) and
+  `<root>/features/<ID>` (refused if it exists and isn't empty) and
   writes `<name> - Ticket.md` in it: the task's fields, its description and its
   other sections. The workflow plans from it; Tatty never touches it again,
   except that **Cancel workflow** moves a feature folder holding nothing but

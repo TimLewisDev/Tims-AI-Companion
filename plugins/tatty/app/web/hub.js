@@ -70,7 +70,7 @@ function hubProjectCard(p, data, redraw, msg) {
     el("div", { class: "hub-path" }, "Folder: ", copyable(p.root)),
     p.repo ? el("div", { class: "hub-path" }, "Code: ", copyable(p.repo), p.repoExists ? "" : el("span", { class: "st missing" }, " (missing)")) : "",
     el("div", { class: "dim small" },
-      p.features === 1 ? "1 feature" : `${p.features} features`, " · ",
+      p.features === 1 ? "1 feature" : `${p.features} features`, p.key ? ` · new ones are ${p.key}-…` : "", " · ",
       p.lastOpened ? `opened ${ago(p.lastOpened)}` : "not opened yet"),
   ];
   const edit = el("button", { type: "button", title: "Rename it, or set the code repo its sessions start in", onclick: () => hubEditPanel(p, redraw) }, "Edit…");
@@ -92,20 +92,31 @@ function hubEditPanel(p, redraw) {
   openSidePanel(`Edit ${p.name}`, msg => {
     const name = el("input", { value: p.name, "aria-label": "Project name", maxlength: "80" });
     const repo = el("input", { value: p.repo || "", "aria-label": "Code repo", placeholder: "(optional) a git repo for its sessions" });
+    const key = shortNameInput(p.key || "");
     return el("form", { class: "hub-form", onsubmit: async e => {
       e.preventDefault();
-      try { await api("/api/hub", { action: "update", id: p.id, name: name.value, repo: repo.value.trim() }); closeSidePanel(); redraw(); }
+      try { await api("/api/hub", { action: "update", id: p.id, name: name.value, repo: repo.value.trim(), key: key.value.trim() }); closeSidePanel(); redraw(); }
       catch (err) { msg.className = "home-note small st missing"; msg.textContent = String(err.message || err); }
     } },
     el("label", {}, "Name", name),
+    el("label", {}, "Short name", key, el("span", { class: "dim small" }, `Its new features are numbered ${key.value || "TAT"}-0001, …`)),
     el("label", {}, "Code repo", el("div", { class: "row" }, repo,
       el("button", { type: "button", onclick: async () => { const got = await pickFolder("Choose the project's code repo", repo.value); if (got) repo.value = got; } }, "Browse…"))),
     el("button", { type: "submit", class: "primary" }, "Save"));
   });
 }
 
+// A project's short name (TAT, STAR): what its new features are numbered under. Capitals and digits.
+function shortNameInput(value) {
+  const key = el("input", { value, "aria-label": "Short name", maxlength: "10", class: "tprefix", placeholder: "e.g. TAT" });
+  key.addEventListener("input", () => { key.value = key.value.toUpperCase(); });
+  return key;
+}
+
 function hubNewForm(data, msg, redraw) {
   const name = el("input", { "aria-label": "Project name", maxlength: "80", placeholder: "e.g. Payments app" });
+  const key = shortNameInput("");
+  name.addEventListener("input", () => { key.placeholder = (name.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().replace(/^[0-9]+/, "").slice(0, 3)) || "e.g. TAT"; });
   const root = el("input", { "aria-label": "Project folder", placeholder: `${data.default}/<name>` });
   const repo = el("input", { "aria-label": "Code repo", placeholder: "(optional) a git repo for its sessions" });
   const browse = (input, title) => el("button", { type: "button", onclick: async () => {
@@ -115,13 +126,14 @@ function hubNewForm(data, msg, redraw) {
     e.preventDefault();
     if (!name.value.trim() && !root.value.trim()) { msg.className = "home-note small st missing"; msg.textContent = "Give the project a name."; return; }
     try {
-      const got = await api("/api/hub", { action: "add", name: name.value.trim(), root: root.value.trim(), repo: repo.value.trim(), create: true, open: true });
+      const got = await api("/api/hub", { action: "add", name: name.value.trim(), root: root.value.trim(), repo: repo.value.trim(), key: key.value.trim(), create: true, open: true });
       openedProject(data, got.project, redraw);
     } catch (err) { msg.className = "home-note small st missing"; msg.textContent = String(err.message || err); }
   } },
   el("h3", {}, "New project"),
   el("p", { class: "dim small" }, "A project is a folder of its own where Tatty keeps its features, designs and tasks. Pick a folder that already holds one to add it."),
   el("label", {}, "Name", name),
+  el("label", {}, "Short name (its new features are numbered with it, e.g. TAT-0001)", key),
   el("label", {}, "Folder", el("div", { class: "row" }, root, data.picker ? browse(root, "Choose the project's folder") : "")),
   el("label", {}, "Code repo", el("div", { class: "row" }, repo, data.picker ? browse(repo, "Choose the project's code repo") : "")),
   el("button", { type: "submit", class: "primary" }, "Create and open"));

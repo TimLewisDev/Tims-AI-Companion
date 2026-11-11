@@ -397,6 +397,11 @@ has "opening leaves the Hub pending: it is the launcher" "$T/st" '"pending": tru
 has "the root moved" "$HH/root" "beta"
 hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"name\":\"Alpha 2\"}" >"$T/j"
 has "a project is renamed" "$T/j" '"name": "Alpha 2"'
+has "short name: made from the name when none is set" "$T/j" '"key": "ALP"'
+hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"key\":\"al9\"}" >"$T/j"
+has "short name: set, in capitals" "$T/j" '"key": "AL9"'
+hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"key\":\"9-x\"}" >"$T/j"
+has "short name: only capitals and digits, a letter first" "$T/j" "A short name is a capital letter"
 hpost /api/hub "{\"action\":\"forget\",\"id\":\"$ALPHA\"}" >"$T/j"
 hasnt "a forgotten project is gone from the list" "$T/j" "Alpha 2"
 [ -d "$HW/alpha/features" ] && ok "forgetting deletes no folder" || bad "forgetting deletes no folder"
@@ -891,6 +896,25 @@ for n in "a/b" "" ".." "what?"; do
 	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"$n\"}" "$U/api/new-feature")" = 400 ] &&
 		ok "refused name: '$n'" || bad "refused name: '$n'"
 done
+get /api/features >"$T/j"
+NF=$(pick "$T/j" "d['nextId']")
+case "$NF" in [A-Z]*-0001) ok "the features list says the next new feature's ID" ;; *) bad "the features list says the next new feature's ID" "$NF" ;; esac
+post /api/new-feature '{"title":"A settings page: with a very long title, longer than the branch takes"}' >"$T/j"
+N1=$(pick "$T/j" "d['name']")
+[ "$N1" = "$NF" ] && ok "new feature: named by the next ID" || bad "new feature: named by the next ID" "$(cat "$T/j")"
+[ -d "$FX/features/$N1" ] && ok "new feature: its folder is the ID" || bad "new feature: its folder is the ID"
+get "/api/feature?name=$N1" >"$T/j"
+[ "$(pick "$T/j" "d['title']")" = "A settings page: with a very long title, longer than the branch takes" ] && ok "new feature: what was typed is its title" || bad "new feature: what was typed is its title" "$(pick "$T/j" "d.get('title')")"
+post /api/new-feature '{"title":"Second"}' >"$T/j"
+N2=$(pick "$T/j" "d['name']")
+[ "${N2%-*}" = "${N1%-*}" ] && [ "${N2##*-}" = 0002 ] && ok "new feature: the next number" || bad "new feature: the next number" "$N1 $N2"
+post /api/feature/delete "{\"name\":\"$N2\",\"confirm\":\"I understand\"}" >/dev/null
+post /api/new-feature '{"title":"Third"}' >"$T/j"
+[ "$(pick "$T/j" "d['name']")" = "${N1%-*}-0003" ] && ok "new feature: a deleted feature's number isn't used again" || bad "new feature: a deleted feature's number isn't used again" "$(cat "$T/j")"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"title":"  "}' "$U/api/new-feature")" = 400 ] &&
+	ok "new feature: it needs a title" || bad "new feature: it needs a title"
+get /api/features >"$T/j"
+[ "$(pick "$T/j" "[f.get('title') for f in d['features'] if f['name'] == 'Shiny Thing']")" = "['']" ] && ok "a feature named as typed has no title" || bad "a feature named as typed has no title" "$(pick "$T/j" "[(f['name'], f.get('title')) for f in d['features']]")"
 
 fi
 if section project; then
@@ -988,6 +1012,11 @@ here_branch() { git -C "$GR" branch --show-current; }
 post /api/new-feature '{"name":"Brand New"}' >/dev/null
 get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
 has "a first Start would make a branch" "$T/j" '"create": "feature/Brand-New"'
+post /api/new-feature '{"title":"A settings page: with a very long title, longer than the branch takes"}' >"$T/j"
+N1=$(pick "$T/j" "d['name']")
+get "/api/branch?name=$N1&project=$GRW" >"$T/j"
+[ "$(pick "$T/j" "d['create']")" = "feature/$N1-a-settings-page-with-a-very" ] && ok "a feature named by an ID: its branch is the ID and its title's first words" || bad "a feature named by an ID: its branch is the ID and its title's first words" "$(pick "$T/j" "d.get('create')")"
+post /api/feature/delete "{\"name\":\"$N1\",\"confirm\":\"I understand\"}" >/dev/null
 has "from the branch the repo is on" "$T/j" '"current": "main"'
 [ "$(here_branch)" = main ] && ok "looking changes nothing" || bad "looking changes nothing"
 printf 'x' >>"$GR/a"
@@ -2188,24 +2217,27 @@ hasnt "the ticket run may only read" "$T/jira-issue.args" "mcp__atlassian__trans
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ABC-1"}' "$U/api/jira/start")" = 400 ] && ok "and a project" || bad "and a project"
 post /api/jira/start "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" >"$T/js"
 has "a workflow starts from a ticket" "$T/js" '"ok": true'
-has "as a feature named for it" "$T/js" '"feature": "ABC-1 - Fix the thing"'
-TK="$FX/features/ABC-1 - Fix the thing/ABC-1 - Fix the thing - Ticket.md"
+has "as a feature named for it" "$T/js" '"feature": "ABC-1"'
+TK="$FX/features/ABC-1/ABC-1 - Ticket.md"
 [ -f "$TK" ] && ok "the ticket is written into its folder" || bad "the ticket is written into its folder"
 has "as a document" "$TK" "# ABC-1: Fix the thing"
 has "with its description" "$TK" "1. Open it"
 has "and its link" "$TK" "(https://example.atlassian.net/browse/ABC-1)"
 has "the workflow's own first step, on the ticket" "$T/js" "Prompt: /tt-adversarial-plan the Jira ticket ABC-1 in"
-has "naming the folder and prefix as tt-workflow does" "$T/js" "Prefix: ABC-1 - Fix the thing"
+has "naming the folder and prefix as tt-workflow does" "$T/js" "Prefix: ABC-1"
+hasnt "the prefix is only the key" "$T/js" "Prefix: ABC-1 -"
+has "the session is named by the key, with the summary" "$T/js" "Name: ABC-1 \u00b7 Fix the thing : "
 has "the ticket moves" "$T/js" '"moving": true'
 jira_wait
 has "by the transition to In Progress" "$T/jira-move.args" "transition id 7"
 has "the move run may move" "$T/jira-move.args" "mcp__atlassian__transitionJiraIssue"
 hasnt "and do nothing else" "$T/jira-move.args" "mcp__atlassian__getJiraIssue"
 [ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "In Progress/inprogress" ] && ok "the board shows it moved" || bad "the board shows it moved" "$(pick "$T/jb" "d['issues'][0]")"
-[ "$(pick "$T/jb" "d['started'].get('ABC-1')")" = "ABC-1 - Fix the thing" ] && ok "the board knows its feature" || bad "the board knows its feature"
+[ "$(pick "$T/jb" "d['started'].get('ABC-1')")" = "ABC-1" ] && ok "the board knows its feature" || bad "the board knows its feature"
 [ "$(pick "$T/jb" "d['project']")" = "$HERE" ] && ok "the project is remembered for the next" || bad "the project is remembered for the next" "$(pick "$T/jb" "d['project']")"
-get "/api/feature?name=$($PY -c 'import urllib.parse; print(urllib.parse.quote("ABC-1 - Fix the thing"))')" >"$T/j"
+get "/api/feature?name=$($PY -c 'import urllib.parse; print(urllib.parse.quote("ABC-1"))')" >"$T/j"
 has "it is one of the features, its ticket first" "$T/j" '"doc": "Ticket"'
+[ "$(pick "$T/j" "d['title']")" = "Fix the thing" ] && ok "its title is the ticket's summary" || bad "its title is the ticket's summary" "$(pick "$T/j" "d.get('title')")"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" "$U/api/jira/start")" = 409 ] && ok "not started twice into the same folder" || bad "not started twice into the same folder"
 rm -f "$T/jira-move.args"
 post /api/jira/move '{"key":"ABC-2"}' >/dev/null; jira_wait
@@ -2215,7 +2247,7 @@ has "and the page is told so" "$T/ev" "ABC-2 is already In Review"
 [ "$(code "$U/static/jira.js")" = 200 ] && ok "jira.js served" || bad "jira.js served"
 # a request opened for ABC-1's feature sends the ticket to In Review, whatever the board had said
 rm -f "$T/jira-move.args"
-post /api/merge '{"name":"ABC-1 - Fix the thing","action":"opened","url":"https://git.example/mr/3"}' >"$T/j"
+post /api/merge '{"name":"ABC-1","action":"opened","url":"https://git.example/mr/3"}' >"$T/j"
 has "an opened request is recorded" "$T/j" '"state": "opened"'
 jira_wait
 has "the ticket goes to In Review (by the transition's id)" "$T/jira-move.args" "transition id 5"
@@ -2248,7 +2280,8 @@ has "a lite workflow starts from a ticket, with a work folder" "$T/js" '"ok": tr
 has "named as it is asked" "$T/js" '"feature": "ABC-2 - Under way"'
 has "with the lite route's own command" "$T/js" "Prompt: /tt-workflow-lite \\\""
 has "on the ticket" "$T/js" "the Jira ticket ABC-2 in"
-has "named as lite" "$T/js" "Name: ABC-2 - Under way : Lite"
+has "named as lite" "$T/js" "Name: ABC-2 - Under way \\u00b7 "
+has "as lite" "$T/js" " : Lite\\nPrompt:"
 has "the session adds the work folder" "$T/js" "--add-dir $FX"
 has "and still runs in the project" "$T/js" "cd $HERE &&"
 has "and says where the work is done" "$T/js" "Never read, build or verify against $HERE"
@@ -2373,7 +2406,13 @@ has "boards live in the root's tasks folder" "$T/j" "fxroot/tasks"
 [ "$(tk new-board '{"name":"a/b"}')" = 400 ] && ok "a board's name is a folder's" || bad "a board's name is a folder's"
 [ "$(tk new-board '{"name":"Sample"}')" = 409 ] && ok "a board isn't made over another" || bad "a board isn't made over another"
 [ "$(tk new-board '{"name":"Game","columns":["To Do","backlog"]}')" = 400 ] && ok "Backlog isn't a column's name" || bad "Backlog isn't a column's name"
+# each board numbers its tasks with a prefix of its own: a workflow started from a task is named by its ID
+[ "$(tk new-board '{"name":"Game","prefix":"T"}')" = 400 ] && has "a prefix another board has is refused" "$T/tk" "The Sample board numbers its tasks T- already" || bad "a prefix another board has is refused" "$(cat "$T/tk")"
+[ "$(tk new-board '{"name":"Game","prefix":"t-0"}')" = 400 ] && ok "a prefix is capitals and digits" || bad "a prefix is capitals and digits" "$(cat "$T/tk")"
+[ "$(tk prefix '{"name":"Sample","prefix":"s"}')" = 200 ] && [ "$(pick "$T/tk" "d['prefix']")" = S ] && ok "a board's prefix is changed" || bad "a board's prefix is changed" "$(cat "$T/tk")"
 [ "$(tk new-board '{"name":"Game","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "a new board" || bad "a new board" "$(cat "$T/tk")"
+[ "$(pick "$T/tk" "d['prefix']")" = T ] && ok "given T when no board has it" || bad "given T when no board has it" "$(cat "$T/tk")"
+[ "$(tk prefix '{"name":"Sample","prefix":"T"}')" = 400 ] && ok "a prefix change to another board's is refused" || bad "a prefix change to another board's is refused" "$(cat "$T/tk")"
 GB="$FX/tasks/Game"
 [ -f "$GB/board.json" ] && [ -d "$GB/items" ] && ok "a board.json and an items folder" || bad "a board.json and an items folder"
 for i in 1 2 3 4 5; do post /api/tasks/create "{\"name\":\"Game\",\"title\":\"Task $i\",\"labels\":\"ui, UI , input\"}" >"$T/c$i" & done; wait
@@ -2470,19 +2509,22 @@ get "/api/tasks/task?name=Game&id=T-0004" >"$T/j"
 # Start workflow, as from a Jira ticket
 [ "$(tk start '{"name":"Game","id":"T-0006"}')" = 400 ] && ok "a workflow needs a project" || bad "a workflow needs a project"
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from a task" || bad "a workflow starts from a task" "$(cat "$T/tk")"
-has "as a feature named for it" "$T/tk" '"feature": "T-0006 - Pause menu"'
-TK="$FX/features/T-0006 - Pause menu/T-0006 - Pause menu - Ticket.md"
+has "as a feature named for it" "$T/tk" '"feature": "T-0006"'
+TK="$FX/features/T-0006/T-0006 - Ticket.md"
 [ -f "$TK" ] && ok "the task is written into its folder" || bad "the task is written into its folder"
+has "the session is named by the ID, with the title" "$T/tk" "Name: T-0006 \u00b7 Pause: menu? : Start"
+get "/api/feature?name=T-0006" >"$T/j"
+[ "$(pick "$T/j" "d['title']")" = "Pause: menu?" ] && ok "the feature's title is the task's" || bad "the feature's title is the task's" "$(pick "$T/j" "d.get('title')")"
 has "as its ticket" "$TK" "# T-0006: Pause: menu?"
 has "with where it came from" "$TK" '- **Task:** T-0006 on the Tasks board "Game"'
 has "type: the ticket carries the task's type" "$TK" "- **Type:** Task"
 has "the workflow's own first step, on the task" "$T/tk" "Prompt: /tt-adversarial-plan the task T-0006 in"
 has "the task moves on" "$T/tk" '"moved": "Doing"'
 has "its file says so" "$(taskfile T-0006)" "- **Status:** Doing"
-has "and names its feature" "$(taskfile T-0006)" "- **Feature:** T-0006 - Pause menu"
+has "and names its feature" "$(taskfile T-0006)" "- **Feature:** T-0006"
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 409 ] && ok "not started twice" || bad "not started twice"
 get "/api/tasks/board?name=Game" >"$T/j"
-[ "$(pick "$T/j" "(d['started'].get('T-0006'), d['options']['project'])")" = "('T-0006 - Pause menu', '$HERE')" ] && ok "the board remembers the feature and the project" || bad "the board remembers the feature and the project" "$(pick "$T/j" "(d['started'], d['options'])")"
+[ "$(pick "$T/j" "(d['started'].get('T-0006'), d['options']['project'])")" = "('T-0006', '$HERE')" ] && ok "the board remembers the feature and the project" || bad "the board remembers the feature and the project" "$(pick "$T/j" "(d['started'], d['options'])")"
 hasnt "no work folder: the session isn't widened" "$T/tk" "--add-dir"
 hasnt "and the ticket has no work-folder section" "$TK" "## Working folder"
 # the linked project is where the session runs; the work folder is added to it
@@ -2501,7 +2543,7 @@ get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"workdir\":\"$FX\",\"mode\":\"lite\"}")" = 200 ] && ok "a lite workflow starts from a task" || bad "a lite workflow starts from a task" "$(cat "$T/tk")"
 has "with the lite route's own command" "$T/tk" "Prompt: /tt-workflow-lite \\\""
 has "on the task" "$T/tk" "the task T-0007 in"
-has "named as lite" "$T/tk" "Name: T-0007 - Some idea : Lite"
+has "named as lite" "$T/tk" "Name: T-0007 \u00b7 Some idea : Lite"
 has "with the work folder added" "$T/tk" "--add-dir $FX"
 has "and the task moves on" "$T/tk" '"moved": "Doing"'
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 409 ] && ok "lite isn't started twice either" || bad "lite isn't started twice either"
@@ -2511,62 +2553,62 @@ get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(pick "$T/j" "d['workflows']['T-0007']['session']['status']")" = "starting" ] && ok "and its session" || bad "and its session" "$(pick "$T/j" "d['workflows']['T-0007']")"
 has "and where it stands" "$T/j" '"phase": "empty"'
 [ "$(pick "$T/j" "d['begun']['T-0007']['from']")" = "backlog" ] && ok "the board remembers where the task came from" || bad "the board remembers where the task came from" "$(pick "$T/j" "d['begun']")"
-get "/api/feature?name=T-0007%20-%20Some%20idea" >"$T/j"
+get "/api/feature?name=T-0007" >"$T/j"
 [ "$(pick "$T/j" "(d['task'], d['ticketOnly'])")" = "({'board': 'Game', 'id': 'T-0007'}, True)" ] && ok "a feature knows its task, and that it holds only the ticket" || bad "a feature knows its task" "$(pick "$T/j" "(d['task'], d['ticketOnly'])")"
 # cancel: sessions ended, the start undone, a ticket-only folder moved out of the way
 wcancel() { curl -s -o "$T/wc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/workflow/cancel"; }
 [ "$(wcancel '{"name":"No such feature"}')" = 404 ] && ok "cancelling a feature there isn't is a 404" || bad "cancelling a feature there isn't is a 404"
-[ "$(wcancel '{"name":"T-0007 - Some idea"}')" = 200 ] && ok "a workflow is cancelled" || bad "a workflow is cancelled" "$(cat "$T/wc")"
+[ "$(wcancel '{"name":"T-0007"}')" = 200 ] && ok "a workflow is cancelled" || bad "a workflow is cancelled" "$(cat "$T/wc")"
 has "its session ended" "$T/wc" '"stopped": 1'
 has "the task went back" "$T/wc" '"movedTo": "Backlog"'
 has "its ticket-only folder was removed" "$T/wc" '"folder": "removed"'
-[ ! -e "$FX/features/T-0007 - Some idea" ] && ls "$FX/features/.deleted/T-0007 - Some idea/"*Ticket.md >/dev/null 2>&1 && ok "into features/.deleted, not gone" || bad "into features/.deleted, not gone" "$(ls -a "$FX/features" "$FX/features/.deleted")"
-hasnt "the task names no feature" "$(taskfile T-0007)" "T-0007 - Some idea"
+[ ! -e "$FX/features/T-0007" ] && ls "$FX/features/.deleted/T-0007/"*Ticket.md >/dev/null 2>&1 && ok "into features/.deleted, not gone" || bad "into features/.deleted, not gone" "$(ls -a "$FX/features" "$FX/features/.deleted")"
+hasnt "the task names no feature" "$(taskfile T-0007)" "- **Feature:** T-0007"
 has "and is in the backlog again" "$(taskfile T-0007)" "- **Status:** Backlog"
 get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(pick "$T/j" "('T-0007' in d['started'], 'T-0007' in d['begun'], 'T-0007' in d['workflows'])")" = "(False, False, False)" ] && ok "the board forgets the start" || bad "the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
 get /api/sessions >"$T/j"
-hasnt "and no tab is left for it" "$T/j" "T-0007 - Some idea"
+hasnt "and no tab is left for it" "$T/j" '"feature": "T-0007"'
 [ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 200 ] && ok "the task can be started again" || bad "the task can be started again" "$(cat "$T/tk")"
 # a folder with documents in it stays
 F5=$(ls -d "$FX/features/T-0005"* | head -1)
 printf '# Notes\n' >"$F5/Notes.md"
-[ "$(wcancel '{"name":"T-0005 - Renamed five"}')" = 200 ] && ok "a workflow with documents is cancelled too" || bad "a workflow with documents is cancelled too" "$(cat "$T/wc")"
+[ "$(wcancel '{"name":"T-0005"}')" = 200 ] && ok "a workflow with documents is cancelled too" || bad "a workflow with documents is cancelled too" "$(cat "$T/wc")"
 has "its folder was kept" "$T/wc" '"folder": "kept"'
 [ -f "$F5/Notes.md" ] && ok "with its documents" || bad "with its documents"
 hasnt "but the task is no longer linked to it" "$(taskfile T-0005)" "- **Feature:** T-0005"
 # an archived feature's workflow can be cancelled too: the task is freed, the feature stays archived
-post /api/feature/archive '{"name":"T-0006 - Pause menu"}' >/dev/null
-[ -d "$FX/archive/T-0006 - Pause menu" ] && has "the task still names its archived feature" "$(taskfile T-0006)" "- **Feature:** T-0006 - Pause menu" || bad "an archived feature keeps its task link"
+post /api/feature/archive '{"name":"T-0006"}' >/dev/null
+[ -d "$FX/archive/T-0006" ] && has "the task still names its archived feature" "$(taskfile T-0006)" "- **Feature:** T-0006" || bad "an archived feature keeps its task link"
 get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(pick "$T/j" "(d['workflows']['T-0006']['missing'], d['workflows']['T-0006']['archived'])")" = "(True, True)" ] && ok "the board says its feature is archived" || bad "the board says its feature is archived" "$(pick "$T/j" "d['workflows']")"
-[ "$(wcancel '{"name":"T-0006 - Pause menu"}')" = 200 ] && ok "an archived feature's workflow is cancelled" || bad "an archived feature's workflow is cancelled" "$(cat "$T/wc")"
+[ "$(wcancel '{"name":"T-0006"}')" = 200 ] && ok "an archived feature's workflow is cancelled" || bad "an archived feature's workflow is cancelled" "$(cat "$T/wc")"
 has "its folder is reported as archived" "$T/wc" '"folder": "archived"'
 has "and the task went back" "$T/wc" '"movedTo": "Backlog"'
-[ -f "$FX/archive/T-0006 - Pause menu/T-0006 - Pause menu - Ticket.md" ] && ok "the feature stays in the archive, ticket and all" || bad "the feature stays in the archive"
+[ -f "$FX/archive/T-0006/T-0006 - Ticket.md" ] && ok "the feature stays in the archive, ticket and all" || bad "the feature stays in the archive"
 hasnt "the task is no longer linked to it" "$(taskfile T-0006)" "- **Feature:** T-0006"
 get "/api/tasks/board?name=Game" >"$T/j"
 [ "$(pick "$T/j" "('T-0006' in d['started'], 'T-0006' in d['begun'])")" = "(False, False)" ] && ok "and the board forgets the start" || bad "and the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
-rm -rf "$FX/archive/T-0006 - Pause menu"  # the archive tests below expect only theirs
+rm -rf "$FX/archive/T-0006"  # the archive tests below expect only theirs
 # a task's type: kept in its file, a missing or unknown one reads as a task (a board of its own, so the counts above stand)
-[ "$(tk new-board '{"name":"Kinds","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "type: a board to try types on" || bad "type: a board to try types on" "$(cat "$T/tk")"
+[ "$(tk new-board '{"name":"Kinds","prefix":"K","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "type: a board to try types on" || bad "type: a board to try types on" "$(cat "$T/tk")"
 KB="$FX/tasks/Kinds"
 kfile() { ls "$KB/items/$1"*.md 2>/dev/null | head -1; }
 kget() { get "/api/tasks/task?name=Kinds&id=$1" >"$T/j"; }
 [ "$(tk create '{"name":"Kinds","title":"Crash on pause","type":"Bug"}')" = 200 ] && [ "$(pick "$T/tk" "d['task']['type']")" = Bug ] &&
-	grep -qxF -- '- **Type:** Bug' "$(kfile T-0001)" && ok "type: a bug is created with its line" || bad "type: a bug is created with its line" "$(cat "$T/tk")"
+	grep -qxF -- '- **Type:** Bug' "$(kfile K-0001)" && ok "type: a bug is created with its line" || bad "type: a bug is created with its line" "$(cat "$T/tk")"
 [ "$(tk create '{"name":"Kinds","title":"No type given"}')" = 200 ] && [ "$(pick "$T/tk" "d['task']['type']")" = Task ] &&
-	grep -qxF -- '- **Type:** Task' "$(kfile T-0002)" && ok "type: a task made with none is a task" || bad "type: a task made with none is a task" "$(cat "$T/tk")"
+	grep -qxF -- '- **Type:** Task' "$(kfile K-0002)" && ok "type: a task made with none is a task" || bad "type: a task made with none is a task" "$(cat "$T/tk")"
 kn=$(ls "$KB/items" | wc -l | tr -d ' ')
 [ "$(tk create '{"name":"Kinds","title":"Odd one","type":"nonsense"}')" = 400 ] && [ "$(ls "$KB/items" | wc -l | tr -d ' ')" = "$kn" ] &&
 	ok "type: a name that isn't a type is refused and makes no file" || bad "type: a name that isn't a type is refused and makes no file" "$(cat "$T/tk")"
-kget T-0001; REV=$(pick "$T/j" "d['rev']")
-[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0001\",\"rev\":\"$REV\",\"type\":\"Story\"}")" = 200 ] &&
-	[ "$(grep -c -- '- \*\*Type:\*\*' "$(kfile T-0001)")" = 1 ] && has "type: a save changes the one Type line" "$(kfile T-0001)" "- **Type:** Story" || bad "type: a save changes the one Type line" "$(cat "$(kfile T-0001)")"
-kget T-0001
+kget K-0001; REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"K-0001\",\"rev\":\"$REV\",\"type\":\"Story\"}")" = 200 ] &&
+	[ "$(grep -c -- '- \*\*Type:\*\*' "$(kfile K-0001)")" = 1 ] && has "type: a save changes the one Type line" "$(kfile K-0001)" "- **Type:** Story" || bad "type: a save changes the one Type line" "$(cat "$(kfile K-0001)")"
+kget K-0001
 [ "$(pick "$T/j" "d['type']")" = Story ] && ok "type: and the task reads as that type" || bad "type: and the task reads as that type" "$(head -c 300 "$T/j")"
 REV=$(pick "$T/j" "d['rev']")
-[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0001\",\"rev\":\"$REV\",\"type\":\"nonsense\"}")" = 400 ] && has "type: a save with an unknown type is refused, the file left alone" "$(kfile T-0001)" "- **Type:** Story" || bad "type: a save with an unknown type is refused, the file left alone"
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"K-0001\",\"rev\":\"$REV\",\"type\":\"nonsense\"}")" = 400 ] && has "type: a save with an unknown type is refused, the file left alone" "$(kfile K-0001)" "- **Type:** Story" || bad "type: a save with an unknown type is refused, the file left alone"
 printf '# T-0050: By hand\n\n- **Status:** Backlog\n- **Priority:** Low\n\n## Description\n\nBy hand.\n' >"$KB/items/T-0050 - By hand.md"
 kget T-0050
 [ "$(pick "$T/j" "d['type']")" = Task ] && ok "type: a file with no Type line reads as a task" || bad "type: a file with no Type line reads as a task" "$(head -c 300 "$T/j")"
@@ -2677,20 +2719,20 @@ cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: still no task file touc
 fi
 if section taskmerge; then
 echo "# merging: the task board"
-[ "$(tk new-board '{"name":"Rev"}')" = 200 ] && ok "a board with the default columns" || bad "a board with the default columns" "$(cat "$T/tk")"
+[ "$(tk new-board '{"name":"Rev","prefix":"R"}')" = 200 ] && ok "a board with the default columns" || bad "a board with the default columns" "$(cat "$T/tk")"
 get "/api/tasks/board?name=Rev" >"$T/j"
 [ "$(pick "$T/j" "','.join(c['name'] for c in d['columns'])")" = "To Do,In Progress,In Review,QA Ready,Done" ] && ok "they include In Review and QA Ready" || bad "they include In Review and QA Ready" "$(pick "$T/j" "d['columns']")"
 [ "$(tk create '{"name":"Rev","title":"Ship it"}')" = 200 ] && ok "a task" || bad "a task"
-[ "$(tk start "{\"name\":\"Rev\",\"id\":\"T-0001\",\"project\":\"$GRW\"}")" = 200 ] && ok "its workflow starts" || bad "its workflow starts" "$(cat "$T/tk")"
+[ "$(tk start "{\"name\":\"Rev\",\"id\":\"R-0001\",\"project\":\"$GRW\"}")" = 200 ] && ok "its workflow starts" || bad "its workflow starts" "$(cat "$T/tk")"
 has "moved to In Progress" "$T/tk" '"moved": "In Progress"'
-RF=$(ls "$FX/tasks/Rev/items/T-0001"*.md | head -1)
-post /api/merge '{"name":"T-0001 - Ship it","action":"opened","url":"https://git.example/mr/9"}' >"$T/j"
+RF=$(ls "$FX/tasks/Rev/items/R-0001"*.md | head -1)
+post /api/merge '{"name":"R-0001","action":"opened","url":"https://git.example/mr/9"}' >"$T/j"
 has "an opened request is recorded" "$T/j" '"state": "opened"'
 has "its task is in review" "$RF" "- **Status:** In Review"
 get "/api/tasks/board?name=Rev" >"$T/j"
 QA=$(pick "$T/j" "[c['id'] for c in d['columns'] if c['name'] == 'QA Ready'][0]")
-post /api/tasks/move "{\"name\":\"Rev\",\"id\":\"T-0001\",\"to\":\"$QA\"}" >/dev/null
-post /api/merge '{"name":"T-0001 - Ship it","action":"merged"}' >"$T/j"
+post /api/tasks/move "{\"name\":\"Rev\",\"id\":\"R-0001\",\"to\":\"$QA\"}" >/dev/null
+post /api/merge '{"name":"R-0001","action":"merged"}' >"$T/j"
 has "merged" "$T/j" '"state": "merged"'
 has "a card you moved on stays where you put it" "$RF" "- **Status:** QA Ready"
 
@@ -2882,12 +2924,13 @@ has "it says to accept it first" "$T/j" "accept it first"
 [ "$(ex_post '{"name":"Inventory","ids":{},"board":"Inventory"}')" = 400 ] && ok "stories to export are named" || bad "stories to export are named"
 [ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-02\":\"$(hash_of US-02)\",\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\",\"newBoard\":true}")" = 200 ] &&
 	ok "export to a new board" || bad "export to a new board" "$(head -c 300 "$T/j")"
-[ "$(pick "$T/j" "[(c['story'], c['task']) for c in d['export']['created']]")" = "[('US-01', 'T-0001'), ('US-02', 'T-0002')]" ] &&
+[ "$(pick "$T/j" "[(c['story'], c['task']) for c in d['export']['created']]")" = "[('US-01', 'INVE-0001'), ('US-02', 'INVE-0002')]" ] &&
 	ok "a task each, in the stories' order" || bad "a task each, in the stories' order" "$(pick "$T/j" "d.get('export')")"
 [ -f "$IB/board.json" ] && ok "the board is made" || bad "the board is made"
-[ "$(pick "$IB/board.json" "d['order']['backlog']")" = "['T-0001', 'T-0002']" ] && ok "at the end of the backlog" || bad "at the end of the backlog"
-TF1="$IB/items/T-0001 - Pick up an item from the floor.md"
-TF2="$IB/items/T-0002 - Grab items from the floor.md"
+[ "$(pick "$IB/board.json" "d['prefix']")" = INVE ] && ok "numbering its tasks with a prefix of its own" || bad "numbering its tasks with a prefix of its own" "$(cat "$IB/board.json")"
+[ "$(pick "$IB/board.json" "d['order']['backlog']")" = "['INVE-0001', 'INVE-0002']" ] && ok "at the end of the backlog" || bad "at the end of the backlog"
+TF1="$IB/items/INVE-0001 - Pick up an item from the floor.md"
+TF2="$IB/items/INVE-0002 - Grab items from the floor.md"
 [ -f "$TF1" ] && [ -f "$TF2" ] && ok "named by ID and title" || bad "named by ID and title" "$(ls "$IB/items")"
 has "in the backlog" "$TF1" "- **Status:** Backlog"
 has "the story sentence is the description" "$TF1" "**As a** player, **I want** to pick up items, **so that** I can use them."
@@ -2898,10 +2941,10 @@ has "each criterion" "$TF1" "- Given a full bag, when I walk over it, then it st
 has "which story it was" "$TF1" '- **Story:** US-01 on the design board "Inventory"'
 hasnt "Ungrouped isn't a label" "$TF1" "Ungrouped"
 has "the group is the label" "$TF2" "- **Labels:** Pickup"
-[ "$(pick "$T/j" "(d['exported']['US-01']['task'], d['exported']['US-01']['changed'], 'US-04' in d['exported'])")" = "('T-0001', False, False)" ] &&
+[ "$(pick "$T/j" "(d['exported']['US-01']['task'], d['exported']['US-01']['changed'], 'US-04' in d['exported'])")" = "('INVE-0001', False, False)" ] &&
 	ok "the board knows which task each became" || bad "the board knows which task each became" "$(pick "$T/j" "d.get('exported')")"
-hasnt "never in the stories document" "$BD/Inventory - User Stories.md" "T-0001"
-get "/api/tasks/task?name=Inventory&id=T-0001" >"$T/t1"
+hasnt "never in the stories document" "$BD/Inventory - User Stories.md" "INVE-0001"
+get "/api/tasks/task?name=Inventory&id=INVE-0001" >"$T/t1"
 [ "$(pick "$T/t1" "[x for x in d['extra'] if x[0] == 'Story'][0][1]")" = 'US-01 on the design board "Inventory"' ] &&
 	ok "the Tasks board reads the Story field" || bad "the Tasks board reads the Story field" "$(head -c 300 "$T/t1")"
 [ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\"}")" = 200 ] &&
@@ -2914,14 +2957,14 @@ get "/api/design?name=Inventory" >"$T/j"
 st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-01\",\"hash\":\"$(hash_of US-01)\",\"title\":\"Pick up an item\"}" >/dev/null
 get "/api/design?name=Inventory" >"$T/j"
 [ "$(pick "$T/j" "d['exported']['US-01']['changed']")" = True ] && ok "a story edited after it went says so" || bad "a story edited after it went says so"
-[ "$(tk delete "{\"name\":\"Inventory\",\"id\":\"T-0001\",\"rev\":\"$(pick "$T/t1" "d['rev']")\"}")" = 200 ] && ok "its task deleted" || bad "its task deleted" "$(cat "$T/tk")"
+[ "$(tk delete "{\"name\":\"Inventory\",\"id\":\"INVE-0001\",\"rev\":\"$(pick "$T/t1" "d['rev']")\"}")" = 200 ] && ok "its task deleted" || bad "its task deleted" "$(cat "$T/tk")"
 get "/api/design?name=Inventory" >"$T/j"
 [ "$(pick "$T/j" "'US-01' in d['exported']")" = False ] && ok "frees the story to go again" || bad "frees the story to go again"
 [ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\"}")" = 200 ] &&
-	[ "$(pick "$T/j" "d['export']['created']")" = "[{'story': 'US-01', 'task': 'T-0003'}]" ] &&
+	[ "$(pick "$T/j" "d['export']['created']")" = "[{'story': 'US-01', 'task': 'INVE-0003'}]" ] &&
 	ok "and it goes again, as a new task" || bad "and it goes again, as a new task" "$(pick "$T/j" "d.get('export')")"
-[ "$(tk start "{\"name\":\"Inventory\",\"id\":\"T-0002\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from an exported story" || bad "a workflow starts from an exported story" "$(cat "$T/tk")"
-ITK="$FX/features/T-0002 - Grab items from the floor/T-0002 - Grab items from the floor - Ticket.md"
+[ "$(tk start "{\"name\":\"Inventory\",\"id\":\"INVE-0002\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from an exported story" || bad "a workflow starts from an exported story" "$(cat "$T/tk")"
+ITK="$FX/features/INVE-0002/INVE-0002 - Ticket.md"
 has "its Ticket has the story" "$ITK" "- **Story:** US-02 on the design board"
 has "and its acceptance criteria" "$ITK" "## Acceptance criteria"
 # the whiteboard under the notes: what's added is kept with the cards, and so is the rest
@@ -3323,11 +3366,11 @@ hasnt "its project choice is forgotten" "$TATTY_HOME/projects.tsv" "arch one"
 [ "$(ls "$TATTY_HOME/boards" 2>/dev/null | wc -l)" = "$NB" ] && ok "and its whiteboard file is gone" || bad "and its whiteboard file is gone"
 rm -rf "$FX/features/Arch One (2)"
 # a feature started from a task: deleting it undoes the start
-[ -d "$FX/features/T-0007 - Some idea" ] && {
-	[ "$(afp delete '{"name":"T-0007 - Some idea","confirm":"I understand"}')" = 200 ] && ok "a feature started from a task is deleted" || bad "a feature started from a task is deleted" "$(cat "$T/fa")"
+[ -d "$FX/features/T-0007" ] && {
+	[ "$(afp delete '{"name":"T-0007","confirm":"I understand"}')" = 200 ] && ok "a feature started from a task is deleted" || bad "a feature started from a task is deleted" "$(cat "$T/fa")"
 	has "the task is named" "$T/fa" '"id": "T-0007"'
-	[ ! -e "$FX/features/T-0007 - Some idea" ] && ok "its folder is gone" || bad "its folder is gone"
-	hasnt "the task names no feature" "$(taskfile T-0007)" "T-0007 - Some idea"
+	[ ! -e "$FX/features/T-0007" ] && ok "its folder is gone" || bad "its folder is gone"
+	hasnt "the task names no feature" "$(taskfile T-0007)" "- **Feature:** T-0007"
 	has "and is back in the backlog" "$(taskfile T-0007)" "- **Status:** Backlog"
 }
 # links (Windows junctions): the real folder goes, what else the folder links to does not
