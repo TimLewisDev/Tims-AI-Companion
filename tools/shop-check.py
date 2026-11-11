@@ -153,6 +153,24 @@ def main(argv):
         time.sleep(0.8)
         shot("7-new-avatar")
 
+        # Settings' Debug section: a wrong password refused, the right one unlocks it, and coins arrive
+        if "--debug-password" in argv:
+            secret = argv[argv.index("--debug-password") + 1]
+            p.js("location.hash = '#settings'; 1")
+            check("the debug section, locked", wait("!!document.querySelector('#debug-settings #debug-password')", 15))
+            p.js("{ const pw = document.querySelector('#debug-password'); pw.value = 'not it'; document.querySelector('#debug-unlock').click(); } 1")
+            check("a wrong password is refused", wait("document.querySelector('#debug-said').textContent === \"That isn't it.\"", 5))
+            p.js(f"{{ const pw = document.querySelector('#debug-password'); pw.value = {json.dumps(secret)}; document.querySelector('#debug-unlock').click(); }} 1")
+            check("the right one shows the coin buttons", wait("document.querySelectorAll('#debug-settings .debug-give').length === 3", 5))
+            before = int(p.js("document.querySelector('.purse-count').textContent.replace(/\\D/g, '')"))
+            p.js("{ const r = document.querySelectorAll('#debug-settings .debug-give')[1].getBoundingClientRect(); "
+                 "document.body.dispatchEvent(new PointerEvent('pointerdown', {clientX: r.x + 10, clientY: r.y + 10, bubbles: true})); "
+                 "document.querySelectorAll('#debug-settings .debug-give')[1].click(); } 1")
+            check("debug coins fly into the purse", wait("document.querySelectorAll('#coin-layer .fly-coin').length > 0", 6))
+            time.sleep(0.3)
+            shot("8-debug-coins")
+            check("and count in", wait(f"document.querySelector('.purse-count').textContent.replace(/\\D/g, '') === '{before + 100}'", 8))
+
         # what the tray app is sent: the chosen avatar in what he wears, in the window's own parts
         baked = p.js("TattyAvatar.bake('cat', {neck: 'bow', hat: 'top'}, '#3B6EA8')") or ""
         check("the tray app's description has his parts", all(x in baked for x in (

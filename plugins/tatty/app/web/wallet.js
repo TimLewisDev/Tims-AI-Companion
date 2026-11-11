@@ -142,7 +142,7 @@
   }
 
   // ---------------------------------------------------------------- earning and spending
-  const BY_HAND = new Set(["answer", "decision", "suggestion", "story"]);
+  const BY_HAND = new Set(["answer", "decision", "suggestion", "story", "debug"]);
   function earn(ev) {
     const amount = ev.amount || 0, balance = ev.balance;
     if (amount <= 0 || typeof balance !== "number") return;

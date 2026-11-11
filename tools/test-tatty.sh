@@ -97,6 +97,8 @@ EOS
 # whichever are installed on this machine. installed_modes() itself is checked
 # against real pointer folders further down.
 export TATTY_MODES=engineering,design
+# Settings' debug coins, with a password of the tests' own (server.py keeps only a hash of the real one).
+export TATTY_DEBUG_KEY=1c8bfe8f801d79745c4631d09fff36c82aa37fc4cce4fc946683d7b336b63032
 # (the server holds its log open until it has shut down: try again a few times rather than leave the folder behind)
 cleanup() { bash "$W" close >/dev/null 2>&1; local i; for i in 1 2 3 4 5 6 7 8; do rm -rf "$T" 2>/dev/null; [ -e "$T" ] || return 0; sleep 1; done; }
 trap cleanup EXIT
@@ -1915,6 +1917,21 @@ get /api/events >"$T/ev"
 	ok "and taken off" || bad "and taken off" "$(cat "$T/shop")"
 [ "$(shop '{"action":"choose","id":"owl"}')" = 409 ] && ok "an avatar not unlocked can't be chosen" || bad "an avatar not unlocked can't be chosen"
 [ "$(shop '{"action":"choose","id":"polished"}')" = 200 ] && ok "the one he starts with can" || bad "the one he starts with can"
+# Settings' Debug section: coins for the asking, but only with the password.
+dbg() { curl -s -o "$T/dbg" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/debug/coins"; }
+[ "$(dbg '{"password":"nope","amount":100}')" = 403 ] && ok "debug coins: a wrong password is refused" || bad "debug coins: a wrong password is refused"
+[ "$(dbg '{"password":"letmein","amount":0}')" = 200 ] && ok "the right one unlocks it" || bad "the right one unlocks it" "$(cat "$T/dbg")"
+had=$(coins)
+[ "$(dbg '{"password":"letmein","amount":500}')" = 200 ] && [ "$(coins)" = "$((had + 500))" ] &&
+	ok "and 500 coins arrive" || bad "and 500 coins arrive" "$had -> $(coins): $(cat "$T/dbg")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[(e['amount'], e['kind']) for e in d if e['type'] == 'coins'][-1]")" = "(500, 'debug')" ] &&
+	ok "said like any reward, for the purse" || bad "said like any reward, for the purse"
+[ "$(dbg '{"password":"letmein","amount":-200}')" = 200 ] && [ "$(coins)" = "$((had + 300))" ] &&
+	ok "a negative amount takes them away" || bad "a negative amount takes them away" "$(coins)"
+[ "$(dbg '{"password":"letmein","amount":"lots"}')" = 400 ] && [ "$(dbg '{"password":"letmein","amount":1000000}')" = 400 ] &&
+	ok "an amount that isn't a sensible number is refused" || bad "an amount that isn't a sensible number is refused"
+hasnt "the password itself isn't in the server" "$root/plugins/tatty/app/server.py" "tatemon"
 # A wallet edited by hand can't give him what he doesn't own.
 $PY -c "import json, sys; p = sys.argv[1]; w = json.load(open(p)); w.update(coins='lots', outfit={'hat': 'crown'}, avatar='owl'); json.dump(w, open(p, 'w'))" "$TATTY_HOME/wallet.json"
 get /api/wallet >"$T/w"

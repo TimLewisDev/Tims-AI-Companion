@@ -70,7 +70,59 @@ function drawSettings() {
     stepSettings(),
     chatSettings(s),
     branchSettings(s),
-    jiraSettings(s)));
+    jiraSettings(s),
+    debugSettings()));
+}
+
+// Debug: Tatty coins out of nowhere, for trying the shop (wallet.js shows them arriving). Locked
+// behind a password the server checks (server.py's debug_coins); once it is right, this window
+// remembers it until it closes (sessionStorage), and forgets it again with Lock.
+const DEBUG_PASS = "tt-debug";
+function debugSettings() {
+  const box = el("section", { id: "debug-settings" });
+  const head = () => el("h3", {}, "Debug");
+  const draw = () => {
+    const pass = sessionStorage.getItem(DEBUG_PASS) || "";
+    const msg = el("span", { class: "dim small", id: "debug-said" });
+    if (!pass) {
+      const pw = el("input", { type: "password", id: "debug-password", placeholder: "Password", autocomplete: "off", "aria-label": "Debug password" });
+      const unlock = async () => {
+        try {
+          await api("/api/debug/coins", { password: pw.value, amount: 0 });
+          sessionStorage.setItem(DEBUG_PASS, pw.value);
+          draw();
+        } catch (e) {
+          msg.textContent = e.status === 403 ? "That isn't it." : e.message;
+          pw.select();
+        }
+      };
+      pw.addEventListener("keydown", e => { if (e.key === "Enter") unlock(); });
+      box.replaceChildren(head(), el("p", { class: "dim small" }, "Tools for trying Tatty out. Locked."),
+        el("div", { class: "actions" }, pw, el("button", { type: "button", id: "debug-unlock", onclick: unlock }, "Unlock"), msg));
+      return;
+    }
+    const amount = el("input", { type: "number", id: "debug-amount", value: "100", step: "1", "aria-label": "Coins to award" });
+    const give = async n => {
+      if (!n) return;
+      try {
+        const r = await api("/api/debug/coins", { password: pass, amount: n });
+        msg.textContent = `Balance: ${r.coins.toLocaleString()}`;
+      } catch (e) {
+        if (e.status === 403) { sessionStorage.removeItem(DEBUG_PASS); draw(); return; }
+        msg.textContent = e.message;
+      }
+    };
+    box.replaceChildren(head(),
+      el("p", { class: "dim small" }, "Award Tatty coins: they arrive in the purse like any others. A negative number takes them away."),
+      el("div", { class: "actions" },
+        ...[10, 100, 1000].map(n => el("button", { type: "button", class: "debug-give", onclick: () => give(n) }, `+${n}`)),
+        amount,
+        el("button", { type: "button", id: "debug-award", class: "primary", onclick: () => give(parseInt(amount.value, 10) || 0) }, "Award"),
+        el("button", { type: "button", id: "debug-lock", onclick: () => { sessionStorage.removeItem(DEBUG_PASS); draw(); } }, "Lock"),
+        msg));
+  };
+  draw();
+  return box;
 }
 
 // What an installed update leaves to restart (server.py's "restarting"): this server,

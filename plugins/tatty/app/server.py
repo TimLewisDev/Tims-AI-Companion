@@ -2683,6 +2683,41 @@ def reward(state, key, kind, reason, **extra):
         return None
 
 
+# Settings' Debug section: coins out of nowhere, for trying the shop. Only with the
+# password, which is kept here as its SHA-256 and never as itself.
+DEBUG_KEY = os.environ.get("TATTY_DEBUG_KEY") or "1706439d3e671dd0dcd53b8e29c4749e60dc6ec553828d4af946698cf57d5644"  # (the tests have their own)
+DEBUG_MAX = 100000
+
+
+def debug_coins(state, b):
+    """{password, amount}: give (or, negative, take) that many coins, said with a "coins" event like
+    any reward (kind "debug"). amount 0 only checks the password. (code, answer)"""
+    if hashlib.sha256(str(b.get("password", "")).encode("utf-8")).hexdigest() != DEBUG_KEY:
+        return 403, {"error": "wrong password"}
+    amount = b.get("amount", 0)
+    if isinstance(amount, bool) or not isinstance(amount, int) or abs(amount) > DEBUG_MAX:
+        return 400, {"error": f"amount: a whole number from -{DEBUG_MAX} to {DEBUG_MAX}"}
+    if amount == 0:
+        return 200, {"ok": True, **wallet_view()}
+
+    def give(w):
+        before = w["coins"]
+        w["coins"] = max(0, before + amount)
+        wallet_log(w, w["coins"] - before, "Debug coins")
+        return w["coins"] - before
+
+    try:
+        given, w = wallet_change(give)
+    except (reviewdoc.DocError, OSError) as e:
+        return 503, {"error": f"the wallet is busy ({e}); try again"}
+    view = wallet_view(w)
+    if given > 0:
+        state.emit("coins", amount=given, reason="Debug coins", kind="debug", key="", paid=True, balance=w["coins"])
+    else:
+        state.emit("wallet", did="debug", id="", slot="", **view)
+    return 200, {"ok": True, **view}
+
+
 def shop_act(state, b):
     """The page's purchases and choices: (code, answer). action: buy {id} (an avatar or an accessory),
     wear {slot, id} (an accessory owned; id "" takes that spot's off), choose {id} (an avatar owned).
@@ -8761,6 +8796,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"id": qid})
         if path == "/api/shop":
             code, answer = shop_act(st, b)
+            return self.send(code, answer)
+        if path == "/api/debug/coins":
+            code, answer = debug_coins(st, b)
             return self.send(code, answer)
         if path == "/api/reply":
             qid = str(b.get("id", ""))

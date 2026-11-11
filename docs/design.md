@@ -394,7 +394,20 @@ through a feature, so most of it is in how it looks and sounds.
   aren't drawn there yet. The page sends again when the look changes: here (a
   `wallet` event), in another window (the status poll's `look`), or with the mode.
   The last description is kept (`%LOCALAPPDATA%\Tatty\avatar-art.xml`), so he is
-  right from the first frame; one that doesn't read changes nothing.
+  right from the first frame; one that doesn't read changes nothing. A look arrives
+  at least twice (the kept one at start, then the page's), and the window's own
+  elements may sit deep in the last drawing (the flag arm inside its wrapper), so
+  `Apply` takes each out wherever it is before putting it into the new one: WPF
+  refuses an element that still has a parent, and the throw left him with no mouth
+  and no flag (0.34.0).
+- **Debug coins.** Settings ends with a **Debug** section, locked: with the password
+  it awards coins (+10, +100, +1000 or any amount; a negative one takes them away),
+  which arrive like any reward, flying from the button into the purse
+  (`POST /api/debug/coins {password, amount}`, `debug_coins`; amount 0 only checks
+  the password). The server keeps only the password's SHA-256 (`DEBUG_KEY`;
+  `TATTY_DEBUG_KEY` replaces it, which is how the tests use a password of their
+  own), and the page remembers an accepted one for the window's life
+  (sessionStorage) until **Lock**.
 
 ## Modes and colour
 

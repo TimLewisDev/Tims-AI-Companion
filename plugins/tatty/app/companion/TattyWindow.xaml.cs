@@ -101,6 +101,10 @@ namespace TtCompanion
             Fill(LegL, a.LegL);
             Fill(LegR, a.LegR);
 
+            // The window's own elements may sit deep in the last drawing (the flag arm inside
+            // its wrapper, say), not just in Body: take each out wherever it is, or putting it
+            // into the new drawing throws and leaves him half drawn.
+            foreach (var own in new FrameworkElement[] { Eyes, Pupils, ArmFlag, FlagNumber, Badge }) Detach(own);
             Body.Children.Clear();
             Eyes.Children.Clear();
             Fill(Pupils, a.Pupils);
@@ -131,6 +135,11 @@ namespace TtCompanion
         {
             panel.Children.Clear();
             foreach (var k in kids) panel.Children.Add(k);
+        }
+
+        private static void Detach(FrameworkElement e)
+        {
+            if (e.Parent is Panel p) p.Children.Remove(e);
         }
 
         // Put one of the window's own elements where the drawing kept a place for it.
