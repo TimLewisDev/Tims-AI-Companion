@@ -696,15 +696,18 @@ const A = {
   id: "polished", letter: "A", name: "Polished Tatty",
   pitch: "Today's shape, with more warmth: soft shading, blushing cheeks, sparkly eyes, a grin with a tongue and an antenna that glows like an LED.",
   wins: "The cheapest change that still makes him cuter. It keeps the same rig and the same tray icon shape, so people still know him.",
-  risks: "It brings the least new character. With no hands, 'needs you' and 'writing' still rest on props.",
-  rig: "The same named parts as today. New: two more mouths (O, wobble), a pupil highlight, a glow behind the antenna tip, and a gradient fill (LinearGradientBrush).",
+  risks: "It brings the least new character of the six: his warmth is all in the face and the little arms.",
+  rig: "The same named parts as today. New: little arms (ArmL, ArmR; the left gives way to the flag arm), two more mouths (O, wobble), a pupil highlight, a glow behind the antenna tip, and a gradient fill (LinearGradientBrush).",
   pivots: BASE.pivots,
   anchors: { ...BASE.anchors, eyes: { x: 52, y: 47, dx: 14, r: 10 }, side: { x: 84, y: 33 }, top: { x: 52, y: -1 } },
   tips: [[52, 8]], iconBox: [10, 0, 84, 84],
   legs: {
     L: `<line x1="38" y1="80" x2="38" y2="94" class="sa rc" stroke-width="4.5"/><ellipse cx="37" cy="97.5" rx="8" ry="3.5" class="fa"/>`,
     R: `<line x1="66" y1="80" x2="66" y2="94" class="sa rc" stroke-width="4.5"/><ellipse cx="67" cy="97.5" rx="8" ry="3.5" class="fa"/>` },
-  back: `<circle cx="16" cy="52" r="4.5" class="fa"/><circle cx="88" cy="52" r="4.5" class="fa"/>`,
+  // little arms from the sides of his head, behind it, hands as round as his feet
+  back: `<circle cx="16" cy="52" r="4.5" class="fa"/><circle cx="88" cy="52" r="4.5" class="fa"/>
+         <g data-p="ArmL" data-c="20,61" class="arm-l"><path d="M20,61 Q12.5,65.5 11,73" class="fn sa rc" stroke-width="4"/><circle cx="10.5" cy="75" r="3.8" class="fa"/></g>
+         <g data-p="ArmR" data-c="84,61"><path d="M84,61 Q91.5,65.5 93,73" class="fn sa rc" stroke-width="4"/><circle cx="93.5" cy="75" r="3.8" class="fa"/></g>`,
   antenna: `<path d="M52,24 Q49,17 52,11" class="fn sa rc" stroke-width="3"/><circle cx="52" cy="8" r="5.5" class="fa"/><circle cx="50.3" cy="6.3" r="1.7" fill="#fff" fill-opacity=".85"/>`,
   head: `<rect x="18" y="24" width="68" height="56" rx="16" fill="url(#gA)" class="sa" stroke-width="3"/>
          <rect x="26" y="28.5" width="30" height="4" rx="2" fill="#fff" fill-opacity=".9"/>`,
@@ -754,7 +757,7 @@ const C = {
   pitch: "A little TV head with rabbit-ear antennas. His face glows on a dark screen in the mode's light shade, and the screen shows a progress bar while he works.",
   wins: "The screen is the expression: any face or icon can go on it, so states are the easiest to read. The progress bar shows he's busy for free.",
   risks: "The dark screen is heavy on a dark desktop and at small sizes. It can feel more gadget than friend.",
-  rig: "Today's rig plus a small body box. The eyes become lit pills (still Eyes and Pupils). New Scan and Prog parts. Every face is a swap of shapes, which is how the XAML already prefers to do it.",
+  rig: "Today's rig plus a small body box and little arms (ArmL, ArmR; the left gives way to the flag arm). The eyes become lit pills (still Eyes and Pupils). New Scan and Prog parts. Every face is a swap of shapes, which is how the XAML already prefers to do it.",
   pivots: { ground: [52, 100], sway: [52, 90], legL: [43, 91], legR: [61, 91], eyes: [52, 48], shoulder: [16, 58] }, flagTop: -16,
   anchors: { hat: { x: 52, y: 22, w: 76, earY: 50 }, cheek: { x: 86, y: 52 }, nose: { x: 52, y: 55 }, back: { x: 52, y: 60, s: 1.1 }, eyes: { x: 52, y: 48, dx: 14, r: 9 }, mouth: { x: 52, y: 60 }, neck: { x: 52, y: 83, w: .85 },
              hand: { x: 92, y: 72 }, side: { x: 88, y: 30 }, bubble: { x: 86, y: 0 }, badge: { x: 88, y: 21 }, top: { x: 68, y: 0 }, ground: 100 },
@@ -762,7 +765,10 @@ const C = {
   legs: {
     L: `<line x1="43" y1="91" x2="43" y2="96" class="sa rc" stroke-width="4"/><line x1="37" y1="98" x2="49" y2="98" class="sa rc" stroke-width="4"/>`,
     R: `<line x1="61" y1="91" x2="61" y2="96" class="sa rc" stroke-width="4"/><line x1="55" y1="98" x2="67" y2="98" class="sa rc" stroke-width="4"/>` },
-  back: `<rect x="36" y="78" width="32" height="13" rx="4" class="ff sa" stroke-width="2.5"/>
+  // little arms from the sides of the set, behind it
+  back: `<g data-p="ArmL" data-c="17,63" class="arm-l"><path d="M17,63 Q9.5,67.5 8,75" class="fn sa rc" stroke-width="3.6"/><circle cx="7.5" cy="77" r="3.4" class="fa"/></g>
+         <g data-p="ArmR" data-c="87,63"><path d="M87,63 Q94.5,67.5 96,75" class="fn sa rc" stroke-width="3.6"/><circle cx="96.5" cy="77" r="3.4" class="fa"/></g>
+         <rect x="36" y="78" width="32" height="13" rx="4" class="ff sa" stroke-width="2.5"/>
          <g class="own own-neck"><circle cx="46" cy="85" r="1.6" class="fa"/><circle cx="52" cy="85" r="1.6" class="fa"/><circle cx="58" cy="85" r="1.6" class="fa" fill-opacity=".4"/></g>`,
   antenna: `<line x1="45" y1="23" x2="37" y2="9" class="sa rc" stroke-width="2.5"/><line x1="59" y1="23" x2="67" y2="9" class="sa rc" stroke-width="2.5"/>
             <circle cx="36" cy="8" r="3.5" class="fa"/><circle cx="68" cy="8" r="3.5" class="fa"/>`,
