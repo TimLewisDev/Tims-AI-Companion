@@ -1326,6 +1326,20 @@ function activityRow(ev, rows) {
   return el("li", { class: "act" }, ev.text || "");
 }
 
+// A new row in the history: it opens out at the top (the older rows slide down to make room as it grows) while it
+// fades in, and is lit for a moment (.fresh, style.css). Like the status bar this is not gated on
+// prefers-reduced-motion: the lit row and the "Latest first" caption say it with everything still.
+function enterRow(li) {
+  li.classList.add("fresh");
+  setTimeout(() => li.classList.remove("fresh"), 2200);
+  if (document.hidden || !li.isConnected) return;
+  const h = li.getBoundingClientRect().height;
+  li.style.overflow = "hidden";
+  const a = li.animate([{ height: "0px", opacity: 0, transform: "translateY(-12px)" }, { height: h + "px", opacity: 1, transform: "none" }],
+    { duration: 420, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  a.onfinish = a.oncancel = () => { li.style.overflow = ""; };
+}
+
 // A question just answered, in a session panel: its card shrinks into the small box and
 // flies down to the top of "Previously answered", where it pops in and the boxes
 // already there are pushed down with a bounce. The card's own place closes up under a
@@ -1424,15 +1438,27 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     }
     if (ev.type !== "activity" && ev.type !== "say") return;
     const li = activityRow(ev, rows);
-    if (li) { list.prepend(li); while (list.children.length > 120) list.lastChild.remove(); } // newest on top, as the questions are
+    if (li) { // newest on top, as the questions are; one that arrives while the panel is on screen slides in
+      list.prepend(li);
+      while (list.children.length > 120) list.lastChild.remove();
+      if (arriving) enterRow(li);
+    }
   };
+  // The fade along the list's foot says "older ones below, nothing there needs you": it is there only while the
+  // list has more below what is in view, and goes once the end is in view.
+  const edge = () => list.classList.toggle("more", list.scrollHeight - list.scrollTop - list.clientHeight > 4);
+  list.addEventListener("scroll", edge, { passive: true });
+  if (typeof ResizeObserver === "function") new ResizeObserver(edge).observe(list);
   const refresh = () => {
     const info = sessionInfo.get(tag) || s;
     paintStatus(status, bar, sessionStatus(info, events()));
     paintAgents(agents, info);
     doing.textContent = `started ${ago(info.started)} · in ${info.project} · ${info.command}`;
+    edge();
   };
+  let arriving = false; // (what is replayed as the panel is drawn does not slide in)
   for (const ev of events()) add(ev);
+  arriving = true;
   const ended = () => (sessionInfo.get(tag) || s).status === "ended";
   const panel = el("section", { class: "card live" }, bar,
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
@@ -1440,7 +1466,8 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     agents, doing, ended() ? "" : decide, questions,
     // the message box under the current question, then the history, newest first
     ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
-    list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
+    list.childElementCount || !ended() ? [el("div", { class: "act-head small dim" }, el("span", {}, "Latest first"), el("span", { class: "act-arrow", "aria-hidden": "true" }, "↓")), list]
+      : el("p", { class: "dim small" }, "Nothing was reported."),
     history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();

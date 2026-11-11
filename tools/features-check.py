@@ -390,6 +390,21 @@ def check_tabs(p):
     p.js("""onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'first thing', ts: Date.now() / 1000 });
             onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'second thing', ts: Date.now() / 1000 }); 1""")
     res["historyNewestFirst"] = p.js("[...document.querySelectorAll('#page-home .card.live ol.activity .act')].map(r => r.innerText.replace(/\\\\s+/g, ' ').trim()).filter(t => /thing/.test(t))")
+    # How the history reads: a caption says "Latest first", the newest row is marked, a row arriving now is animating and lit,
+    # older rows are fainter, and a fade along the foot shows while there is more below and goes at the end.
+    res["historyHead"] = p.js("(document.querySelector('#page-home .card.live .act-head') || { innerText: null }).innerText.replace(/\\\\s+/g, ' ').trim()")
+    p.js("onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'arriving now', ts: Date.now() / 1000 }); 1")
+    res["arrival"] = p.js("""(() => { const li = document.querySelector('#page-home .card.live ol.activity > .act'); return { text: li.innerText.replace(/\\\\s+/g, ' ').trim(),
+        animating: li.getAnimations().length > 0, lit: li.classList.contains('fresh'), marked: getComputedStyle(li).boxShadow !== 'none' }; })()""")
+    p.js("for (let n = 0; n < 40; n++) onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'older ' + n, ts: Date.now() / 1000 }); 1")
+    time.sleep(0.6)
+    res["fadeAndAge"] = p.js("""(() => { const l = document.querySelector('#page-home .card.live ol.activity'); const rows = [...l.querySelectorAll(':scope > .act')];
+        const after = getComputedStyle(l, '::after');
+        const r = { moreBelow: l.classList.contains('more'), fadeHeight: after.height, opacity: [0, 5, 8, 12].map(n => getComputedStyle(rows[n]).opacity) };
+        l.scrollTop = l.scrollHeight; return r; })()""")
+    time.sleep(0.3)
+    res["fadeGoesAtEnd"] = p.js("document.querySelector('#page-home .card.live ol.activity').classList.contains('more')")
+    p.js("document.querySelector('#page-home .card.live ol.activity').scrollTop = 0; 1")
     # questions waiting for the person: the panel's button appears (pulsing) with the count, the rail's item pulses; none: both go
     p.js("""window.__f0 = featureCache.get('Demo');
             featureCache.set('Demo', { docList: [], notes: [], ...(window.__f0 || {}), name: 'Demo', decide: { open: 2, apply: 0, kinds: ['challenge'] } }); 1""")
