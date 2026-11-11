@@ -1405,14 +1405,13 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     }
     if (ev.type !== "activity" && ev.type !== "say") return;
     const li = activityRow(ev, rows);
-    if (li) { list.append(li); while (list.children.length > 120) list.firstChild.remove(); }
+    if (li) { list.prepend(li); while (list.children.length > 120) list.lastChild.remove(); } // newest on top, as the questions are
   };
   const refresh = () => {
     const info = sessionInfo.get(tag) || s;
     paintStatus(status, bar, sessionStatus(info, events()));
     paintAgents(agents, info);
     doing.textContent = `started ${ago(info.started)} · in ${info.project} · ${info.command}`;
-    list.scrollTop = list.scrollHeight;
   };
   for (const ev of events()) add(ev);
   const ended = () => (sessionInfo.get(tag) || s).status === "ended";
@@ -1420,8 +1419,9 @@ function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
     el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
       el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
     agents, doing, questions,
-    list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
+    // the message box under the current question, then the history, newest first
     ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
+    list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
     history);
   if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
   refresh();

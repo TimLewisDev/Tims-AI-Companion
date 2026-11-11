@@ -386,6 +386,10 @@ def check_tabs(p):
     # lands above the first; a declined one says so when opened.
     res["order"] = p.js("""[...document.querySelectorAll('#page-home .card.live > *')].map(n => n.className.split(' ')[0])
                             .filter(c => ['live-questions', 'live-say', 'activity', 'live-answered'].includes(c))""")
+    # the history reads newest first: what arrives later is above what arrived before
+    p.js("""onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'first thing', ts: Date.now() / 1000 });
+            onEvent({ type: 'activity', kind: 'prompt', tag: 's-t1', text: 'second thing', ts: Date.now() / 1000 }); 1""")
+    res["historyNewestFirst"] = p.js("[...document.querySelectorAll('#page-home .card.live ol.activity .act')].map(r => r.innerText.replace(/\\\\s+/g, ' ').trim()).filter(t => /thing/.test(t))")
     p.js("onEvent({ type: 'answered', id: 'zz9', tag: 's-t1', answers: { 'Which way?': 'Left' } }); 1")
     res["flight"] = {"ghost": p.js("!!document.querySelector('.abox-ghost')")}
     wait(p, "!document.querySelector('.abox-ghost')")
