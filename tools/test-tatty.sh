@@ -3665,6 +3665,24 @@ else
 fi
 
 fi
+if section cache; then
+echo "# the server's caches: the processes it starts"
+# tools/test-tatty-cache.py counts the processes the server starts for a call, the second time; like the compact chat's
+# tests it prints a line a check in this script's own format, counted here. It keeps its own folders, and needs a toolbox.
+for cache_args in "" "--changes"; do
+	# shellcheck disable=SC2086
+	$PY -I "$root/tools/test-tatty-cache.py" $cache_args >"$T/cache.out" 2>&1; cache_rc=$?
+	while IFS= read -r line; do
+		case "$line" in
+		"ok "*) pass=$((pass + 1)) ;;
+		FAIL*) fail=$((fail + 1)) ;;
+		esac
+		case "$line" in *" passed, "*) ;; *) printf '%s\n' "$line" ;; esac
+	done <"$T/cache.out"
+	[ "$cache_rc" = 0 ] && ok "the cache checks ran to the end${cache_args:+ ($cache_args)}" ||
+		bad "the cache checks ran to the end${cache_args:+ ($cache_args)}" "exit $cache_rc: $(tail -n 3 "$T/cache.out")"
+done
+fi
 section end # (a mark for TATTY_TIMES)
 echo "# close"
 expect "close" 0 bash "$W" close

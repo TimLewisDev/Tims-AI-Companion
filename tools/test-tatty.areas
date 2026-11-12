@@ -24,6 +24,7 @@ ignore	tools/test-tatty-plan.py	-
 file	tools/test-tatty.sections	*
 file	tools/test-tatty.areas	*
 file	tools/test-compact-chat.py	compactchat
+file	tools/test-tatty-cache.py	cache
 file	tools/build-installer.ps1	prebuilt,desktop
 file	plugins/tatty/scripts/tatty.sh	*
 file	plugins/tatty/scripts/tatty-root.sh	root,features,newfeature
@@ -45,17 +46,17 @@ banner	^restarting	restart,settings,launching,selfupdate
 banner	^models	models,llms,settings,chats
 banner	^setting up LLM	clone,hub,llms
 banner	^features	features,newfeature,editdoc,startstep,views,root,milestones
-banner	^the Hub	hub,clone
-banner	^milestones	milestones,coins
+banner	^the Hub	hub,clone,cache
+banner	^milestones	milestones,coins,cache
 banner	^coins and the shop	coins
-banner	^branches	branches,worktrees,mergestep,startstep,archive
+banner	^branches	branches,worktrees,mergestep,startstep,archive,cache
 banner	^committing	commit
 banner	^the Review step	reviewstep,reviewrepo,mergestep
 banner	^starting a session	startstep,newfeature,models,live,tabs,branches,worktrees,reviewrepo,reviewstep,jira,tasks,stories,decide,planids
 banner	^Jira	jira,tasks
 banner	^planning IDs	planids
 banner	^questions	decide
-banner	^design \(user stories\)	stories,whiteboards
+banner	^design \(user stories\)	stories,whiteboards,cache
 banner	^whiteboards	whiteboards,stories
 banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
 banner	^archiving	archive

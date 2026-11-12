@@ -37,6 +37,7 @@ Exit: 0 ok, 1 not open, 2 usage, 5 no answer yet, 6 declined (ask in the termina
 """
 
 import collections
+import copy
 import datetime
 import hashlib
 import json
@@ -1957,11 +1958,17 @@ def workflow_rows(state, folder):
     script = toolbox_script("tt-common/scripts/workflow-state.sh")
     if not script:
         return []
-    try:
-        p = quiet_run(state, [state.bash, str(script), "--tsv", folder.as_posix()], cwd=str(folder))
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    rows = [dict(zip(STATE_COLS, line.split("\t"))) for line in p.stdout.splitlines() if line.strip()]
+
+    def run():
+        try:
+            p = quiet_run(state, [state.bash, str(script), "--tsv", folder.as_posix()], cwd=str(folder))
+        except (OSError, subprocess.TimeoutExpired):
+            return False, []
+        found = [dict(zip(STATE_COLS, line.split("\t"))) for line in p.stdout.splitlines() if line.strip()]
+        return p.returncode in (0, 1), found
+
+    stamp = folder_stamp(folder, script, toolbox_script("tt-common/scripts/decide-lib.sh"))
+    rows = cached_run(("workflow_rows", folder.as_posix(), ()), stamp, run)
     # The toolbox's last phase is "complete". Tatty adds the Review step after it (its own review row replaces
     # the toolbox's), until the request is merged.
     if any(r.get("phase") == "complete" for r in rows) and merge_view(folder.name)["state"] != "merged":
@@ -2246,20 +2253,25 @@ def stages_view(state, folder):
     script = toolbox_script("tt-common/scripts/stages.sh")
     if not script:
         return None
-    try:
-        p = quiet_run(state, [state.bash, str(script), "show", "--tsv", folder.as_posix()], cwd=str(folder))
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if p.returncode:
-        return None
-    rows = []
-    for line in p.stdout.splitlines():
-        c = dict(zip(STAGE_COLS, line.rstrip("\r").split("\t")))
-        if c.get("key"):
-            rows.append({"key": c["key"], "label": c.get("label", ""), "level": c.get("level", "top"), "on": c.get("on") == "on",
-                         "locked": c.get("locked") == "1", "why": c.get("why", "")})
-    plan = next((r for r in rows if r["key"] == "plan"), None)
-    return {"route": "lite" if plan and not plan["on"] else "full", "stages": rows} if rows else None
+
+    def run():
+        try:
+            p = quiet_run(state, [state.bash, str(script), "show", "--tsv", folder.as_posix()], cwd=str(folder))
+        except (OSError, subprocess.TimeoutExpired):
+            return False, None
+        if p.returncode:
+            return False, None
+        rows = []
+        for line in p.stdout.splitlines():
+            c = dict(zip(STAGE_COLS, line.rstrip("\r").split("\t")))
+            if c.get("key"):
+                rows.append({"key": c["key"], "label": c.get("label", ""), "level": c.get("level", "top"), "on": c.get("on") == "on",
+                             "locked": c.get("locked") == "1", "why": c.get("why", "")})
+        plan = next((r for r in rows if r["key"] == "plan"), None)
+        return True, ({"route": "lite" if plan and not plan["on"] else "full", "stages": rows} if rows else None)
+
+    stamp = folder_stamp(folder, script, toolbox_script("tt-common/scripts/decide-lib.sh"))
+    return cached_run(("stages_view", folder.as_posix(), ()), stamp, run)
 
 
 def stages_set(state, folder, key, on):
@@ -2287,6 +2299,74 @@ DECIDE_COLS = ("doc", "kind", "id", "state", "group", "severity", "title")
 DECIDE_DOCS = (" - Challenges.md", " - Tech Proposals.md")  # the documents decide.sh reads (a cheap look first)
 DECIDE_NUDGE = "Continue: I've decided the {what} in Tatty (every answer is recorded)."
 decide_cache = {}  # folder -> (the decision documents' mtimes, pending items)
+script_cache = {}  # key -> (stamp, value): a script's answer, kept while the files it reads are unchanged
+script_cache_lock = threading.Lock()
+
+
+def folder_stamp(folder, *scripts):
+    """What a script run in the feature's folder depends on, for script_cache: each script's path and mtime,
+    then the name, kind (d or f), mtime and size of the folder's top-level .md files and of every file and
+    directory under .tt (a directory counts: the toolbox tests that a document's folder exists). None when the
+    folder can't be listed, so nothing is kept. A script given as None (not installed) is left out."""
+    parts = []
+    for s in scripts:
+        if s is None:
+            continue
+        try:
+            parts.append((Path(s).as_posix(), lp(s).stat().st_mtime_ns))
+        except OSError:
+            return None
+    base = str(lp(folder))
+    tt = os.path.join(base, ".tt")
+    seen = []
+    try:
+        with os.scandir(base) as it:
+            top = list(it)
+    except OSError:
+        return None
+    for e in top:
+        if e.name.lower().endswith(".md"):
+            try:
+                if e.is_file():
+                    st = e.stat()
+                    seen.append((e.name, "f", st.st_mtime_ns, st.st_size))
+            except OSError:
+                continue
+    try:
+        seen.append((".tt", "d", os.stat(tt).st_mtime_ns, 0))
+    except OSError:
+        pass
+    for root, dirs, files in os.walk(tt):
+        rel = os.path.relpath(root, tt).replace("\\", "/")
+        rel = "" if rel == "." else rel + "/"
+        for name in dirs:
+            try:
+                seen.append((".tt/" + rel + name, "d", os.stat(os.path.join(root, name)).st_mtime_ns, 0))
+            except OSError:
+                continue
+        for name in files:
+            try:
+                st = os.stat(os.path.join(root, name))
+            except OSError:
+                continue
+            seen.append((".tt/" + rel + name, "f", st.st_mtime_ns, st.st_size))
+    return tuple(parts), tuple(sorted(seen))
+
+
+def cached_run(key, stamp, run):
+    """run()'s value, kept under key while stamp is unchanged. run() returns (cacheable, value); only a
+    cacheable value is kept. With no stamp (None) it just runs. Each caller gets its own copy."""
+    if stamp is None:
+        return run()[1]
+    with script_cache_lock:
+        hit = script_cache.get(key)
+    if hit and hit[0] == stamp:
+        return copy.deepcopy(hit[1])
+    cacheable, value = run()
+    if cacheable:
+        with script_cache_lock:
+            script_cache[key] = (stamp, copy.deepcopy(value))
+    return value
 
 
 def decide_run(state, folder, *args):
@@ -2381,20 +2461,31 @@ def decide_item(state, folder, name, item):
         return 404, {"error": "no such decision document"}
     if not re.fullmatch(r"[A-Za-z]{1,4}\d+", item):
         return 400, {"error": "id: an item id such as CH3"}
-    p = decide_run(state, folder, "show", doc.as_posix(), item)
-    if p is None:
-        return 409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."}
-    if p.returncode:
-        said = (p.stderr or p.stdout).strip().splitlines()
-        return 404 if p.returncode == 1 else 400, {"error": (said[-1] if said else "decide.sh refused it").removeprefix("decide.sh: ")}
-    fields, options = {}, []
-    for line in p.stdout.splitlines():
-        c = line.rstrip("\r").split("\t")
-        if c[0] == "option" and len(c) >= 6:
-            options.append({"key": c[1], "title": c[2], "detail": c[3], "recommended": c[4] == "1", "needsNote": c[5] == "1"})
-        elif len(c) >= 2:
-            fields[c[0]] = c[1]
-    return 200, {"doc": name, "fields": fields, "options": options}
+
+    def run():
+        p = decide_run(state, folder, "show", doc.as_posix(), item)
+        if p is None:
+            return False, (409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."})
+        if p.returncode:
+            said = (p.stderr or p.stdout).strip().splitlines()
+            return False, (404 if p.returncode == 1 else 400, {"error": (said[-1] if said else "decide.sh refused it").removeprefix("decide.sh: ")})
+        fields, options = {}, []
+        for line in p.stdout.splitlines():
+            c = line.rstrip("\r").split("\t")
+            if c[0] == "option" and len(c) >= 6:
+                options.append({"key": c[1], "title": c[2], "detail": c[3], "recommended": c[4] == "1", "needsNote": c[5] == "1"})
+            elif len(c) >= 2:
+                fields[c[0]] = c[1]
+        return True, (200, {"doc": name, "fields": fields, "options": options})
+
+    # decide.sh show reads only the named document, so that and the script are what the answer depends on
+    script = toolbox_script("tt-common/scripts/decide.sh")
+    try:
+        st = lp(doc).stat()
+        stamp = (name, st.st_mtime_ns, st.st_size, script.as_posix(), lp(script).stat().st_mtime_ns) if script else None
+    except OSError:
+        stamp = None
+    return cached_run(("decide_item", folder.as_posix(), (name, item)), stamp, run)
 
 
 # an item's id (CH3, P2, Q1) and an option's key: the toolbox's writers accept letters, digits and "-"
@@ -2889,13 +2980,82 @@ MERGE_CHECK_EVERY = 30  # seconds: a look at the host for the request is never m
 
 def git(repo, *args, timeout=60):
     """(exit code, output) of a git command in repo: stdout, or stderr when it fails;
-    (1, "") when git can't run."""
+    (-1, "") when git can't run or times out, so that is never taken for git's own exit 1."""
     try:
         p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, stdin=subprocess.DEVNULL,
                            encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
-        return 1, ""
+        return -1, ""
     return p.returncode, ((p.stdout if p.returncode == 0 else (p.stderr or p.stdout)) or "").strip()
+
+
+def git_dir_of(top):
+    """(git dir, common dir) of the repository whose top folder is `top`, read from the files alone (no
+    process). A plain repository has one .git folder, which is both. A worktree's .git is a file naming its
+    own git dir ("gitdir: <path>", relative to `top` when not absolute), and that holds a `commondir` file
+    naming the shared dir where refs/ and packed-refs live. None when neither is found."""
+    dot = os.path.join(str(top), ".git")
+    try:
+        if os.path.isdir(lp(dot)):
+            return dot, dot
+        text = lp(dot).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    line = next((ln for ln in text.splitlines() if ln.startswith("gitdir:")), "")
+    if not line[7:].strip():
+        return None
+    gitdir = os.path.normpath(os.path.join(str(top), line[7:].strip()))
+    common = gitdir
+    try:
+        named = lp(os.path.join(gitdir, "commondir")).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        named = ""
+    if named:
+        common = os.path.normpath(os.path.join(gitdir, named))
+    return gitdir, common
+
+
+def git_stamp(top):
+    """What the branch reads depend on, for script_cache: (name, mtime, size) of the repository's HEAD, its
+    packed-refs, refs/remotes/origin/HEAD and every file under refs/heads. A missing file is left out.
+    None when the repository's git dir can't be found, so nothing is kept."""
+    if not top:
+        return None
+    dirs = git_dir_of(top)
+    if dirs is None:
+        return None
+    gitdir, common = dirs
+    seen = []
+    for name, path in (("HEAD", os.path.join(gitdir, "HEAD")), ("packed-refs", os.path.join(common, "packed-refs")),
+                       ("origin/HEAD", os.path.join(common, "refs", "remotes", "origin", "HEAD"))):
+        try:
+            st = os.stat(lp(path))
+        except OSError:
+            continue
+        seen.append((name, st.st_mtime_ns, st.st_size))
+    heads = os.path.join(common, "refs", "heads")
+    for root, _dirs, files in os.walk(lp(heads)):
+        for name in files:
+            try:
+                st = os.stat(os.path.join(root, name))
+            except OSError:
+                continue
+            seen.append(("heads/" + os.path.relpath(os.path.join(root, name), str(lp(heads))).replace("\\", "/"),
+                         st.st_mtime_ns, st.st_size))
+    return tuple(sorted(seen))
+
+
+def git_read(repo, key, args, parse, keep=(0,)):
+    """parse(exit code, output) of a git read in repo, kept under key while git_stamp(repo) is unchanged;
+    only a result whose exit code is in keep is kept (a read whose exit 1 is a real answer lists it)."""
+    def run():
+        code, out = git(repo, *args)
+        return code in keep, parse(code, out)
+
+    return cached_run(("git", key, str(repo)), git_stamp(repo), run)
+
+
+repo_tops = {}  # where -> the repository's top folder (kept while its .git is still there)
 
 
 def repo_of(project, workdir=""):
@@ -2903,17 +3063,25 @@ def repo_of(project, workdir=""):
     where = workdir or project
     if not where or not os.path.isdir(where):
         return ""
+    with script_cache_lock:
+        top = repo_tops.get(where)
+    if top and os.path.exists(os.path.join(top, ".git")):
+        return top
     code, out = git(where, "rev-parse", "--show-toplevel")
-    return Path(out).as_posix() if code == 0 and out else ""
+    top = Path(out).as_posix() if code == 0 and out else ""
+    if top:
+        with script_cache_lock:
+            repo_tops[where] = top
+    return top
 
 
 def current_branch(repo):
-    code, out = git(repo, "branch", "--show-current")
-    return out if code == 0 else ""
+    return git_read(repo, "current", ("branch", "--show-current"), lambda code, out: out if code == 0 else "")
 
 
 def branch_exists(repo, name):
-    return bool(name) and git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}")[0] == 0
+    return bool(name) and git_read(repo, ("exists", name), ("show-ref", "--verify", "--quiet", f"refs/heads/{name}"),
+                                   lambda code, out: code == 0, keep=(0, 1))  # exit 1 is "no such branch"
 
 
 def branch_records():
@@ -2952,8 +3120,8 @@ def branch_name(repo, feature):
 
 def local_branches(repo):
     """The repo's local branches, the most recently committed first."""
-    code, out = git(repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads")
-    return [b for b in out.splitlines() if b.strip()][:300] if code == 0 else []
+    return git_read(repo, "branches", ("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"),
+                    lambda code, out: [b for b in out.splitlines() if b.strip()][:300] if code == 0 else [])
 
 
 def branch_repo(feature, project, workdir=""):
@@ -2970,8 +3138,9 @@ PROTECTED_BRANCHES = ("main", "master", "develop", "trunk")
 
 def default_branch(repo):
     """The branch origin's HEAD points at (main, develop ...), or "" when unknown."""
-    code, out = git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
-    return out.split("/", 1)[1] if code == 0 and "/" in out else ""
+    return git_read(repo, "default", ("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"),
+                    lambda code, out: out.split("/", 1)[1] if code == 0 and "/" in out else "",
+                    keep=(0, 1))  # exit 1 is "origin/HEAD isn't set"
 
 
 def is_protected(repo, branch):
@@ -5312,26 +5481,37 @@ def run_stories(state, args, cwd=None):
 
 def read_stories(state, doc):
     """The document through `stories.sh list --tsv`: meta, groups, stories, retired,
-    and the problems it found (a hand edit out of the template's layout)."""
-    code, out, err = run_stories(state, ["list", doc, "--tsv"], cwd=str(doc.parent))
-    got = {"meta": {}, "groups": [], "stories": [], "retired": [], "error": "",
-           "problems": [ln[len("problem: "):] for ln in err.splitlines() if ln.startswith("problem: ")]}
-    if code != 0:
-        got["error"] = (err.strip().splitlines() or ["stories.sh couldn't read the document"])[-1]
-        return got
-    for line in out.splitlines():
-        f = [unesc(c) for c in line.split("\t")]
-        if f[0] == "meta" and len(f) >= 3:
-            got["meta"][f[1]] = f[2]
-        elif f[0] == "group" and len(f) >= 4:
-            got["groups"].append({"name": f[1], "description": f[2], "count": int(f[3] or 0)})
-        elif f[0] == "story" and len(f) >= 15:
-            s = dict(zip(STORY_COLS, f[1:]))
-            s["criteria"] = [c for c in s["criteria"].split("\n") if c]
-            got["stories"].append(s)
-        elif f[0] == "retired" and len(f) >= 4:
-            got["retired"].append({"id": f[1], "title": f[2], "outcome": f[3]})
-    return got
+    and the problems it found (a hand edit out of the template's layout). The answer is kept while the
+    document and stories.sh are unchanged (list reads only the document it is given); an error is not kept."""
+    def run():
+        code, out, err = run_stories(state, ["list", doc, "--tsv"], cwd=str(doc.parent))
+        got = {"meta": {}, "groups": [], "stories": [], "retired": [], "error": "",
+               "problems": [ln[len("problem: "):] for ln in err.splitlines() if ln.startswith("problem: ")]}
+        if code != 0:
+            got["error"] = (err.strip().splitlines() or ["stories.sh couldn't read the document"])[-1]
+            return False, got
+        for line in out.splitlines():
+            f = [unesc(c) for c in line.split("\t")]
+            if f[0] == "meta" and len(f) >= 3:
+                got["meta"][f[1]] = f[2]
+            elif f[0] == "group" and len(f) >= 4:
+                got["groups"].append({"name": f[1], "description": f[2], "count": int(f[3] or 0)})
+            elif f[0] == "story" and len(f) >= 15:
+                s = dict(zip(STORY_COLS, f[1:]))
+                s["criteria"] = [c for c in s["criteria"].split("\n") if c]
+                got["stories"].append(s)
+            elif f[0] == "retired" and len(f) >= 4:
+                got["retired"].append({"id": f[1], "title": f[2], "outcome": f[3]})
+        return True, got
+
+    # taken fresh on every call, so a caller that edits the document and reads it again sees its own write
+    script = stories_script()
+    try:
+        st = lp(doc).stat()
+        stamp = ((doc.name, st.st_mtime_ns, st.st_size), lp(script).stat().st_mtime_ns) if script else None
+    except OSError:
+        stamp = None
+    return cached_run(("stories", doc.as_posix()), stamp, run)
 
 
 def board_path(folder):
