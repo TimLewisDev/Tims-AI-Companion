@@ -74,7 +74,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
-          "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript",
+          "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
           "wallet.js": "text/javascript", "shop.js": "text/javascript", "shop.css": "text/css",
@@ -2298,6 +2298,7 @@ def stages_set(state, folder, key, on):
 DECIDE_COLS = ("doc", "kind", "id", "state", "group", "severity", "title")
 DECIDE_DOCS = (" - Challenges.md", " - Tech Proposals.md")  # the documents decide.sh reads (a cheap look first)
 DECIDE_NUDGE = "Continue: I've decided the {what} in Tatty (every answer is recorded)."
+VALIDATE_NUDGE = "Continue: I've recorded {n} validation {results} in Tatty ({left}). Read them with questions.sh list --tsv."
 decide_cache = {}  # folder -> (the decision documents' mtimes, pending items)
 script_cache = {}  # key -> (stamp, value): a script's answer, kept while the files it reads are unchanged
 script_cache_lock = threading.Lock()
@@ -2395,6 +2396,16 @@ def decide_docs(folder):
 DECIDE_LIST = re.compile(r"\.tt/[^/\\]+ - Questions/[^/\\]+\.md")
 
 
+# a work unit's engineer checks (the toolbox's tt-execute writes them as validation-<WU>.md): they are answered
+# on the Validation page, not the Decide page
+VALIDATE_LIST = re.compile(r"\.tt/[^/\\]+ - Questions/validation-[^/\\]+\.md")
+
+
+def decide_scope(doc):
+    """"validate" for a work unit's checks, else "decide"."""
+    return "validate" if VALIDATE_LIST.fullmatch(str(doc).replace("\\", "/")) else "decide"
+
+
 def decide_rel(folder, doc):
     """The path decide.sh printed, relative to the feature's folder (a document's name, or .tt/… for a list)."""
     base = folder.as_posix().rstrip("/") + "/"
@@ -2423,14 +2434,16 @@ def decide_pending(state, folder):
         c = dict(zip(DECIDE_COLS, line.rstrip("\r").split("\t")))
         if c.get("id"):
             c["doc"] = decide_rel(folder, c["doc"])
+            c["scope"] = decide_scope(c["doc"])
             items.append(c)
     decide_cache[str(folder)] = (stamp, items)
     return items
 
 
-def decide_view(state, folder):
-    """{open, apply} for the feature's page and card, or None (nothing to decide, or no decide.sh)."""
-    items = decide_pending(state, folder)
+def decide_view(state, folder, scope="decide"):
+    """{open, apply, kinds} for the feature's page and card, or None (nothing to decide, or no decide.sh).
+    scope "validate" counts the work unit's checks instead of the decisions."""
+    items = [i for i in (decide_pending(state, folder) or []) if i.get("scope", "decide") == scope]
     if not items:
         return None
     return {"open": sum(i["state"] == "open" for i in items), "apply": sum(i["state"] == "apply" for i in items),
@@ -2530,12 +2543,24 @@ def decide_pay(state, key):
 def decide_after(state, folder, docs):
     """{open, apply, nudged} once choices are recorded (docs: the names they were recorded in). With the
     folder's last open item decided, the feature's running session (if one is open) is told to carry on."""
-    items = decide_pending(state, folder) or []
+    validating = bool(docs) and all(decide_scope(d) == "validate" for d in docs)
+    items = [i for i in (decide_pending(state, folder) or []) if (i.get("scope", "decide") == "validate") == validating]
     left = sum(i["state"] == "open" for i in items)
     nudged = None
-    if not left and docs:  # (no docs: nothing was recorded, so there is nothing to carry on with)
+    # (no docs: nothing was recorded, so there is nothing to carry on with.) A decision waits for the last one;
+    # checks are carried on with as soon as some are sent, the rest staying open.
+    if (not left or validating) and docs:
         live = next((s for s in sessions_of(state, folder) if s["status"] == "running"), None)
-        if live:
+        if live and validating:
+            n = len(docs)
+            text = VALIDATE_NUDGE.format(n=n, results="result" if n == 1 else "results",
+                                         left=f"{left} {'check' if left == 1 else 'checks'} still open" if left else "none still open")
+            with state.cond:
+                state.inbox[live["tag"]].append(text)
+                state.cond.notify_all()
+            state.emit("say", text=text, tag=live["tag"])
+            nudged = {"tag": live["tag"], "name": live.get("name", "")}
+        elif live:
             kinds = sorted({i["kind"] for i in items}) or sorted({
                 "question" if DECIDE_LIST.fullmatch(d) else "proposal" if d.endswith(" - Tech Proposals.md") else "challenge"
                 for d in docs})
@@ -2589,9 +2614,13 @@ def decide_draft_read(folder):
     return decide_draft_clean(read_json(decide_draft_path(folder), {}))
 
 
-def decide_draft_write(folder, entries, drop=()):
-    """Keep entries (less the keys in drop) as the folder's draft; none left removes the file."""
+def decide_draft_write(folder, entries, drop=(), scope=None):
+    """Keep entries (less the keys in drop) as the folder's draft; none left removes the file. With a scope
+    ("decide" | "validate") only that page's entries are replaced and the other page's are kept."""
     keep = {k: v for k, v in decide_draft_clean(entries).items() if k not in drop}
+    if scope:
+        other = {k: v for k, v in decide_draft_read(folder).items() if decide_scope(k.split("#")[0]) != scope and k not in drop}
+        keep = {**other, **{k: v for k, v in keep.items() if decide_scope(k.split("#")[0]) == scope}}
     path = decide_draft_path(folder)
     if keep:
         write_json(path, keep)
@@ -2667,7 +2696,7 @@ def feature_summary(state, folder, detail=False):
            "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
-           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder), "decide": decide_view(state, folder),
+           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder), "decide": decide_view(state, folder), "validate": decide_view(state, folder, "validate"),
            "live": next(({"name": x["name"], "status": x["status"], "tag": x["tag"]} for x in sessions_of(state, folder)
                          if x["status"] in ("starting", "running", "lost")), None)}
     if detail:
@@ -2679,7 +2708,7 @@ def feature_summary(state, folder, detail=False):
         lite_first = out["route"] == "new" and bool(profile) and profile["route"] == "lite"
         sessions = sessions_of(state, folder)
         # A new feature whose chosen stages leave out Plan is a small change: lite first.
-        action = primary_action(folder, rows, out["decide"], sessions, lite_first)
+        action = primary_action(folder, rows, out["decide"], sessions, lite_first, out["validate"])
         if lite_first and action["kind"] == "start":
             action["note"] = "The stages chosen for this feature leave out Plan, so it starts as a small change on the lite route."
         out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
@@ -4024,7 +4053,7 @@ def lite_row(folder, hint="", text="Start a small change on the lite route."):
 LIVE_SESSION = ("starting", "running", "lost")
 
 
-def primary_action(folder, rows, decide, sessions, lite_first):
+def primary_action(folder, rows, decide, sessions, lite_first, validate=None):
     """The one thing a feature's page offers first, from where the feature stands:
       start    -- nothing is written yet: Start Workflow and Start Workflow Lite (Lite only
                   when the chosen stages leave out Plan)
@@ -4043,6 +4072,9 @@ def primary_action(folder, rows, decide, sessions, lite_first):
     waiting = (decide or {}).get("open", 0)
     if waiting:
         return {"kind": "decide", "label": "Decisions Needed", "count": waiting, "href": href + "/decide"}
+    checks = (validate or {}).get("open", 0)
+    if checks:
+        return {"kind": "decide", "label": "Validation Needed", "count": checks, "href": href + "/validate", "what": "validate"}
     if link.get("phase") == "decide":
         return {"kind": "decide", "label": "Decisions Needed", "href": link["link"]}
     if link.get("phase") == "commit":
@@ -9108,7 +9140,8 @@ class Handler(BaseHTTPRequestHandler):
             items = decide_pending(st, folder)
             if items is None and decide_docs(folder) and not toolbox_script("tt-common/scripts/decide.sh"):
                 return self.send(409, {"error": "The installed toolbox is too old to decide here. Update its core plugin."})
-            answer = {"items": items or []}
+            scope = q.get("scope", [""])[0]
+            answer = {"items": [i for i in (items or []) if not scope or i.get("scope", "decide") == scope]}
             if q.get("drafts", [""])[0] == "1":  # the Decide page also asks for the choices it was left with
                 answer["drafts"] = decide_draft_read(folder)
             return self.send(200, answer)
@@ -9517,7 +9550,7 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             try:
-                kept = decide_draft_write(folder, b.get("entries") if isinstance(b, dict) else {})
+                kept = decide_draft_write(folder, b.get("entries") if isinstance(b, dict) else {}, scope="validate" if isinstance(b, dict) and b.get("scope") == "validate" else "decide")
             except OSError as e:
                 return self.send(500, {"error": f"couldn't keep the choices: {e}"})
             return self.send(200, {"kept": len(kept)})

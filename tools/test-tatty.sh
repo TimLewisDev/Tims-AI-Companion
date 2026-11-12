@@ -3546,6 +3546,7 @@ fi
 if section decide; then
 echo "# deciding a workflow's questions in Tatty"
 [ "$(code "$U/static/decide-page.js")" = 200 ] && ok "decide-page.js served" || bad "decide-page.js served"
+[ "$(code "$U/static/validate-page.js")" = 200 ] && ok "validate-page.js served" || bad "validate-page.js served"
 DECIDE_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/decide.sh"
 if [ -f "$DECIDE_SH" ]; then
 	dpost() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/decide"; }
@@ -3613,6 +3614,19 @@ if [ -f "$DECIDE_SH" ]; then
 		get "/api/decide/item?name=Decide%20Draft&doc=$QDOC&id=Q1" >"$T/j"
 		pick "$T/j" "(d['fields']['context'], [o['key'] for o in d['options']])" >"$T/f"
 		has "its context and options" "$T/f" "('Save on a full disk. / You should see a toast.', ['passed', 'failed'])"
+		# a validation-<WU> list is the Validation page's, not the Decide page's
+		get "/api/decide?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "{i['id']: i['scope'] for i in d['items'] if i['kind'] == 'question'}" >"$T/f"
+		has "a validation list's checks are scoped to the Validation page" "$T/f" "{'Q1': 'validate'}"
+		get "/api/decide?name=Decide%20Draft&scope=decide" >"$T/j"
+		pick "$T/j" "[i['id'] for i in d['items'] if i['kind'] == 'question']" >"$T/f"
+		has "the Decide page's list leaves them out" "$T/f" "[]"
+		get "/api/decide?name=Decide%20Draft&scope=validate" >"$T/j"
+		pick "$T/j" "[i['id'] for i in d['items']]" >"$T/f"
+		has "the Validation page's list is only them" "$T/f" "['Q1']"
+		get "/api/feature?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "(d['validate'] or {}).get('open') == 1 and 'question' not in ((d['decide'] or {}).get('kinds') or [])" >"$T/f"
+		has "the feature counts validation apart from decisions" "$T/f" "True"
 		BADQ=$($PY -c "import urllib.parse; print(urllib.parse.quote('.tt/../../Demo/Demo - Task Status.md'))")
 		[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=$BADQ&id=Q1")" = 404 ] && ok "a path out of the folder is refused" || bad "a path out of the folder is refused"
 		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed"}')" = 409 ] && ok "an option that needs words, without them" || bad "an option that needs words, without them" "$(cat "$T/dj")"
@@ -3638,6 +3652,22 @@ if [ -f "$DECIDE_SH" ]; then
 			ok "and its coins come after" || bad "and its coins come after"
 		[ "$(dpost '{"name":"Decide Draft","answers":[]}')" = 400 ] && ok "a batch needs answers" || bad "a batch needs answers"
 	fi
+	# a work unit's checks: sending some tells the session at once and the rest stay open (unlike decisions, which
+	# wait for the last one)
+	if [ -f "$QSH" ]; then
+		VLIST="$DDIR/.tt/Decide Draft - Questions/validation-WU2.md"
+		bash "$QSH" init "$VLIST" --title "Decide Draft: WU2 engineer checks" >/dev/null
+		printf 'title: One\nref: WU2 check 1\noption: passed | Passed | ok | recommended\noption: failed | Failed | no | note\n---\ntitle: Two\nref: WU2 check 2\noption: passed | Passed | ok | recommended\noption: failed | Failed | no | note\n' | bash "$QSH" add "$VLIST" >/dev/null
+		for _ in 1 2 3 4 5 6 7 8 9 10; do get "/api/inbox?wait=0&tag=$DTAG&client=claude-mod" >/dev/null; done # (the earlier nudges)
+		[ "$(dpost "{\"name\":\"Decide Draft\",\"batch\":\"vb1\",\"answers\":[{\"doc\":\".tt/Decide Draft - Questions/validation-WU2.md\",\"id\":\"Q1\",\"choice\":\"passed\"}]}")" = 200 ] && ok "send one of two checks" || bad "send one of two checks" "$(cat "$T/dj")"
+		pick "$T/dj" "(d['open'], d['nudged']['tag'] if d['nudged'] else None)" >"$T/f"
+		has "the session is told with a check still open" "$T/f" "(1, '$DTAG')"
+		get "/api/inbox?wait=1&tag=$DTAG&client=claude-mod" >"$T/j"
+		has "and told which are left" "$T/j" "recorded 1 validation result in Tatty (1 check still open)"
+		get "/api/feature?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "(d['validate'] or {}).get('open')" >"$T/f"
+		has "the feature still waits on the other check" "$T/f" "1"
+	fi
 	# choices left on the Decide page (a draft) are kept in Tatty's home, so they outlive a reload and a restart
 	drpost() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/decide/draft"; }
 	[ "$(drpost '{"name":"Decide Draft","entries":{"Decide Draft - Challenges.md#CH3":{"key":"accept","note":"yes","label":"Accept","decided":true,"at":5},"x#Q1":{"key":"-bad","note":"","at":1},"y#Q2":{"key":"A1","note":"n","decided":false,"at":2}}}')" = 200 ] && ok "a draft is kept" || bad "a draft is kept" "$(cat "$T/dj")"
@@ -3658,6 +3688,13 @@ if [ -f "$DECIDE_SH" ]; then
 	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
 	pick "$T/j" "d['drafts']" >"$T/f"
 	has "clears it" "$T/f" "{}"
+	# the Validation page's draft and the Decide page's are kept apart: one page saving doesn't drop the other's
+	drpost '{"name":"Decide Draft","scope":"validate","entries":{".tt/Decide Draft - Questions/validation-WU2.md#Q2":{"key":"passed","note":"","decided":false,"at":7}}}' >/dev/null
+	drpost '{"name":"Decide Draft","scope":"decide","entries":{"Decide Draft - Challenges.md#CH3":{"key":"accept","note":"","decided":false,"at":8}}}' >/dev/null
+	drpost '{"name":"Decide Draft","scope":"decide","entries":{}}' >/dev/null
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "sorted(d['drafts'])" >"$T/f"
+	has "a page's draft is not dropped by the other page saving" "$T/f" "['.tt/Decide Draft - Questions/validation-WU2.md#Q2']"
 	post /api/bye "{\"tag\":\"$DTAG\"}" >/dev/null
 	rm -rf "$DDIR"
 else

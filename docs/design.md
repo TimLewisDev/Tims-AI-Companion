@@ -475,6 +475,17 @@ through a feature, so most of it is in how it looks and sounds.
   own), and the page remembers an accepted one for the window's life
   (sessionStorage) until **Lock**.
 
+## The Validation page
+
+`#feature/<name>/validate` (`web/validate-page.js`) shows a work unit's engineer checks as one checklist. They are
+the question lists the toolbox writes as `.tt/<Prefix> - Questions/validation-<WU>.md` (`decide_scope` /
+`VALIDATE_LIST` in `server.py` give them scope `validate`; the Decide page asks for `scope=decide` and leaves them
+out). Every check is on the page with its list's own options (passed, failed, waived); **Validate** sends the
+checks that have a result (failed and waived need words) and the rest stay open. Unlike decisions, which wait
+for the last one, the running session is told as soon as some are sent, and told how many are still open. Drafts
+are kept per page (`scope` on `/api/decide/draft`). One pulsing button (`waitingOn` in `features.js`: the
+overview action, the session panel button, the rail item) goes to Decisions, else Validation.
+
 ## The Decide page
 
 `#feature/<name>/decide` (`web/decide-page.js`) puts the questions a workflow session wrote down (challenges,

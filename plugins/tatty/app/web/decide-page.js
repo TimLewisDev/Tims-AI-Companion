@@ -38,7 +38,7 @@ async function decidePage(f, main) {
   const back = el("a", { href: featureHref(f.name) }, "← Overview");
   let items, kept = {};
   put(head, waitNode());
-  try { const got = await api("/api/decide?drafts=1&name=" + enc(f.name)); items = got.items; kept = got.drafts || {}; }
+  try { const got = await api("/api/decide?drafts=1&scope=decide&name=" + enc(f.name)); items = got.items; kept = got.drafts || {}; }
   catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
   if (!items.length) { put(head, el("p", { class: "dim" }, "Nothing is waiting for a decision."), back); return; }
   const keyOf = x => x.doc + "#" + x.id; // two question lists can both have a Q1
@@ -64,7 +64,7 @@ async function decidePage(f, main) {
   let draftTimer = null;
   const flushDraft = hiding => {
     clearTimeout(draftTimer); draftTimer = null;
-    const body = { name: f.name, entries: entries() };
+    const body = { name: f.name, scope: "decide", entries: entries() };
     if (hiding) fetch("/api/decide/draft", { method: "POST", keepalive: true, headers: { "X-TT-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
     else api("/api/decide/draft", body).catch(() => { /* the browser still has it */ });
   };

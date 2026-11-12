@@ -1884,6 +1884,64 @@ def check_launcher(p):
     return res
 
 
+def check_validate(p):
+    """The Validation page, drawn with the page's api() stood in for: three checks on one page at once, a result
+    for each from the list's own options, Failed needing its words, Validate sending only the checks given a
+    result (the rest stay open), the session told, and the one pulsing button / rail item pointing at the page.
+    Nothing is written."""
+    res = {}
+    p.js("""window.__real = { api: window.api }; window.__sent = []; window.__drafted = []; localStorage.removeItem('tatty.validate.Demo');
+            const doc = '.tt/Demo - Questions/validation-WU1.md';
+            window.__items = [1, 2, 3].map(n => ({ doc, kind: 'question', id: 'Q' + n, state: 'open', group: 'Demo: WU1 engineer checks', severity: 'WU1 check ' + n, title: 'Check ' + n + ' of R1', scope: 'validate' }));
+            const opts = [{ key: 'passed', title: 'Passed', detail: 'It worked', recommended: true, needsNote: false },
+                          { key: 'failed', title: 'Failed', detail: 'Say what you saw', recommended: false, needsNote: true },
+                          { key: 'waived', title: 'Waived', detail: 'Say why', recommended: false, needsNote: true }];
+            window.__show = {}; window.__items.forEach(i => { window.__show[i.id] = { doc, fields: { id: i.id, title: i.title, ref: i.severity, context: 'Open the panel. / Press Save, then R1 applies. / You should see: a toast.', take: 'A toast shows', decision: '', state: 'open' }, options: opts }; });
+            window.api = async (path, body) => {
+              if (path.startsWith('/api/items')) return { ids: { R1: { file: 'Demo - Comprehensive Tech Plan.md' } } };
+              if (path.startsWith('/api/decide/item')) { const id = new URLSearchParams(path.split('?')[1]).get('id'); return window.__show[id]; }
+              if (path.startsWith('/api/decide?')) return { items: window.__items.filter(i => i.state === 'open'), drafts: {} };
+              if (path === '/api/decide/draft') { window.__drafted.push(body); return { kept: 0 }; }
+              if (path === '/api/decide') {
+                window.__sent.push(body);
+                body.answers.forEach(a => { window.__items.find(i => i.id === a.id).state = 'apply'; });
+                return { results: body.answers.map(a => ({ doc: a.doc, id: a.id, ok: true })), open: window.__items.filter(i => i.state === 'open').length, apply: body.answers.length, nudged: { tag: 's-test9999', name: 'Demo : Build' } };
+              }
+              return window.__real.api(path, body);
+            };
+            1""")
+    p.js("""(() => { const m = document.createElement('div'); m.id = 'vl-main'; document.body.append(m); validatePage({ name: 'Demo' }, m); })(); 1""")
+    wait(p, "document.querySelectorAll('#vl-main .vl-check').length === 3")
+    res["first"] = p.js("""({ checks: document.querySelectorAll('.vl-check').length, steps: document.querySelectorAll('.vl-check')[0].querySelectorAll('.vl-steps li').length,
+                             options: [...document.querySelectorAll('.vl-check')[0].querySelectorAll('.vl-opt')].map(o => o.dataset.key),
+                             go: document.querySelector('#vl-go').textContent, disabled: document.querySelector('#vl-go').disabled,
+                             status: document.querySelector('#vl-status').textContent })""")
+    wait(p, "document.querySelectorAll('#vl-main a.idlink').length >= 3")
+    res["idLinks"] = p.js("document.querySelectorAll('#vl-main .vl-check a.idlink').length")
+    p.js("document.querySelector('.vl-check[data-id=\"Q1\"] input[value=\"passed\"]').click(); 1")
+    res["afterPass"] = p.js("({ go: document.querySelector('#vl-go').textContent, disabled: document.querySelector('#vl-go').disabled, status: document.querySelector('#vl-status').textContent })")
+    p.js("document.querySelector('.vl-check[data-id=\"Q2\"] input[value=\"failed\"]').click(); 1")
+    res["failedNeedsWords"] = p.js("({ go: document.querySelector('#vl-go').textContent, msg: document.querySelector('#vl-msg').textContent, placeholder: document.querySelector('.vl-check[data-id=\"Q2\"] .vl-note').placeholder })")
+    p.js("(() => { const t = document.querySelector('.vl-check[data-id=\"Q2\"] .vl-note'); t.value = 'no toast'; t.dispatchEvent(new Event('input', { bubbles: true })); })()")
+    res["failedWithWords"] = p.js("({ go: document.querySelector('#vl-go').textContent, msg: document.querySelector('#vl-msg').textContent, status: document.querySelector('#vl-status').textContent })")
+    p.js("document.querySelector('#vl-go').click(); 1")
+    wait(p, "!!document.querySelector('.vl-sent')")
+    res["sent"] = p.js("""({ answers: window.__sent.map(b => b.answers.map(a => [a.id, a.choice, a.note])), said: document.querySelector('.vl-sent').innerText,
+                            link: (document.querySelector('.vl-sent a') || {}).getAttribute('href'),
+                            locked: [...document.querySelectorAll('.vl-check')].map(c => c.querySelector('input:checked') ? c.querySelector('input:checked').value + (c.querySelector('input').disabled ? ' (locked)' : '') : 'open'),
+                            go: document.querySelector('#vl-go').textContent, disabled: document.querySelector('#vl-go').disabled })""")
+    # a draft survives leaving: a result on the last check is kept in the browser
+    p.js("document.querySelector('.vl-check[data-id=\"Q3\"] input[value=\"passed\"]').click(); 1")
+    res["draft"] = p.js("Object.entries(JSON.parse(localStorage.getItem('tatty.validate.Demo') || '{}')).map(([k, v]) => [k, v.key])")
+    # the one button: decisions first, else validation
+    res["button"] = p.js("""(() => { const f = { name: 'Demo', decide: null, validate: { open: 3, apply: 0, lists: [] } };
+                                    const w = waitingOn(f); const both = waitingItems({ ...f, decide: { open: 2, apply: 0 } }).map(x => x.rail);
+                                    const nav = featureNav({ ...f, docList: [], notes: [], phase: 'build' }, null, false, {}); const it = [...nav.querySelectorAll('.fnav-item')].find(a => /Validation/.test(a.innerText));
+                                    return { label: w.label, n: w.n, href: w.href, both, rail: it ? it.innerText.replace(/\\s+/g, ' ') : null, pulses: it ? it.classList.contains('decide-pulse') : null,
+                                             sig: decideSig({ decide: { open: 1, apply: 0 }, validate: { open: 3, apply: 2 } }) }; })()""")
+    return res
+
+
 def check_loading(p):
     """A feature's page is drawn before it is read: the page's api() is stood in for with a feature that takes as
     long as the test says. The frame (the rail's "← Features" and the name, an empty main, no "Reading…") is on
@@ -2284,10 +2342,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--loading", "--launcher", "--modes", "--debug", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--loading", "--launcher", "--modes", "--debug", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

@@ -18,12 +18,19 @@ const featureCache = new (class extends Map { set(k, v) { super.set(k, v); paint
 
 // A session's panel has a "Decisions Needed" button, hidden unless questions wait for the feature's person: the
 // workflow is paused on them (the Decide page is where they are answered). It pulses like the way to a question.
+// The one button for what waits on the person: decisions first, else a work unit's validation checks.
+function waitingOn(f) {
+  const d = (f && f.decide && f.decide.open) || 0, v = (f && f.validate && f.validate.open) || 0;
+  if (d) return { n: d, label: "Decisions Needed", rail: "Decisions", sub: `${d} to decide`, href: featureDecideHref(f.name), page: "decide" };
+  if (v) return { n: v, label: "Validation Needed", rail: "Validation", sub: `${v} to check`, href: featureValidateHref(f.name), page: "validate" };
+  return null;
+}
 function paintDecideButton(btn, f) {
-  const n = (f && f.decide && f.decide.open) || 0;
-  btn.hidden = !n;
-  if (!n) return;
-  btn.href = featureDecideHref(f.name);
-  btn.textContent = `Decisions Needed (${n})`;
+  const w = waitingOn(f);
+  btn.hidden = !w;
+  if (!w) return;
+  btn.href = w.href;
+  btn.textContent = `${w.label} (${w.n})`;
 }
 function paintDecisions(f) {
   if (!f || !f.name) return;
@@ -140,7 +147,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate" };
   }
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
@@ -171,6 +178,7 @@ const onFeatureList = () => { const r = parseRoute(); return r.page === "home" &
 const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
   (doc ? "/doc/" + encodeURIComponent(doc) + (at ? "/at/" + encodeURIComponent(at) : "") : "");
 const featureBoardHref = name => "#feature/" + encodeURIComponent(name) + "/whiteboard";
+const featureValidateHref = name => "#feature/" + encodeURIComponent(name) + "/validate";
 const featureDiffHref = name => "#feature/" + encodeURIComponent(name) + "/code-diff";
 
 function showPage(which) {
@@ -222,7 +230,7 @@ async function route() {
       clearInterval(homeTimer);
       homeTimer = setInterval(() => { if (!document.hidden && onFeatureList()) renderHome(true); }, 30000);
     }
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate);
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "shop") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -674,7 +682,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide) {
+async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -702,13 +710,14 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     if (mine !== routeSeq) return; // (the person has gone elsewhere while it was read)
   }
   const main = el("div", { class: "fmain" });
-  const opts = { commit, suggestions, diff, decide };
+  const opts = { commit, suggestions, diff, decide, validate };
   box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name), main));
-  featureView = { name, doc, board, opts, overview: !doc && !board && !commit && !suggestions && !diff && !decide, sig: decideSig(f) };
+  featureView = { name, doc, board, opts, overview: !doc && !board && !commit && !suggestions && !diff && !decide && !validate, sig: decideSig(f) };
   // What is drawn is what was read last time; it is read again behind the page, and the page is
   // redrawn if anything changed (a decision written, a session started).
   if (!doc && cached) refreshFeature(name);
   if (decide) await decidePage(f, main); // decide-page.js
+  else if (validate) await validatePage(f, main); // validate-page.js
   else if (suggestions) await reviewPage(f, main); // review-page.js
   else if (commit) await commitPage(f, main); // commit.js
   else if (board) await featureBoard(f, main);
@@ -725,7 +734,7 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
 // What the feature page on screen is showing: { name, doc, board, opts (commit, suggestions, diff, decide), overview
 // (the overview, which is redrawn when the feature changes), sig (the decisions it was drawn with) }.
 let featureView = null;
-const decideSig = f => `${(f.decide || {}).open || 0}/${(f.decide || {}).apply || 0}`;
+const decideSig = f => `${((f.decide || {}).open || 0) + ((f.validate || {}).open || 0)}/${((f.decide || {}).apply || 0) + ((f.validate || {}).apply || 0)}`;
 
 // Reads the feature again and, when it has changed, redraws what shows it: the rail always, the overview too
 // unless the person is in the middle of something on it (a Start panel, a form, "More options" open), in which
@@ -777,6 +786,14 @@ setInterval(pollDecisions, 6000);
 // The feature's left rail: its overview, whiteboard, documents and working notes.
 // On a workflow tab (opts.side) the documents open in the side panel (split.js)
 // instead of taking the page, and the ones open there are marked (markRail).
+// Everything that waits on the person, in order (the first one pulses).
+function waitingItems(f) {
+  const d = (f.decide && f.decide.open) || 0, v = (f.validate && f.validate.open) || 0;
+  return [
+    d ? { rail: "Decisions", sub: `${d} to decide`, href: featureDecideHref(f.name), page: "decide" } : null,
+    v ? { rail: "Validation", sub: `${v} to check`, href: featureValidateHref(f.name), page: "validate" } : null].filter(Boolean);
+}
+
 function featureNav(f, current, board, opts = {}) {
   const item = (label, href, on, sub, file) => {
     const a = el("a", { class: "fnav-item" + (on ? " on" : ""), href }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
@@ -794,13 +811,13 @@ function featureNav(f, current, board, opts = {}) {
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
     f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
-    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
     f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
     // decide-page.js. While questions wait it pulses to be seen (not on the Decide page itself, where it is already open)
-    f.decide && f.decide.open ? (a => { if (!opts.decide) a.classList.add("decide-pulse"); return a; })(item("Decisions", featureDecideHref(f.name), !!opts.decide, `${f.decide.open} to decide`)) : "",
+    ...waitingItems(f).map((w, n) => (a => { if (!n && !opts[w.page]) a.classList.add("decide-pulse"); return a; })(item(w.rail, w.href, !!opts[w.page], w.sub))),
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -1638,11 +1655,12 @@ function actionBar(f) {
     said = rows[a.row].text;
     opener("step-continue", "Continue", close => startPanel(f, rows[a.row], a.row, close));
   } else if (a.kind === "decide" || a.kind === "commit") {
-    const open = f.decide && f.decide.open;
+    const open = a.what === "validate" ? 0 : f.decide && f.decide.open;
     covered = rows.findIndex(r => r.link);
-    said = open ? `${open} ${open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).` : rows[covered].text;
-    link(open ? "decide-waiting" : "step-" + a.kind, a.label + (a.count ? ` (${a.count})` : ""), a.href);
-    if (open) covered = -1; // (the review's own row, if any, is offered under More options)
+    said = a.what === "validate" ? `${a.count} ${a.count === 1 ? "check waits" : "checks wait"} for your result.`
+      : open ? `${open} ${open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).` : rows[covered].text;
+    link(open || a.what === "validate" ? "decide-waiting" : "step-" + a.kind, a.label + (a.count ? ` (${a.count})` : ""), a.href);
+    if (open || a.what === "validate") covered = -1; // (the review's own row, if any, is offered under More options)
   }
   if (!node.childElementCount) return { node: "", covered };
   return { covered, node: el("div", { class: "action" + (a.kind === "start" ? " action-start" : "") },

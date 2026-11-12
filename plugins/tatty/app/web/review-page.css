@@ -37,3 +37,21 @@
 .dc-page .rv-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .dc-actions { position: sticky; bottom: 0; padding: 8px 0; background: var(--card-bg, var(--bg)); border-top: 1px solid var(--line); margin-top: 8px; }
 #dc-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
+/* The Validation page: a work unit's checks as one checklist (validate-page.js). */
+.vl-page { max-width: 900px; }
+.vl-group { margin: 14px 0 0; font-size: 15px; }
+.vl-check { margin: 8px 0; line-height: 1.5; border-left: 3px solid var(--line); }
+.vl-check.vl-done { border-left-color: var(--ok); }
+.vl-check.vl-bad { border-left-color: var(--bad); }
+.vl-steps { margin: 6px 0 10px; padding-left: 22px; }
+.vl-steps li { margin: 3px 0; }
+.vl-seg { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.vl-opt { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; }
+.vl-opt:hover { border-color: var(--accent); }
+.vl-opt.picked { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.vl-opt.vl-passed.picked { border-color: var(--ok); color: var(--ok); }
+.vl-opt.vl-failed.picked { border-color: var(--bad); color: var(--bad); }
+.vl-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vl-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
+.vl-foot { position: sticky; bottom: 0; align-items: center; padding: 10px 0; background: var(--card-bg, var(--bg)); border-top: 1px solid var(--line); margin-top: 10px; }
+.vl-sent { margin: 8px 0; }
