@@ -74,7 +74,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "intake.js": "text/javascript", "intake.css": "text/css",
-          "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
+          "review.js": "text/javascript", "commit.js": "text/javascript", "unitgate.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
@@ -2716,13 +2716,13 @@ def feature_summary(state, folder, detail=False):
         lite_first = base_route == "new" and bool(profile) and profile["route"] == "lite"
         sessions = sessions_of(state, folder)
         # A new feature whose chosen stages leave out Plan is a small change: lite first.
-        action = primary_action(folder, rows, out["decide"], sessions, lite_first, out["validate"])
+        action = primary_action(folder, rows, out["decide"], sessions, lite_first, out["validate"], unit_gate(folder, units))
         if lite_first and action["kind"] == "start":
             action["note"] = "The stages chosen for this feature leave out Plan, so it starts as a small change on the lite route."
         out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
                     "stages": stages_of(read_doc(folder, plan) if plan else "", events, left_out), "profile": profile,
                     "project": project, "projectFrom": project_from, "sessions": sessions,
-                    "liteFirst": lite_first, "action": action})
+                    "liteFirst": lite_first, "action": action, "unitGate": unit_gate(folder, units)})
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
         out["ticket"] = next(iter(jira_for_feature(folder.name)), "")  # the Jira ticket it was started from
@@ -3473,8 +3473,112 @@ def feature_commit(state, folder, body):
     return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo, "reviewDone": reviewed}
 
 
+# ---------------------------------------------------------------- the break after a validated work unit
+# When a work unit is Done (the toolbox's tt-execute wrote that after the engineer's checks passed) and
+# another unit follows, the feature's page offers two buttons: Commit work (one click: the files the
+# workflow's results name, the rest left alone) and Continue to the next unit (always a new session).
+# Nothing here is the workflow's record: the gate is derived from the Task Status's unit table, plus
+# <project home>/unit-gates.json: feature (lower case) -> {handled: "<unit id>", committed: "<short sha>"}.
+# The toolbox still never offers to commit; these are Tatty's buttons.
+
+UNIT_NOT_BEGUN = {"", "—", "-", "not started", "pending", "todo", "to do"}
+
+
+def unit_gate(folder, units):
+    """{unit, next, outcome} while the last Done unit has units after it and the person hasn't moved on
+    from it (pressed Continue), else None."""
+    live = [u for u in units if u["status"] != "Dropped"]
+    done = [i for i, u in enumerate(live) if u["status"] == "Done"]
+    if not done or done[-1] == len(live) - 1:
+        return None
+    last = live[done[-1]]
+    rec = read_json(project_home() / "unit-gates.json", {}).get(folder.name.lower())
+    if isinstance(rec, dict) and rec.get("handled") == last["id"]:
+        return None
+    later = [u for u in live[done[-1] + 1:] if u["status"] != "Done"]
+    # (a unit already begun, failed or blocked means the work has moved on, or needs more than a break)
+    if not later or any(u["status"].strip().lower() not in UNIT_NOT_BEGUN for u in later):
+        return None
+    nxt = later[0]
+    return {"unit": last["id"], "outcome": last["outcome"], "next": nxt["id"],
+            "committed": (rec or {}).get("committed", "") if isinstance(rec, dict) and rec.get("unit") == last["id"] else ""}
+
+
+def unit_gate_save(folder, **fields):
+    rows = read_json(project_home() / "unit-gates.json", {})
+    rec = rows.get(folder.name.lower())
+    rows[folder.name.lower()] = {**(rec if isinstance(rec, dict) else {}), **fields}
+    write_json(project_home() / "unit-gates.json", rows)
+
+
+def unit_units(folder):
+    status = first_doc(docs_of(folder), "Task Status")
+    return progress_of(read_doc(folder, status))[0] if status else []
+
+
+def unit_commit(state, folder):
+    """Commit the files the workflow's task results name, with a message naming the unit (http code, answer).
+    Other changes in the repo are left uncommitted, and counted in the answer."""
+    gate = unit_gate(folder, unit_units(folder))
+    if not gate:
+        return 409, {"error": "No work unit is waiting to be committed."}
+    info = commit_info(folder)
+    if not info["repo"]:
+        return 400, {"error": info["note"]}
+    chosen = [f["path"] for f in info["files"] if f["workflow"] and not f["secret"]]
+    if not chosen:
+        return 409, {"error": f"Nothing {gate['unit']} changed is uncommitted: no changed file is named in the workflow's task results."}
+    titles = []
+    tt = folder / ".tt"
+    for f in sorted(tt.rglob("results/*.md")) if tt.is_dir() else []:
+        one, names = workflow_results_of(f)
+        if names and any(in_workflow(p, one, info["repo"]) for p in chosen):
+            titles.append(names)
+    message = suggest_commit_message(folder, info["repo"], info.get("branch") or info.get("current") or "", titles)
+    first, _, rest = message.partition("\n")
+    first = f"{first[:80].rstrip()} ({gate['unit']})" if gate["unit"] not in first else first
+    code, answer = feature_commit(state, folder, {"files": chosen, "message": first + ("\n" + rest if rest else "")})
+    if code != 200:
+        return code, answer
+    unit_gate_save(folder, unit=gate["unit"], committed=answer["commit"])
+    return 200, {**answer, "unit": gate["unit"], "others": len(info["files"]) - len(chosen)}
+
+
+def workflow_results_of(path):
+    """({paths a task result lists as modified}, its title) for one results file."""
+    try:
+        text = lp(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set(), ""
+    head = re.match(r"#\s*Result:\s*[A-Za-z0-9._-]+\s*[—–-]\s*(.+)", text)
+    paths, part = set(), ""
+    for line in text.replace("\r", "").split("\n"):
+        if line.startswith("## "):
+            part = line[3:].strip()
+        elif part == "Files Modified" and line.startswith("- "):
+            for p in re.findall(r"`([^`]+)`", line.split(": ", 1)[0]):
+                paths.add(re.sub(r"^\./", "", p.strip().replace("\\", "/")))
+    return paths, head.group(1).strip() if head else ""
+
+
+def unit_continue(state, folder):
+    """Move on from the Done unit: a new session on the state's next step (http code, answer).
+    The gate is closed only once the session has started."""
+    gate = unit_gate(folder, unit_units(folder))
+    if not gate:
+        return 409, {"error": "No work unit is waiting."}
+    rows = workflow_rows(state, folder)
+    nxt = next((i for i, r in enumerate(rows) if r.get("kind") == "primary" and not r.get("link") and command(r)), None)
+    if nxt is None:
+        return 409, {"error": "The workflow has no next step to run."}
+    code, answer = start_session(state, folder, {"row": nxt})
+    if code == 200 and answer.get("ok"):  # (not ok: no terminal could be opened, and the person was given the command to run)
+        unit_gate_save(folder, handled=gate["unit"])
+    return code, answer
+
+
 REVIEW_SKILL = "tt-branch-review"
-REF_NAME = re.compile(r"^[A-Za-z0-9._/@#+~^-]{1,200}$")  # a branch or ref: no spaces, quotes or shell characters
+REF_NAME =re.compile(r"^[A-Za-z0-9._/@#+~^-]{1,200}$")  # a branch or ref: no spaces, quotes or shell characters
 
 
 def review_info(folder, repo=""):
@@ -4088,7 +4192,7 @@ def quick_row(folder, hint="", text="Start a small change on the quick route."):
 LIVE_SESSION = ("starting", "running", "lost")
 
 
-def primary_action(folder, rows, decide, sessions, lite_first, validate=None):
+def primary_action(folder, rows, decide, sessions, lite_first, validate=None, gate=None):
     """The one thing a feature's page offers first, from where the feature stands:
       start    -- nothing is written yet: Start Workflow and Start Workflow Lite (Lite only
                   when the chosen stages leave out Plan)
@@ -4114,6 +4218,9 @@ def primary_action(folder, rows, decide, sessions, lite_first, validate=None):
         return {"kind": "decide", "label": "Decisions Needed", "href": link["link"]}
     if link.get("phase") == "commit":
         return {"kind": "commit", "label": "Commit", "href": link["link"]}
+    if gate:
+        row = next((i for i, r in enumerate(rows) if r.get("kind") == "primary" and not r.get("link") and command(r)), None)
+        return {"kind": "unitgate", "label": f"{gate['unit']} validated", "unit": gate["unit"], "next": gate["next"], "row": row}
     live = next((s for s in sessions if s["status"] in LIVE_SESSION), None)
     if live:
         return {"kind": "session", "label": "Open session", "tag": live["tag"]}
@@ -9724,6 +9831,12 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             code, answer = feature_commit(st, folder, b if isinstance(b, dict) else {})
+            return self.send(code, answer)
+        if path in ("/api/unit-commit", "/api/unit-continue"):
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = (unit_commit if path == "/api/unit-commit" else unit_continue)(st, folder)
             return self.send(code, answer)
         if path in ("/api/feature/archive", "/api/feature/restore", "/api/feature/delete"):
             name = str(b.get("name", ""))

@@ -1658,6 +1658,8 @@ function actionBar(f) {
     covered = a.row;
     said = rows[a.row].text;
     opener("step-continue", "Continue", close => startPanel(f, rows[a.row], a.row, close));
+  } else if (a.kind === "unitgate") {
+    covered = a.row == null ? -1 : a.row; // (its buttons are the "Where it stands" card's: unitgate.js)
   } else if (a.kind === "decide" || a.kind === "commit") {
     const open = a.what === "validate" ? 0 : f.decide && f.decide.open;
     covered = rows.findIndex(r => r.link);
@@ -1694,7 +1696,7 @@ function overview(f) {
       el("span", {}, (e.qualifier ? e.qualifier + " " : "") + (EVENTS[e.event] || e.event)),
       e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : "";
   const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
-  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), commitCard(f), // commit.js
+  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), unitGateCard(f), commitCard(f), // unitgate.js, commit.js
     stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
   // Each session Start opened that is still going has a tab on the Features page: one line

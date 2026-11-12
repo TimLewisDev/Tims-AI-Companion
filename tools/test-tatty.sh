@@ -1377,6 +1377,56 @@ get "/api/commit?name=Commit%20Demo" >"$T/j"
 [ "$(pick "$T/j" "[f['path'] for f in d['files']]")" = "['.env']" ] && ok "the page then lists only that" || bad "the page then lists only that"
 
 fi
+if section unitgate; then
+echo "# the break after a validated work unit"
+[ "$(code "$U/static/unitgate.js")" = 200 ] && ok "unitgate.js served" || bad "unitgate.js served"
+GR="$T/gaterepo"
+mkdir -p "$GR" && git -C "$GR" init -q -b main && git -C "$GR" config user.email t@example.com && git -C "$GR" config user.name Tester
+printf 1 >"$GR/base.txt"; git -C "$GR" add -A; git -C "$GR" commit -q -m "feat: base [KEY-1]"
+git -C "$GR" switch -q -c feature/Gate-Demo
+GRW=$(cd "$GR" && { pwd -W 2>/dev/null || pwd; })
+GD="$FX/features/Gate Demo"
+mkdir -p "$GD/.tt/Gate Demo - Task Status/results"
+gate_status() { printf '# Status\n- State: In Progress\n\n# Work Unit Board\n| ID | Outcome | Tasks | Validated by | Status | Notes |\n|---|---|---|---|---|---|\n| WU1 | Save settings | T01 | Agent | %s | |\n| WU2 | See a greeting | T02 | Agent | %s | |\n\n# Task Board\n| ID | Task | Executor | Work unit | Depends on | Status | Notes |\n|---|---|---|---|---|---|---|\n| T01 | Add the store | Agent | WU1 | — | Done | |\n| T02 | Add the greeting | Agent | WU2 | T01 | Todo | |\n' "$1" "$2" >"$GD/Gate Demo - Task Status.md"; }
+gate_status Done "Not Started"
+printf '# Result: T01 — Add the store\n\n## Files Modified\n- create `src/store.txt`: x\n\n## Summary\nok\n' >"$GD/.tt/Gate Demo - Task Status/results/T01.md"
+$PY -c "import json,os,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)) if os.path.exists(p) else {}; d['gate demo']={'repo':sys.argv[2],'branch':'feature/Gate-Demo','base':'main','created':1,'merge':{}}; json.dump(d,open(p,'w'))" "$TATTY_HOME" "$GRW"
+mkdir -p "$GR/src"; printf s >"$GR/src/store.txt"; printf o >"$GR/other.txt"
+upost() { curl -s -o "$T/ug" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/$1"; }
+get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']['unit'] + ' ' + d['unitGate']['next']")" = "WU1 WU2" ] && ok "a Done unit with one still to start is a break" || bad "a Done unit with one still to start is a break" "$(head -c 400 "$T/j")"
+[ "$(pick "$T/j" "d['action']['kind']")" = unitgate ] && ok "and the page's first action says so" || bad "and the page's first action says so"
+gate_status "In Progress" "Not Started"; get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "no break while the first unit is not yet Done" || bad "no break while the first unit is not yet Done"
+gate_status Done "In Progress"; get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "none once the next unit has begun" || bad "none once the next unit has begun"
+gate_status Done Done; get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "none after the last unit (the complete build has its own Commit)" || bad "none after the last unit"
+gate_status Done "Not Started"
+[ "$(upost unit-commit '{"name":"Nope"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(upost unit-commit '{"name":"Gate Demo"}')" = 200 ] && ok "Commit work commits" || bad "Commit work commits" "$(cat "$T/ug")"
+has "naming the unit" "$T/ug" '(WU1)'
+has "and counting the changes it left" "$T/ug" '"others": 1'
+[ "$(git -C "$GR" show --name-only --format= HEAD | tr -d '\r' | tr '\n' ' ')" = "src/store.txt " ] && ok "only the files the results name" || bad "only the files the results name" "$(git -C "$GR" show --name-only --format= HEAD)"
+git -C "$GR" log -1 --format=%B >"$T/msg"; hasnt "with no trailer" "$T/msg" "Co-Authored"
+git -C "$GR" status --porcelain >"$T/st"; has "the other change stays uncommitted" "$T/st" "?? other.txt"
+get "/api/feature?name=Gate%20Demo" >"$T/j"
+has "the break stays after committing" "$T/j" '"unit": "WU1"'
+[ "$(upost unit-commit '{"name":"Gate Demo"}')" = 409 ] && ok "a second Commit work has nothing to commit" || bad "a second Commit work has nothing to commit" "$(cat "$T/ug")"
+if [ "$TOOLBOX" = 1 ]; then
+	post /api/project "{\"name\":\"Gate Demo\",\"path\":\"$GRW\"}" >/dev/null
+	[ "$(upost unit-continue '{"name":"Gate Demo"}')" = 200 ] && ok "Continue opens a new session" || bad "Continue opens a new session" "$(cat "$T/ug")"
+	has "which was started" "$T/ug" '"ok": true'
+	get "/api/feature?name=Gate%20Demo" >"$T/j"
+	[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "and the break is over" || bad "and the break is over"
+else
+	echo "skip  no toolbox: Continue needs the workflow's next step"
+fi
+gate_status Done "In Progress"
+[ "$(upost unit-commit '{"name":"Gate Demo"}')" = 409 ] && ok "no break, no commit" || bad "no break, no commit"
+[ "$(upost unit-continue '{"name":"Gate Demo"}')" = 409 ] && ok "and no Continue" || bad "and no Continue"
+
+fi
 if section reviewstep; then
 echo "# the Review step: suggestions, decisions, the changes, the commit"
 [ "$(code "$U/static/review-page.js")" = 200 ] && ok "review-page.js served" || bad "review-page.js served"

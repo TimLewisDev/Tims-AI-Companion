@@ -1302,6 +1302,18 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   Cancelling after a failed launch works the same, so the task can be started
   again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
   are left alone; it asks again when its folder is missing.
+- **Break after a validated work unit** (unitgate.js; server.py "the break after a
+  validated work unit"). The toolbox's tt-execute marks a unit `Done` once its checks
+  pass and stops; it never offers to commit. When the Task Status's last `Done` unit
+  is followed only by units not yet begun (`UNIT_NOT_BEGUN`), `unit_gate` puts
+  `unitGate` {unit, next, outcome} on the feature, `primary_action` answers
+  `unitgate`, and "Where it stands" shows two buttons. **Commit work**
+  (`POST /api/unit-commit`) commits in one click only the files the task results
+  name (`workflow_results_of`), with the suggested message plus `(WUn)`, through
+  `feature_commit`; other changes are left and counted; it never pushes. **Continue**
+  (`POST /api/unit-continue`) starts a new session on the state's next step and only
+  then records `handled` in `<project home>/unit-gates.json`, ending the break. The
+  break survives a reload, restart or a Commit. No toolbox change.
 - **Commit** (commit.js; server.py "committing what the workflow left"). Once a
   build is complete, a review only sees commits, so the step before it is to commit
   what the workflow changed, as a page and not a manual step. A card at the top of
