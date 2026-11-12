@@ -4,7 +4,16 @@
 // decide_set), so the page can be left and come back to. With the last one, the feature's open session is
 // told to carry on and apply them; with none open, the feature's Start picks them up.
 
-const featureDecideHref = name => "#feature/" + encodeURIComponent(name) + "/decide";
+// What shows under the bar while the decisions go, one after another.
+const SEND_PHRASES = [
+  "Scribbling away at the decision log…", "Making words be more gooder…", "Turning the heavy, heavy cogs…",
+  "Sharpening the pencil…", "Dotting the i's and crossing the t's…", "Filing it under “decided”…",
+  "Persuading the paperwork to behave…", "Blowing the dust off the ledger…", "Stamping everything with great ceremony…",
+  "Teaching the commas where to sit…", "Oiling the hinges of the filing cabinet…", "Straightening the stack of notes…",
+  "Whispering the choices to the session…", "Tucking each answer in neatly…", "Polishing the full stops…",
+];
+
+const featureDecideHref =name => "#feature/" + encodeURIComponent(name) + "/decide";
 const DECIDE_SEV = { blocking: "bad", significant: "now", minor: "todo", open: "now", "default applied": "todo" };
 // a challenge's fields, and a proposal's, in the order they are shown
 const DECIDE_FIELDS = [["target", "Targets"], ["assumption", "Assumption attacked"], ["why", "Why it may be wrong"], ["evidence", "Evidence"]];
@@ -106,19 +115,46 @@ async function decidePage(f, main) {
     const meter = bar(0, total, "");
     meter.id = "dc-bar"; meter.classList.add("send-bar");
     const fill = meter.firstChild, words = meter.querySelector("em");
-    let sentN = 0, refused = 0;
+    // Tatty rides the bar's leading edge, writing, and now and then looks down at the bar; a phrase under it
+    // changes every few seconds. Both are decoration (the status line and the bar's label say the real thing).
+    const rider = el("div", { class: "send-tatty", "aria-hidden": "true", hidden: "" });
+    const phrase = el("p", { class: "send-phrase dim", "aria-hidden": "true" }, "");
+    const stage = el("div", { class: "send-stage" }, rider, meter, phrase);
+    let sentN = 0, refused = 0, card = null, glanceTimer = 0, phraseTimer = 0, over = false;
     const paint = () => {
-      fill.style.width = `${Math.round(100 * sentN / total)}%`;
+      const share = sentN / total;
+      fill.style.width = `${Math.round(100 * share)}%`;
+      rider.style.left = `${Math.round(1000 * share) / 10}%`;
       words.textContent = `${sentN} of ${total} sent` + (refused ? ` (${refused} refused)` : "") + ` · ${total - sentN} to go`;
     };
     paint();
-    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${total} decision${total === 1 ? "" : "s"}…`), meter);
+    const glanceSoon = () => {
+      glanceTimer = setTimeout(() => { if (card) card.play("glance", 1.2, "writing"); glanceSoon(); }, 3000 + Math.random() * 2000);
+    };
+    const order = SEND_PHRASES.slice().sort(() => Math.random() - .5);
+    let said = 0;
+    const nextPhrase = () => {
+      phrase.classList.add("fading");
+      phraseTimer = setTimeout(() => { phrase.textContent = order[said++ % order.length]; phrase.classList.remove("fading"); phraseTimer = setTimeout(nextPhrase, 2500); }, 250);
+    };
+    nextPhrase();
+    if (window.TattyAvatar) {
+      api("/api/wallet").then(w => {
+        if (over || !w || !w.avatar || !stage.isConnected) return;
+        rider.innerHTML = TattyAvatar.svg(w.avatar, { scale: .55, box: "icon", outfit: w.outfit });
+        rider.hidden = false;
+        card = TattyAvatar.animate([rider.querySelector("svg")], w.avatar, "writing");
+        glanceSoon();
+      }).catch(() => {}); // no avatar is no loss
+    }
+    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${total} decision${total === 1 ? "" : "s"}…`), stage);
     const onProgress = e => {
       const ev = e.detail;
       if (ev.type !== "decided" || ev.batch !== batch) return;
       sentN = Math.max(sentN, ev.n);
       if (!ev.ok) refused++;
       paint();
+      if (card) card.play("glance", 1, "writing");
     };
     const was = window.TattyWallet && TattyWallet.source;
     if (window.TattyWallet) TattyWallet.source = ev => {
@@ -126,7 +162,9 @@ async function decidePage(f, main) {
       return was ? was(ev) : null;
     };
     document.addEventListener("tt-event", onProgress);
-    const done = () => { document.removeEventListener("tt-event", onProgress); if (window.TattyWallet) TattyWallet.source = was || null; };
+    const done = () => {
+      over = true; clearTimeout(glanceTimer); clearTimeout(phraseTimer);
+      document.removeEventListener("tt-event", onProgress); if (window.TattyWallet) TattyWallet.source = was || null; };
     let r;
     try {
       r = await api("/api/decide", { name: f.name, batch, answers: todo.map(x => { const v = decided.get(keyOf(x)); return { doc: x.doc, id: x.id, choice: v.key, note: v.note }; }) });
@@ -138,6 +176,7 @@ async function decidePage(f, main) {
     }
     // the bar fills if events were missed, and holds a moment so the last decision's coins leave from it
     sentN = total; paint();
+    if (card) card.play("celebrate", .5);
     // The feature as read before these decisions says they still wait: nothing is drawn from it again (a workflow
     // tab opened next draws its rail once the feature is read anew), and the Decisions Needed buttons on screen
     // take the count the server has just given (features.js).

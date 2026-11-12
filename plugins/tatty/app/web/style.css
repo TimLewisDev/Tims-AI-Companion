@@ -220,7 +220,26 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .bar em { position: absolute; inset: 0; font-style: normal; font-size: 11px; line-height: 14px; padding-left: 8px; color: var(--ink); }
 /* the Decide page sending its decisions: how many have gone and how many are left (decide-page.js) */
 .bar.send-bar { height: 22px; max-width: 520px; margin: 10px 0; }
-.bar.send-bar span { opacity: .6; transition: width .35s ease-out; }
+/* The fill is a two-tier corkscrew: two sets of diagonal stripes in two shades, sliding past each other the
+   opposite way. The motion is not gated on prefers-reduced-motion (this machine has the OS animations off, and a
+   bar that doesn't move says nothing is happening): a default here, not a veto. */
+.bar.send-bar span { opacity: .85; transition: width .35s ease-out;
+  background-color: var(--accent);
+  background-image:
+    repeating-linear-gradient(135deg, transparent 0 7px, rgba(255, 255, 255, .45) 7px 12px),
+    repeating-linear-gradient(45deg, transparent 0 10px, rgba(0, 0, 0, .22) 10px 15px);
+  background-size: 17px 17px, 21px 21px;
+  animation: corkscrew-a 1.1s linear infinite, corkscrew-b 1.7s linear infinite; }
+@keyframes corkscrew-a { to { background-position-x: 17px, 0; } }
+@keyframes corkscrew-b { to { background-position-x: 0, -21px; } }
+/* Tatty rides the leading edge above the bar (decide-page.js); a phrase changes under it. */
+.send-stage { position: relative; max-width: 520px; padding-top: 44px; }
+.send-stage .bar.send-bar { margin: 0; }
+.send-tatty { position: absolute; top: 0; width: 44px; height: 44px; margin-left: -22px; transition: left .35s ease-out; pointer-events: none; }
+.send-tatty[hidden] { display: none; }
+.send-tatty svg { width: 44px; height: 44px; display: block; }
+.send-phrase { margin: 8px 0 0; font-size: 12px; font-style: italic; min-height: 1.4em; transition: opacity .25s; }
+.send-phrase.fading { opacity: 0; }
 .bar.send-bar em { line-height: 20px; font-size: 12px; }
 .bar.warn span { background: var(--warn); opacity: .45; }
 .bar.bad span { background: var(--bad); opacity: .45; }

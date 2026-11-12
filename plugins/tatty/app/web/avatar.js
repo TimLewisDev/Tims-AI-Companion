@@ -47,6 +47,7 @@ const STATE_INFO = [
   ["thinking", "Thinking", "session <code>turn</code> started, no tool yet", "Looks up, mouth an O, a thought bubble with dots, the antenna glows."],
   ["reading", "Reading", "<code>activity</code> tool Read / Grep / Glob / WebFetch", "Sweeps a magnifying glass across his eyes; his pupils follow it."],
   ["writing", "Writing", "<code>activity</code> tool Edit / Write", "Scribbles on a notepad by his hand, line by line, leaning into it."],
+  ["glance", "Glance", "the Decide page sending: now and then, and as each decision lands", "Stops writing, leans back and looks down at the bar to see how far it has got; the notepad stays in hand."],
   ["running", "Running", "<code>activity</code> tool Bash", "Jogs on the spot beside a little terminal with a blinking cursor."],
   ["delegating", "Delegating", "session <code>agents</code> &gt; 0", "Two tiny helper bots hop beside him; he looks from one to the other."],
   ["waiting", "Waiting", "session <code>shells</code> &gt; 0, its turn over", "A shell command runs in the background: he taps his foot and keeps an eye on a little alarm clock, its hands going round."],
@@ -86,6 +87,10 @@ const STATES = {
     T("Ln1.sx", [[0, 0], [0, .4], [1, .75], [1, 1.15], [0, 1.2]]),
     T("Ln2.sx", [[0, 0], [0, .8], [1, 1.15], [0, 1.2]]),
     T("ArmR.a", [[-20, 0], [-32, .3], [-20, .6]], .6), T("ArmL.a", [[0, 0]])] }),
+  glance: d => ({ dur: 1.2, mouth: "neutral", bob: [2, 1.2], tracks: [
+    T("Pupils.x", [[-3, 0]]), T("Pupils.y", [[4.5, 0]]),
+    T("Body.a", [[-3, 0]]),
+    T("ArmR.a", [[-20, 0]]), T("ArmL.a", [[0, 0]])] }),
   running: d => ({ dur: .6, mouth: "neutral", bob: [2, .6], tracks: [
     T("LegL.y", [[0, 0], [-5, .15], [0, .3], [0, .6]]),
     T("LegR.y", [[0, 0], [0, .3], [-5, .45], [0, .6]]),
@@ -874,6 +879,7 @@ function rules() {
     STATE_IDS.map(s => `.tatty.st-${s} .p-${s}`).join(",") + "{display:inline}",
     ["neutral", "happy", "flat", "o", "wobble"].map(m => `.tatty.mo-${m} .m-${m}`).join(",") + "{display:inline}",
     WORKING.map(s => `.tatty.st-${s} .prog`).join(",") + "{display:inline}",
+    ".tatty.st-glance .p-writing{display:inline}", // he looks up from the notepad, he doesn't put it down
   ];
   for (const it of ITEMS) {
     const on = `.dress.w-${it.slot}-${it.id}`;
