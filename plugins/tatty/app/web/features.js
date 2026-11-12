@@ -302,7 +302,7 @@ async function linkTarget(a) {
     if (s) feature = s.feature;
   } else if (r.chat) {
     feature = (chatList.get(r.chat) || {}).feature || ""; // chat.js
-  } else if (r.page === "feature" && featureCache.get(r.name)) { feature = r.name; fallback = r.doc; }
+  } else if (r.page === "feature" && (featureCache.get(r.name) || r.decide)) { feature = r.name; fallback = r.doc; } // (the Decide page drops its cache entry when it sends: featureOf reads it again)
   if (!feature) return null;
   let f;
   try { f = await featureOf(feature); } catch { return null; }

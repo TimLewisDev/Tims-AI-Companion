@@ -1604,7 +1604,7 @@ def check_decide(p):
               { doc: '.tt/Demo - Questions/validation-WU3.md', kind: 'question', id: 'Q1', state: 'open', group: 'Demo: WU3 engineer checks', severity: 'WU3 check 2', title: 'The panel shows a toast' }];
             window.__show = {
               CH1: { doc: 'Demo - Challenges.md', fields: { id: 'CH1', target: '[R2](<Demo - Comprehensive Tech Plan.md#requirements>)', assumption: 'Once per change.', why: 'Registered twice.', evidence: '`a.sh:2`',
-                     question: 'Must a second save be a no-op?', take: 'The handler is registered on every open.', recommended: 'accept', state: 'open' },
+                     question: 'Does R2 allow a second save to be a no-op?', take: 'The handler is registered on every open.', recommended: 'accept', state: 'open' },
                      options: [{ key: 'accept', title: 'Accept & change', detail: 'The plan changes.', recommended: true, needsNote: false },
                                { key: 'rebut', title: 'Rebut', detail: 'The plan stands.', recommended: false, needsNote: true },
                                { key: 'defer', title: 'Defer', detail: 'Not now.', recommended: false, needsNote: false }] },
@@ -1621,6 +1621,7 @@ def check_decide(p):
                      options: [{ key: 'passed', title: 'Passed', detail: 'It showed', recommended: true, needsNote: false },
                                { key: 'failed', title: 'Failed', detail: 'Say what you saw', recommended: false, needsNote: true }] } };
             window.api = async (path, body) => {
+              if (path.startsWith('/api/items')) return { ids: { R1: { file: 'Demo - Comprehensive Tech Plan.md' }, R2: { file: 'Demo - Comprehensive Tech Plan.md' }, CD1: { file: 'Demo - Comprehensive Tech Plan.md' } } };
               if (path.startsWith('/api/decide/item')) { const id = new URLSearchParams(path.split('?')[1]).get('id'); return window.__show[id]; }
               if (path.startsWith('/api/decide?')) return { items: window.__items, drafts: window.__serverDraft || {} };
               if (path === '/api/decide/draft') { window.__drafted.push(body); return { kept: Object.keys(body.entries).length }; }
@@ -1645,11 +1646,15 @@ def check_decide(p):
     p.js("""(() => { const m = document.createElement('div'); m.id = 'dc-main'; document.body.append(m); decidePage({ name: 'Demo' }, m); })(); 1""")
     wait(p, "!!document.querySelector('#dc-item')")
     res["first"] = p.js("""({ id: document.querySelector('#dc-item').dataset.id, h3: document.querySelector('#dc-item h3').textContent,
-                             facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()),
+                             facts: [...document.querySelectorAll('.dc-facts dt')].map(t => t.innerText.trim() + ': ' + t.nextElementSibling.innerText.trim()),
                              take: (document.querySelector('.dc-take') || {}).innerText, ask: (document.querySelector('#dc-item .ask-line') || {}).innerText,
                              opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()),
                              go: document.querySelector('#dc-go').textContent, disabled: document.querySelector('#dc-go').disabled,
                              dots: document.querySelectorAll('.rv-dot').length })""")
+    wait(p, "document.querySelectorAll('#dc-item a.idlink').length >= 2")
+    res["links"] = p.js("""({ ask: [...document.querySelectorAll('#dc-item .dc-ask a.idlink')].map(a => a.textContent),
+                              target: [...document.querySelectorAll('#dc-item .dc-facts a.idlink')].map(a => a.textContent),
+                              stray: document.querySelectorAll('#dc-item a.doclink:not(.idlink)').length })""")
     p.js("document.querySelector('.rv-opt[data-key=\"rebut\"] input').click(); 1")
     res["rebutNeedsReason"] = p.js("({ disabled: document.querySelector('#dc-go').disabled, placeholder: document.querySelector('#dc-note').placeholder })")
     p.js("(() => { const t = document.querySelector('#dc-note'); t.value = 'a toast shows it'; t.dispatchEvent(new Event('input', { bubbles: true })); })()")
@@ -1657,12 +1662,12 @@ def check_decide(p):
     p.js("document.querySelector('#dc-go').click(); 1")
     wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'CH2'")
     res["sentAfter1"] = p.js("window.__sent.length")
-    res["second"] = p.js("""({ facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()), go: document.querySelector('#dc-go').textContent,
+    res["second"] = p.js("""({ facts: [...document.querySelectorAll('.dc-facts dt')].map(t => t.innerText.trim() + ': ' + t.nextElementSibling.innerText.trim()), go: document.querySelector('#dc-go').textContent,
                               opts: [...document.querySelectorAll('.rv-opt')].map(o => o.dataset.key) })""")
     p.js("document.querySelector('.rv-opt[data-key=\"dismiss\"] input').click(); document.querySelector('#dc-go').click(); 1")
     wait(p, "document.querySelector('#dc-item') && document.querySelector('#dc-item').dataset.id === 'P2'")
     res["sentAfter2"] = p.js("window.__sent.length")
-    res["proposal"] = p.js("""({ context: (document.querySelector('.dc-context') || {}).innerText, facts: [...document.querySelectorAll('.dc-facts li')].map(x => x.innerText.trim()),
+    res["proposal"] = p.js("""({ context: (document.querySelector('.dc-context') || {}).innerText, facts: [...document.querySelectorAll('.dc-facts dt')].map(t => t.innerText.trim() + ': ' + t.nextElementSibling.innerText.trim()),
                                 take: (document.querySelector('.dc-take') || {}).innerText, doc: (document.querySelector('#dc-doc') || {}).innerText,
                                 opts: [...document.querySelectorAll('.rv-opt')].map(o => o.innerText.replace(/\\s+/g, ' ').trim()), go: document.querySelector('#dc-go').textContent })""")
     p.js("document.querySelector('.rv-opt[data-key=\"B\"] input').click(); document.querySelector('#dc-go').click(); 1")

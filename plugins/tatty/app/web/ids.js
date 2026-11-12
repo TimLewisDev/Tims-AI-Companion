@@ -20,8 +20,17 @@ const remembered = (map, key, get) => {
   return map.get(key);
 };
 const indexes = new Map(), items = new Map();
-const itemsOf = feature => !feature ? Promise.resolve({}) :
-  remembered(indexes, feature, () => api("/api/items?name=" + encodeURIComponent(feature)).then(r => r.ids || {}, () => ({})));
+// A failed or empty read is not remembered (the documents may be written a moment later), and `fresh` reads again.
+const itemsOf = (feature, fresh) => {
+  if (!feature) return Promise.resolve({});
+  if (fresh) indexes.delete(feature);
+  return remembered(indexes, feature, () => {
+    const p = api("/api/items?name=" + encodeURIComponent(feature)).then(r => r.ids || {}, () => ({}));
+    p.then(ids => { if (!Object.keys(ids).length && indexes.get(feature) === p) indexes.delete(feature); });
+    return p;
+  });
+};
+let lastFresh = 0;
 const itemOf = (feature, id) => remembered(items, feature + "\n" + id,
   () => api(`/api/item?name=${encodeURIComponent(feature)}&id=${encodeURIComponent(id)}`).catch(() => null));
 
@@ -53,15 +62,27 @@ const NOT_HERE = "a, code, pre, h1, h2, h3, h4, h5, h6, summary, textarea, input
 
 // Makes the IDs the feature defines, in root's text, links to their items, once
 // the feature's IDs are known (so it can be called on a node not yet on screen).
-async function linkIds(root, feature) {
+// o.allowDefining: the text only quotes IDs (a question, a take), so a bold opening ID is a cite, not a
+// definition. o.headings: also link inside h1-h6 (an item's title).
+async function linkIds(root, feature, o = {}) {
   if (!root || !feature) return root;
-  const ids = await itemsOf(feature);
+  let ids = await itemsOf(feature);
+  const cites = [...root.querySelectorAll("a.doclink:not(.idlink)")].filter(a => isId(a.textContent.trim()));
+  // an ID the index doesn't know may be in a document written since: read it again, once in a while
+  const unknown = known => [...root.textContent.matchAll(ID_TOKEN)].some(m => !known[m[0]]);
+  if (unknown(ids) && Date.now() - lastFresh > 5000) { lastFresh = Date.now(); ids = await itemsOf(feature, true); }
   if (!Object.keys(ids).length) return root;
+  // cites the page wrote as document links ([R2](<Doc.md#…>)) become the ID's own link
+  for (const a of cites) {
+    const id = a.textContent.trim();
+    if (ids[id]) a.replaceWith(idLink(feature, id, ids[id]));
+  }
+  const skip = o.headings ? NOT_HERE.replace(/h1, h2, h3, h4, h5, h6, /, "") : NOT_HERE;
   const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const hits = [];
   for (let n = walk.nextNode(); n; n = walk.nextNode()) {
     const p = n.parentElement;
-    if (!/\d/.test(n.nodeValue) || !p || p.closest(NOT_HERE) || defining(n)) continue;
+    if (!/\d/.test(n.nodeValue) || !p || p.closest(skip) || (!o.allowDefining && defining(n))) continue;
     if ([...n.nodeValue.matchAll(ID_TOKEN)].some(m => ids[m[0]])) hits.push(n);
   }
   for (const n of hits) {

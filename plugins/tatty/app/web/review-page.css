@@ -19,6 +19,21 @@
 .rv-row { padding: 5px 0; border-top: 1px solid var(--line); }
 .rv-row:first-child { border-top: none; }
 /* The Decide page reuses the Review page's layout (decide-page.js). */
-.dc-facts { margin: 6px 0; }
-.dc-take { margin: 8px 0; }
+.dc-page .rv-item { line-height: 1.5; max-width: 76ch; }
+.dc-title { font-size: 17px; margin: 8px 0 10px; }
+.dc-context { margin: 6px 0 10px; color: var(--dim); }
+.dc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 8px 0 12px; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.dc-facts dt { color: var(--dim); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding-top: 2px; }
+.dc-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dc-more summary { cursor: pointer; }
+.dc-more[open] summary { color: var(--dim); }
+.dc-more > div { margin-top: 4px; }
+.dc-take { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 6px 6px 0; }
+.dc-take-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--accent); margin-bottom: 2px; }
+.dc-ask { margin: 14px 0 6px; font-size: 15px; }
+.dc-page .rv-opt { padding: 9px 11px; }
+.dc-page .rv-opt.rec { border-left: 3px solid var(--accent); }
+.dc-page .rv-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dc-actions { position: sticky; bottom: 0; padding: 8px 0; background: var(--card-bg, var(--bg)); border-top: 1px solid var(--line); margin-top: 8px; }
 #dc-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }

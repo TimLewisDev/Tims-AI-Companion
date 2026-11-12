@@ -203,7 +203,7 @@ async function decidePage(f, main) {
       const radio = el("input", { type: "radio", name: "dc-choice", value: o.key, "aria-label": o.title });
       radio.checked = choice === o.key;
       radio.addEventListener("change", () => pick(o.key));
-      const node = el("label", { class: "rv-opt" + (choice === o.key ? " picked" : ""), "data-key": o.key }, radio,
+      const node = el("label", { class: "rv-opt" + (choice === o.key ? " picked" : "") + (o.recommended ? " rec" : ""), "data-key": o.key }, radio,
         el("span", {}, el("strong", {}, /^[A-Z]$/.test(o.key) ? `${o.key} — ${o.title}` : o.title), o.recommended ? el("span", { class: "chip done" }, "recommended") : "",
           o.detail ? el("div", { class: "small dim" }, o.detail) : ""));
       opts.push({ key: o.key, node });
@@ -226,8 +226,12 @@ async function decidePage(f, main) {
       type: "button", class: "rv-dot" + (isDone(x) ? " done" : "") + (n === at ? " now" : ""),
       title: `${x.id}: ${x.title}`, "aria-label": `${x.id}: ${x.title}`, onclick: () => move(n) }, isDone(x) ? "✓" : String(n + 1))));
     const proposal = i.kind === "proposal", question = i.kind === "question";
+    // label column and value column; a long Evidence folds away (its first words stay as the summary)
     const facts = question ? [] : (proposal ? DECIDE_PROPOSAL_FIELDS : DECIDE_FIELDS).filter(([k]) => fields[k])
-      .map(([k, label]) => el("li", {}, el("strong", {}, label + ": "), decideText(fields[k])));
+      .flatMap(([k, label]) => [el("dt", {}, label),
+        el("dd", {}, k === "evidence" && fields[k].length > 260
+          ? el("details", { class: "dc-more" }, el("summary", {}, decidePlain(fields[k]).slice(0, 110).trim() + "…"), el("div", {}, decideText(fields[k])))
+          : decideText(fields[k]))]);
     const take = proposal ? fields.recommendation : fields.take;
     // a question list's context keeps its lines (show joins them with " / ")
     const context = question && fields.context ? el("div", { class: "dc-context" },
@@ -236,20 +240,21 @@ async function decidePage(f, main) {
       el("div", { class: "rv-chips" }, el("span", { class: "qchip id" }, i.id),
         question ? (i.severity ? el("code", {}, i.severity) : "") : el("span", { class: "chip " + (DECIDE_SEV[i.severity] || "todo") }, i.severity),
         i.group ? el("span", { class: "dim small" }, i.group) : "", fields.state === "apply" ? el("span", { class: "chip done" }, "decided: waiting to be applied") : ""),
-      el("h3", {}, i.title),
+      el("h3", { class: "dc-title" }, decideText(i.title)),
       context,
-      facts.length ? el("ul", { class: "qevidence dc-facts" }, facts) : "",
-      take ? el("p", { class: "dc-take" }, el("em", {}, el("strong", {}, proposal ? "Recommendation: " : "The planner's take: "), decideText(take))) : "",
-      !proposal && fields.question ? el("p", { class: "ask-line" }, el("strong", {}, decideText(fields.question))) : "",
+      facts.length ? el("dl", { class: "dc-facts" }, facts) : "",
+      take ? el("div", { class: "dc-take" }, el("div", { class: "dc-take-label" }, proposal ? "Recommendation" : "The planner's take"), el("div", {}, decideText(take))) : "",
       proposal ? el("p", { class: "small" }, el("a", { href: featureHref(f.name, i.doc), id: "dc-doc" }, "The full comparison, in " + i.doc)) : "",
+      !proposal && fields.question ? el("p", { class: "ask-line dc-ask" }, decideText(fields.question)) : "",
       el("div", { class: "rv-opts" }, options.map(option)),
       note, msg,
-      el("div", { class: "start-actions" }, go,
+      el("div", { class: "start-actions dc-actions" }, go,
         el("button", { type: "button", id: "dc-prev", disabled: at === 0, onclick: () => move(at - 1) }, "Back"),
         el("button", { type: "button", id: "dc-skip", disabled: at === items.length - 1, onclick: () => move(at + 1) }, "Next")));
     put(head, el("div", { class: "small dim" }, "Written down by the workflow for you to decide here, instead of one at a time in the terminal. Your choices are kept in this browser and sent together with the last one. ", back),
       el("div", { class: "rv-progress" }, bar(done, items.length, `${done} of ${items.length} decided`)), list, card);
-    if (typeof linkIds === "function") linkIds(card, f.name);
+    // the page only quotes IDs (never defines them), so a bold opening ID is linked too, and so is the title
+    if (typeof linkIds === "function") linkIds(card, f.name, { allowDefining: true, headings: true });
     show(choice); // (drawing is not a pick: nothing is held until the person picks)
     if (needsNote()) note.focus();
   };
