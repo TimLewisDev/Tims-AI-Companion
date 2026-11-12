@@ -27,6 +27,8 @@ throwaway root;
 leaving Scope, Plan and Review out and putting them back. It writes the feature's stage profile, so a throwaway root only;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
+--intake      only the Engineering home's task box: the box and the card it draws, the effort slider's stops, a bug, Create and start
+(the page's api() stood in for: nothing is made);
 --decide      only the Decide page and its overview line (the page's api() stood in for: nothing is written);
 --debug       only Settings' Debug section (coins in and out, unlocks locked again) and the shop's line saying whose wallet it is (the page's api() stood in: nothing is written);
 --modes       only the top bar's modes while in the shop: choosing one leaves it for that mode's home page (modes set on the page);
@@ -1419,6 +1421,92 @@ def check_actions(p):
     return res
 
 
+def check_intake(p):
+    """The box on the Engineering home (intake.js), with the page's api() stood in for (nothing is made): it is on the
+    Engineering mode's home and not on Design's; the first message makes a chat and says it; the card shows what Tatty
+    understood (title, summary, done when, the level on the slider, the branch it proposes); the slider snaps (by value, by
+    arrow key, by a click on its labels) and the description of the chosen level is the one marked; a bug hides the slider;
+    Create and start sends what the card shows and opens the session's tab; and with no quick route in the toolbox,
+    Low is held."""
+    res = {}
+    p.js("""(() => {
+      window.__real = { api: window.api }; window.__sent = []; window.__chat = null;
+      window.__task = { title: 'Retry button on the upload dialog', summary: 'Show Retry when an upload fails.', acceptance: ['The dialog shows Retry', 'Retry uploads again'],
+                        kind: 'feature', level: 'low', why: 'One dialog and a retry to copy.', unknowns: [] };
+      window.__info = { project: 'C:/work/proj', projects: [], quick: true, nextId: 'TAT-0007', toolbox: true };
+      window.api = async (path, body) => {
+        if (path === '/api/intake/info') return window.__info;
+        if (path === '/api/chat/new') { window.__sent.push(['new', body]); window.__chat = { id: 'c-0000abcd', kind: 'intake', title: 'New task', project: body.project, feature: '', messages: [], task: null, cost: 0, busy: false, step: '' }; return window.__chat; }
+        if (path === '/api/chat/say') { window.__sent.push(['say', body]); window.__chat.messages.push({ role: 'you', text: body.text, ts: 1 }, { role: 'claude', text: 'So you want a Retry button. Is that right?', ts: 2, steps: [] }); window.__chat.task = window.__task; return window.__chat; }
+        if (path.startsWith('/api/chat?id=')) return window.__chat;
+        if (path === '/api/chat/close') { window.__sent.push(['close', body]); return { ok: true }; }
+        if (path.startsWith('/api/intake/branch')) return { repo: 'C:/work/proj', branch: 'feature/TAT-0007-retry-button', base: 'main' };
+        if (path === '/api/intake/start') { window.__sent.push(['start', body]); return { ok: true, tag: 's-intake', feature: 'TAT-0007', name: 'TAT-0007 : Quick', command: '/tt-workflow-quick', project: 'C:/work/proj' }; }
+        return window.__real.api(path, body);
+      };
+      window.__type = (el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); };
+      window.__reset = () => { sessionStorage.removeItem('tt-intake-chat'); intakeBox = null; window.__chat = null; window.__sent = []; };
+      window.__card = () => { const c = document.querySelector('.intake-card'); if (!c) return null; const s = c.querySelector('.intake-slider'); return {
+        slider: s.value, valuetext: s.getAttribute('aria-valuetext'),
+        ticks: [...c.querySelectorAll('.intake-tick')].map(b => b.textContent + (b.classList.contains('on') ? '*' : '')),
+        levels: [...c.querySelectorAll('.intake-level')].map(d => d.dataset.level + (d.classList.contains('on') ? '*' : '')),
+        effortHidden: c.querySelector('.intake-effort').hidden, bugNote: !c.querySelector('.intake-bugnote').hidden,
+        happens: c.querySelector('.intake-happens').textContent, warn: c.querySelector('.intake-warn').textContent,
+        go: c.querySelector('.intake-buttons .primary').disabled }; };
+      window.__reset(); return 1; })()""")
+    show = "applyMode('engineering'); renderModeHome(document.querySelector('#page-mode')); 1"
+    p.js("setInstalledModes(['engineering', 'design', 'production']); applyMode('engineering'); location.hash = '#mode'; 1")
+    wait(p, "document.querySelector('#page-mode').classList.contains('on') && !!document.querySelector('#page-mode .intake-text')")
+    res["box"] = p.js("""({ heading: document.querySelector('.intake h3').textContent, where: document.querySelector('.intake-where').textContent,
+                           beforeTiles: !!document.querySelector('.intake ~ .mode-tiles'), cards: document.querySelectorAll('.intake-card').length })""")
+    p.js("applyMode('design'); renderModeHome(document.querySelector('#page-mode')); 1")
+    res["designHasNone"] = p.js("!document.querySelector('#page-mode .intake')")
+    p.js(show)
+    wait(p, "!!document.querySelector('#page-mode .intake-text')")
+
+    # the first message: a chat is made and the message said; Tatty answers, and its understanding is the card
+    p.js("window.__type(document.querySelector('.intake-text'), 'add a Retry button to the upload failed dialog'); document.querySelector('.intake-form').requestSubmit(); 1")
+    wait(p, "!!document.querySelector('.intake-card') && !!document.querySelector('.intake-branch') && document.querySelector('.intake-branch').value")
+    res["sent"] = p.js("window.__sent.map(s => s[0] + ':' + (s[1].kind || s[1].text))")
+    res["card"] = p.js("""(() => { const c = document.querySelector('.intake-card'); return { title: c.querySelector('.intake-title').value,
+        summary: c.querySelector('.intake-summary').value, done: c.querySelector('.intake-done').value.split('\\n'),
+        kind: c.querySelector('input[name=intake-kind]:checked').value, branch: c.querySelector('.intake-branch').value,
+        why: c.querySelector('.intake-why').textContent, ...window.__card() }; })()""")
+    res["chat"] = p.js("({ messages: document.querySelectorAll('.intake .chat-msg').length, tab: !!document.querySelector('.wtab[data-chat]') })")
+
+    # the slider: three stops it snaps to
+    res["snap"] = p.js("(() => { const s = document.querySelector('.intake-slider'); s.value = '1.4'; return s.value; })()")
+    p.js("(() => { const s = document.querySelector('.intake-slider'); s.value = '0'; s.dispatchEvent(new Event('input', { bubbles: true })); s.focus(); })(); 1")
+    key(p, "ArrowRight", 39)
+    res["arrow"] = p.js("window.__card()")
+    p.js("document.querySelectorAll('.intake-tick')[2].click(); 1")
+    res["tickHigh"] = p.js("window.__card()")
+    p.js("document.querySelector('input[name=intake-kind][value=bug]').click(); 1")
+    res["bug"] = p.js("window.__card()")
+    p.js("document.querySelector('input[name=intake-kind][value=feature]').click(); document.querySelectorAll('.intake-tick')[0].click(); 1")
+    res["low"] = p.js("window.__card()")
+
+    # Create and start: what the card shows is what is sent, and the session's tab opens
+    p.js("window.__type(document.querySelector('.intake-title'), 'Retry button'); document.querySelector('.intake-buttons .primary').click(); 1")
+    wait(p, "window.__sent.some(s => s[0] === 'start')")
+    res["start"] = p.js("(({ chat, title, summary, acceptance, kind, level, project, branchName, isolate }) => ({ chat, title, summary, acceptance, kind, level, project, branchName, isolate }))(window.__sent.find(s => s[0] === 'start')[1])")
+    wait(p, "location.hash.startsWith('#workflows/')")
+    res["opened"] = p.js("decodeURIComponent(location.hash)")
+
+    # a toolbox with no quick route: the card starts at Medium, and Low is held
+    p.js("window.__info.quick = false; window.__reset(); location.hash = '#mode'; 1")
+    p.js(show)
+    wait(p, "!!document.querySelector('#page-mode .intake-text')")
+    p.js("window.__type(document.querySelector('.intake-text'), 'again'); document.querySelector('.intake-form').requestSubmit(); 1")
+    wait(p, "!!document.querySelector('.intake-card')")
+    res["noQuickStart"] = p.js("window.__card()")
+    p.js("document.querySelectorAll('.intake-tick')[0].click(); 1")
+    res["noQuickLow"] = p.js("window.__card()")
+
+    p.js("window.api = window.__real.api; window.__reset(); applyMode('engineering'); location.hash = '#home'; 1")
+    return res
+
+
 def check_review(p):
     """The review step's Start panel (review.js), drawn with the page's api() stood in for: it asks which
     repo and branch rather than showing the project line, the command has no "[branch]" in it, Start is held
@@ -2342,10 +2430,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--loading", "--launcher", "--modes", "--debug", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

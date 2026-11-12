@@ -958,6 +958,52 @@ contract's "Chats" section; how it is built:
   asks (`pickChatProject`: the folders Tatty knows, `GET /api/chat/projects`, or
   Explorer).
 
+### The Engineering home's task box (intake)
+
+The Engineering mode home (`#mode`, `renderModeHome` in `modes.js`) starts with a
+box to type a task into (`intake.js`, `intake.css`; server.py's "intake"). It is a
+third kind of chat, `intake`, and everything above applies except that it has no
+tab (`chats_open` leaves it out; `chatView` does not put it in `chatList`) and no
+feature. The contract's "Starting a task by typing" has the rules; how it is built:
+
+- **The box** (`makeIntake`, one instance that `intakeNode()` hands to each draw of
+  the page) is a textarea until the first message. Then `/api/chat/new
+  {kind: "intake"}` makes the chat (in the open project's repo,
+  `intake_project`; the "Choose a folder…" link asks otherwise) and `chatView(id,
+  {bare, empty, placeholder, onDraw})` shows the conversation in place. The chat in
+  progress is kept in `sessionStorage` (`tt-intake-chat`), so a refresh or another
+  page does not lose it; **Start over** closes it.
+- **What it asks and says** is `plugins/tatty/skills/intake` (`/tatty:intake`):
+  the first message goes after it and a `<facts>` block (`intake_facts`). It asks
+  at most three short questions in one message, or plays the task back and ends
+  with the `tatty-task` block. `parse_intake_task` checks the last block (title cut
+  at 80, summary at 1500, at most 8 acceptance lines, `kind` feature|bug, `level`
+  low|medium|high, unknown values falling back) and keeps it as the chat's `task`;
+  a reply from the person clears it. A block that does not parse is left in the
+  text, so a failure shows. With a reply and no task, "Skip the questions:
+  summarise what you have" sends a canned message.
+- **The card** (`taskCard`) shows the task for correction: title, summary, done
+  when, feature or bug, and the **effort slider** (a native range input of three
+  stops, `step=1`, so it snaps; Low / Medium / High under it as buttons, and what
+  each level does below, the chosen one marked). Low is the quick route, Medium a
+  small change, High the full workflow; the level Tatty suggested is shown with
+  its reason. A bug hides the slider (it starts `tt-debug`). Under it: the ID,
+  the branch name Tatty proposes (`GET /api/intake/branch`, the ID and the title's
+  first words; editable), **Own worktree**, the project and the model picker, and
+  what **Create and start** will make. Low is refused when
+  `quick_available()` (the toolbox has `skills/tt-workflow-quick`) says no.
+- **Create and start** (`intake_start`, one at a time per chat): checks, makes the
+  feature (`new_numbered_feature`), writes the Ticket (`intake_ticket_md`), and
+  starts the session through `card_start_session` with the route (`quick_row`
+  beside `lite_row`), the branch name passed on as `branchName` to `ensure_branch`
+  (`branch_pick`: a name git allows and that does not exist). When Start refuses
+  after the feature was made, the feature (the Ticket and its folder) is removed, so
+  the card can try again; the ID is not reused. On success the chat is closed and
+  the page opens the session's tab, as a feature's Start does.
+- **Quick is labelled by Tatty.** `routes.json` (`set_feature_route`) records the
+  features started quick, and `feature_summary` turns the lite route into `quick`
+  for them (`ROUTES`, `pipeline`: Understand, Brief, Build, Review, Done).
+
 ## The compact bubble's chat and questions
 
 The compact bubble (380×440) shows one of two things at a time, chosen with a
@@ -1470,7 +1516,11 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   (only reading, no command, the conversation named then resumed), the side
   chat's context in front of its first message only, both summaries, one turn
   at a time and Stop, closing, and a workflow beside a chat hearing nothing of
-  it. And the compact chat and its questions (`tools/test-compact-chat.py`, run
+  it. And the Engineering home's task box (`intake`): the chat's task parsed from a
+  `tatty-task` block (clamped, malformed ignored, cleared by a reply), the card's
+  Create and start at each level (the command, the Ticket, the branch, the chat
+  closed, once only), a branch name typed on the card, a refused name or a failed
+  Start leaving nothing behind. And the compact chat and its questions (`tools/test-compact-chat.py`, run
   from here and on its own with `python tools/test-compact-chat.py`): the worker
   against a stand-in `claude`, so no agent runs: a history per project, kept
   across a restart, a turn in the project's folder, a command that could do more

@@ -29,7 +29,7 @@ file	tools/build-installer.ps1	prebuilt,desktop
 file	plugins/tatty/scripts/tatty.sh	*
 file	plugins/tatty/scripts/tatty-root.sh	root,features,newfeature
 file	plugins/tatty/scripts/suggestions.sh	reviewstep
-file	plugins/tatty/skills/*	reviewstep,mergestep,chats
+file	plugins/tatty/skills/*	reviewstep,mergestep,chats,intake
 file	plugins/tatty/hooks/*	live,tabs,milestones
 file	plugins/tatty/app/compact_chat.py	compactchat,chats
 file	plugins/tatty/app/reviewdoc.py	reviewstep,reviewrepo
@@ -61,7 +61,8 @@ banner	^whiteboards	whiteboards,stories
 banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
 banner	^archiving	archive
 banner	^code changes	commit,reviewstep,reviewrepo
-banner	^chats	chats,compactchat
+banner	^chats	chats,compactchat,intake
+banner	^intake	intake,chats,newfeature,startstep,branches
 banner	^the compact chat	compactchat,chats
 banner	^HTTP	route
 banner	^client	launching,restart,settings,selfupdate

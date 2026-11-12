@@ -40,6 +40,7 @@ whiteboards	features,project	7
 models	features,project	324
 llms	features,project	289
 chats	-	33
+intake	features	40
 compactchat	-	3
 archive	tasks	25
 restart	features,project,settings	34

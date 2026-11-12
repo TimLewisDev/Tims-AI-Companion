@@ -267,6 +267,7 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .fcard:hover { border-color: var(--accent); box-shadow: 0 1px 6px rgba(0,0,0,.08); }
 .fcard.route-lite { border-left-color: var(--ok); }
 .fcard.route-bug { border-left-color: var(--warn); }
+.fcard.route-quick { border-left-color: var(--accent); }
 .fcard.route-new { border-left-color: var(--line); }
 .fcard-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .fcard-top strong { font-size: 15px; }
@@ -314,6 +315,7 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .hcard-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--accent); }
 .hcard-lite .hcard-stripe { background: var(--ok); }
 .hcard-bug .hcard-stripe { background: var(--warn); }
+.hcard-quick .hcard-stripe { background: var(--accent); }
 .hcard-new .hcard-stripe { background: var(--line); }
 .hcard-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; min-width: 0; }
 .hcard-name { font-size: 15px; min-width: 0; overflow-wrap: anywhere; }

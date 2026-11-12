@@ -32,13 +32,15 @@ async function loadChats() {
 
 // A chat's view: its context (for a side chat), its messages, and a box to send
 // another. { id, node, dirty(), focus() }; it follows the chat's "chat" events.
-function chatView(id) {
+// opts, for a chat that isn't in a tab (the Engineering home's intake box, intake.js):
+// bare (no heading), empty and placeholder (its words), onDraw(chat) after each draw.
+function chatView(id, opts = {}) {
   const head = el("div", { class: "chat-head" });
   const ctxSlot = el("div", { class: "chat-context-slot" });
   const list = el("ol", { class: "chat-msgs", "aria-live": "polite" });
   const step = el("div", { class: "chat-step dim small" });
   const box = el("textarea", { rows: 3, class: "chat-box", "aria-label": "Your message",
-    placeholder: "Ask something…  (Enter sends, Shift+Enter for a new line)" });
+    placeholder: opts.placeholder || "Ask something…  (Enter sends, Shift+Enter for a new line)" });
   const stop = el("button", { type: "button", class: "chat-stop", title: "Stop this answer" }, "Stop");
   const send = el("button", { type: "submit", class: "primary chat-send" }, "Send");
   const said = el("span", { class: "dim small chat-said" });
@@ -51,14 +53,15 @@ function chatView(id) {
   const draw = () => {
     if (!chat) return;
     const where = [chat.feature, chat.project].filter(Boolean).join(" · ");
-    head.replaceChildren(el("h3", {}, chat.title || "Chat"),
+    if (opts.bare) head.replaceChildren();
+    else head.replaceChildren(el("h3", {}, chat.title || "Chat"),
       el("div", { class: "dim small" }, chat.kind === "side" ? "Side chat" : "Chat", where ? " · " + where : "",
         chat.cost ? ` · $${chat.cost.toFixed(2)} so far` : ""));
     ctxSlot.replaceChildren(chat.context ? contextChip(chat) : "");
     if (drawn !== chat.messages.length) {
       drawn = chat.messages.length;
       list.replaceChildren(...(chat.messages.length ? chat.messages.map(m => chatMessage(m, chat))
-        : [el("li", { class: "chat-msg dim" }, chat.kind === "side"
+        : [el("li", { class: "chat-msg dim" }, opts.empty ? opts.empty : chat.kind === "side"
           ? "Ask your question about it: the context above goes in front of your first message."
           : `Ask anything. The chat can read ${chat.project} and use the toolbox's skills, but can't change anything.`)]));
       list.scrollTop = list.scrollHeight;
@@ -68,6 +71,7 @@ function chatView(id) {
     step.textContent = busy ? (chat.step || "Thinking") + "…" : "";
     stop.hidden = !busy || chat.step === "Summarising";
     send.disabled = busy;
+    if (opts.onDraw) opts.onDraw(chat);
   };
   const load = async () => {
     const mine = ++loading;
@@ -78,8 +82,10 @@ function chatView(id) {
     }
     if (mine !== loading) return;
     chat = c;
-    const was = chatList.get(id);
-    chatList.set(id, { ...was, ...c, messages: undefined, context: undefined });
+    if (c.kind !== "intake") { // (an intake chat has no tab)
+      const was = chatList.get(id);
+      chatList.set(id, { ...was, ...c, messages: undefined, context: undefined });
+    }
     draw();
   };
 

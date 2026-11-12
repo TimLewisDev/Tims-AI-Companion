@@ -60,7 +60,7 @@ const PHASES = {
   "lite-focus": "Exploring", "lite-brief": "Brief written", debugging: "Debugging",
   "debug-done": "Root cause found", debugged: "Written up",
 };
-const ROUTES = { full: "Feature", lite: "Small change", bug: "Bug", new: "New" };
+const ROUTES = { full: "Feature", lite: "Small change", quick: "Quick", bug: "Bug", new: "New" };
 
 // The toolbox's last phase is "complete" (built and validated); Tatty's Review step follows it.
 function phaseDone(f) { return f.phase === "complete" && (f.merge || {}).state === "merged"; }
@@ -916,6 +916,10 @@ function pipeline(f) {
   if (f.route === "lite") {
     const at = { "lite-focus": 0, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
     return { steps: ["Explore", "Lite Brief", "Build", "Review", "Done"], at, done };
+  }
+  if (f.route === "quick") { // the small change with the understanding done by Tatty; Review is offered at the end, not run
+    const at = { exploring: 0, "lite-focus": 1, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
+    return { steps: ["Understand", "Brief", "Build", "Review", "Done"], at, done };
   }
   if (f.route === "bug") {
     const kinds = new Set(f.docList.map(d => d.doc));

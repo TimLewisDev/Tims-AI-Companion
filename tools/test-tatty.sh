@@ -3203,6 +3203,8 @@ for a in "$@"; do [ "$prev" = --session-id ] && sid=$a; prev=$a; done
 # Claude Code keeps a conversation once there is a message in it
 [ -n "$sid" ] && mkdir -p "$CLAUDE_CONFIG_DIR/projects/chat" && : >"$CLAUDE_CONFIG_DIR/projects/chat/$sid.jsonl"
 echo '{"type":"system","subtype":"init"}'
+# an intake chat's turn (the "intake" section): the stream-json lines it should answer with
+[ -f "$d/intake-out" ] && { cat "$d/intake-out"; exit 0; }
 # (its output elsewhere: a stopped turn ends when the claude it stands in for does, not when the sleep would)
 [ -f "$d/chat-slow" ] && sleep 20 >/dev/null 2>&1
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/README.md"}}]}}'
@@ -3333,6 +3335,166 @@ hasnt "it leaves the tabs" "$T/c" "$C1"
 [ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Hello?\"}")" = 404 ] && ok "a closed chat takes no message" || bad "a closed chat takes no message"
 post /api/bye '{"tag":"s-chatwf"}' >/dev/null
 
+fi
+if section intake; then
+echo "# starting a task by typing (the Engineering home's box)"
+if [ "$TOOLBOX" != 1 ]; then
+	echo "skip  the TT toolbox isn't here: a typed task is started with its workflow"
+else
+# A repository of its own: every Start here makes a branch in it.
+IGIT="-c user.name=t -c user.email=t@example.com"
+mkdir -p "$T/intakerepo/src" && git -C "$T/intakerepo" init -q -b main && : >"$T/intakerepo/src/x" &&
+	git -C "$T/intakerepo" add -A && git -C "$T/intakerepo" $IGIT commit -q -m first
+IR=$(cd "$T/intakerepo" && { pwd -W 2>/dev/null || pwd; })
+HAVE_QUICK=0; [ -f "${TATTY_TOOLBOX:-/none}/plugins/engineering/skills/tt-workflow-quick/SKILL.md" ] && HAVE_QUICK=1
+# What the stand-in claude answers an intake chat's next turn with (the claude-chat.sh of the chats section reads it).
+intake_reply() {
+	$PY -c "import json, sys
+t = sys.argv[1]
+print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': t}]}}))
+print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': t, 'total_cost_usd': 0.01}))" "$1" >"$T/intake-out"
+}
+newchat() { cpost /api/chat/new "{\"kind\":\"intake\",\"project\":\"$IR\"}" >/dev/null; pick "$T/j" "d['id']"; }
+# istart <chat> <level> [more JSON fields]: confirm the card; prints the HTTP status, the answer is in $T/j
+istart() { cpost /api/intake/start "{\"chat\":\"$1\",\"title\":\"Retry button\",\"summary\":\"Show Retry.\",\"acceptance\":[\"The dialog shows Retry\"],\"kind\":\"feature\",\"level\":\"$2\",\"project\":\"$IR\"${3:+,$3}}"; }
+nfeat() { ls "$FX/features" | wc -l; }
+qs() { $PY -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"; }
+TASK_JSON='{"title":"Retry button on the upload dialog","summary":"Show Retry when an upload fails.","acceptance":["The dialog shows Retry","Retry uploads again"],"kind":"feature","level":"low","why":"One dialog and a retry to copy.","unknowns":[]}'
+[ "$(code "$U/static/intake.js")" = 200 ] && ok "intake.js served" || bad "intake.js served"
+[ "$(code "$U/static/intake.css")" = 200 ] && ok "intake.css served" || bad "intake.css served"
+get /api/intake/info >"$T/c"
+[ "$(pick "$T/c" "sorted(d)")" = "['nextId', 'project', 'projects', 'quick', 'toolbox']" ] && ok "the box asks what it needs" || bad "the box asks what it needs" "$(head -c 300 "$T/c")"
+[ "$(pick "$T/c" "d['quick']")" = "$([ $HAVE_QUICK = 1 ] && echo True || echo False)" ] && ok "and whether the toolbox has the quick route" || bad "and whether the toolbox has the quick route" "$(head -c 300 "$T/c")"
+case "$(pick "$T/c" "d['nextId']")" in *-[0-9][0-9][0-9][0-9]) ok "and the ID a task would get" ;; *) bad "and the ID a task would get" "$(pick "$T/c" "d['nextId']")" ;; esac
+# the chat
+[ "$(cpost /api/chat/new "{\"kind\":\"intake\",\"project\":\"$IR\"}")" = 200 ] && ok "an intake chat" || bad "an intake chat" "$(cat "$T/j")"
+I1=$(pick "$T/j" "d['id']")
+[ "$(pick "$T/j" "(d['kind'], d['title'], d['task'])")" = "('intake', 'New task', None)" ] && ok "named New task, with nothing understood yet" || bad "named New task, with nothing understood yet" "$(head -c 300 "$T/j")"
+get /api/chats >"$T/c"
+hasnt "it has no tab" "$T/c" "$I1"
+intake_reply "Which dialog do you mean? 1. Where does it live?"
+[ "$(cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"add a Retry button to the upload failed dialog\"}")" = 202 ] && chat_done "$I1" 1 && ok "the first message starts a turn" || bad "the first message starts a turn" "$(cat "$T/j")"
+[ "$(head -n 1 "$T/chat.prompt")" = "/tatty:intake" ] && ok "it goes to the intake skill" || bad "it goes to the intake skill" "$(head -n 3 "$T/chat.prompt")"
+has "after the facts" "$T/chat.prompt" "<facts>"
+has "which say where it works" "$T/chat.prompt" "Repository: "
+has "and the ID the task would get" "$T/chat.prompt" "Next feature ID: "
+[ "$(tail -n 1 "$T/chat.prompt")" = "add a Retry button to the upload failed dialog" ] && ok "then what was typed" || bad "then what was typed" "$(tail -n 2 "$T/chat.prompt")"
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']")" = None ] && ok "a question is not yet a task" || bad "a question is not yet a task" "$(head -c 300 "$T/c")"
+# the summary: a fenced tatty-task block ends the reply
+BLOCK=$(printf 'So you want a Retry button when an upload fails. Is that right?\n\n%s\n%s\n%s' '```tatty-task' "$TASK_JSON" '```')
+intake_reply "$BLOCK"
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"the one in UploadFailedPopup\"}" >/dev/null; chat_done "$I1" 2
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']['title']")" = "Retry button on the upload dialog" ] && ok "the block becomes the chat's task" || bad "the block becomes the chat's task" "$(head -c 400 "$T/c")"
+[ "$(pick "$T/c" "(d['task']['level'], d['task']['kind'], d['task']['acceptance'])")" = "('low', 'feature', ['The dialog shows Retry', 'Retry uploads again'])" ] && ok "with its level, kind and what done looks like" || bad "with its level, kind and what done looks like"
+pick "$T/c" "d['messages'][-1]['text']" >"$T/f"
+hasnt "the block is not text to read" "$T/f" "tatty-task"
+has "the question stays" "$T/f" "Is that right?"
+# a reply to it clears it: the person said it isn't right
+intake_reply "Noted, a blue one."
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"and make it blue\"}" >/dev/null; chat_done "$I1" 3
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']")" = None ] && ok "a reply to it clears the task until it is understood again" || bad "a reply to it clears the task until it is understood again"
+# a block that isn't JSON is no task, and the page shows what was said as it is
+intake_reply "$(printf 'Here it is:\n%s\n{not json}\n%s' '```tatty-task' '```')"
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"again\"}" >/dev/null; chat_done "$I1" 4
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']")" = None ] && ok "a block that isn't JSON is no task" || bad "a block that isn't JSON is no task"
+pick "$T/c" "d['messages'][-1]['text']" >"$T/f"
+has "and is left in the text, not hidden" "$T/f" "{not json}"
+LONG=$(printf 'x%.0s' $(seq 1 120))
+intake_reply "$(printf 'Ok.\n%s\n{"title":"%s","summary":"s","kind":"nonsense","level":"extreme","acceptance":"one\\ntwo","unknowns":[]}\n%s' '```tatty-task' "$LONG" '```')"
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"once more\"}" >/dev/null; chat_done "$I1" 5
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "(len(d['task']['title']), d['task']['kind'], d['task']['level'], d['task']['acceptance'])")" = "(80, 'feature', 'medium', ['one', 'two'])" ] && ok "the title is cut, an unknown kind or level falls back, lines are lines" || bad "the title is cut, an unknown kind or level falls back, lines are lines" "$(head -c 400 "$T/c")"
+# the branch the card proposes
+get "/api/intake/branch?project=$(qs "$IR")&title=Retry%20button" >"$T/c"
+case "$(pick "$T/c" "d['branch']")" in feature/*-[0-9][0-9][0-9][0-9]-retry-button) ok "the card proposes a branch: the ID and the title's words" ;; *) bad "the card proposes a branch: the ID and the title's words" "$(head -c 300 "$T/c")" ;; esac
+[ "$(pick "$T/c" "d['base']")" = main ] && ok "from the branch the repo is on" || bad "from the branch the repo is on"
+get "/api/intake/branch?project=$(qs "$T")&title=x" >"$T/c"
+[ "$(pick "$T/c" "d['repo']")" = "" ] && ok "no repository, no branch to propose" || bad "no repository, no branch to propose" "$(head -c 300 "$T/c")"
+# confirming the card
+[ "$(cpost /api/intake/start '{"chat":"c-00000000"}')" = 404 ] && ok "start: no such task" || bad "start: no such task"
+[ "$(cpost /api/intake/start "{\"chat\":\"$I1\",\"title\":\" \",\"summary\":\"x\",\"level\":\"low\",\"project\":\"$IR\"}")" = 400 ] && ok "start: it needs a title" || bad "start: it needs a title"
+[ "$(cpost /api/intake/start "{\"chat\":\"$I1\",\"title\":\"T\",\"summary\":\"x\",\"level\":\"extreme\",\"project\":\"$IR\"}")" = 400 ] && ok "start: a level is low, medium or high" || bad "start: a level is low, medium or high"
+[ "$(cpost /api/intake/start "{\"chat\":\"$I1\",\"title\":\"T\",\"summary\":\"x\",\"level\":\"low\",\"project\":\"C:/no/such/place\"}")" = 400 ] && ok "start: the project must be there" || bad "start: the project must be there"
+N0=$(nfeat)
+if [ $HAVE_QUICK = 1 ]; then
+	[ "$(istart "$I1" low)" = 200 ] && ok "low starts the quick route" || bad "low starts the quick route" "$(cat "$T/j")"
+	IF1=$(pick "$T/j" "d['feature']")
+	pick "$T/j" "d['command']" >"$T/f"
+	has "through tt-workflow-quick" "$T/f" '/tt-workflow-quick "'
+	has "on the new feature's folder" "$T/f" "/features/$IF1\" the task $IF1 in \""
+	has "naming its Ticket" "$T/f" " - Ticket.md\". Folder: "
+	has "and its prefix" "$T/f" ". Prefix: $IF1"
+	has "the session is named for it" "$T/j" '\u00b7 Retry button : Quick'
+	TK="$FX/features/$IF1/$IF1 - Ticket.md"
+	[ -f "$TK" ] && ok "its Ticket is written" || bad "its Ticket is written"
+	has "headed by the ID and the title as the card left them" "$TK" "# $IF1: Retry button"
+	has "with the summary" "$TK" "Show Retry."
+	has "and what done looks like" "$TK" "- The dialog shows Retry"
+	has "and the person's own words" "$TK" "> add a Retry button to the upload failed dialog"
+	has "and the level" "$TK" "**Effort:** Low (quick)"
+	[ "$(git -C "$IR" branch --show-current)" = "feature/$IF1-retry-button" ] && ok "the branch is made in the repo" || bad "the branch is made in the repo" "$(git -C "$IR" branch --show-current)"
+	get "/api/chat?id=$I1" >"$T/c"
+	[ "$(pick "$T/c" "(d['closed'], d['started'] == '$IF1')")" = "(True, True)" ] && ok "the box's chat is closed, and says what it became" || bad "the box's chat is closed, and says what it became" "$(head -c 200 "$T/c")"
+	[ "$(istart "$I1" low)" = 404 ] && ok "a task starts once" || bad "a task starts once"
+	# its documents are the lite route's: Tatty labels it Quick because it started it that way
+	mkdir -p "$FX/features/$IF1/.tt/$IF1 - Familiarisation"
+	printf -- '- **Mode:** lite\n- **Status:** Exploring\n' >"$FX/features/$IF1/.tt/$IF1 - Familiarisation/focus-log.md"
+	get "/api/feature?name=$IF1" >"$T/j"
+	[ "$(pick "$T/j" "d['route']")" = quick ] && ok "a feature started quick is labelled Quick while its focus isn't confirmed (the state says exploring, as a full feature's does)" || bad "a feature started quick is labelled Quick while its focus isn't confirmed" "$(pick "$T/j" "d['route']")"
+	printf -- '- **Mode:** lite\n- **Pace:** quick\n- **Status:** Focus confirmed 2026-11-12\n' >"$FX/features/$IF1/.tt/$IF1 - Familiarisation/focus-log.md"
+	get "/api/feature?name=$IF1" >"$T/j"
+	[ "$(pick "$T/j" "d['route']")" = quick ] && ok "and once the go-ahead is given" || bad "and once the go-ahead is given" "$(pick "$T/j" "d['route']")"
+	if [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/workflow-state.sh" ] && grep -q "tt-workflow-quick" "$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/workflow-state.sh"; then
+		[ "$(pick "$T/j" "d['rows'][0]['skill']")" = tt-workflow-quick ] && ok "Continue is the toolbox's own: tt-workflow-quick" || bad "Continue is the toolbox's own: tt-workflow-quick" "$(pick "$T/j" "d['rows'][0]")"
+	fi
+	: >"$FX/features/$IF1/$IF1 - Comprehensive Tech Plan.md"
+	get "/api/feature?name=$IF1" >"$T/j"
+	[ "$(pick "$T/j" "d['route']")" != quick ] && ok "but not once it has moved on to a plan" || bad "but not once it has moved on to a plan"
+else
+	[ "$(istart "$I1" low)" = 409 ] && ok "low is refused when the toolbox has no quick route" || bad "low is refused when the toolbox has no quick route" "$(cat "$T/j")"
+	has "and says what to do" "$T/j" "update its engineering plugin"
+	[ "$(nfeat)" = "$N0" ] && ok "and makes nothing" || bad "and makes nothing"
+fi
+I2=$(newchat)
+[ "$(istart "$I2" medium)" = 200 ] && ok "medium starts a small change" || bad "medium starts a small change" "$(cat "$T/j")"
+IF2=$(pick "$T/j" "d['feature']")
+pick "$T/j" "d['command']" >"$T/f"
+has "through tt-workflow-lite" "$T/f" '/tt-workflow-lite "'
+has "with the task named" "$T/f" "the task $IF2 in \""
+mkdir -p "$FX/features/$IF2/.tt/$IF2 - Familiarisation"
+printf -- '- **Mode:** lite\n- **Status:** Focus confirmed 2026-11-12\n' >"$FX/features/$IF2/.tt/$IF2 - Familiarisation/focus-log.md"
+get "/api/feature?name=$IF2" >"$T/j"
+[ "$(pick "$T/j" "d['route']")" = lite ] && ok "and is a small change, not Quick" || bad "and is a small change, not Quick"
+I3=$(newchat)
+[ "$(istart "$I3" high)" = 200 ] && ok "high starts the full workflow" || bad "high starts the full workflow" "$(cat "$T/j")"
+IF3=$(pick "$T/j" "d['feature']")
+pick "$T/j" "d['command']" >"$T/f"
+has "with the task handed to planning" "$T/f" "/tt-adversarial-plan the task $IF3 in \""
+I4=$(newchat)
+[ "$(cpost /api/intake/start "{\"chat\":\"$I4\",\"title\":\"It crashes\",\"summary\":\"The app crashes on save.\",\"kind\":\"bug\",\"level\":\"low\",\"project\":\"$IR\"}")" = 200 ] && ok "a bug starts the debugger, whatever the level" || bad "a bug starts the debugger, whatever the level" "$(cat "$T/j")"
+pick "$T/j" "d['command']" >"$T/f"
+has "tt-debug, with the task" "$T/f" "/tt-debug the task "
+# the branch the card shows is the one made; a bad one makes nothing
+I5=$(newchat)
+[ "$(istart "$I5" medium '"branchName":"feature/my-own-name"')" = 200 ] && ok "a branch name typed on the card is the one made" || bad "a branch name typed on the card is the one made" "$(cat "$T/j")"
+[ "$(git -C "$IR" branch --show-current)" = "feature/my-own-name" ] && ok "in the repo" || bad "in the repo" "$(git -C "$IR" branch --show-current)"
+I6=$(newchat); N1=$(nfeat)
+[ "$(istart "$I6" medium '"branchName":"has space"')" = 400 ] && ok "a name git refuses is refused" || bad "a name git refuses is refused" "$(cat "$T/j")"
+[ "$(istart "$I6" medium '"branchName":"main"')" = 400 ] && ok "so is a branch that exists" || bad "so is a branch that exists" "$(cat "$T/j")"
+[ "$(nfeat)" = "$N1" ] && ok "and nothing is left behind" || bad "and nothing is left behind" "$(nfeat) features, was $N1"
+# a Start that fails after the feature was made takes it back, so the card can try again
+[ "$(istart "$I6" medium '"isolate":true,"base":"no-such-branch"')" = 400 ] && ok "a Start that fails is refused" || bad "a Start that fails is refused" "$(cat "$T/j")"
+has "saying why" "$T/j" "no-such-branch"
+[ "$(nfeat)" = "$N1" ] && ok "and the feature it made is taken back" || bad "and the feature it made is taken back" "$(nfeat) features, was $N1"
+get "/api/chat?id=$I6" >"$T/c"
+[ "$(pick "$T/c" "(d['closed'], d['started'])")" = "(False, '')" ] && ok "the card is still open to try again" || bad "the card is still open to try again" "$(head -c 200 "$T/c")"
+[ "$(istart "$I6" medium)" = 200 ] && ok "and it works the next time" || bad "and it works the next time" "$(cat "$T/j")"
+rm -f "$T/intake-out" # (the stand-in claude answers every chat turn with it while it is there: the sections after this one use the stand-in too)
+fi
 fi
 if section compactchat; then
 echo "# the compact chat and its questions"

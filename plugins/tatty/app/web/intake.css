@@ -1,0 +1,59 @@
+/* The Engineering home's task box (intake.js): the box to type a task into, the
+   conversation with Tatty, and the card of what it understood. Everything uses
+   theme.css's tokens; there are no inline styles (the page's content security
+   policy has none). */
+
+.mode-home:has(.intake) { max-width: 860px; }
+.intake { text-align: left; margin-top: 22px; padding: 14px 16px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; }
+.intake [hidden] { display: none !important; }
+.intake h3 { margin: 0 0 4px; font-size: 16px; }
+.intake-lede { margin: 0 0 10px; }
+.intake .linklike { border: none; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font-size: inherit; }
+.intake .linklike:hover, .intake .linklike:focus-visible { color: var(--ink); }
+
+.intake-form { display: grid; gap: 6px; }
+.intake-text { width: 100%; resize: vertical; min-height: 64px; }
+.intake-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+.intake-said { margin-right: auto; }
+.intake-where { margin-top: 2px; }
+
+.intake-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.intake .chat { margin-top: 4px; }
+.intake .chat-msgs { min-height: 80px; max-height: 340px; }
+.intake-card-slot { margin-top: 10px; }
+.intake-card-slot > p { margin: 0; }
+
+/* the card: what Tatty understood, for the person to correct and confirm */
+.intake-card { display: grid; gap: 10px; border-color: var(--accent); }
+.intake-card-head { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.intake-field { display: grid; gap: 2px; }
+.intake-field input, .intake-field textarea { width: 100%; }
+.intake-field textarea { resize: vertical; }
+.intake-kind { display: flex; gap: 16px; flex-wrap: wrap; }
+.intake-radio { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.intake-unknowns { padding: 4px 8px; border-left: 3px solid var(--warn); }
+
+/* the effort slider: three stops it snaps to, a label under each, and what each does below */
+.intake-effort { display: grid; gap: 4px; }
+.intake-label { font-weight: 600; font-size: 13px; }
+.intake-slider { width: 100%; margin: 4px 0 0; accent-color: var(--accent); }
+.intake-ticks { display: grid; grid-template-columns: repeat(3, 1fr); }
+.intake-tick { border: none; background: none; padding: 2px 0; color: var(--dim); font-size: 13px; cursor: pointer; }
+.intake-tick:nth-child(1) { justify-self: start; }
+.intake-tick:nth-child(2) { justify-self: center; }
+.intake-tick:nth-child(3) { justify-self: end; }
+.intake-tick.on { color: var(--accent); font-weight: 700; }
+.intake-levels { display: grid; gap: 4px; margin-top: 4px; }
+.intake-level { padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); color: var(--dim); font-size: 12.5px; }
+.intake-level strong { color: var(--ink); }
+.intake-level.on { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+.intake-bugnote { padding: 6px 10px; border-left: 3px solid var(--warn); }
+.intake-warn:empty, .intake-why:empty { display: none; }
+
+.intake-where-card { display: grid; gap: 4px; }
+.intake-branchline { display: grid; gap: 2px; }
+.intake-branch { width: min(100%, 420px); font-family: var(--mono); font-size: 12.5px; }
+.intake-happens { padding: 6px 10px; background: var(--bg); border-radius: 6px; }
+.intake-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.intake-result:empty { display: none; }

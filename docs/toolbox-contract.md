@@ -308,6 +308,40 @@ the feature's project as the working directory (`tt-workflow` ran it on every re
 of the state; the ledger names the project as the git root it runs in, so the
 directory matters), except for a review, which only reads.
 
+### Starting a task by typing (the Engineering home's box)
+
+The box on the Engineering mode home (`#mode`) starts a task from a few words,
+and is Tatty's own: it adds nothing to the toolbox but a route the toolbox
+already has.
+
+- **The conversation** is a chat of kind `intake` (see "Chats"): read-only, no
+  feature yet, working in the open project's repo. Its first message goes after
+  `/tatty:intake` (Tatty's skill) and a `<facts>` block (the repository, the
+  next feature ID). When the skill understands, its reply ends with one fenced
+  `tatty-task` JSON block (`title`, `summary`, `acceptance[]`, `kind`, `level`,
+  `why`, `unknowns[]`); the server checks and clamps it, keeps it as the chat's
+  `task` and takes it out of the text, and the page shows it as a card.
+- **The card** is the person's to change; nothing is made until **Create and
+  start** (`POST /api/intake/start`). That does what **Start workflow** on a task
+  does, without a board: makes the next-ID feature with the title, writes its
+  Ticket document (`# <ID>: <title>`, the summary, the acceptance criteria and
+  the person's own messages), makes the branch (the name on the card; an own
+  worktree if ticked) and opens the session. A Start that fails after the feature
+  was made takes it back, so the card can try again.
+- **The level** picks the route, on a snapping Low / Medium / High slider:
+  Low is the **quick route**, `/tt-workflow-quick "<folder>" the task <ID> in
+  "<ticket document>". Folder: <folder>. Prefix: <ID>`; Medium is
+  `/tt-workflow-lite "<folder>"` with the same words after it; High is the
+  full pipeline's first step with its placeholder filled (as a task's **Start
+  workflow**). A bug starts `/tt-debug` as **Start Workflow Lite** does, whatever
+  the level. Low needs the toolbox's `skills/tt-workflow-quick`: Tatty checks the
+  file is there and refuses the stop when it is not.
+- **Labelling.** A quick task's documents are the lite route's (a Focus Log
+  marked `**Pace:** quick`, a Lite Brief, a Task Status), so the state script says
+  `lite-*`; Tatty records which features it started quick in `routes.json` and
+  shows them as **Quick**. Continue needs nothing from Tatty: `workflow-state.sh`
+  names `/tt-workflow-quick "<folder>"` as the next step of a quick Focus Log.
+
 **Start workflow** on a Jira ticket (below) starts the toolbox's own first step
 for a new folder, the command `workflow-state.sh` names for it
 (`/tt-adversarial-plan <idea, spec or ticket>`), with its placeholder filled the
@@ -422,6 +456,10 @@ a person's message, never on its own:
 - **The side-chat skill is Tatty's** (`/tatty:side-chat`, in this plugin), not the
   toolbox's: the toolbox is unchanged, and the skill does nothing useful outside
   Tatty, which writes the context it reads.
+- **The intake skill is Tatty's too** (`/tatty:intake`): the box on the Engineering
+  home is a chat of kind `intake`, with no tab and no feature, whose skill
+  understands a typed task and ends a summary with a `tatty-task` block (see
+  "Starting a task by typing" above).
 
 ## Models and LLM connections
 
@@ -506,7 +544,10 @@ are therefore Tatty's own, outside the workflow's records:
   - `tasks-index/<key>.json`: each task board's index (each task file's size,
     time and summary), so a big board opens without reading every file;
   - `chats/<id>.json`: each chat: its kind, folder, feature, the Claude
-    conversation's id, what a side chat is about, the messages and the cost;
+    conversation's id, what a side chat is about, the messages and the cost
+    (an intake chat also its understood `task`, and `started`: the feature it became);
+  - `routes.json` (in the project's own folder): the features Tatty started on the
+    quick route, by name;
   - `server.json` and `server.log`.
 - `%LOCALAPPDATA%\Tatty\`, on Windows:
   - the launcher's build, and `boot.json`: which Tatty the launcher runs (the one

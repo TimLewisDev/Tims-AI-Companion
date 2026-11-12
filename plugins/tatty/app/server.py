@@ -73,6 +73,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
+          "intake.js": "text/javascript", "intake.css": "text/css",
           "review.js": "text/javascript", "commit.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
@@ -2692,8 +2693,15 @@ def feature_summary(state, folder, detail=False):
     status = first_doc(docs, "Task Status")
     units, tasks = progress_of(read_doc(folder, status)) if status else ([], {"done": 0, "total": 0})
     stamps = [d["updated"] for d in docs + notes] or [lp(folder).stat().st_mtime]
+    base_route = route = route_of(primary.get("phase", ""), docs, notes)
+    if feature_route(folder.name) == "quick":  # (a quick task's documents are the lite route's; Tatty started it quick)
+        planned = {d["doc"] for d in docs} & {"Comprehensive Tech Plan", "Task Breakdown", "Familiarisation", "Tech Plan"}
+        # not before it has any document (new), while its Focus Log is not yet confirmed (the state says exploring, as a
+        # full feature's does), and through the lite route; not once it has moved on to a plan
+        if route in ("new", "lite") or (route == "full" and primary.get("phase") == "exploring" and not planned):
+            route = "quick"
     out = {"name": folder.name, "title": feature_title(folder.name, folder), "folder": folder.as_posix(), "phase": primary.get("phase", ""),
-           "route": route_of(primary.get("phase", ""), docs, notes), "stage": primary.get("stage", ""),
+           "route": route, "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
            "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder), "decide": decide_view(state, folder), "validate": decide_view(state, folder, "validate"),
@@ -2705,7 +2713,7 @@ def feature_summary(state, folder, detail=False):
         project, project_from = feature_project(folder, docs)
         profile = stages_view(state, folder)
         left_out = {STAGE_ROWS[s["key"]] for s in profile["stages"] if not s["on"] and s["key"] in STAGE_ROWS} if profile else set()
-        lite_first = out["route"] == "new" and bool(profile) and profile["route"] == "lite"
+        lite_first = base_route == "new" and bool(profile) and profile["route"] == "lite"
         sessions = sessions_of(state, folder)
         # A new feature whose chosen stages leave out Plan is a small change: lite first.
         action = primary_action(folder, rows, out["decide"], sessions, lite_first, out["validate"])
@@ -3129,12 +3137,13 @@ def save_branch(feature, rec):
     write_json(project_home() / "branches.json", rows)
 
 
-def branch_name(repo, feature):
+def branch_name(repo, feature, title=None):
     """The new branch's name: the prefix setting and the feature's name made safe for a ref; -2, -3 ... if taken.
-    A feature with a title (one named by an ID) has the title's first words after its ID, 40 characters at most."""
+    A feature with a title (one named by an ID) has the title's first words after its ID, 40 characters at most.
+    `title` is for a feature not made yet (the intake card's proposal); else the one kept for it."""
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", feature)
     slug = re.sub(r"\.{2,}", ".", slug).strip("-.")[:60].strip("-.")
-    words = re.findall(r"[a-z0-9]+", feature_title(feature).lower())
+    words = re.findall(r"[a-z0-9]+", (feature_title(feature) if title is None else clean_title(title)).lower())
     for w in words:
         if len(slug) + 1 + len(w) > 40:
             break
@@ -3700,13 +3709,28 @@ def attach_worktree(feature, repo, rec):
     return True, worktree_info(repo, rec, wt, f"Made the worktree {wt} on {want}.")
 
 
-def make_worktree(feature, repo, here, base, old):
+def branch_pick(repo, feature, wanted=""):
+    """(name, error) for a feature's new branch: the name the person typed when they did (it must be
+    a usable ref name that doesn't exist yet), else the one Tatty proposes (branch_name)."""
+    wanted = (wanted or "").strip()
+    if not wanted:
+        return branch_name(repo, feature), ""
+    if wanted.startswith("-") or not REF_NAME.match(wanted) or git(repo, "check-ref-format", "--branch", wanted)[0] != 0:
+        return "", f"{wanted} isn't a name git allows for a branch."
+    if branch_exists(repo, wanted):
+        return "", f"The branch {wanted} exists already in {repo}: choose another name."
+    return wanted, ""
+
+
+def make_worktree(feature, repo, here, base, old, wanted=""):
     """Give a feature a new branch in a new worktree, from `base` (else the branch the repo is on).
     The repo's own checkout is not touched. (ok, info); BRANCH_LOCK held."""
     base = (base or here or "").strip()
     if base and (base.startswith("-") or not REF_NAME.match(base) or git(repo, "rev-parse", "--verify", "--quiet", base + "^{commit}")[0] != 0):
         return False, {"error": f"{base or '(none)'} isn't a branch or commit of {repo}."}
-    name = branch_name(repo, feature)
+    name, why = branch_pick(repo, feature, wanted)
+    if why:
+        return False, {"error": why}
     path = worktree_path(repo, name)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     left = len([l for l in git(repo, "status", "--porcelain", "--untracked-files=no")[1].splitlines() if l.strip()])
@@ -3720,7 +3744,7 @@ def make_worktree(feature, repo, here, base, old):
     return True, {**worktree_info(repo, rec, path, note), "created": True}
 
 
-def ensure_branch(folder, project, workdir, fresh, isolate=None, base=""):
+def ensure_branch(folder, project, workdir, fresh, isolate=None, base="", wanted=""):
     """Give a feature its branch, in its own worktree if asked, before a session starts. (ok, info):
     by default (isolate not True) the first Start of an unstarted feature makes the branch in the
     repo's own checkout, and a later Start switches it back, because a worktree is a whole second
@@ -3740,7 +3764,7 @@ def ensure_branch(folder, project, workdir, fresh, isolate=None, base=""):
         if mine and rec.get("worktree"):
             return attach_worktree(feature, repo, rec)
         if isolate is True:
-            return make_worktree(feature, repo, here, base or (rec["branch"] if mine else ""), rec)
+            return make_worktree(feature, repo, here, base or (rec["branch"] if mine else ""), rec, wanted)
         if mine:
             want = rec["branch"]
             if here == want:
@@ -3760,7 +3784,9 @@ def ensure_branch(folder, project, workdir, fresh, isolate=None, base=""):
                 return False, {"error": f"Couldn't switch {repo} to {want} (is it on another branch with changes in the way?): {out}"}
             return True, {"repo": repo, "branch": want, "base": rec.get("base", ""), "note": f"Switched to {want} (it was on {here or 'a detached HEAD'})."}
         if fresh:
-            name = branch_name(repo, feature)
+            name, why = branch_pick(repo, feature, wanted)
+            if why:
+                return False, {"error": why}
             dirty = len([l for l in git(repo, "status", "--porcelain", "--untracked-files=no")[1].splitlines() if l.strip()])
             code, out = git(repo, "switch", "-c", name)
             if code != 0:
@@ -4050,6 +4076,15 @@ def lite_row(folder, hint="", text="Start a small change on the lite route."):
             "hint": hint, "stage": "Lite"}
 
 
+def quick_row(folder, hint="", text="Start a small change on the quick route."):
+    """The quick route's entry: tt-workflow-quick links the folder in the lite route's own link
+    file, reads the task named in the hint (said after the folder) and runs without a conversation
+    until it reports what it found. Like lite_row, the hint is free text."""
+    return {"prefix": "", "kind": "alt", "phase": "quick", "skill": "tt-workflow-quick", "verb": "",
+            "arg": folder.as_posix(), "text": text,
+            "hint": hint, "stage": "Quick"}
+
+
 LIVE_SESSION = ("starting", "running", "lost")
 
 
@@ -4223,6 +4258,8 @@ def start_session(state, folder, body):
             row = workflow_row(folder)
         elif body.get("row") == "lite":
             row = lite_row(folder, " ".join(str(body.get("hint") or "").split())[:2000])
+        elif body.get("row") == "quick":
+            row = quick_row(folder, " ".join(str(body.get("hint") or "").split())[:2000])
         else:
             row = rows[int(body.get("row", 0))]
     except (ValueError, IndexError, TypeError):
@@ -4242,7 +4279,7 @@ def start_session(state, folder, body):
     if why:
         return 400, {"error": why}
     values = begun or body.get("values") or {}
-    for ph in ([] if row.get("phase") == "lite" else PLACEHOLDER.findall(cmd)):  # a lite hint is free text
+    for ph in ([] if row.get("phase") in ("lite", "quick") else PLACEHOLDER.findall(cmd)):  # a lite or quick hint is free text
         v = " ".join(str(values.get(ph, "")).split())[:2000]
         if not v:
             return 400, {"error": f"say what goes in <{ph}>"}
@@ -4279,7 +4316,8 @@ def start_session(state, folder, body):
     # "base" is what a new worktree branch starts from.
     isolate = body["isolate"] if isinstance(body.get("isolate"), bool) else None
     ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty",
-                                                                 isolate, str(body.get("base") or "").strip())
+                                                                 isolate, str(body.get("base") or "").strip(),
+                                                                 str(body.get("branchName") or "").strip())
     if not ok_branch:
         return 400, {"error": branch["error"]}
     if branch.get("worktree"):  # the session runs in the feature's worktree: the project's folder as it is there
@@ -4293,8 +4331,8 @@ def start_session(state, folder, body):
     # <name> · <title> : <stage>: the title (cut short) only where the name is the feature's own
     title = short_title(feature_title(folder.name, folder))
     called = f"{folder.name} · {title}" if title else folder.name
-    if row.get("phase") in ("empty", "workflow", "lite"):
-        base = f"{called} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite"}[row["phase"]]
+    if row.get("phase") in ("empty", "workflow", "lite", "quick"):
+        base = f"{called} : " + {"empty": "Start", "workflow": "Workflow", "lite": "Lite", "quick": "Quick"}[row["phase"]]
     else:
         prefix = row.get("prefix") or folder.name
         base = f"{called if prefix == folder.name else prefix} : {row.get('stage') or 'Next'}"
@@ -4435,6 +4473,24 @@ def next_feature_id(peek=False):
             rec[key] = n + 1
             write_json(project_home() / "feature-ids.json", rec)
     return f"{key}-{n:04d}"
+
+
+_ROUTES_LOCK = threading.Lock()
+
+
+def set_feature_route(name, route):
+    """Keep that Tatty started this feature on the quick route (<project home>/routes.json, by name).
+    A quick task's documents are the lite route's, so the toolbox cannot say it was started quick."""
+    with _ROUTES_LOCK:
+        rows = read_json(project_home() / "routes.json", {})
+        rows[name] = route
+        write_json(project_home() / "routes.json", rows)
+
+
+def feature_route(name):
+    """"quick" when Tatty started the feature on the quick route, else ''."""
+    got = read_json(project_home() / "routes.json", {}).get(name)
+    return got if got == "quick" else ""
 
 
 def sessions_of(state, folder):
@@ -7473,11 +7529,14 @@ def card_start_session(state, feature, name, doc, said, note, project, workdir, 
     """Start the session on a feature made from a task or a ticket (its folder `feature`, named `name`, with the
     ticket in `doc`). The folder holds only the ticket, so the workflow's own first step names a <placeholder>
     for what the feature is: `said` (the work-folder `note` after it, if any), the way tt-workflow itself
-    hands a new folder to planning. Lite has no planning command to fill: its hint is `said`.
-    (http code, answer), the answer with the feature's name and the ticket document's file."""
+    hands a new folder to planning. Lite has no planning command to fill: its hint is `said`; nor has
+    quick (`lite` is then "quick"). (http code, answer), the answer with the feature's name and the
+    ticket document's file."""
     if note:
         said += f". {note}"
-    if lite:
+    if lite == "quick":
+        go = {"row": "quick", "hint": said}
+    elif lite:
         go = {"row": "lite", "hint": said}
     else:
         rows = workflow_rows(state, feature)
@@ -7485,7 +7544,9 @@ def card_start_session(state, feature, name, doc, said, note, project, workdir, 
         values = {ph: said for ph in PLACEHOLDER.findall(command(first))} if first else {}
         go = {"row": 0 if first else "workflow", "values": values}
     code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body),
-                                                  **({"isolate": body["isolate"]} if isinstance(body.get("isolate"), bool) else {})})
+                                                  **({"isolate": body["isolate"]} if isinstance(body.get("isolate"), bool) else {}),
+                                                  **{k: body[k].strip() for k in ("base", "branchName")
+                                                     if isinstance(body.get(k), str) and body[k].strip()}})
     return code, {**answer, "feature": name, "ticket": doc.name}
 
 
@@ -8608,11 +8669,12 @@ def chat_view(state, c, full=True):
 
 
 def chats_open(state):
-    """Every chat whose tab hasn't been closed, oldest first."""
+    """Every chat whose tab hasn't been closed, oldest first. (An intake chat, the box on the
+    Engineering home, has no tab: the home page shows it.)"""
     out = []
     for f in sorted(chats_dir().glob("c-*.json")) if chats_dir().is_dir() else []:
         c = read_chat(f.stem)
-        if c and not c.get("closed"):
+        if c and not c.get("closed") and c.get("kind") != "intake":
             out.append(chat_view(state, c, full=False))
     return sorted(out, key=lambda c: c.get("created", 0))
 
@@ -8712,19 +8774,22 @@ def model_summary(state, c):
 
 
 def chat_new(state, b):
-    """Make a chat: (http code, answer). kind main or side (a side chat needs its
-    context). It works in the project asked for, else its workflow's, else its
-    feature's; nothing runs until its first message."""
+    """Make a chat: (http code, answer). kind main, side (a side chat needs its
+    context) or intake (the box on the Engineering home: it has no feature yet and
+    works in the open project's repo). It works in the project asked for, else its
+    workflow's, else its feature's; nothing runs until its first message."""
     import uuid
     kind = str(b.get("kind", ""))
-    if kind not in ("main", "side"):
-        return 400, {"error": "kind: main or side"}
+    if kind not in ("main", "side", "intake"):
+        return 400, {"error": "kind: main, side or intake"}
     tag = str(b.get("tag", ""))[:20]
     s = state.sessions.get(tag, {}) if tag else {}
     feature = text_of(b.get("feature"), 200) or s.get("feature", "")
     project = str(b.get("project") or "").strip() or s.get("project", "")
     if not project and feature and feature_dir(feature):
         project = feature_project(feature_dir(feature), docs_of(feature_dir(feature)))[0] or ""
+    if not project and kind == "intake":
+        project = intake_project(state)
     if not project or not os.path.isdir(project):
         return 400, {"error": "Choose the project this chat works in."}
     ctx = None
@@ -8735,9 +8800,12 @@ def chat_new(state, b):
         ctx["summary"] = chat_context_summary(ctx)
     cid = "c-" + secrets.token_hex(4)
     first = " ".join(ctx["selected"].split())[:40] if ctx else ""
-    c = {"id": cid, "kind": kind, "title": f"About: {first}" if ctx else "Chat", "project": Path(project).as_posix(),
+    c = {"id": cid, "kind": kind, "title": f"About: {first}" if ctx else ("New task" if kind == "intake" else "Chat"),
+         "project": Path(project).as_posix(),
          "feature": feature, "tag": tag, "claudeSession": str(uuid.uuid4()), "context": ctx, "messages": [],
          "cost": 0.0, "created": time.time(), "closed": False}
+    if kind == "intake":
+        c["task"] = None  # what it understood, once it does (see "intake")
     with state.chat_lock:
         write_chat(c)
     if ctx and load_settings()["chatSummary"] == "model":
@@ -8807,10 +8875,17 @@ def chat_say(state, b):
         if cid in state.chat_runs:
             return 409, {"error": "This chat is still answering."}
         state.chat_runs[cid] = {"step": "Starting", "proc": None, "cancelled": False}
-    lead = c["kind"] == "side" and c.get("context") and not any(m["role"] == "you" for m in c["messages"])
+    first = not any(m["role"] == "you" for m in c["messages"])
+    lead = c["kind"] == "side" and c.get("context") and first
     prompt = f"/tatty:side-chat\n{context_block(c['context'])}\n\n{text}\n" if lead else text + "\n"
-    c = change_chat(state, cid, lambda c: c["messages"].append(
-        {"role": "you", "text": text, "ts": time.time(), "withContext": bool(lead)}))
+    if c["kind"] == "intake" and first:  # the skill, and the facts it can't see from the repo
+        prompt = f"/tatty:intake\n{intake_facts(c)}\n\n{text}\n"
+
+    def said(c):
+        c["messages"].append({"role": "you", "text": text, "ts": time.time(), "withContext": bool(lead)})
+        if c["kind"] == "intake":
+            c["task"] = None  # a reply to what it understood: it understands again, or not
+    c = change_chat(state, cid, said)
     threading.Thread(target=chat_turn_work, args=(state, c, chat_argv(state, claude, c), prompt), daemon=True).start()
     state.emit("chat", id=cid, busy=True, step="Starting")
     return 202, chat_view(state, c)
@@ -8892,7 +8967,13 @@ def chat_turn_work(state, c, argv, prompt):
 
     def keep(c):
         if reply:
-            c["messages"].append({"role": "claude", "text": reply, "ts": time.time(), "steps": steps[:40],
+            shown = reply
+            if c.get("kind") == "intake":
+                task = parse_intake_task(reply)
+                if task:  # the page draws the card; the block itself isn't text to read
+                    c["task"] = task
+                    shown = TASK_BLOCK.sub("", reply).strip() or "Here is what I understood."
+            c["messages"].append({"role": "claude", "text": shown, "ts": time.time(), "steps": steps[:40],
                                   "cost": round(cost, 4)})
         if error:
             c["messages"].append({"role": "error", "text": error, "ts": time.time()})
@@ -8923,6 +9004,186 @@ def chat_close(state, cid):
         return 404, {"error": "no such chat"}
     state.emit("chat", id=cid, closed=True)
     return 200, {"ok": True}
+
+
+# ---------------------------------------------------------------- intake
+# The Engineering home has a box to type a task into. It is a chat of kind "intake" (the same
+# read-only headless runs as every chat, but with no feature yet) whose first message goes after
+# /tatty:intake. When the skill understands the task it ends its reply with one fenced
+# ```tatty-task JSON block; the server keeps the checked block as the chat's "task" and takes it
+# out of the text, and the page shows it as a card the person edits and confirms. intake_start
+# then does what Start does for a task from a board (task_start): makes the feature (the next ID),
+# writes its Ticket document, makes the branch and starts the session on the route the effort
+# level means (low = quick, medium = lite, high = full). The person confirms every step on the card;
+# nothing is made before that. See docs/toolbox-contract.md, "Starting a task by typing".
+
+INTAKE_ROUTES = {"low": "quick", "medium": "lite", "high": "full"}  # effort level -> route
+INTAKE_LEVEL_WORDS = {"low": "Low (quick)", "medium": "Medium (small change)", "high": "High (full workflow)"}
+TASK_BLOCK = re.compile(r"```tatty-task[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.S)
+QUICK_SKILL = "tt-workflow-quick"
+
+
+def quick_available():
+    """True when the toolbox's engineering plugin has the quick route (Tatty only starts what the toolbox has)."""
+    p = toolbox_plugin("engineering")
+    return bool(p) and (Path(p) / "skills" / QUICK_SKILL / "SKILL.md").is_file()
+
+
+def task_lines(v, most, cap):
+    """A list of short strings from a list (or text, a line each): blanks dropped, each cut at `cap`, `most` kept."""
+    items = v if isinstance(v, list) else str(v or "").splitlines()
+    return [" ".join(str(x).split())[:cap] for x in items if str(x).strip()][:most]
+
+
+def parse_intake_task(reply):
+    """The task an intake reply ends with: its last ```tatty-task block, checked and cut to size, or
+    None (no block, not JSON, or without a title and a summary)."""
+    found = TASK_BLOCK.findall(reply or "")
+    if not found:
+        return None
+    try:
+        raw = json.loads(found[-1])
+    except ValueError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    title = clean_title(raw.get("title"))[:80]
+    summary = str(raw.get("summary") or "").strip()[:1500]
+    if not title or not summary:
+        return None
+    return {"title": title, "summary": summary, "acceptance": task_lines(raw.get("acceptance"), 8, 300),
+            "kind": "bug" if raw.get("kind") == "bug" else "feature",
+            "level": raw.get("level") if raw.get("level") in INTAKE_ROUTES else "medium",
+            "why": text_of(raw.get("why"), 300), "unknowns": task_lines(raw.get("unknowns"), 5, 200)}
+
+
+def intake_project(state):
+    """The repo the box works in: the open project's own, else the folder a workflow or chat used last."""
+    try:
+        repo = (hub_active(hub_load()) or {}).get("repo")
+    except OSError:
+        repo = None
+    if repo and os.path.isdir(repo):
+        return Path(repo).as_posix()
+    found = chat_projects(state)
+    return found[0] if found else ""
+
+
+def intake_facts(c):
+    """What the intake skill can't see from the repo: where the work will run and the ID it would get."""
+    return "\n".join(["<facts>", f"Repository: {c['project']}", f"Next feature ID: {next_feature_id(peek=True)}", "</facts>"])
+
+
+def intake_info(state):
+    """What the box needs before the first message: the repo it will work in, the others it could, and
+    whether the quick route exists in the toolbox installed here."""
+    return {"project": intake_project(state), "projects": chat_projects(state), "quick": quick_available(),
+            "nextId": next_feature_id(peek=True), "toolbox": toolbox_core() is not None}
+
+
+def intake_branch(project, workdir, title):
+    """The branch the card proposes for the task: the repo it would go in, its name (the ID it would get
+    and the title's first words), and the branch the repo is on now (what a new branch starts from)."""
+    repo = repo_of(project, workdir)
+    if not repo:
+        return {"repo": "", "branch": "", "base": ""}
+    return {"repo": repo, "branch": branch_name(repo, next_feature_id(peek=True), title or ""), "base": current_branch(repo) or ""}
+
+
+def intake_ticket_md(name, task, said, work=""):
+    """The task as a feature's Ticket document, from the card as the person left it: what the
+    workflow plans from. `said` is what they typed in the box, each message as they wrote it."""
+    meta = [("Type", "Bug" if task["kind"] == "bug" else "Feature"), ("Effort", INTAKE_LEVEL_WORDS[task["level"]]),
+            ("Typed in", "Tatty, on the Engineering home"), ("Created", time.strftime("%Y-%m-%d %H:%M"))]
+    out = [f"# {name}: {task['title']}", ""] + [f"- **{k}:** {v}" for k, v in meta]
+    out += ["", "## Description", "", task["summary"], ""]
+    if task["acceptance"]:
+        out += ["## Acceptance criteria", ""] + [f"- {a}" for a in task["acceptance"]] + [""]
+    if said:
+        out += ["## In the person's own words", ""]
+        for m in said:
+            out += [("> " + ln).rstrip() for ln in m.strip().splitlines()] + [""]
+    if work:
+        out += ["## Working folder", "", work, ""]
+    return "\n".join(out)
+
+
+def intake_start(state, body):
+    """Confirm the card: make the feature for the task, write its Ticket, branch and start the session on
+    the route the effort level means. (http code, answer): the answer is Start's, with the feature's name
+    and the Ticket's file. Once only: a second try is refused while the first runs and after it worked."""
+    cid = str(body.get("chat", ""))
+    with state.chat_lock:
+        c = read_chat(cid)
+        if not c or c.get("kind") != "intake" or c.get("closed"):
+            return 404, {"error": "no such task"}
+        if c.get("started"):
+            return 409, {"error": "This task was started already.", "feature": c["started"] if c["started"] != "starting" else ""}
+        c["started"] = "starting"
+        write_chat(c)
+    made = ""
+    try:
+        code, answer = intake_start_work(state, c, body)
+        made = answer.get("feature", "") if code == 200 else ""
+        return code, answer
+    finally:
+        change_chat(state, cid, lambda c: c.update(started=made))  # (nothing made: the card can try again)
+
+
+def intake_start_work(state, c, body):
+    title = clean_title(body.get("title"))[:80]
+    summary = str(body.get("summary") or "").strip()[:1500]
+    if not title or not summary:
+        return 400, {"error": "A task needs a title and a summary."}
+    level = body.get("level")
+    if level not in INTAKE_ROUTES:
+        return 400, {"error": "level: low, medium or high"}
+    task = {"title": title, "summary": summary, "acceptance": task_lines(body.get("acceptance"), 8, 300),
+            "kind": "bug" if body.get("kind") == "bug" else "feature", "level": level}
+    route = "lite" if task["kind"] == "bug" else INTAKE_ROUTES[level]  # a bug is a debugging session first, whatever the level
+    if route == "quick" and not quick_available():
+        return 409, {"error": "The toolbox installed here has no quick route yet: update its engineering plugin, or choose Medium."}
+    got, refused = card_start_target(state, {**body, "project": str(body.get("project") or c["project"]).strip()})
+    if refused:
+        return refused
+    project, workdir, _ = got
+    wanted = str(body.get("branchName") or "").strip()
+    if wanted:  # (the feature isn't made yet: a bad name must not leave one behind)
+        repo = repo_of(project, workdir)
+        _, why = branch_pick(repo, "x", wanted) if repo else ("", "")
+        if why:
+            return 400, {"error": why}
+    code, made = new_numbered_feature(title)
+    if code != 200:
+        return code, made
+    name = made["name"]
+    feature = feature_dir(name)
+    doc = feature / f"{name} - Ticket.md"
+    note = work_folder_note(project, workdir) if workdir else ""
+    said = [m["text"] for m in c["messages"] if m.get("role") == "you"]
+    doc.write_text(intake_ticket_md(name, task, said, note), encoding="utf-8")
+    what = f'the task {name} in "{doc.as_posix()}"'
+    if task["kind"] == "bug":
+        extra = {"project": project, "workdir": workdir, **model_fields(body),
+                 **({"isolate": body["isolate"]} if isinstance(body.get("isolate"), bool) else {}),
+                 **{k: body[k].strip() for k in ("base", "branchName") if isinstance(body.get(k), str) and body[k].strip()}}
+        code, answer = start_session(state, feature, {"begin": "lite", "kind": "bug", "idea": what + (f". {note}" if note else ""), **extra})
+        answer = {**answer, "feature": name, "ticket": doc.name}
+    else:
+        code, answer = card_start_session(state, feature, name, doc, f'{what}. Folder: {feature.as_posix()}. Prefix: {name}', note,
+                                          project, workdir, "quick" if route == "quick" else route == "lite", body)
+    if code != 200:  # nothing started: take the feature back (it holds only the Ticket just written), so the card can try again
+        try:
+            os.unlink(lp(doc))
+            os.rmdir(lp(feature))
+            set_feature_title(name, "")
+        except OSError:
+            pass
+        return code, {k: v for k, v in answer.items() if k not in ("feature", "ticket")}
+    if route == "quick":
+        set_feature_route(name, "quick")
+    chat_close(state, c["id"])  # (its tab was never shown; the task is a feature now)
+    return 200, answer
 
 
 # ---------------------------------------------------------------- the compact chat
@@ -9064,6 +9325,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, chat_view(st, c)) if c else self.send(404, {"error": "no such chat"})
         if path == "/api/chat/projects":
             return self.send(200, chat_projects(st))
+        if path == "/api/intake/info":
+            return self.send(200, intake_info(st))
+        if path == "/api/intake/branch":
+            project = q.get("project", [""])[0].strip() or intake_project(st)
+            return self.send(200, intake_branch(project, q.get("workdir", [""])[0].strip(), q.get("title", [""])[0]))
         if path == "/api/compact-chat":
             code, answer = st.compact.get(q.get("project", [""])[0])
             return self.send(code, answer)
@@ -9484,6 +9750,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"ok": chat_stop(st, str(b.get("id", "")))})
         if path == "/api/chat/close":
             code, answer = chat_close(st, str(b.get("id", "")))
+            return self.send(code, answer)
+        if path == "/api/intake/start":
+            code, answer = intake_start(st, b if isinstance(b, dict) else {})
             return self.send(code, answer)
         if path == "/api/compact-chat/say":
             code, answer = st.compact.say(b if isinstance(b, dict) else {})

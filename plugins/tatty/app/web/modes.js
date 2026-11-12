@@ -176,6 +176,7 @@ function renderModeHome(box) {
   box.replaceChildren(el("div", { class: "mode-home pad" },
     el("div", { class: "mode-home-head" }, modeDot(currentMode), el("h2", {}, info.label)),
     el("p", { class: "dim" }, info.blurb),
+    currentMode === "engineering" && typeof intakeNode === "function" ? intakeNode() : "", // intake.js: type a task here to start it
     el("div", { class: "mode-tiles" }, pages.map(p =>
       el("a", { class: "mode-tile", href: p.href },
         el("span", { class: "mode-tile-icon" }, icon(p.icon)),
