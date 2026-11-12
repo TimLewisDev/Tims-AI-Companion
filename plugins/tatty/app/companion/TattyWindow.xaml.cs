@@ -72,10 +72,12 @@ namespace TtCompanion
         // project, and so no number). It sits where it suits the avatar (Apply); two digits get a
         // smaller type, and past 99 it says so rather than overflowing.
         // What a session of this project is doing: "idle", "thinking", "reading", "writing",
-        // "running", "delegating", "needs" or "oops" (App.xaml.cs works it out).
+        // "running", "delegating", "waiting", "needs" or "oops" (App.xaml.cs works it out).
+        // The avatar follows it too: idle puts him to sleep, a question keeps everything else off.
         public void SetActivity(string state)
         {
             doing = state;
+            avatar.Follow(state);
             activity?.Set(state);
         }
 
@@ -244,8 +246,11 @@ namespace TtCompanion
             remove => avatar.PoseChanged -= value;
         }
 
-        // Something happened: wake up and stand up.
+        // Someone reached for him, or he was brought out: wake up and stand up.
         public void Poke() => avatar.Poke();
+
+        // News from the server: start counting the quiet again (but no waking him: SetActivity does that).
+        public void Stir() => avatar.Stir();
 
         // A little hop to say "look at me".
         public void Hop() => avatar.Perform(Act.Hop);

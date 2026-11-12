@@ -118,7 +118,10 @@ Tatty is for when you'd rather see it laid out, and be told when it needs you.
 
 Tatty chimes, hops and throws sparks when he needs you, and celebrates with
 confetti when a section is finished: a work unit validated, a plan signed off,
-a build complete. Between those moments he fidgets, dances and falls asleep.
+a build complete. While your sessions work he acts out what they're doing, and
+when nothing in the project is running he falls asleep, so you can see at a
+glance that it's idle. A question waiting for you always comes first: nothing
+else he does plays over it.
 Everything about him can be turned off, and if your system is set to show less
 motion, he keeps still.
 

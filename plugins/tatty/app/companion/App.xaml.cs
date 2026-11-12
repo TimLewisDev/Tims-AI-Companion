@@ -243,7 +243,9 @@ namespace TtCompanion
         // (Activity.cs): a question waiting, then a tool that has just failed, then subagents,
         // then the tool (reading, writing, running a command), then a turn with no tool yet
         // (thinking), then a turn over with a command it started still running in the
-        // background (waiting: on the command, not on the person), else nothing. Each is let go when it goes quiet, so a session that
+        // background (waiting: on the command, not on the person), else idle -- nothing running
+        // anywhere in the project, which is when he sleeps (Avatar.Follow). A question outranks
+        // all of it, and Avatar.cs lets nothing play over it. Each is let go when it goes quiet, so a session that
         // stopped telling (closed, or crashed) doesn't leave him working for ever.
         private sealed class Work { public bool Turn; public int Agents, Shells; public string Tool = ""; public DateTime ToolAt, Seen; }
         private readonly Dictionary<string, Work> work = new();
@@ -347,13 +349,16 @@ namespace TtCompanion
                 // still waiting and nothing else, or a window opened beside a
                 // day's work would arrive mid-party.
                 if (first) { since = Math.Max(since, 0); question = openAsks.Count > 0; finished = null; anything = false; }
-                if (anything) tatty.Poke();
-                if (question || finished != null) alertWaiting = true;
+                // What the project is doing goes first, so that an open question has
+                // already shut out everything else by the time anything plays: he asks,
+                // and a milestone in the same breath gets its confetti but not his jump.
                 tatty.HasBadge = openAsks.Count > 0;
                 tatty.SetActivity(Doing());
+                if (anything) tatty.Stir();
+                if (question || finished != null) alertWaiting = true;
                 if (question || finished != null) PopUp(activate: false);
-                if (finished != null) Celebrate(finished == "big");
-                else if (question) Asked();
+                if (question) Asked();
+                if (finished != null) Celebrate(finished == "big", quiet: question);
                 effects.Asking(Waiting);
                 if (openAsks.Count == 0 && bubble.IsShown && !tuck.IsEnabled) tuck.Start();
                 if (openAsks.Count > 0) tuck.Stop();
@@ -389,12 +394,14 @@ namespace TtCompanion
 
         // A section is finished: he jumps and wiggles, the confetti goes up, and
         // there is a flourish to hear. "big" is a plan signed off or a build
-        // complete; everything else is the smaller version of all three.
-        private void Celebrate(bool big)
+        // complete; everything else is the smaller version of all three. While a
+        // question waits he keeps asking instead of jumping (Avatar.Perform), and
+        // quiet leaves the flourish out when the question's chime has just played.
+        private void Celebrate(bool big, bool quiet = false)
         {
             tatty.Celebrate(big);
             effects.Confetti(big);
-            sounds.Play(big ? Sounds.Cue.Complete : Sounds.Cue.Milestone);
+            if (!quiet) sounds.Play(big ? Sounds.Cue.Complete : Sounds.Cue.Milestone);
         }
 
         // A question has arrived: a sharp double hop and a chime. The ring pulses
@@ -863,9 +870,18 @@ namespace TtCompanion
             var preview = new Forms.ToolStripMenuItem("Preview");
             var items = preview.DropDownItems;
             var noises = new List<Forms.ToolStripItem>();
+            var overQuestion = new List<Forms.ToolStripItem>(); // what would play over a waiting question
 
-            void Does(string what, Act act) => items.Add(what, null, (_, _) => tatty.Preview(act));
-            void Holds(string what, Pose pose) => items.Add(what, null, (_, _) => tatty.Preview(pose));
+            void Does(string what, Act act)
+            {
+                var item = items.Add(what, null, (_, _) => tatty.Preview(act));
+                if (act != Act.Alert) overQuestion.Add(item);
+            }
+            void Holds(string what, Pose pose)
+            {
+                var item = items.Add(what, null, (_, _) => tatty.Preview(pose));
+                if (pose != Pose.Stand) overQuestion.Add(item);
+            }
             void Hears(string what, Sounds.Cue cue) => noises.Add(items.Add(what, null, (_, _) => sounds.Preview(cue)));
             void Line() => items.Add(new Forms.ToolStripSeparator());
 
@@ -875,13 +891,11 @@ namespace TtCompanion
             Does("Dance, foot to foot", Act.Dance);
             Does("Stretch", Act.Stretch);
             Does("Look about", Act.LookAround);
-            Does("Yawn", Act.Yawn);
             Does("Celebrate", Act.Celebrate);
             Does("Celebrate, the big one", Act.CelebrateBig);
             Line();
             Holds("Stand up", Pose.Stand);
             Holds("Sit down", Pose.Sit);
-            Holds("Doze", Pose.Doze);
             Holds("Fall asleep (Z's and all)", Pose.Asleep);
             Line();
             items.Add("Confetti", null, (_, _) => effects.Confetti(big: false));
@@ -904,10 +918,12 @@ namespace TtCompanion
             items.Add("A question arriving", null, (_, _) => Asked());
 
             // Nothing moves while his animations are off, and nothing is heard
-            // while his sound is: saying so is kinder than doing nothing.
+            // while his sound is: saying so is kinder than doing nothing. Nor does
+            // anything play over a question waiting for an answer.
             freshen += () =>
             {
                 foreach (Forms.ToolStripItem item in items) item.Enabled = Motion.On;
+                if (openAsks.Count > 0) foreach (var item in overQuestion) item.Enabled = false;
                 foreach (var noise in noises) noise.Enabled = sounds.Enabled;
                 preview.Enabled = Motion.On || sounds.Enabled;
             };

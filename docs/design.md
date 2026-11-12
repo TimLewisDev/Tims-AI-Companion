@@ -218,16 +218,21 @@ the noise.
   everything above the knees, and each leg has a lift and a fold of its own, so
   he can shift his weight from foot to foot and fold them under to sit. The mouth
   is three shapes with one shown at a time, which is steadier than animating a
-  shape, and the eyes' one blink transform doubles as his eyelids: half closed
-  dozing, nearly shut asleep.
-- **The ladder** (`Avatar.cs`). Left alone 45 seconds he starts to fidget -- a
-  look about, a dance from foot to foot, a stretch, a sit down for a minute --
-  after five minutes he dozes and yawns, and after ten he is asleep, sat down
-  with Z's drifting off him. `Poke()` is the only thing the rest of the app has
-  to remember: every server event, and every hover, click and drag, is one, and
-  it stands him up with a start. `TATTY_ANIM_FAST=1` divides every one of those
-  waits by nine, because nobody wants to wait ten minutes to see whether he
-  snores. Two properties are owned outright so the clocks can't fight over them:
+  shape, and the eyes' one blink transform doubles as his eyelids: nearly shut
+  asleep.
+- **The ladder** (`Avatar.cs`). While the project's sessions work and nothing
+  new arrives for 45 seconds he starts to fidget -- a look about, a dance from
+  foot to foot, a stretch, a sit down for a minute. **Asleep means the project
+  is idle**: `Follow(state)` gets App.xaml.cs's `Doing()`, and once that is
+  `idle` (no session in a turn, with subagents, or with a background command
+  running) he sits down with Z's drifting off him a few seconds later, and
+  wakes with a start when work begins again. A hover, click or drag
+  (`Poke()`) wakes him for a few seconds; server news (`Stir()`) only restarts
+  the fidget clock, so it doesn't keep waking him while nothing runs. **A
+  question outranks everything**: while one is open (`needs`) he stands, and
+  no fidget, sit, sleep, celebration or menu preview plays over the alert; a
+  milestone that arrives then gets its confetti but not his jump.
+  `TATTY_ANIM_FAST=1` divides every one of those waits by nine. Two properties are owned outright so the clocks can't fight over them:
   the bob owns `BodyShift.Y` and the blink owns `Blink.ScaleY`, which is why a
   performance uses the root transforms, the legs and the pupils instead. One
   performance runs at a time; a fidget that misses its turn is dropped, and the

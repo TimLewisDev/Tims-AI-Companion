@@ -274,17 +274,17 @@ const pingpong = (t, s) => { const u = (t % (2 * s)) / s; return u <= 1 ? u : 2 
 // ------------------------------------------------------------------ states
 const CONFETTI = 14;
 const STATE_INFO = [
-  ["idle", "Idle", "nothing running (today's default)", "Bobs, blinks, looks about now and then."],
+  ["idle", "Idle", "the few seconds after work stops, or after a hand wakes him", "Bobs, blinks, looks about now and then."],
   ["thinking", "Thinking", "session <code>turn</code> started, no tool yet", "Looks up, mouth an O, a thought bubble with dots, the antenna glows."],
   ["reading", "Reading", "<code>activity</code> tool Read / Grep / Glob / WebFetch", "Sweeps a magnifying glass across his eyes; his pupils follow it."],
   ["writing", "Writing", "<code>activity</code> tool Edit / Write", "Scribbles on a notepad by his hand, line by line, leaning into it."],
   ["running", "Running", "<code>activity</code> tool Bash", "Jogs on the spot beside a little terminal with a blinking cursor."],
   ["delegating", "Delegating", "session <code>agents</code> &gt; 0", "Two tiny helper bots hop beside him; he looks from one to the other."],
   ["waiting", "Waiting", "session <code>shells</code> &gt; 0, its turn over", "A shell command runs in the background: he taps his foot and keeps an eye on a little alarm clock, its hands going round."],
-  ["needs", "Needs you", "<code>ask</code> open", "Today's ! badge and alert hop, plus wide eyes, a ? bubble and a raised hand."],
+  ["needs", "Needs you", "<code>ask</code> open (outranks every other state)", "Today's ! badge and alert hop, plus wide eyes, a ? bubble and a raised hand."],
   ["oops", "Oops", "<code>activity</code> tool-done with <code>ok: false</code>", "A wobbly mouth, a sweat drop, a puff of smoke and a shake: trying his best."],
   ["celebrate", "Celebrate", "<code>milestone</code>", "Today's squash-and-jump, with confetti and a grin."],
-  ["asleep", "Asleep", "ten quiet minutes (today's idle ladder)", "Sits down, eyes shut, Z's drifting off."],
+  ["asleep", "Asleep", "no session in the project has anything running", "Sits down, eyes shut, Z's drifting off."],
 ];
 const STATE_IDS = STATE_INFO.map(s => s[0]);
 const armIdle = [T("ArmL.a", [[0, 0], [5, 1.6], [0, 3.2]], 3.2), T("ArmR.a", [[0, 0], [-5, 1.6], [0, 3.2]], 3.2)];

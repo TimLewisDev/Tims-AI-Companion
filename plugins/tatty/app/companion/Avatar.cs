@@ -7,17 +7,23 @@ using System.Windows.Threading;
 namespace TtCompanion
 {
     // What Tatty can do on his own: one-shot performances.
-    internal enum Act { Hop, Startle, Alert, Dance, Stretch, LookAround, Yawn, Celebrate, CelebrateBig }
+    internal enum Act { Hop, Startle, Alert, Dance, Stretch, LookAround, Celebrate, CelebrateBig }
 
     // ... and how he holds himself between them.
-    internal enum Pose { Stand, Sit, Doze, Asleep }
+    internal enum Pose { Stand, Sit, Asleep }
 
-    // Tatty's animation. He bobs and blinks as he always did; left alone he
-    // fidgets -- a look about, a dance from foot to foot, a sit down -- then
-    // dozes, then falls asleep, and wakes with a start at the first sign of
-    // anything happening. Poke() is that sign, and the only thing the rest of the
-    // app has to remember: every server event, and every hover, click and drag,
-    // is one.
+    // Tatty's animation. He bobs and blinks as he always did; left alone while the
+    // project's sessions work he fidgets -- a look about, a dance from foot to
+    // foot, a sit down. Asleep means the project is idle: once no session has
+    // anything running (Follow("idle"), from App.xaml.cs's Doing()) he nods off a
+    // few seconds later, and wakes with a start when work begins again. A hand
+    // reaching for him wakes him too (Poke), for a few seconds; news from the
+    // server only resets the fidget clock (Stir), so it doesn't keep waking him
+    // while nothing runs.
+    //
+    // A question waiting outranks all of it (Follow("needs")): he stands, and
+    // nothing plays over the alert -- no fidget, no sitting, no sleep, no
+    // celebration -- until every question is answered.
     //
     // Everything here animates the transforms TattyWindow.xaml names, so the
     // drawing stays in the XAML and the movement stays here. Two properties are
@@ -26,10 +32,10 @@ namespace TtCompanion
     // performance uses the root transforms, the legs and the pupils instead.
     internal sealed class Avatar
     {
-        // How long he is left alone before each step down, and the gap between
-        // fidgets. TATTY_ANIM_FAST divides them all, because nobody wants to wait
-        // ten minutes to see whether he snores.
-        private const double IdleAfter = 45, DozeAfter = 300, SleepAfter = 600, FidgetGap = 20;
+        // How long he is left alone before he fidgets, the gap between fidgets,
+        // and how long he stays awake once the project goes idle (or after a
+        // hand wakes him). TATTY_ANIM_FAST divides them all.
+        private const double IdleAfter = 45, FidgetGap = 20, NodOff = 8;
         private const double SitDrop = 12, SitFold = 72; // how far he sinks and how far his legs splay
 
         private static readonly IEasingFunction Ease = new SineEase { EasingMode = EasingMode.EaseInOut };
@@ -41,8 +47,9 @@ namespace TtCompanion
         private readonly double hurry = Environment.GetEnvironmentVariable("TATTY_ANIM_FAST") == "1" ? 9 : 1;
 
         private Storyboard? running;
-        private DateTime busyUntil, poked, nextFidget, sitUntil;
+        private DateTime busyUntil, poked, nextFidget, sitUntil, awakeUntil;
         private Pose pose = Pose.Stand;
+        private bool projectIdle, asking, holding;
 
         public Avatar(TattyWindow window) => w = window;
 
@@ -63,40 +70,88 @@ namespace TtCompanion
             Bob();
         }
 
-        // Something happened (or someone reached for him): stand up, open your
-        // eyes, and start counting the quiet again.
+        // What the project is doing, as App.xaml.cs's Doing() names it: "idle"
+        // (nothing running anywhere), "needs" (a question waiting) or one of the
+        // working states. Only the change between those three matters here:
+        // idle sends him to sleep on the ladder's next ticks, and anything else
+        // wakes him; a question also stands him up and keeps him standing.
+        public void Follow(string state)
+        {
+            bool idle = state == "idle", needs = state == "needs";
+            if (idle == projectIdle && needs == asking) return;
+            projectIdle = idle;
+            asking = needs;
+            holding = false;
+            if (idle) StayAwake(DateTime.UtcNow);
+            else Wake();
+        }
+
+        // Someone reached for him (a hover, a click, a drag), or he was brought
+        // out: wake up, stand up, and start counting the quiet again. While the
+        // project is idle he nods off again a few seconds later.
         public void Poke()
         {
+            var now = DateTime.UtcNow;
+            poked = now;
+            holding = false;
+            StayAwake(now);
+            Wake();
+        }
+
+        // News from the server: the fidget clock starts again and a sit ends,
+        // but sleep is left alone -- the project's state ends it (Follow), so the
+        // odd event while nothing runs doesn't keep waking him up.
+        public void Stir()
+        {
             poked = DateTime.UtcNow;
+            if (pose == Pose.Sit && !holding && !projectIdle) Set(Pose.Stand);
+        }
+
+        private void Wake()
+        {
             if (pose == Pose.Stand) return;
-            bool sleeping = pose == Pose.Asleep || pose == Pose.Doze;
+            bool sleeping = pose == Pose.Asleep;
             Set(Pose.Stand);
             if (sleeping) Perform(Act.Startle);
         }
 
+        private void StayAwake(DateTime from)
+        {
+            var until = from + Seconds(NodOff / hurry);
+            if (until > awakeUntil) awakeUntil = until;
+        }
+
         // One performance at a time. A fidget waits its turn and is dropped if it
         // misses it; the two that are the whole point -- a question, a milestone --
-        // cut in.
-        public void Perform(Act act) =>
+        // cut in. While a question waits, the alert is the only one he does.
+        public void Perform(Act act)
+        {
+            if (asking && act != Act.Alert) return;
             Run(act, cutsIn: act == Act.Alert || act == Act.Celebrate || act == Act.CelebrateBig);
+        }
 
         // One asked for by name, from his own menu. It cuts in, because somebody
         // who has just picked a performance off a menu should see that one and
         // not whatever he happened to be doing, and the quiet starts again, so
-        // he doesn't wander off into a fidget while it is being watched.
+        // he doesn't wander off into a fidget while it is being watched. Not
+        // over a waiting question, though (the menu greys these out then).
         public void Preview(Act act)
         {
+            if (asking && act != Act.Alert) return;
             poked = DateTime.UtcNow;
+            StayAwake(poked);
             Run(act, cutsIn: true);
         }
 
-        // A pose held for as long as it is wanted: the ladder is wound back, so
+        // A pose held for as long as it is wanted: the ladder lets him be, so
         // nothing stands him up or sends him to sleep until something really
-        // happens (any Poke, including a hand reaching for him).
+        // happens (a hand reaching for him, or the project starting or stopping
+        // work, or a question arriving).
         public void Preview(Pose held)
         {
+            if (asking && held != Pose.Stand) return;
             poked = DateTime.UtcNow;
-            sitUntil = DateTime.UtcNow + Seconds(600);
+            holding = true;
             Set(held);
         }
 
@@ -118,7 +173,7 @@ namespace TtCompanion
         private static bool Lively => Motion.On;
 
         // The performances that move him off the spot, and so can't be done sat down.
-        private static bool Standing(Act act) => act != Act.LookAround && act != Act.Yawn;
+        private static bool Standing(Act act) => act != Act.LookAround;
 
         private double Quiet => (DateTime.UtcNow - poked).TotalSeconds * hurry;
 
@@ -126,17 +181,22 @@ namespace TtCompanion
 
         private void Tick()
         {
-            if (!Lively) return;
+            if (!Lively || holding) return;
+            // A question waiting: he stands and asks (Follow stood him up), and that is all.
+            if (asking) return;
             var now = DateTime.UtcNow;
-            double quiet = Quiet;
-            if (quiet >= SleepAfter) Set(Pose.Asleep);
-            else if (quiet >= DozeAfter) Set(Pose.Doze);
-            else if (pose == Pose.Sit && now >= sitUntil) Set(Pose.Stand);
+            // Nothing running in the project: asleep, once he has finished whatever
+            // he was doing and the few seconds' grace are up.
+            if (projectIdle)
+            {
+                if (pose != Pose.Asleep && now >= awakeUntil && now >= busyUntil) Set(Pose.Asleep);
+                return;
+            }
+            if (pose == Pose.Sit && now >= sitUntil) Set(Pose.Stand);
 
-            if (pose == Pose.Asleep || quiet < IdleAfter || now < busyUntil || now < nextFidget) return;
+            if (Quiet < IdleAfter || now < busyUntil || now < nextFidget) return;
             nextFidget = now + Seconds((FidgetGap + random.NextDouble() * FidgetGap) / hurry);
-            if (pose == Pose.Doze) Perform(Act.Yawn);
-            else Fidget();
+            Fidget();
         }
 
         private void Fidget()
@@ -171,16 +231,15 @@ namespace TtCompanion
             PoseChanged?.Invoke(next);
         }
 
-        private static double LidsFor(Pose p) => p switch { Pose.Doze => 0.45, Pose.Asleep => 0.08, _ => 1 };
+        private static double LidsFor(Pose p) => p == Pose.Asleep ? 0.08 : 1;
 
-        // The idle bob: slower and shallower the sleepier he is. It owns
+        // The idle bob: slower and shallower sat down, and slower still asleep. It owns
         // BodyShift.Y, so it survives every performance underneath it.
         private void Bob()
         {
             (double rise, double seconds) = pose switch
             {
                 Pose.Sit => (3.0, 2.2),
-                Pose.Doze => (3.0, 2.6),
                 Pose.Asleep => (2.5, 3.6),
                 _ => (4.0, 1.6),
             };
@@ -249,7 +308,6 @@ namespace TtCompanion
             Act.Dance => Dance(),
             Act.Stretch => Stretch(),
             Act.LookAround => LookAround(),
-            Act.Yawn => Yawn(),
             Act.Celebrate => Celebrate(big: false),
             Act.CelebrateBig => Celebrate(big: true),
             _ => Hop(),
@@ -316,17 +374,6 @@ namespace TtCompanion
             var act = Board(2.2);
             Add(act, w.PupilShift, TranslateTransform.XProperty, (-3, .45), (-3, .95), (3, 1.4), (3, 1.9), (0, 2.2));
             Add(act, w.BodySway, RotateTransform.AngleProperty, (2, .45), (-2, 1.4), (0, 2.2));
-            return act;
-        }
-
-        // Eyes screwed up, mouth open, a long breath in: the dozing fidget.
-        private Storyboard Yawn()
-        {
-            var act = Board(1.2);
-            Add(act, w.Blink, ScaleTransform.ScaleYProperty, (0.25, .3), (0.25, .8), (LidsFor(pose), 1.2));
-            Add(act, w.RootSquash, ScaleTransform.ScaleYProperty, (1.06, .35), (1, 1.2));
-            Add(act, w.RootLean, RotateTransform.AngleProperty, (-4, .35), (0, 1.2));
-            Grin(act, .15, .95);
             return act;
         }
 
