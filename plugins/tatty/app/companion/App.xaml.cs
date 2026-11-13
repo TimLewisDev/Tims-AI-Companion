@@ -700,7 +700,7 @@ namespace TtCompanion
                 case "maximise": bubble.ToggleMaximise(); break;
                 case "minimise": bubble.Minimise(); break;
                 case "hide": HideEverything(); break;
-                // The mode on the page (engineering, design, production): Tatty
+                // The mode on the page (engineering, design, qa, production): Tatty
                 // himself is drawn in its colour too.
                 case "mode": SetAccent(arg); break;
                 // What he looks like: the avatar chosen in the shop, in what he wears (AvatarArt.cs).

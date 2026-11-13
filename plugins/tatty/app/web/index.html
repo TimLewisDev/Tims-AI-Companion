@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="/static/stories.css">
 <link rel="stylesheet" href="/static/taskboard.css">
 <link rel="stylesheet" href="/static/tasks.css">
+<link rel="stylesheet" href="/static/qa.css">
 <link rel="stylesheet" href="/static/split.css">
 <link rel="stylesheet" href="/static/chat.css">
 <link rel="stylesheet" href="/static/intake.css">
@@ -54,6 +55,7 @@
     <a href="#home" data-page="home" data-mode="engineering">Features</a>
     <a href="#jira" data-page="jira" data-mode="production">Jira</a>
     <a href="#tasks" data-page="tasks" data-mode="production">Tasks</a>
+    <a href="#qa" data-page="qa" data-mode="qa">QA</a>
     <a href="#designs" data-page="designs" data-mode="design">User Stories</a>
     <a href="#whiteboards" data-page="whiteboards" data-mode="design">Whiteboards</a>
     <a href="#toolbox" data-page="toolbox">Toolbox</a>
@@ -84,6 +86,10 @@
   <!-- Tasks: the production mode's own task boards, and one board (tasks.js). -->
   <section class="page" id="page-tasks"></section>
   <section class="page" id="page-taskboard"></section>
+  <!-- QA: the QA mode's home, one bug, and a feature's test plan (qa.js). -->
+  <section class="page" id="page-qa"></section>
+  <section class="page" id="page-qabug"></section>
+  <section class="page" id="page-qaplan"></section>
   <!-- User Stories: the design mode's boards, and one board of sticky notes (stories.js). -->
   <section class="page" id="page-designs"></section>
   <section class="page" id="page-design"></section>
@@ -165,6 +171,7 @@
 <script src="/static/whiteboards.js"></script>
 <script src="/static/tasktype.js"></script>
 <script src="/static/tasks.js"></script>
+<script src="/static/qa.js"></script>
 <script src="/static/diff.js"></script>
 <script src="/static/ids.js"></script>
 <script src="/static/hub.js"></script>

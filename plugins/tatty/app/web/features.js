@@ -7,11 +7,12 @@
 const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
-  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard") };
+  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"),
+  qa: $("#page-qa"), qabug: $("#page-qabug"), qaplan: $("#page-qaplan") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
 const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", tasks: "production", taskboard: "production",
-  designs: "design", design: "design", whiteboards: "design", whiteboard: "design" };
+  designs: "design", design: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
 // name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
 // decisions are painted from it (paintDecisions).
 const featureCache = new (class extends Map { set(k, v) { super.set(k, v); paintDecisions(v); return this; } })();
@@ -142,6 +143,7 @@ window.addEventListener("hashchange", closeSidePanel);
 // · #toolbox · #settings · #shop (shop.js) · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
+// · #qa · #qa/bug/new · #qa/bug/<ID> · #qa/test/<feature>[/<A1>] (qa.js)
 
 function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
@@ -161,6 +163,9 @@ function parseRoute() {
     return { page: "taskboard", name: parts[1], view, task: parts[at] === "task" ? parts[at + 1] || null : null };
   }
   if (parts[0] === "tasks") return { page: "tasks" };
+  if (parts[0] === "qa" && parts[1] === "bug" && parts[2]) return { page: "qabug", id: parts[2] };
+  if (parts[0] === "qa" && parts[1] === "test" && parts[2]) return { page: "qaplan", name: parts[2], area: parts[3] || null };
+  if (parts[0] === "qa") return { page: "qa" };
   if (parts[0] === "toolbox") return { page: "toolbox" };
   if (parts[0] === "settings") return { page: "settings" };
   if (parts[0] === "shop") return { page: "shop" };
@@ -183,7 +188,7 @@ const featureDiffHref = name => "#feature/" + encodeURIComponent(name) + "/code-
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
-  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks", whiteboard: "whiteboards" }[which] || which));
+  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks", whiteboard: "whiteboards", qabug: "qa", qaplan: "qa" }[which] || which));
   $("#settings-link").classList.toggle("on", which === "settings");
   const purse = $("#wallet-link");
   if (purse) purse.classList.toggle("on", which === "shop");
@@ -249,6 +254,14 @@ async function route() {
       "The task boards didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
     else if (r.page === "tasks") await renderTasks(pageEls.tasks);
     else await renderTaskBoard(pageEls.taskboard, r.name, r.view, r.task);
+  }
+  else if (r.page === "qa" || r.page === "qabug" || r.page === "qaplan") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderQa !== "function") pageEls[r.page].replaceChildren(el("p", { class: "pad st missing" },
+      "QA mode didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+    else if (r.page === "qa") await renderQa(pageEls.qa);
+    else if (r.page === "qabug") await renderQaBug(pageEls.qabug, r.id);
+    else await renderQaPlan(pageEls.qaplan, r.name, r.area);
   }
   else if (r.page === "designs") await renderDesigns(pageEls.designs);
   else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);

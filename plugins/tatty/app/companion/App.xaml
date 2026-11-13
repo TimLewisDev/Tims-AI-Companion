@@ -10,5 +10,6 @@
     <SolidColorBrush x:Key="TtAccentEngineering" Color="#3B6EA8" />
     <SolidColorBrush x:Key="TtAccentDesign" Color="#A9641F" />
     <SolidColorBrush x:Key="TtAccentProduction" Color="#7D5BBD" />
+    <SolidColorBrush x:Key="TtAccentQa" Color="#0F857A" />
   </Application.Resources>
 </Application>

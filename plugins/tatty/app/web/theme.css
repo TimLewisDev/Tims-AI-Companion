@@ -14,10 +14,12 @@
   --accent-engineering: #3b6ea8;
   --accent-design: #a9641f;
   --accent-production: #7d5bbd;
+  --accent-qa: #0f857a;
   /* the soft tint of each accent: a selected row, your own message, a panel */
   --accent-engineering-soft: #eaf2fb;
   --accent-design-soft: #fbf1e6;
   --accent-production-soft: #f1ecfb;
+  --accent-qa-soft: #e3f4f1;
 }
 
 /* ---------------------------------------------------------------- 2. theme */
@@ -37,9 +39,11 @@
     --accent-engineering: #7aa7da;
     --accent-design: #e0a86a;
     --accent-production: #b49ae6;
+    --accent-qa: #5cc9bb;
     --accent-engineering-soft: #1f2a38;
     --accent-design-soft: #332a1d;
     --accent-production-soft: #272036;
+    --accent-qa-soft: #1b2e2b;
   }
 }
 
@@ -50,6 +54,7 @@
 body[data-mode="engineering"] { --accent: var(--accent-engineering); --accent-soft: var(--accent-engineering-soft); }
 body[data-mode="design"] { --accent: var(--accent-design); --accent-soft: var(--accent-design-soft); }
 body[data-mode="production"] { --accent: var(--accent-production); --accent-soft: var(--accent-production-soft); }
+body[data-mode="qa"] { --accent: var(--accent-qa); --accent-soft: var(--accent-qa-soft); }
 
 /* Something that shows a mode which isn't the one on screen -- a dot in the top
    bar's radio, a card on the landing page -- takes that mode's accent for
@@ -58,3 +63,4 @@ body[data-mode="production"] { --accent: var(--accent-production); --accent-soft
 .mode-dot[data-mode="engineering"], .mode-card[data-mode="engineering"] { --accent: var(--accent-engineering); --accent-soft: var(--accent-engineering-soft); }
 .mode-dot[data-mode="design"], .mode-card[data-mode="design"] { --accent: var(--accent-design); --accent-soft: var(--accent-design-soft); }
 .mode-dot[data-mode="production"], .mode-card[data-mode="production"] { --accent: var(--accent-production); --accent-soft: var(--accent-production-soft); }
+.mode-dot[data-mode="qa"], .mode-card[data-mode="qa"] { --accent: var(--accent-qa); --accent-soft: var(--accent-qa-soft); }

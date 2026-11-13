@@ -506,7 +506,7 @@ the next question is already read (`prefetch`), and the choices are sent togethe
 
 ## Modes and colour
 
-A **mode** is one of the toolbox's discipline plugins: engineering, design or
+A **mode** is one of the toolbox's discipline plugins: engineering, design, qa or
 production (`installed_modes()` in `server.py`, from the toolbox's pointer
 folders and Claude Code's own install records; see
 [toolbox-contract.md](toolbox-contract.md)).
@@ -1452,6 +1452,55 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   click opens the task; ✎ when the story changed after it went) and isn't
   offered again; delete the task and it is.
 
+## QA (the QA mode)
+
+The **QA** mode is the toolbox's `qa` plugin, drawn in teal. It has two jobs, both
+Tatty's pages over the plugin's scripts (see "QA" in [toolbox-contract.md](toolbox-contract.md)):
+writing a bug from plain words, and testing a feature area by area. Nothing is
+written but through `bug.sh` and `test.sh`; the model only drafts.
+
+- **The home** (`#qa`, `renderQa` in `qa.js`): the features under test, each a
+  card with its status (Draft or Ready), a progress bar and its counts, and
+  **Start testing** (a feature that has no plan yet); then the bugs as a table
+  with a filter (Open, All, or one status). **New bug** is at the top.
+- **A bug** (`#qa/bug/new`, `#qa/bug/<ID>`). The tester describes it in their
+  own words, and **Draft it with Claude** (`POST /api/qa/bug/draft`) fills the
+  form: a headless `claude -p` with no tools (haiku, `TATTY_QA_MODEL`), whose
+  system prompt asks for one JSON object (title, severity, summary, steps,
+  expected, actual, environment, evidence, and `notStated`, the facts the
+  description left out, shown as chips under the box). The draft is a form
+  to read and change: **Save bug** is what writes it (`bug.sh new`). **Talk it
+  through in Claude** opens a session running `/tt-qa-bug` instead. A saved bug
+  has its status, a Jira key, **Copy as text** and **Create in Jira**.
+- **Create in Jira** is the one place Tatty writes more than a transition: a
+  headless run over the Atlassian MCP with `createJiraIssue` (and
+  `getAccessibleAtlassianResources`, `getJiraProjectIssueTypesMetadata`),
+  through the Jira board's own `jira_claude` and `jira_job`. The project key is
+  asked once and remembered in the browser; the issue type is Bug, or the
+  project's closest. The new key is kept on the bug (`bug.sh set jira`).
+- **A feature's plan** (`#qa/test/<feature>`, from the features Tatty lists).
+  With no areas it offers **Break it into areas with Claude**: a headless run
+  that may read the feature's own documents (Read, Glob, Grep; haiku is not
+  the default here: `TATTY_QA_MODEL_PLAN`, budget `TATTY_QA_BUDGET_PLAN`) and
+  answers with areas, items and the things the documents don't say. The server
+  writes them through `test.sh`, as a **Draft**, and the page edits them from
+  there (add an area, add an item, edit, remove). **Plan it in a Claude
+  session** does the same with `/tt-qa-test-plan`.
+- **The dashboard** is tiles (items, % tested, passed, failed, blocked,
+  skipped, not tested), a bar (red when anything failed, amber when blocked),
+  the areas as cards with their own counts, the failed items that have no bug
+  yet, and the bugs raised from this test.
+- **An area** (`#qa/test/<feature>/<A1>`) is its checklist. Each item shows how
+  to test and what a pass looks like; **Pass, Fail, Blocked, Skip** record a
+  verdict with a note (`test.sh check`; Reset puts it back). **Raise a bug** on
+  a failed item opens the bug form already filled (title, steps, expected,
+  actual, the item as its source); saving it links the bug to the item.
+- **Events**: the page hears `qa` events (a drafted bug or plan, a change made
+  in another window) and `jira` events for `qabug:<ID>` jobs.
+- **Where it lives**: `<root>/qa/Bugs/BUG-NN - <title>.md` and
+  `<root>/qa/Plans/<feature>/<feature> - Test Plan.md` with its
+  `... - Results.tsv`. The root's folder check (Delete) keeps `qa/` too.
+
 ## Whiteboards
 
 `whiteboard.js` (and `whiteboard.css`) is the board the User Stories page draws
@@ -1641,6 +1690,11 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   one discipline installed. It asks for a milestone through the page's own
   `api()` as well, and reports the card, the confetti, and that the pieces take
   themselves away again.
+- `features-check.py --qa` walks the QA mode with real clicks on a throwaway root whose
+  server has a stand-in `claude` (and the toolbox's qa plugin): a bug drafted and saved, its status,
+  Create in Jira (the stand-in answers STAR-77), a feature started and its areas drafted, results
+  marked, a failure raised as a bug and linked back, and the dashboard's counts and bar. It
+  writes bugs and plans: a throwaway root and home only.
 - `tools/whiteboard-perf.py` measures the whiteboard's pan and zoom: a User
   Stories board of 40, 120 or 300 made-up notes (the page's `api()` stood in
   for, so nothing is written), scripted runs (idle, a middle-button pan, wheel

@@ -69,7 +69,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "settings.js": "text/javascript", "jira.js": "text/javascript",
           "stories.js": "text/javascript", "stories.css": "text/css",
           "taskboard.js": "text/javascript", "taskboard.css": "text/css",
-          "tasks.js": "text/javascript", "tasks.css": "text/css", "tasktype.js": "text/javascript",
+          "tasks.js": "text/javascript", "tasks.css": "text/css", "qa.js": "text/javascript", "qa.css": "text/css", "tasktype.js": "text/javascript",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
@@ -172,7 +172,7 @@ def toolbox_script(rel):
 # discipline installs, so it is not one of them. Each plugin points its own
 # folder under the pointer home at its install, so the pointers say which
 # disciplines are installed; TATTY_MODES names them instead (development, tests).
-MODES = ("engineering", "design", "production")
+MODES = ("engineering", "design", "qa", "production")
 
 
 TOOLBOX_MARKET = "tims-ai-toolbox"  # the name in the toolbox's own marketplace.json
@@ -229,7 +229,7 @@ def installed_modes():
 def install_mode(state, mode):
     """Add one of the toolbox's disciplines the way a person would:
     `claude plugin install <mode>@<marketplace>`. (exit code, what it said).
-    Only the three names in MODES, only on a click on the modes page, and never
+    Only the names in MODES, only on a click on the modes page, and never
     with -y: a marketplace that wanted to run a command of its own is refused
     here and has to be installed by a person who can see what it asks for.
     (run_claude is with the updates below: the same command, the same stand-in
@@ -273,6 +273,7 @@ class State:
         self.httpd = None  # the listening server, so a restart can stop it (see "restarting")
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
+        self.qa_runs = {}  # run id -> a QA draft the model is writing (see "QA")
         self.task_writes = {}  # run id -> the "Write it for me" run on a task's description (see "tasks: write it for me")
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
         self.chat_lock = threading.Lock()  # one change to a chat's file at a time
@@ -542,7 +543,7 @@ def restart_needs(state):
                 going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
                               "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
         asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
-        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes)
+        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes) + len(state.qa_runs)
     return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
             "busy": busy, "cached": sessions_cache_file().exists()}
 
@@ -1375,7 +1376,7 @@ def root_info():
     root, is_set = tatty_root()
     features = root / "features"
     return {"root": root.as_posix(), "features": features.as_posix(), "design": (root / "design").as_posix(),
-            "tasks": (root / "tasks").as_posix(), "archive": (root / "archive").as_posix(), "isSet": is_set,
+            "tasks": (root / "tasks").as_posix(), "qa": (root / "qa").as_posix(), "archive": (root / "archive").as_posix(), "isSet": is_set,
             "exists": features.is_dir(), "default": (Path.home() / "Tatty").as_posix(), "picker": picker_argv() is not None}
 
 
@@ -7946,7 +7947,7 @@ def delete_refused(folder):
     if real.parent == real or len(real.parts) < 3:
         return "its real folder is a drive or a top-level folder"
     root = tatty_root()[0].resolve()
-    keep = [root, root / "features", root / "archive", root / "design", root / "tasks", home().resolve(),
+    keep = [root, root / "features", root / "archive", root / "design", root / "tasks", root / "qa", home().resolve(),
             config_dir().resolve(), Path.home().resolve(), PLUGIN.resolve()]
     for p in keep:
         if real == p or real in p.parents:
@@ -8728,7 +8729,7 @@ CHAT_ID = re.compile(r"^c-[0-9a-f]{8}$")
 CHAT_TIMEOUT = float(os.environ.get("TATTY_CHAT_TIMEOUT", "600"))
 CHAT_BUDGET = os.environ.get("TATTY_CHAT_BUDGET", "2")  # US dollars, at most, per turn
 CHAT_TOOLS = ["Read", "Glob", "Grep", "Skill"]
-CHAT_PLUGINS = ("core", "engineering", "design", "production")  # the toolbox's, loaded from a checkout
+CHAT_PLUGINS = ("core", "engineering", "design", "qa", "production")  # the toolbox's, loaded from a checkout
 MAX_SELECTED, MAX_AROUND, MAX_MESSAGE = 4000, 6000, 20000
 SUMMARY_TIMEOUT = 120
 SUMMARY_SYSTEM = ("You summarise, in two or three plain sentences, a piece of a software workflow that someone "
@@ -9111,6 +9112,713 @@ def chat_close(state, cid):
         return 404, {"error": "no such chat"}
     state.emit("chat", id=cid, closed=True)
     return 200, {"ok": True}
+
+
+# ---------------------------------------------------------------- QA (bugs and test plans)
+# The QA mode's two documents. Bugs: <root>/qa/Bugs/BUG-NN - <title>.md. A feature's test plan:
+# <root>/qa/Plans/<feature>/<feature> - Test Plan.md, with its results beside it. Both are written
+# only by the toolbox qa plugin's scripts (bug.sh, test.sh); Tatty hands them specs and reads
+# their --tsv. The model only drafts: a bug's fields (shown in a form for the tester to change
+# and save) or a plan's areas and items (written through test.sh, for the tester to edit).
+
+QA_BUG_SCRIPT = "tt-qa-bug/scripts/bug.sh"
+QA_TEST_SCRIPT = "tt-qa-test-plan/scripts/test.sh"
+QA_MISSING = ("QA mode needs the toolbox's qa plugin: /plugin install qa@tims-ai-toolbox, "
+              "then restart Tatty.")
+QA_BUG_FIELDS = ("title", "severity", "feature", "area", "source", "environment", "jira",
+                 "summary", "steps", "expected", "actual", "evidence")
+QA_BUG_SETTABLE = ("severity", "status", "feature", "area", "source", "environment", "jira")
+QA_BUG_COLS = ("id", "title", "severity", "status", "feature", "area", "source", "jira", "created",
+               "updated", "hash", "file")
+QA_RESULTS = ("pass", "fail", "blocked", "skip", "reset")
+QA_ID = re.compile(r"^BUG-\d{1,6}\Z")
+QA_ITEM = re.compile(r"^A\d{1,4}\.\d{1,4}\Z")
+QA_AREA = re.compile(r"^A\d{1,4}\Z")
+QA_RUNS_MAX = 2  # model runs at once
+QA_TIMEOUT_BUG = float(os.environ.get("TATTY_QA_TIMEOUT", "180"))
+QA_TIMEOUT_PLAN = float(os.environ.get("TATTY_QA_TIMEOUT_PLAN", "900"))
+
+QA_BUG_SYSTEM = (
+    "You turn a tester's plain-English description of a bug into a well-formed bug. Reply with one JSON "
+    "object and nothing else (no code fence, no commentary), with these keys: "
+    '"title" (what is wrong, under 80 characters, no ID, no "bug:" prefix), '
+    '"severity" (one of Critical, Major, Minor, Trivial: Critical = crash, data loss, security, or the main '
+    "path blocked with no way round; Major = a feature is broken or wrong but there is a workaround; Minor = "
+    "wrong behaviour in a rarely used path or a clear cosmetic fault; Trivial = a typo or a few pixels), "
+    '"summary" (one or two sentences), "steps" (an array of strings: one action per step, in order, from a '
+    'known starting state), "expected" (one sentence), "actual" (one sentence), "environment" (build, '
+    'platform, device, account: only what is stated, else ""), "evidence" (links, file paths or log text '
+    'given, else ""), and "notStated" (an array of short strings naming facts a tester repeating this would '
+    "need that the description does not give, such as the build or the account). Never invent a step, a "
+    "number, a build or a log line: what the description does not say goes in notStated. Keep the "
+    "tester's own words for facts. You cannot ask questions: write the best bug you can.")
+QA_PLAN_SYSTEM = (
+    "You break a feature into areas for a QA tester to validate, from the feature's documents, which you "
+    "may read (Read, Glob, Grep). Reply with one JSON object and nothing else (no code fence, no "
+    'commentary): {"areas": [{"title": "...", "why": "one line: what could go wrong here", "items": '
+    '[{"title": "what is checked", "how": ["numbered steps a tester can follow cold, starting state '
+    'included"], "expect": "what a pass looks like, observable, with exact text and numbers where the '
+    'documents give them"}]}], "notSpecified": ["things the documents do not say, which a tester must ask '
+    "about\"]}. Rules: 3 to 8 areas, each something a tester can validate in one sitting (a flow, a screen, a "
+    "rule, an integration, a state); every requirement and acceptance criterion in the documents lands in at "
+    "least one item; then the edges (empty and maximum inputs, cancelling half way, repeating an action, "
+    "losing connection, the wrong order, permissions, old data) and an area for neighbouring behaviour the "
+    "feature could break; one check and one verdict per item; at most 12 items per area. Ground every item "
+    'in the documents: where they do not say what should happen, write the item\'s "expect" as "Not '
+    'specified: ask the owner" and list it in notSpecified. Never invent behaviour. You cannot ask '
+    "questions: write the best plan you can.")
+
+
+def qa_script(rel):
+    """A script of the toolbox's qa plugin (under its skills folder), or None."""
+    p = toolbox_plugin("qa")
+    f = p / "skills" / rel if p else None
+    return f if f and f.is_file() else None
+
+
+def qa_run(state, rel, args, spec=None, timeout=60):
+    """Run a qa script: (exit code, stdout, stderr), or None when the toolbox has no qa plugin."""
+    script = qa_script(rel)
+    if not script:
+        return None
+    try:
+        p = subprocess.run([state.bash, str(script), *[str(a) for a in args]], cwd=state.cwd, capture_output=True,
+                           timeout=timeout, input=spec if spec is not None else "", encoding="utf-8",
+                           errors="replace", creationflags=NO_WINDOW)
+        return p.returncode, p.stdout.replace("\r", ""), p.stderr.replace("\r", "")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 2, "", str(e)
+
+
+def qa_root():
+    return tatty_root()[0] / "qa"
+
+
+def qa_bugs_dir():
+    return qa_root() / "Bugs"
+
+
+def qa_plan_file(feature):
+    return qa_root() / "Plans" / feature / f"{feature} - Test Plan.md"
+
+
+def qa_feature_name(name):
+    """A feature's name when it is a real feature of Tatty's root (one plain path part), else None."""
+    name = str(name or "")
+    return name if feature_dir(name) else None
+
+
+def qa_unesc(s):
+    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t", "\\": "\\"}.get(m.group(1), m.group(0)), s)
+
+
+def qa_spec(fields, allowed):
+    """A script spec from a dict: one line, or an indented block when the text has more. An empty or
+    missing value is left out."""
+    out = []
+    for k in allowed:
+        v = fields.get(k)
+        if v is None:
+            continue
+        v = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
+        v = v.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        if not v.strip():
+            continue
+        if "\n" in v:
+            out.append(f"{k}:")
+            out += ["  " + ln for ln in v.split("\n")]
+        else:
+            out.append(f"{k}: {v.strip()}")
+    return "\n".join(out) + "\n"
+
+
+def qa_failed(got):
+    """The (http code, answer) for a script that refused or isn't there."""
+    if got is None:
+        return 501, {"error": QA_MISSING}
+    code, _, err = got
+    msg = (err or "").strip().replace("bug.sh: ", "").replace("test.sh: ", "") or "the script refused"
+    return (409 if code == 3 else 400 if code == 1 else 500), {"error": msg}
+
+
+def qa_bug_row(cols):
+    row = dict(zip(QA_BUG_COLS, cols))
+    for k in ("title", "feature", "area", "source"):
+        row[k] = qa_unesc(row.get(k, ""))
+    row["jira"] = "" if row.get("jira") == "none" else row.get("jira", "")
+    return row
+
+
+def qa_bugs(state):
+    got = qa_run(state, QA_BUG_SCRIPT, ["list", qa_bugs_dir().as_posix(), "--tsv"])
+    if got is None or got[0] != 0:
+        return []
+    rows = [qa_bug_row(r) for r in tsv_rows(got[1], len(QA_BUG_COLS))]
+    return sorted(rows, key=lambda r: -int(re.sub(r"\D", "", r["id"]) or 0))
+
+
+def qa_bug_view(state, bug_id):
+    if not QA_ID.match(bug_id):
+        return 400, {"error": "not a bug ID"}
+    got = qa_run(state, QA_BUG_SCRIPT, ["show", qa_bugs_dir().as_posix(), bug_id, "--tsv"])
+    if got is None or got[0] != 0:
+        return qa_failed(got)
+    cols = got[1].rstrip("\n").split("\t")
+    if len(cols) < len(QA_BUG_COLS) + 6:
+        return 500, {"error": "the bug could not be read"}
+    row = qa_bug_row(cols[:len(QA_BUG_COLS)])
+    for name, v in zip(("summary", "steps", "expected", "actual", "environment", "evidence"), cols[len(QA_BUG_COLS):]):
+        row[name] = qa_unesc(v)
+    row["evidence"] = "" if row["evidence"] == "none" else row["evidence"]
+    row["environment"] = "" if row["environment"] == "none" else row["environment"]
+    return 200, row
+
+
+def qa_plan_view(state, feature):
+    """A feature's test plan: header, areas with their items and latest results, and the counts. None
+    when there is no plan yet."""
+    f = qa_plan_file(feature)
+    if not f.is_file():
+        return None
+    listed = qa_run(state, QA_TEST_SCRIPT, ["list", f.as_posix(), "--tsv"])
+    counts = qa_run(state, QA_TEST_SCRIPT, ["summary", f.as_posix(), "--tsv"])
+    if listed is None or listed[0] != 0 or counts is None or counts[0] != 0:
+        return None
+    meta, areas, by_id = {}, [], {}
+    for r in (ln.split("\t") for ln in listed[1].splitlines() if ln):
+        if r[0] == "meta" and len(r) >= 3:
+            meta[r[1]] = qa_unesc(r[2])
+        elif r[0] == "area" and len(r) >= 4:
+            a = {"id": r[1], "title": qa_unesc(r[2]), "why": qa_unesc(r[3]), "items": []}
+            areas.append(a)
+            by_id[a["id"]] = a
+        elif r[0] == "item" and len(r) >= 10 and r[2] in by_id:
+            by_id[r[2]]["items"].append({"id": r[1], "title": qa_unesc(r[3]), "how": qa_unesc(r[4]),
+                                         "expect": qa_unesc(r[5]), "result": r[6], "date": r[7], "bug": r[8],
+                                         "note": qa_unesc(r[9])})
+    total, per = {}, {}
+    for r in (ln.split("\t") for ln in counts[1].splitlines() if ln):
+        keys = ("items", "pass", "fail", "blocked", "skip", "untested")
+        if r[0] == "total" and len(r) >= 7:
+            total = dict(zip(keys, (int(x) for x in r[1:7])))
+        elif r[0] == "area" and len(r) >= 9:
+            per[r[1]] = dict(zip(keys, (int(x) for x in r[3:9])))
+    for a in areas:
+        a["counts"] = per.get(a["id"], {})
+    return {"feature": feature, "title": feature_title(feature), "meta": meta, "areas": areas, "counts": total}
+
+
+def qa_plans(state):
+    """Every feature with a test plan: its status and counts, for the QA home."""
+    base = qa_root() / "Plans"
+    out = []
+    if not base.is_dir():
+        return out
+    for d in sorted(p for p in base.iterdir() if p.is_dir()):
+        f = qa_plan_file(d.name)
+        if not f.is_file():
+            continue
+        status = ""
+        try:
+            m = re.search(r"^- \*\*Status:\*\* (.+)$", f.read_text(encoding="utf-8", errors="replace"), re.M)
+            status = m.group(1).strip() if m else ""
+        except OSError:
+            pass
+        counts = qa_run(state, QA_TEST_SCRIPT, ["summary", f.as_posix(), "--tsv"])
+        total = {}
+        for r in (ln.split("\t") for ln in (counts[1] if counts and counts[0] == 0 else "").splitlines()):
+            if r[0] == "total" and len(r) >= 7:
+                total = dict(zip(("items", "pass", "fail", "blocked", "skip", "untested"), (int(x) for x in r[1:7])))
+        out.append({"feature": d.name, "title": feature_title(d.name), "status": status, "counts": total,
+                    "updated": f.stat().st_mtime})
+    return sorted(out, key=lambda p: -p["updated"])
+
+
+def qa_home(state):
+    return {"available": bool(qa_script(QA_BUG_SCRIPT) and qa_script(QA_TEST_SCRIPT)), "missing": QA_MISSING,
+            "bugs": qa_bugs(state), "plans": qa_plans(state), "root": qa_root().as_posix()}
+
+
+def qa_get(st, path, q):
+    one = lambda k, d="": q.get(k, [d])[0]
+    if path == "/api/qa":
+        return 200, qa_home(st)
+    if path == "/api/qa/bug":
+        return qa_bug_view(st, one("id"))
+    if path == "/api/qa/plan":
+        feature = qa_feature_name(one("feature"))
+        if not feature:
+            return 404, {"error": "no such feature"}
+        view = qa_plan_view(st, feature)
+        return (200, view) if view else (404, {"error": "This feature has no test plan yet."})
+    return 404, {"error": "not found"}
+
+
+def qa_changed(st, b, **what):
+    st.emit("qa", client=str(b.get("client", ""))[:40], **what)
+
+
+def qa_bug_save(st, b):
+    """Save a bug the tester has reviewed: a new one, or (with an id) a change to a saved one. The
+    script lays it out and says what it refuses."""
+    fields = {k: b.get(k) for k in QA_BUG_FIELDS}
+    spec = qa_spec(fields, QA_BUG_FIELDS)
+    bug_id = str(b.get("id", "")).strip()
+    folder = qa_bugs_dir().as_posix()
+    if bug_id:
+        if not QA_ID.match(bug_id):
+            return 400, {"error": "not a bug ID"}
+        args = ["edit", folder, bug_id, "-"]
+        if re.match(r"^\d{1,12}\Z", str(b.get("hash", ""))):
+            args += ["--if", str(b["hash"])]
+        got = qa_run(st, QA_BUG_SCRIPT, args, spec)
+    else:
+        got = qa_run(st, QA_BUG_SCRIPT, ["new", folder, "-"], spec)
+    if got is None or got[0] != 0:
+        return qa_failed(got)
+    saved = got[1].strip().splitlines()[-1] if got[1].strip() else bug_id
+    qa_changed(st, b, kind="bugs", id=saved)
+    return qa_bug_view(st, saved)
+
+
+def qa_bug_set(st, b):
+    bug_id, field, value = str(b.get("id", "")), str(b.get("field", "")), str(b.get("value", "")).strip()
+    if not QA_ID.match(bug_id) or field not in QA_BUG_SETTABLE:
+        return 400, {"error": "id and field: severity, status, feature, area, source, environment or jira"}
+    if not value or "\n" in value:
+        return 400, {"error": "a one-line value, please"}
+    args = ["set", qa_bugs_dir().as_posix(), bug_id, field, value]
+    if re.match(r"^\d{1,12}\Z", str(b.get("hash", ""))):
+        args += ["--if", str(b["hash"])]
+    got = qa_run(st, QA_BUG_SCRIPT, args)
+    if got is None or got[0] != 0:
+        return qa_failed(got)
+    qa_changed(st, b, kind="bugs", id=bug_id)
+    return qa_bug_view(st, bug_id)
+
+
+# -- the test plan: every change goes through test.sh
+
+def qa_one_line(v, n=500):
+    return " ".join(str(v or "").split())[:n]
+
+
+def qa_plan_op(st, b):
+    """One change to a feature's test plan, or one result: op is start, area-add, item-add, edit,
+    remove, status or check. (http code, the plan afterwards)."""
+    feature = qa_feature_name(b.get("feature"))
+    if not feature:
+        return 404, {"error": "no such feature"}
+    op, f = str(b.get("op", "")), qa_plan_file(feature).as_posix()
+    ident = str(b.get("id", ""))
+    if op == "start":
+        if qa_plan_file(feature).is_file():
+            return 409, {"error": "This feature has a test plan already."}
+        got = qa_run(st, QA_TEST_SCRIPT, ["init", f, "--feature", feature, "--title",
+                                          feature_title(feature) and f"{feature} {feature_title(feature)}" or feature])
+    elif not qa_plan_file(feature).is_file():
+        return 404, {"error": "This feature has no test plan yet."}
+    elif op == "area-add":
+        got = qa_run(st, QA_TEST_SCRIPT, ["area", "add", f, "-"], qa_spec(b, ("title", "why")))
+    elif op == "item-add":
+        if not QA_AREA.match(ident):
+            return 400, {"error": "id: the area, like A1"}
+        got = qa_run(st, QA_TEST_SCRIPT, ["item", "add", f, ident, "-"], qa_spec(b, ("title", "how", "expect")))
+    elif op == "edit":
+        if not (QA_AREA.match(ident) or QA_ITEM.match(ident)):
+            return 400, {"error": "id: an area (A1) or an item (A1.2)"}
+        allowed = ("title", "how", "expect") if "." in ident else ("title", "why")
+        got = qa_run(st, QA_TEST_SCRIPT, ["edit", f, ident, "-"], qa_spec(b, allowed))
+    elif op == "remove":
+        if not (QA_AREA.match(ident) or QA_ITEM.match(ident)):
+            return 400, {"error": "id: an area (A1) or an item (A1.2)"}
+        got = qa_run(st, QA_TEST_SCRIPT, ["remove", f, ident, *(["--force"] if b.get("force") else [])])
+    elif op == "status":
+        got = qa_run(st, QA_TEST_SCRIPT, ["status", f, str(b.get("status", ""))])
+    elif op == "check":
+        result = str(b.get("result", ""))
+        if not QA_ITEM.match(ident) or result not in QA_RESULTS:
+            return 400, {"error": "id: an item (A1.2); result: pass, fail, blocked, skip or reset"}
+        args = ["check", f, ident, result]
+        note, bug = qa_one_line(b.get("note")), str(b.get("bug", "")).strip()
+        if note:
+            args += ["--note", note]
+        if bug:
+            if not QA_ID.match(bug):
+                return 400, {"error": "bug: a bug ID like BUG-03"}
+            args += ["--bug", bug]
+        got = qa_run(st, QA_TEST_SCRIPT, args)
+    else:
+        return 400, {"error": "op: start, area-add, item-add, edit, remove, status or check"}
+    if got is None or got[0] != 0:
+        return qa_failed(got)
+    qa_changed(st, b, kind="plan", feature=feature)
+    view = qa_plan_view(st, feature) or {}
+    view["made"] = got[1].strip().splitlines()[-1] if got[1].strip() else ""
+    return 200, view
+
+
+# -- the model's drafts
+
+def qa_json(text):
+    """The JSON object in a model's reply (with or without a code fence around it), or None."""
+    t = str(text or "").strip()
+    m = re.match(r"^```[A-Za-z]*\n(.*)\n```$", t, re.S)
+    t = m.group(1) if m else t
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        got = json.loads(t[i:j + 1])
+    except ValueError:
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def qa_claude(state, r, system, prompt, cwd, tools, timeout, budget, model, add_dir=None):
+    """One headless `claude -p` run, waited for: (the result dict, error text). r is the run's
+    record (so a cancel can stop it). A run with tools may read files, never change them."""
+    claude = claude_path()
+    if not claude:
+        return None, NO_CLAUDE
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    argv += ["-p", "--output-format", "json", "--system-prompt", system, "--setting-sources", "user",
+             "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config",
+             "--max-budget-usd", str(budget)]
+    if tools:
+        argv += ["--tools", ",".join(tools), "--allowedTools", *tools, "--permission-mode", "dontAsk"]
+    else:
+        argv += ["--tools", ""]
+    if add_dir:
+        argv += ["--add-dir", Path(add_dir).as_posix()]
+    if model:
+        argv += ["--model", model]
+    env = claude_child_env(state)
+    if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
+    try:
+        p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW,
+                             start_new_session=os.name != "nt")
+    except OSError as e:
+        return None, f"couldn't run claude: {e}"
+    r["proc"] = p
+    if r.get("cancelled"):
+        kill_tree(p)
+    try:
+        out, err = p.communicate(prompt, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(p)
+        p.communicate()
+        return None, f"It took longer than {max(1, int(timeout // 60))} minute(s) and was stopped."
+    if r.get("cancelled"):
+        return None, "Stopped."
+    final = None
+    try:
+        got = json.loads(out)
+        final = got if isinstance(got, dict) else next((x for x in reversed(got) if isinstance(x, dict) and x.get("type") == "result"), None)
+    except (ValueError, TypeError, StopIteration):
+        pass
+    if not final:
+        said = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+        return None, said[-1] if said else f"claude exited {p.returncode} saying nothing"
+    if final.get("is_error") or final.get("subtype") not in (None, "success"):
+        return None, str(final.get("result") or final.get("subtype") or "the run failed")[:400]
+    return final, ""
+
+
+def qa_run_start(st, b, kind, work):
+    """Register a model run (at most QA_RUNS_MAX at once, one per run id) and start it on a thread:
+    work(r) returns (result, error). The answer is a "qa" event."""
+    run_id = str(b.get("runId", ""))
+    if not TASK_WRITE_RUN.match(run_id):
+        return 400, {"error": "runId: 6 to 40 letters, digits, - or _"}
+    client = str(b.get("client", ""))[:40]
+    with st.cond:
+        if run_id in st.qa_runs:
+            return 409, {"error": "That one is running already."}
+        if len(st.qa_runs) >= QA_RUNS_MAX:
+            return 409, {"error": "Two are being drafted already: wait for one to finish."}
+        r = st.qa_runs[run_id] = {"runId": run_id, "kind": kind, "started": time.time(), "proc": None,
+                                  "cancelled": False}
+
+    def go():
+        result, error, cost = None, "", 0.0
+        try:
+            result, error, cost = work(r)
+        except Exception as e:  # a draft must never take the server down
+            error = f"the draft failed: {e}"
+        finally:
+            with st.cond:
+                st.qa_runs.pop(run_id, None)
+        st.emit("qa", kind=kind, client=client, runId=run_id, done=True, ok=not error, error=error,
+                result=None if error else result, cost=round(cost, 4))
+    threading.Thread(target=go, daemon=True).start()
+    return 202, {"runId": run_id}
+
+
+def qa_bug_draft(st, b):
+    """Draft a bug from the tester's words: the fields come back in a "qa" event, nothing is saved."""
+    text = str(b.get("description", "")).strip()
+    if not text:
+        return 400, {"error": "Describe the bug first."}
+    if len(text) > MAX_NOTE:
+        return 400, {"error": f"Keep the description under {MAX_NOTE} characters."}
+    if not qa_script(QA_BUG_SCRIPT):
+        return 501, {"error": QA_MISSING}
+    if not claude_path():
+        return 501, {"error": NO_CLAUDE}
+    context = [f"{k}: {qa_one_line(b.get(k), 200)}" for k in ("feature", "area", "source", "environment") if b.get(k)]
+    prompt = ("The tester's description of the bug:\n\n" + text + "\n"
+              + ("\nKnown context:\n" + "\n".join(context) + "\n" if context else ""))
+
+    def work(r):
+        final, error = qa_claude(st, r, QA_BUG_SYSTEM, prompt, str(qa_root().parent), None, QA_TIMEOUT_BUG,
+                                 os.environ.get("TATTY_QA_BUDGET", "1"), os.environ.get("TATTY_QA_MODEL", "haiku"))
+        cost = float((final or {}).get("total_cost_usd") or 0)
+        if error:
+            return None, error, cost
+        got = qa_json(final.get("result"))
+        if not got or not str(got.get("title", "")).strip():
+            return None, "The model's answer could not be read as a bug. Try again.", cost
+        steps = got.get("steps")
+        fields = {k: (got.get(k) or "") for k in QA_BUG_FIELDS}
+        fields["steps"] = "\n".join(str(x) for x in steps) if isinstance(steps, list) else str(steps or "")
+        for k in ("feature", "area", "source", "environment"):  # what the tester already knew wins
+            if b.get(k):
+                fields[k] = qa_one_line(b.get(k), 200)
+        if fields["severity"] not in ("Critical", "Major", "Minor", "Trivial"):
+            fields["severity"] = "Major"
+        not_stated = [qa_one_line(x, 160) for x in got.get("notStated", []) if str(x).strip()][:8] \
+            if isinstance(got.get("notStated"), list) else []
+        return {"fields": {k: (v if isinstance(v, str) else str(v)) for k, v in fields.items()},
+                "notStated": not_stated}, "", cost
+    return qa_run_start(st, b, "bugdraft", work)
+
+
+def qa_plan_sources(feature):
+    """The feature's own documents the plan is drafted from: markdown files at the top of its folder,
+    skipping the ledgers that record the planning itself."""
+    folder = feature_dir(feature)
+    skip = ("challenges", "task status", "debug log", "focus log", "tech proposals", "future iterations")
+    if not folder:
+        return []
+    return [p.name for p in sorted(folder.iterdir())
+            if p.is_file() and p.suffix == ".md" and not any(s in p.name.lower() for s in skip)][:15]
+
+
+def qa_plan_apply(st, feature, data):
+    """Write a drafted plan through test.sh. (areas added, items added, the things the script refused)."""
+    f = qa_plan_file(feature).as_posix()
+    areas_n = items_n = 0
+    refused = []
+    for a in (data.get("areas") or [])[:12]:
+        if not isinstance(a, dict) or not str(a.get("title", "")).strip():
+            continue
+        got = qa_run(st, QA_TEST_SCRIPT, ["area", "add", f, "-"],
+                     qa_spec({"title": qa_one_line(a.get("title"), 120), "why": qa_one_line(a.get("why"), 300)}, ("title", "why")))
+        if got is None or got[0] != 0:
+            refused.append(qa_failed(got)[1]["error"])
+            continue
+        areas_n += 1
+        area_id = got[1].strip().splitlines()[-1]
+        for it in (a.get("items") or [])[:12]:
+            if not isinstance(it, dict):
+                continue
+            how = it.get("how")
+            how = "\n".join(str(x) for x in how) if isinstance(how, list) else str(how or "")
+            spec = qa_spec({"title": qa_one_line(it.get("title"), 160), "how": how,
+                            "expect": str(it.get("expect", "")).strip()}, ("title", "how", "expect"))
+            got = qa_run(st, QA_TEST_SCRIPT, ["item", "add", f, area_id, "-"], spec)
+            if got is None or got[0] != 0:
+                refused.append(f"{area_id}: {qa_failed(got)[1]['error']}")
+            else:
+                items_n += 1
+    return areas_n, items_n, refused
+
+
+def qa_plan_draft(st, b):
+    """Have the model read the feature's documents and propose areas and items; they are written through
+    test.sh into a plan that has no areas yet, left as Draft for the tester to edit."""
+    feature = qa_feature_name(b.get("feature"))
+    if not feature:
+        return 404, {"error": "no such feature"}
+    if not (qa_script(QA_TEST_SCRIPT)):
+        return 501, {"error": QA_MISSING}
+    if not claude_path():
+        return 501, {"error": NO_CLAUDE}
+    view = qa_plan_view(st, feature)
+    if view and view["areas"]:
+        return 409, {"error": "This plan has areas already: change them, or remove them first."}
+    docs = qa_plan_sources(feature)
+    extra = str(b.get("note", "")).strip()[:MAX_NOTE]
+    if not docs and not extra:
+        return 400, {"error": "This feature has no documents to read: add a note about what it does."}
+    folder = feature_dir(feature)
+    prompt = (f"Feature: {feature}" + (f" - {feature_title(feature)}" if feature_title(feature) else "") + "\n\n"
+              + ("Documents to read (in the current folder):\n" + "\n".join(f"- {d}" for d in docs) + "\n\n" if docs else "")
+              + ("The tester's note:\n" + extra + "\n\n" if extra else "")
+              + "Read the documents, then reply with the JSON object described.")
+
+    def work(r):
+        final, error = qa_claude(st, r, QA_PLAN_SYSTEM, prompt, str(folder), ("Read", "Glob", "Grep"), QA_TIMEOUT_PLAN,
+                                 os.environ.get("TATTY_QA_BUDGET_PLAN", "3"), os.environ.get("TATTY_QA_MODEL_PLAN", ""),
+                                 add_dir=str(folder.resolve()))
+        cost = float((final or {}).get("total_cost_usd") or 0)
+        if error:
+            return None, error, cost
+        got = qa_json(final.get("result"))
+        if not got or not isinstance(got.get("areas"), list) or not got["areas"]:
+            return None, "The model's answer could not be read as a plan. Try again.", cost
+        if not qa_plan_file(feature).is_file():
+            made = qa_run(st, QA_TEST_SCRIPT, ["init", qa_plan_file(feature).as_posix(), "--feature", feature, "--title",
+                                              f"{feature} {feature_title(feature)}".strip()])
+            if made is None or made[0] != 0:
+                return None, qa_failed(made)[1]["error"], cost
+        areas_n, items_n, refused = qa_plan_apply(st, feature, got)
+        if not areas_n:
+            return None, "Nothing in the answer could be written: " + (refused[0] if refused else "no areas"), cost
+        qa_changed(st, b, kind="plan", feature=feature)
+        ns = [qa_one_line(x, 200) for x in got.get("notSpecified", []) if str(x).strip()][:10] \
+            if isinstance(got.get("notSpecified"), list) else []
+        return {"feature": feature, "areas": areas_n, "items": items_n, "refused": refused[:5],
+                "notSpecified": ns}, "", cost
+    return qa_run_start(st, b, "plandraft", work)
+
+
+def qa_run_cancel(st, b):
+    r = st.qa_runs.get(str(b.get("runId", "")))
+    if not r:
+        return 404, {"error": "nothing is running under that id"}
+    r["cancelled"] = True
+    if r.get("proc"):
+        kill_tree(r["proc"])
+    return 200, {"ok": True}
+
+
+# -- creating the bug in Jira (the one place Tatty writes more than a transition)
+
+JIRA_CREATE_TOOLS = ("getAccessibleAtlassianResources", "getJiraProjectIssueTypesMetadata", "createJiraIssue")
+JIRA_CREATE_SCHEMA = {"type": "object", "required": ["ok"], "properties": {
+    "ok": {"type": "boolean"}, "key": _s, "url": _s, "message": _s, "error": _s}}
+QA_JIRA_PROJECT = re.compile(r"^[A-Z][A-Z0-9_]{1,9}\Z")
+QA_JIRA_TYPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}\Z")
+
+
+def qa_bug_markdown(b):
+    """A saved bug as Markdown, for a Jira description."""
+    steps = [ln for ln in str(b.get("steps", "")).splitlines() if ln.strip()]
+    head = [f"**Severity:** {b.get('severity', '')}"]
+    for key, label in (("feature", "Feature"), ("area", "Area"), ("source", "Source test"), ("environment", "Environment")):
+        if b.get(key):
+            head.append(f"**{label}:** {b[key]}")
+    parts = ["  \n".join(head), "### Summary\n" + str(b.get("summary", "")),
+             "### Steps to reproduce\n" + "\n".join(steps),
+             "### Expected result\n" + str(b.get("expected", "")), "### Actual result\n" + str(b.get("actual", ""))]
+    if str(b.get("evidence", "")).strip():
+        parts.append("### Evidence\n" + str(b["evidence"]))
+    parts.append(f"_Raised from Tatty's QA mode as {b.get('id', '')}._")
+    return "\n\n".join(parts)
+
+
+def qa_jira_create_work(state, bug_id, project, issue_type):
+    """Create the saved bug as a Jira issue, then keep its key on the bug. The answer goes out as a "jira" event."""
+    code, bug = qa_bug_view(state, bug_id)
+    if code != 200:
+        return {"ok": False, "bug": bug_id, "error": bug.get("error", "no such bug")}
+    if bug.get("jira"):
+        return {"ok": False, "bug": bug_id, "error": f"{bug_id} is {bug['jira']} in Jira already."}
+    prompt = (f"{jira_where(jira_board())} Call createJiraIssue in project {project} with issue type \"{issue_type}\" "
+              "(if Jira rejects that type, call getJiraProjectIssueTypesMetadata for the project and use the type closest to "
+              f"\"{issue_type}\"), summary exactly: {bug['title']}\nand the description in Markdown, exactly the text between "
+              f"the lines BEGIN and END, giving no other fields.\nBEGIN\n{qa_bug_markdown(bug)}\nEND\n"
+              "Report ok: whether Jira created the issue, key: the new issue's key, url: its browse link, and message: "
+              "Jira's error text if it didn't.")
+    got, usage, error = jira_claude(state, prompt, JIRA_CREATE_TOOLS, JIRA_CREATE_SCHEMA)
+    key = text_of((got or {}).get("key"))
+    if error or got.get("ok") is not True or not JIRA_KEY.match(key):
+        return {"ok": False, "bug": bug_id, "error": error or text_of((got or {}).get("message"), 400) or "Jira didn't create it."}
+    kept = qa_run(state, QA_BUG_SCRIPT, ["set", qa_bugs_dir().as_posix(), bug_id, "jira", key])
+    state.emit("qa", kind="bugs", id=bug_id, client="")
+    return {"ok": True, "bug": bug_id, "key": key, "url": text_of(got.get("url"), 300),
+            "message": f"{bug_id} is {key} in Jira." + ("" if kept and kept[0] == 0 else " (Its key could not be kept on the bug: type it in.)")}
+
+
+def qa_bug_jira(st, b):
+    bug_id, project = str(b.get("id", "")), str(b.get("project", "")).strip().upper()
+    issue_type = str(b.get("issueType", "") or "Bug").strip()
+    if not QA_ID.match(bug_id):
+        return 400, {"error": "not a bug ID"}
+    if not QA_JIRA_PROJECT.match(project):
+        return 400, {"error": "project: the Jira project's key, like STAR"}
+    if not QA_JIRA_TYPE.match(issue_type):
+        return 400, {"error": "issueType: the name of an issue type, like Bug"}
+    code, bug = qa_bug_view(st, bug_id)
+    if code != 200:
+        return code, bug
+    if bug.get("jira"):
+        return 409, {"error": f"{bug_id} is {bug['jira']} in Jira already."}
+    job = f"qabug:{bug_id}"
+    if not jira_job(st, job, qa_jira_create_work, bug_id, project, issue_type):
+        return 409, {"error": "That bug is being created in Jira already."}
+    return 202, {"job": job}
+
+
+# -- the same work in a Claude session, with the skills of the toolbox's qa plugin
+
+QA_SKILLS = {"bug": "/tt-qa-bug", "plan": "/tt-qa-test-plan", "run": "/tt-qa-test-run"}
+
+
+def qa_session(st, b):
+    """Open a Claude session running one of the qa skills (tt-qa-bug, tt-qa-test-plan or tt-qa-test-run) on this
+    machine's terminal, for the tester who would rather talk it through. The skills write through the same scripts
+    as the page does, so what they save shows here on a reload. (http code, answer)."""
+    kind = str(b.get("kind", ""))
+    if kind not in QA_SKILLS:
+        return 400, {"error": "kind: bug, plan or run"}
+    if not (qa_script(QA_BUG_SCRIPT) and qa_script(QA_TEST_SCRIPT)):
+        return 501, {"error": QA_MISSING}
+    feature = qa_feature_name(b.get("feature")) if b.get("feature") else None
+    if b.get("feature") and not feature:
+        return 404, {"error": "no such feature"}
+    bugs = qa_bugs_dir().as_posix()
+    folder = feature_dir(feature) if feature else None
+    if kind == "bug":
+        cmd = f'{QA_SKILLS[kind]} "{bugs}"' + (" " + " ".join(str(b.get("description", "")).split())[:2000]).rstrip()
+    elif not feature:
+        return 400, {"error": "Choose the feature first."}
+    else:
+        plan = qa_plan_file(feature).as_posix()
+        if kind == "plan":
+            cmd = f'{QA_SKILLS[kind]} "{plan}" "{folder.as_posix()}"'
+        elif not qa_plan_file(feature).is_file():
+            return 404, {"error": "This feature has no test plan yet."}
+        else:
+            cmd = f'{QA_SKILLS[kind]} "{plan}" "{bugs}"'
+    qa_root().mkdir(parents=True, exist_ok=True)
+    project = (feature_project(folder, docs_of(folder))[0] if folder else "") or tatty_root()[0].as_posix()
+    default = session_default(st)
+    flags, why = model_choice(st, str(b.get("model") or default["model"]).strip(), str(b.get("effort") or default["effort"]).strip())
+    if flags is None:
+        return 400, {"error": why}
+    label = {"bug": "Bug", "plan": "Test plan", "run": "Testing"}[kind]
+    name = session_name(f"QA {label}" + (f" : {feature}" if feature else ""))
+    tag = "s-" + secrets.token_hex(4)
+    ok, said = launch(st, project, name, cmd, tag, "", flags)
+    return 200, {"ok": ok, "name": name, "command": cmd, "said": said, "tag": tag, "project": project}
+
+
+QA_POSTS = {"/api/qa/bug/save": qa_bug_save, "/api/qa/bug/set": qa_bug_set, "/api/qa/bug/draft": qa_bug_draft, "/api/qa/bug/jira": qa_bug_jira, "/api/qa/session": qa_session,
+            "/api/qa/plan": qa_plan_op, "/api/qa/plan/draft": qa_plan_draft, "/api/qa/run-cancel": qa_run_cancel}
+
+
+def qa_post(st, path, b):
+    if not isinstance(b, dict):
+        return 400, {"error": "a JSON object, please"}
+    work = QA_POSTS.get(path)
+    if not work:
+        return 404, {"error": "not found"}
+    return work(st, b)
 
 
 # ---------------------------------------------------------------- intake
@@ -9551,6 +10259,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tasks" or path.startswith("/api/tasks/"):
             code, answer = tasks_get(st, path, q)
             return self.send(code, answer)
+        if path == "/api/qa" or path.startswith("/api/qa/"):
+            code, answer = qa_get(st, path, q)
+            return self.send(code, answer)
         if path.startswith("/api/view/"):
             res = run_view(st, path[len("/api/view/"):], q)
             return self.send(200, res) if res is not None else self.send(404, {"error": "no such view"})
@@ -9892,6 +10603,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path.startswith("/api/tasks/"):
             code, answer = tasks_post(st, path, b)
+            return self.send(code, answer)
+        if path.startswith("/api/qa/"):
+            code, answer = qa_post(st, path, b)
             return self.send(code, answer)
         if path == "/api/doc/save":
             folder = feature_dir(str(b.get("name", "")))

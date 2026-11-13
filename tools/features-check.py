@@ -38,6 +38,8 @@ alone (the page's api() stood in for: nothing is opened);
 --diff only the Code Diff section: it puts T03 In Progress in the Demo feature's Task Status (and puts it back), starts a
 session (no terminal opens) that reports one edit, and reports the rail item, the red and green cells, the progress bar
 and the task's chip; a throwaway root and home only;
+--qa only the QA mode: a bug drafted and saved, a feature taken to a plan with drafted areas, results, a failure raised as a bug,
+and the dashboard (a throwaway root and home, a stand-in claude, a feature named T-0001; it writes bugs and plans);
 --stories walks only the User Stories board (a root with a board under design/);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --jira only the Jira board (drawn from a sample board, with the page's api() stood in for: nothing is fetched or started);
@@ -2395,6 +2397,96 @@ def check_settings(p):
     return res
 
 
+def check_qa(p):
+    """The QA mode, with real clicks on a throwaway root whose server has a stand-in claude (TATTY_CLAUDE) and
+    the toolbox's qa plugin: the home, a bug described, drafted and saved, a feature taken to a plan, its areas
+    drafted, results marked, a failure raised as a bug, and the dashboard's counts. It writes bugs and plans,
+    so a throwaway root and home only. Expects a feature named T-0001 under features/."""
+    res = {}
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    p.js("setInstalledModes(['engineering', 'qa']); applyMode('engineering'); 1")
+    res["navInEngineering"] = p.js("!document.querySelector('.pnav a[data-page=qa]').classList.contains('hidden')")
+    p.js("location.hash = '#qa'; 1")
+    wait(p, "currentMode === 'qa' && !!document.querySelector('#page-qa .qa-home')")
+    res["mode"] = p.js("document.body.dataset.mode")
+    res["navInQa"] = p.js("!document.querySelector('.pnav a[data-page=qa]').classList.contains('hidden')")
+    res["home"] = p.js("""({ head: document.querySelector('#page-qa h2').textContent,
+                           plans: document.querySelectorAll('#page-qa .qa-plan').length,
+                           bugRows: document.querySelectorAll('#page-qa tr[data-bug]').length,
+                           note: (document.querySelector('#page-qa .home-note') || {}).textContent || '' })""")
+
+    # a bug: described, drafted by the (stand-in) model, checked, saved
+    p.js("document.querySelector('#qa-new-bug').click(); 1")
+    wait(p, "!!document.querySelector('#qa-desc')")
+    p.js("document.querySelector('#qa-desc').value = 'login retry does nothing'; document.querySelector('#qa-draft').click(); 1")
+    wait(p, "document.querySelector('#qa-f-title').value !== ''", 60)
+    res["draft"] = p.js("""({ title: document.querySelector('#qa-f-title').value, severity: document.querySelector('#qa-f-severity').value,
+                            steps: document.querySelector('#qa-f-steps').value, notStated: [...document.querySelectorAll('.qa-notstated .chip')].map(c => c.textContent),
+                            msg: document.querySelector('#qa-msg').textContent })""")
+    # the same work in a Claude session (a dry run: the server only says what it would open)
+    p.js("document.querySelector('.qa-session').click(); 1")
+    wait(p, "/^Opened a Claude session/.test(document.querySelector('#qa-msg').textContent)")
+    res["session"] = p.js("document.querySelector('#qa-msg').textContent")
+    p.js("document.querySelector('#qa-f-feature').value = 'T-0001'; document.querySelector('#qa-save').click(); 1")
+    wait(p, "/^#qa\\/bug\\/BUG-/.test(location.hash)")
+    wait(p, "!!document.querySelector('#qa-copy')")
+    res["saved"] = p.js("""({ hash: location.hash, h2: document.querySelector('#page-qabug h2').textContent,
+                            status: document.querySelector('#qa-status-set').value, steps: document.querySelector('#qa-f-steps').value })""")
+    p.js("(() => { const s = document.querySelector('#qa-status-set'); s.value = 'Confirmed'; s.dispatchEvent(new Event('change')); })(); 1")
+    wait(p, "document.querySelector('#qa-msg').textContent === 'Status set.'")
+    res["statusSet"] = p.js("document.querySelector('#qa-msg').textContent")
+    # Create in Jira (the server's claude is a stand-in that answers STAR-77): the key lands on the bug and the controls go
+    p.js("document.querySelector('#qa-jira-project').value = 'star'; document.querySelector('#qa-jira-create').click(); 1")
+    wait(p, "document.querySelector('#qa-jira').value === 'STAR-77'", 60)
+    res["jira"] = p.js("""({ key: document.querySelector('#qa-jira').value, createHidden: document.querySelector('#qa-jira-create').hidden,
+                            projectHidden: document.querySelector('#qa-jira-project').hidden, msg: document.querySelector('#qa-msg').textContent,
+                            remembered: localStorage.getItem('tt-qa-jira-project') })""")
+    p.js("location.hash = '#qa'; 1")
+    wait(p, "document.querySelectorAll('#page-qa tr[data-bug]').length > 0")
+    res["homeAfterBug"] = p.js("[...document.querySelectorAll('#page-qa tr[data-bug]')].map(r => r.innerText.replace(/\\s+/g, ' ').trim())")
+
+    # a feature under test: start, draft the areas, mark results
+    p.js("document.querySelector('#qa-feature').value = 'T-0001'; document.querySelector('#qa-start').click(); 1")
+    wait(p, "!!document.querySelector('#qa-plan-draft')")
+    res["empty"] = p.js("({ hash: location.hash, draft: !!document.querySelector('#qa-plan-draft'), addArea: !!document.querySelector('#qa-area-add') })")
+    p.js("document.querySelector('#qa-plan-draft').click(); 1")
+    wait(p, "document.querySelectorAll('.qa-area').length > 0", 80)
+    res["dashboard"] = p.js("""({ areas: [...document.querySelectorAll('.qa-area')].map(a => a.innerText.replace(/\\s+/g, ' ').trim()),
+                                 tiles: [...document.querySelectorAll('.tstat')].map(t => t.innerText.replace(/\\s+/g, ' ').trim()),
+                                 notSpecified: (document.querySelector('.qa-step ul') || {}).innerText || '' })""")
+    p.js("document.querySelector('.qa-area').click(); 1")
+    wait(p, "document.querySelectorAll('.qa-item').length > 0")
+    res["area"] = p.js("[...document.querySelectorAll('.qa-item')].map(i => i.dataset.item + ' ' + i.className)")
+    p.js("document.querySelector('.qa-item[data-item=\"A1.1\"] .qa-res-pass').click(); 1")
+    wait(p, "!!document.querySelector('.qa-item.done[data-item=\"A1.1\"]')")
+    p.js("(() => { const i = document.querySelector('.qa-item[data-item=\"A1.2\"]'); i.querySelector('.qa-note').value = 'nothing happened'; i.querySelector('.qa-res-fail').click(); })(); 1")
+    wait(p, "!!document.querySelector('.qa-item.bad[data-item=\"A1.2\"] .qa-raise')")
+    res["marked"] = p.js("[...document.querySelectorAll('.qa-item')].map(i => i.dataset.item + ' ' + i.className + ' ' + i.querySelector('.qa-note').value)")
+
+    # the failure raised as a bug: the form starts filled in, and the item points at the bug once it is saved
+    p.js("document.querySelector('.qa-item[data-item=\"A1.2\"] .qa-raise').click(); 1")
+    wait(p, "location.hash === '#qa/bug/new' && document.querySelector('#qa-f-title').value !== ''")
+    res["raised"] = p.js("""({ title: document.querySelector('#qa-f-title').value, source: document.querySelector('#qa-f-source').value,
+                             feature: document.querySelector('#qa-f-feature').value, actual: document.querySelector('#qa-f-actual').value,
+                             steps: document.querySelector('#qa-f-steps').value })""")
+    p.js("document.querySelector('#qa-save').click(); 1")
+    res["raisedSaved"] = wait(p, "/^#qa\\/bug\\/BUG-02/.test(location.hash)")
+    p.js("location.hash = '#qa/test/T-0001/A1'; 1")
+    wait(p, "!!document.querySelector('.qa-item[data-item=\"A1.2\"] a[href^=\"#qa/bug/\"]')")
+    res["linked"] = p.js("(document.querySelector('.qa-item[data-item=\"A1.2\"] a[href^=\"#qa/bug/\"]') || {}).textContent || ''")
+    p.js("location.hash = '#qa/test/T-0001'; 1")
+    wait(p, "document.querySelectorAll('.tstat').length > 0")
+    time.sleep(0.4)
+    res["final"] = p.js("""({ tiles: [...document.querySelectorAll('.tstat')].map(t => t.innerText.replace(/\\s+/g, ' ').trim()),
+                             bar: (document.querySelector('#page-qaplan .bar span') || {style: {}}).style.width,
+                             barClass: (document.querySelector('#page-qaplan .bar') || {}).className,
+                             bugs: [...document.querySelectorAll('.qa-fails a')].map(a => a.textContent) })""")
+    p.js("location.hash = '#mode'; 1")
+    wait(p, "!!document.querySelector('#page-mode .mode-tile')")
+    res["modeTiles"] = p.js("[...document.querySelectorAll('#page-mode .mode-tile strong')].map(s => s.textContent)")
+    return res
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -2430,10 +2522,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

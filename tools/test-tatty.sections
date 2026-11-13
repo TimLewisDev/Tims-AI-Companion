@@ -36,6 +36,7 @@ jira	-	114
 tasks	-	80
 taskwrite	tasks	19
 taskmerge	tasks	16
+qa	-	60
 stories	tasks	196
 whiteboards	features,project	7
 models	features,project	324

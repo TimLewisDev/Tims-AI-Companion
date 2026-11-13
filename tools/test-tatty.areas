@@ -59,6 +59,7 @@ banner	^questions	decide
 banner	^design \(user stories\)	stories,whiteboards,cache
 banner	^whiteboards	whiteboards,stories
 banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
+banner	^QA	qa
 banner	^archiving	archive
 banner	^code changes	commit,reviewstep,reviewrepo
 banner	^chats	chats,compactchat,intake

@@ -51,7 +51,7 @@ pages say "Tatty can't find the TT toolbox", and nothing else breaks.
 
 ## Which disciplines are installed (Tatty's modes)
 
-The toolbox's discipline plugins -- `engineering`, `design`, `production` --
+The toolbox's discipline plugins -- `engineering`, `design`, `qa`, `production` --
 are Tatty's **modes**: its landing page offers the ones installed, its title bar
 switches between them, and the mode is the only thing that sets the app's accent
 colour. `core` is the base every discipline installs, so it is not one of them.
@@ -76,7 +76,7 @@ is hidden.
 does beyond reading. It is still not a change to the toolbox: Claude Code does
 the installing, through the command a person would run themselves --
 `claude plugin install <plugin>@<marketplace>`, the marketplace `core` was
-installed from (`install_mode` and `toolbox_market()`). Only the three names
+installed from (`install_mode` and `toolbox_market()`). Only the names
 above, only on a click, never with `-y`, and the toolbox's own files are
 untouched. The plugin's skills and hooks reach Claude Code in sessions started
 afterwards, as they would after any install.
@@ -386,7 +386,7 @@ toolbox has no part in it. What it does, and the limits it keeps:
   kept. The answer is checked against a schema and cleaned again by the server
   (a ticket without a proper key is dropped; a picture becomes a note, since
   its link opens only in a signed-in browser).
-- **Changes in Jira.** Only transitions, never other fields, each by the
+- **Changes in Jira.** Transitions, never other fields, each by the
   transition whose target (or name) is the status, found in the ticket's
   transitions (looked up again in Jira if the kept list lacks it), never a fixed
   id: **In Progress** on **Start workflow**, only after the session has opened
@@ -395,6 +395,7 @@ toolbox has no part in it. What it does, and the limits it keeps:
   pull / merge request is seen open (see "Branches and merging" in the design
   notes); and any status the person picks in the ticket panel's **Move to** row
   or drops the ticket's card on. A ticket already in the status is left alone.
+  (The QA mode adds one more write: creating an issue from a saved bug. See "QA".)
 - **One document written.** Start workflow, or Start lite, makes
   `<root>/features/<KEY>` (refused if it exists and isn't empty)
   and writes `<name> - Ticket.md` in it: the ticket's fields, its description,
@@ -404,6 +405,34 @@ toolbox has no part in it. What it does, and the limits it keeps:
 - **Columns are Tatty's.** The person's order for the columns and which are
   hidden are kept in Tatty's home (`jira/layout.json`); nothing about them is
   written to Jira.
+
+## QA
+
+The QA mode's pages (`qa.js`; see "QA (the QA mode)" in the design notes) run
+the toolbox's `qa` plugin. Tatty only runs its scripts and reads their output:
+
+- **`tt-qa-bug/scripts/bug.sh`**: `new`, `edit`, `set` (with `--if <hash>` so a
+  bug that moved since it was read is refused), `show --tsv`, `list --tsv`,
+  `validate`, `check`. The only writer of `BUG-NN - <title>.md`. Tatty hands it a
+  spec on stdin and reads `list --tsv` / `show --tsv` back.
+- **`tt-qa-test-plan/scripts/test.sh`**: `init`, `area add`, `item add`, `edit`,
+  `remove`, `status`, `check`, `list --tsv`, `summary --tsv`, `verify`. The only
+  writer of a feature's Test Plan and its `- Results.tsv` (one row per verdict, the
+  last for an item wins). A model's draft of a plan is written by Tatty calling
+  `area add` and `item add`, never by the model.
+- **The skills** (`/tt-qa-bug`, `/tt-qa-test-plan`, `/tt-qa-test-run`) are what
+  **Talk it through in Claude** and the other "in a Claude session" buttons start,
+  through `launch` as any session; they write through the same scripts.
+
+What Tatty keeps: `<root>/qa/Bugs/` and `<root>/qa/Plans/<feature>/`. The files
+are the toolbox's; Tatty keeps nothing about them of its own.
+
+**Jira.** A saved bug can be created in Jira (**Create in Jira**): a headless
+run, like the Jira board's, with `createJiraIssue` (and the two read tools to
+find the site and the project's issue types) allowed and nothing else, the
+project key typed by the person. This is the one write beyond a transition; it
+creates one issue from one saved bug and then sets the bug's `Jira` line to
+the new key (`bug.sh set`). It never edits or deletes an issue.
 
 ## Tasks
 

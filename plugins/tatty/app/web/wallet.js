@@ -193,7 +193,7 @@
   // avatar chosen in what he wears, drawn in the mode's colour as the tray app draws it
   // (avatar.js's bake; the window's AvatarArt.cs draws it). Again whenever that changes:
   // here, in another window (the status poll's `look`) or by a change of mode.
-  const TRAY_ACCENT = { engineering: "#3B6EA8", design: "#A9641F", production: "#7D5BBD" };
+  const TRAY_ACCENT = { engineering: "#3B6EA8", design: "#A9641F", production: "#7D5BBD", qa: "#0F857A" };
   let look = null, sent = "";
   async function sendLook() {
     if (typeof companion === "undefined" || !companion || typeof host === "undefined" || !host || !window.TattyAvatar) return;

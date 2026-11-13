@@ -58,6 +58,8 @@ cat >"$T/claude.sh" <<'EOS'
 [ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
 # the task panel's "Write it for me" (it names its job in the system prompt): the stand-in is claude-tw.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"You write up a task"*) exec bash "$(dirname "$0")/claude-tw.sh" "$@" ;; esac
+# the QA mode's drafts (they name their job in the system prompt) and Jira's answer to a create: the stand-in is claude-qa.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"You turn a tester"*|*"You break a feature"*|*mcp__atlassian__createJiraIssue*) exec bash "$(dirname "$0")/claude-qa.sh" "$@" ;; esac
 # a chat's turn (it names its conversation): the stand-in is claude-chat.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *--session-id*|*--resume*) exec bash "$(dirname "$0")/claude-chat.sh" "$@" ;; esac
 # the summary a small model writes of a side chat's context
@@ -2826,6 +2828,135 @@ post /api/merge '{"name":"R-0001","action":"merged"}' >"$T/j"
 has "merged" "$T/j" '"state": "merged"'
 has "a card you moved on stays where you put it" "$RF" "- **Status:** QA Ready"
 
+fi
+if section qa; then
+echo "# QA mode"
+if [ ! -f "${TATTY_TOOLBOX:-/none}/plugins/qa/skills/tt-qa-bug/scripts/bug.sh" ]; then
+	echo "skip  QA mode: the toolbox has no qa plugin"
+else
+post /api/root "{\"path\":\"$FX\"}" >/dev/null # (the features section does this too: this one needs the fixture root only)
+[ "$(code "$U/static/qa.js")" = 200 ] && ok "qa.js served" || bad "qa.js served"
+[ "$(code "$U/static/qa.css")" = 200 ] && ok "qa.css served" || bad "qa.css served"
+# qb <what> <body>: POST /api/qa/<what>; the answer in $T/qa, the HTTP code printed
+qb() { curl -s -o "$T/qa" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/qa/$1"; }
+# the stand-in for the model's drafts and Jira's answer (the main stand-in hands these prompts to it)
+cat >"$T/claude-qa.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+echo "$*" >>"$d/claude-qa.log"
+case "$*" in
+*"You turn a tester"*) cat "$d/qa-bug.out" ;;
+*"You break a feature"*) cat "$d/qa-plan.out" ;;
+*) if [ -f "$d/qa-jira-fail" ]; then
+	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"ok":false,"message":"Project STAR does not exist"}}'
+else
+	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"ok":true,"key":"STAR-77","url":"https://x.atlassian.net/browse/STAR-77"}}'
+fi ;;
+esac
+EOS
+cat >"$T/qa-bug.out" <<'EOS'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"result":"{\"title\":\"Login does nothing on retry\",\"severity\":\"Critical\",\"summary\":\"Second tap does nothing.\",\"steps\":[\"Open the app\",\"Enter a wrong password\",\"Tap Login twice\"],\"expected\":\"The login is retried.\",\"actual\":\"Nothing happens.\",\"environment\":\"\",\"evidence\":\"\",\"notStated\":[\"the build\"]}"}
+EOS
+cat >"$T/qa-plan.out" <<'EOS'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"result":"```json\n{\"areas\":[{\"title\":\"Login\",\"why\":\"The entry path.\",\"items\":[{\"title\":\"Wrong password\",\"how\":[\"Open the app\",\"Enter a wrong password\"],\"expect\":\"An error shows.\"},{\"title\":\"Retry\",\"how\":[\"Tap Login twice\"],\"expect\":\"The login retries.\"}]},{\"title\":\"Profile\",\"why\":\"\",\"items\":[{\"title\":\"Avatar\",\"how\":[\"Open the profile\"],\"expect\":\"The avatar shows.\"}]}],\"notSpecified\":[\"the lockout limit\"]}\n```"}
+EOS
+# an event of a kind has arrived (the drafts and Jira answer on a thread)
+qaev() { local i; for i in $(seq 1 60); do get "/api/events?since=0" >"$T/ev"; grep -q "$1" "$T/ev" && return 0; sleep 0.3; done; return 1; }
+get /api/qa >"$T/j"
+[ "$(pick "$T/j" "(d['available'], d['bugs'], d['plans'])")" = "(True, [], [])" ] && ok "nothing under test yet" || bad "nothing under test yet" "$(head -c 300 "$T/j")"
+get /api/root >"$T/j"; has "the root says where QA lives" "$T/j" '"qa":'
+
+# bugs
+[ "$(qb bug/save '{"title":"x"}')" = 400 ] && has "a bug needs its facts" "$T/qa" "summary is required" || bad "a bug needs its facts" "$(cat "$T/qa")"
+[ "$(qb bug/save '{"title":"a/b","summary":"s","steps":"a","expected":"e","actual":"x"}')" = 400 ] && ok "a title can't hold a path character" || bad "a title can't hold a path character" "$(cat "$T/qa")"
+[ "$(qb bug/save '{"title":"Login does nothing","severity":"Major","feature":"Demo","summary":"s","steps":"Open\n- Tap","expected":"e","actual":"x"}')" = 200 ] && ok "a bug is saved" || bad "a bug is saved" "$(cat "$T/qa")"
+[ "$(pick "$T/qa" "(d['id'], d['status'], d['steps'])")" = "('BUG-01', 'New', '1. Open\n2. Tap')" ] && ok "it is BUG-01, New, with numbered steps" || bad "it is BUG-01, New, with numbered steps" "$(cat "$T/qa")"
+[ -f "$FX/qa/Bugs/BUG-01 - Login does nothing.md" ] && ok "in the root's qa/Bugs folder" || bad "in the root's qa/Bugs folder" "$(ls -R "$FX/qa" 2>&1 | head)"
+[ "$(qb bug/save '{"title":"Second","severity":"Minor","summary":"s","steps":"a","expected":"e","actual":"x"}')" = 200 ] && [ "$(pick "$T/qa" "d['id']")" = BUG-02 ] && ok "the next bug is BUG-02" || bad "the next bug is BUG-02" "$(cat "$T/qa")"
+get /api/qa >"$T/j"
+[ "$(pick "$T/j" "[b['id'] for b in d['bugs']]")" = "['BUG-02', 'BUG-01']" ] && ok "the newest bug is listed first" || bad "the newest bug is listed first" "$(head -c 300 "$T/j")"
+H=$(pick "$T/j" "d['bugs'][1]['hash']")
+[ "$(qb bug/set "{\"id\":\"BUG-01\",\"field\":\"jira\",\"value\":\"STAR-5\",\"hash\":\"$H\"}")" = 200 ] && ok "a field is set when the bug is as it was read" || bad "a field is set when the bug is as it was read" "$(cat "$T/qa")"
+[ "$(qb bug/set "{\"id\":\"BUG-01\",\"field\":\"status\",\"value\":\"Fixed\",\"hash\":\"$H\"}")" = 409 ] && ok "a bug that moved since is refused (409)" || bad "a bug that moved since is refused (409)" "$(cat "$T/qa")"
+[ "$(qb bug/set '{"id":"BUG-01","field":"title","value":"x"}')" = 400 ] && ok "only header fields are set" || bad "only header fields are set"
+[ "$(qb bug/set '{"id":"BUG-01","field":"status","value":"Done"}')" = 400 ] && ok "a status is one of the list" || bad "a status is one of the list" "$(cat "$T/qa")"
+[ "$(qb bug/save '{"id":"BUG-01","title":"Login does nothing on retry","actual":"still nothing"}')" = 200 ] && ok "a bug is changed" || bad "a bug is changed" "$(cat "$T/qa")"
+[ "$(pick "$T/qa" "(d['title'], d['actual'], d['steps'], d['jira'])")" = "('Login does nothing on retry', 'still nothing', '1. Open\n2. Tap', 'STAR-5')" ] && ok "only what was sent changed" || bad "only what was sent changed" "$(cat "$T/qa")"
+get "/api/qa/bug?id=BUG-9" >"$T/j"; has "an unknown bug is said so" "$T/j" "no such bug"
+[ "$(code -H "X-TT-Token: $K" "$U/api/qa/bug?id=..%2Fx")" = 400 ] && ok "a bug ID is checked" || bad "a bug ID is checked"
+
+# a bug drafted from plain words: the fields come back in an event, nothing is saved
+[ "$(qb bug/draft '{"runId":"bugdraft01","description":"login retry does nothing","client":"t"}')" = 202 ] && ok "a draft starts" || bad "a draft starts" "$(cat "$T/qa")"
+qaev '"kind": "bugdraft"' && ok "the draft answers" || bad "the draft answers"
+$PY -c "
+import json, sys
+e = [x for x in json.load(open(sys.argv[1], encoding='utf-8')) if x.get('kind') == 'bugdraft'][0]
+r = e['result']
+sys.exit(0 if e['ok'] and r['fields']['title'] == 'Login does nothing on retry' and r['fields']['severity'] == 'Critical' and r['fields']['steps'].count('\n') == 2 and r['notStated'] == ['the build'] else 1)" "$T/ev" && ok "as fields, with what the description left out" || bad "as fields, with what the description left out" "$(grep -o '"kind": "bugdraft".*' "$T/ev" | head -c 300)"
+[ "$(qb bug/draft '{"runId":"bugdraft02","description":"  "}')" = 400 ] && ok "a draft needs words" || bad "a draft needs words"
+[ "$(qb bug/draft '{"runId":"bad id","description":"x"}')" = 400 ] && ok "a run id is checked" || bad "a run id is checked"
+[ "$(ls "$FX/qa/Bugs" | wc -l | tr -d ' ')" = 2 ] && ok "and nothing was saved" || bad "and nothing was saved" "$(ls "$FX/qa/Bugs")"
+[ "$(qb run-cancel '{"runId":"nothing12"}')" = 404 ] && ok "a run that isn't going can't be stopped" || bad "a run that isn't going can't be stopped"
+
+# creating a bug in Jira (the stand-in answers STAR-77)
+[ "$(qb bug/jira '{"id":"BUG-01","project":"STAR"}')" = 409 ] && has "a bug that has a ticket already is refused" "$T/qa" "STAR-5" || bad "a bug that has a ticket already is refused" "$(cat "$T/qa")"
+[ "$(qb bug/jira '{"id":"BUG-02","project":"star!"}')" = 400 ] && ok "the project is a key" || bad "the project is a key" "$(cat "$T/qa")"
+: >"$T/qa-jira-fail"
+[ "$(qb bug/jira '{"id":"BUG-02","project":"STAR"}')" = 202 ] && ok "Create in Jira starts" || bad "Create in Jira starts" "$(cat "$T/qa")"
+qaev "Project STAR does not exist" && ok "Jira answers, and a refusal is passed on" || bad "Jira answers, and a refusal is passed on"
+get "/api/qa/bug?id=BUG-02" >"$T/j"; [ "$(pick "$T/j" "d['jira']")" = "" ] && ok "and the bug has no key" || bad "and the bug has no key"
+rm -f "$T/qa-jira-fail"
+[ "$(qb bug/jira '{"id":"BUG-02","project":"star","issueType":"Bug"}')" = 202 ] && ok "tried again" || bad "tried again" "$(cat "$T/qa")"
+for _ in $(seq 1 60); do get "/api/qa/bug?id=BUG-02" >"$T/j"; [ "$(pick "$T/j" "d['jira']")" = STAR-77 ] && break; sleep 0.3; done
+[ "$(pick "$T/j" "d['jira']")" = STAR-77 ] && ok "the ticket's key is kept on the bug" || bad "the ticket's key is kept on the bug" "$(head -c 300 "$T/j")"
+has "the model is told what to create and where" "$T/claude-qa.log" "createJiraIssue in project STAR with issue type \"Bug\""
+has "and may use only the create tools" "$T/claude-qa.log" "mcp__atlassian__createJiraIssue"
+
+# a feature's test plan
+[ "$(qb plan '{"feature":"../x","op":"start"}')" = 404 ] && ok "a plan is for a feature that exists" || bad "a plan is for a feature that exists"
+[ "$(qb plan '{"feature":"Demo","op":"area-add","title":"x"}')" = 404 ] && ok "no plan, no areas" || bad "no plan, no areas" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"start"}')" = 200 ] && ok "a plan is started" || bad "a plan is started" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"start"}')" = 409 ] && ok "once" || bad "once"
+[ "$(qb plan '{"feature":"Demo","op":"area-add","title":"Login","why":"The entry path."}')" = 200 ] && [ "$(pick "$T/qa" "d['made']")" = A1 ] && ok "an area is added" || bad "an area is added" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A1","title":"Wrong password","how":"Open the app\nEnter a wrong password","expect":"An error shows."}')" = 200 ] && [ "$(pick "$T/qa" "d['made']")" = A1.1 ] && ok "an item is added" || bad "an item is added" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A1","title":"Retry","how":"Tap twice","expect":"It retries."}')" = 200 ] && ok "another" || bad "another"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A1","title":"No steps"}')" = 400 ] && ok "an item needs its steps and expectation" || bad "an item needs its steps and expectation" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A9","title":"x","how":"y","expect":"z"}')" = 400 ] && ok "in an area that exists" || bad "in an area that exists" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.1","result":"fail","note":"no error shown"}')" = 200 ] && ok "a result is recorded" || bad "a result is recorded" "$(cat "$T/qa")"
+[ "$(pick "$T/qa" "d['counts']")" = "{'items': 2, 'pass': 0, 'fail': 1, 'blocked': 0, 'skip': 0, 'untested': 1}" ] && ok "and counted" || bad "and counted" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.2","result":"great"}')" = 400 ] && ok "a result is one of the five" || bad "a result is one of the five"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.1","result":"fail","note":"no error shown","bug":"BUG-01"}')" = 200 ] && ok "a failed item takes its bug" || bad "a failed item takes its bug" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.1","result":"fail","bug":"nope"}')" = 400 ] && ok "a bug is an ID" || bad "a bug is an ID"
+get "/api/qa/plan?feature=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(i['id'], i['result'], i['bug'], i['note']) for a in d['areas'] for i in a['items']]")" = "[('A1.1', 'fail', 'BUG-01', 'no error shown'), ('A1.2', 'untested', '', '')]" ] && ok "the plan reads back with its results" || bad "the plan reads back with its results" "$(head -c 500 "$T/j")"
+[ "$(qb plan '{"feature":"Demo","op":"remove","id":"A1.1"}')" = 400 ] && has "an item with results is kept" "$T/qa" "has results" || bad "an item with results is kept" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"edit","id":"A1.2","expect":"It retries and shows a spinner."}')" = 200 ] && ok "an item is edited" || bad "an item is edited" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"status","status":"Ready"}')" = 200 ] && [ "$(pick "$T/qa" "d['meta']['status']")" = Ready ] && ok "the plan is marked ready" || bad "the plan is marked ready" "$(cat "$T/qa")"
+get /api/qa >"$T/j"
+[ "$(pick "$T/j" "[(p['feature'], p['status'], p['counts']['items'], p['counts']['fail']) for p in d['plans']]")" = "[('Demo', 'Ready', 2, 1)]" ] && ok "the home lists it with its counts" || bad "the home lists it with its counts" "$(head -c 400 "$T/j")"
+[ "$(qb plan/draft '{"runId":"plandraft1","feature":"Demo"}')" = 409 ] && ok "a plan with areas isn't drafted over" || bad "a plan with areas isn't drafted over" "$(cat "$T/qa")"
+
+# areas drafted from the feature's own documents
+[ "$(qb plan '{"feature":"Lite","op":"start"}')" = 200 ] && ok "a second feature's plan" || bad "a second feature's plan"
+[ "$(qb plan/draft '{"runId":"plandraft2","feature":"Lite","client":"t"}')" = 202 ] && ok "its areas are drafted" || bad "its areas are drafted" "$(cat "$T/qa")"
+qaev '"kind": "plandraft"' && ok "the draft answers" || bad "the draft answers"
+$PY -c "
+import json, sys
+e = [x for x in json.load(open(sys.argv[1], encoding='utf-8')) if x.get('kind') == 'plandraft'][0]
+r = e['result']
+sys.exit(0 if e['ok'] and r['areas'] == 2 and r['items'] == 3 and r['notSpecified'] == ['the lockout limit'] else 1)" "$T/ev" && ok "two areas and three items, and what the documents don't say" || bad "two areas and three items, and what the documents don't say" "$(grep -o '"kind": "plandraft".*' "$T/ev" | head -c 300)"
+get "/api/qa/plan?feature=Lite" >"$T/j"
+[ "$(pick "$T/j" "(d['meta']['status'], [(a['id'], a['title'], len(a['items'])) for a in d['areas']])")" = "('Draft', [('A1', 'Login', 2), ('A2', 'Profile', 1)])" ] && ok "written through the script, as a draft" || bad "written through the script, as a draft" "$(head -c 500 "$T/j")"
+has "the model was told to read, not write" "$T/claude-qa.log" "--tools Read,Glob,Grep"
+
+# the same work in a Claude session (a dry run: nothing is opened)
+[ "$(qb session '{"kind":"bug","description":"it crashed"}')" = 200 ] && ok "a bug session" || bad "a bug session" "$(cat "$T/qa")"
+has "runs tt-qa-bug on the bugs folder" "$T/qa" '/tt-qa-bug'
+[ "$(qb session '{"kind":"run","feature":"Demo"}')" = 200 ] && has "a testing session runs tt-qa-test-run on the plan" "$T/qa" '/tt-qa-test-run' || bad "a testing session" "$(cat "$T/qa")"
+[ "$(qb session '{"kind":"plan"}')" = 400 ] && ok "a plan session needs a feature" || bad "a plan session needs a feature"
+[ "$(qb session '{"kind":"run","feature":"Empty"}')" = 404 ] && ok "and a plan to test" || bad "and a plan to test" "$(cat "$T/qa")"
+[ "$(qb session '{"kind":"jump"}')" = 400 ] && ok "of a kind it knows" || bad "of a kind it knows"
+fi
 fi
 if section stories; then
 echo "# user stories"

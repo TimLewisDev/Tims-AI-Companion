@@ -10,9 +10,10 @@
 const MODE_INFO = {
   engineering: { label: "Engineering", blurb: "Plan, build, debug and review code." },
   design: { label: "Design", blurb: "Turn design documents into user stories, and work them on a board." },
+  qa: { label: "QA", blurb: "Write up bugs, and test a feature area by area." },
   production: { label: "Production", blurb: "Track the work: your Jira sprint, or task boards of Tatty's own." },
 };
-const MODE_ORDER = ["engineering", "design", "production"];
+const MODE_ORDER = ["engineering", "design", "qa", "production"];
 
 let installedModes = []; // the plugins the server found, in MODE_ORDER
 let currentMode = "";    // the one on screen; "" until one is picked
@@ -135,6 +136,10 @@ const MODE_PAGES = {
   design: [
     { href: "#designs", label: "User Stories", icon: "stories", blurb: "Your user story boards of sticky notes." },
   ],
+  qa: [
+    { href: "#qa", label: "QA", icon: "qa", blurb: "Features under test, and the bugs." },
+    { href: "#qa/bug/new", label: "New bug", icon: "bug", blurb: "Describe a bug in plain words; Claude formats it." },
+  ],
   production: [
     { href: "#jira", label: "Jira", icon: "jira", blurb: "Your open-sprint tickets on a board." },
     { href: "#tasks", label: "Tasks", icon: "tasks", blurb: "Task boards of Tatty's own." },
@@ -151,6 +156,8 @@ const ICONS = {
   stories: ["M5 4h14v10l-6 6H5Z", "M13 20v-6h6", "M8 9h8", "M8 13h4"],
   jira: ["M4 4h4.5v16H4Z", "M9.75 4h4.5v10h-4.5Z", "M15.5 4H20v13h-4.5Z"],
   tasks: ["M4 4h16v16H4Z", "M8 12.5l2.5 2.5L16 9"],
+  qa: ["M9 3h6v4l4 11a2 2 0 0 1-1.9 2.7H6.9A2 2 0 0 1 5 18L9 7Z", "M8 14h8"],
+  bug: ["M9 8h6v8a3 3 0 0 1-6 0Z", "M12 8V5", "M9 11H5", "M15 11h4", "M9 15H5", "M15 15h4"],
   modes: ["M4 4h6.5v6.5H4Z", "M13.5 4H20v6.5h-6.5Z", "M4 13.5h6.5V20H4Z", "M13.5 13.5H20V20h-6.5Z"],
 };
 
