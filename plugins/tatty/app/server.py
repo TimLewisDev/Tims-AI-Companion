@@ -46,6 +46,7 @@ import re
 import secrets
 import subprocess
 import sys
+import traceback
 import tempfile
 import threading
 import time
@@ -10297,6 +10298,21 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST
 
     def do_POST(self):
+        # An error nobody expected must still answer: left to escape, the thread dies, the connection drops
+        # and the page can only say "Failed to fetch".
+        try:
+            self.do_POST_inner()
+        except (BrokenPipeError, ConnectionError):
+            raise
+        except Exception as e:
+            sys.stderr.write("POST %s failed: %r\n" % (self.path, e))
+            traceback.print_exc()
+            try:
+                self.send(500, {"error": "Tatty hit an error: %s" % (str(e) or type(e).__name__)})
+            except Exception:
+                pass
+
+    def do_POST_inner(self):
         g = self.gate()
         if not g:
             return

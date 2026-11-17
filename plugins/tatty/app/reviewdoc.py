@@ -248,9 +248,18 @@ def parse(text, name=""):
     return doc
 
 
+def lp(p):
+    """p as a path Windows will open past the 260-character limit (LongPathsEnabled is off on many
+    machines): the `\\\\?\\` form. For opening and writing only. Short paths and other systems come back as given."""
+    if os.name != "nt":
+        return Path(p)
+    s = os.path.abspath(str(p))
+    return Path("\\\\?\\" + s) if len(s) >= 240 and not s.startswith("\\\\?\\") else Path(p)
+
+
 def load(path):
     """The document at path, or None when there is none. DocError when it is not in the layout."""
-    p = Path(path)
+    p = lp(path)
     if not p.is_file():
         return None
     try:
@@ -265,7 +274,7 @@ class Lock:
     """One writer at a time, across processes: a directory beside the document."""
 
     def __init__(self, path):
-        self.dir = Path(path).parent / ("." + Path(path).name + ".lock")
+        self.dir = lp(Path(path).parent / ("." + Path(path).name + ".lock"))
 
     def __enter__(self):
         for _ in range(200):
@@ -294,8 +303,8 @@ def save(path, doc):
     if doc.crlf:
         text = text.replace("\n", "\r\n")
     data = ("\ufeff" if doc.bom else "") + text
-    p = Path(path)
-    tmp = p.with_name("." + p.name + ".tmp")
+    p = lp(path)
+    tmp = lp(p.with_name("." + p.name + ".tmp"))
     tmp.write_bytes(data.encode("utf-8"))
     os.replace(tmp, p)
 
@@ -313,14 +322,14 @@ def change(path, how):
 
 def create(path, name, head, replace=False):
     """A new, empty document. An existing one is refused, or with replace moved to <folder>/.tt/Review Suggestions history/."""
-    p = Path(path)
+    p = lp(path)
     with Lock(path):
         if p.exists():
             if not replace:
                 raise DocError(f"{p.name} exists: --replace keeps the old one in .tt/ and starts again")
-            hist = p.parent / ".tt" / "Review Suggestions history"
+            hist = lp(p.parent / ".tt" / "Review Suggestions history")
             hist.mkdir(parents=True, exist_ok=True)
-            os.replace(p, hist / (time.strftime("%Y%m%d-%H%M%S") + " " + p.name))
+            os.replace(p, lp(hist / (time.strftime("%Y%m%d-%H%M%S") + " " + p.name)))
         save(p, Doc(name, head))
 
 
