@@ -54,6 +54,140 @@
 :root[data-look="drive"][data-shade="dark"] { --bg: #07090f; --panel: #10131d; --ink: #e9e6df; --dim: #9a97a6; --line: #22263a; --look-sig: #f2b14c;
   --look-bg: radial-gradient(ellipse 80% 30% at 50% 100%, rgba(242,177,76,.12), transparent 75%), linear-gradient(180deg, #03050b, #0a1022 45%, #151629); }
 
+/* ---------------------------------------------------------------- 1b. the skins: every page in the theme
+   The palette above is the room; this is the furniture. Each theme sets tokens, and one set of rules
+   below lays them on the parts every page is made of (cards of every kind, headings and card labels,
+   buttons, chips, code and commands, the bars), so a page needs nothing of its own to be themed.
+   The accent is the theme's, mixed a fifth of the way to the mode's (so Engineering, Design and
+   Production still read apart); the mode switch keeps the modes' own colours. The stage (2b) and the
+   scenes (3) draw themselves, so the card rules leave everything inside a journey card alone. */
+:root[data-look] body { --mode-acc: var(--accent-engineering);
+  --accent: color-mix(in srgb, var(--look-acc) 80%, var(--mode-acc)); --accent-soft: color-mix(in srgb, var(--accent) 14%, var(--panel)); --on-accent: var(--look-on); }
+:root[data-look] body { accent-color: var(--accent); } /* (ticks, radios, ranges) */
+/* Tatty himself stays in the mode's colour, as the tray app's Tatty is (avatar.css; the bake reads it) */
+:root[data-look] :is(.tatty, .tatty-defs) { --accent: var(--mode-acc); }
+:root[data-look] body[data-mode="design"] { --mode-acc: var(--accent-design); }
+:root[data-look] body[data-mode="production"] { --mode-acc: var(--accent-production); }
+:root[data-look] body[data-mode="qa"] { --mode-acc: var(--accent-qa); }
+
+/* the tokens, light then dark, theme by theme */
+:root[data-look="kin"] { --look-acc: #94681a; --look-on: #fffaf0; --sk-radius: 6px; --sk-edge: color-mix(in srgb, #b07f26 32%, var(--line)); --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #fdfcf9, #f5f2ea);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 140 60'%3E%3Cpath d='M140 55 L118 48 L109 52 L92 41 L83 44 L70 31 L61 33 L52 22' fill='none' stroke='%23c3913a' stroke-width='1.3' stroke-linejoin='round' stroke-linecap='round' opacity='.75'/%3E%3Cpath d='M92 41 L96 30 L90 23' fill='none' stroke='%23c3913a' stroke-width='1' stroke-linecap='round' opacity='.6'/%3E%3C/svg%3E");
+  --sk-orn-pos: right bottom; --sk-orn-size: 140px 60px;
+  --sk-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 1px 3px rgba(80,60,20,.08); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .01em;
+  --sk-label: #94681a; --sk-label-track: .16em; --sk-btn-r: 6px; --sk-chip-r: 4px;
+  --sk-primary: linear-gradient(180deg, #f3d98b, #c3913a); --sk-primary-ink: #2a1d05; --sk-primary-edge: #b07f26; --sk-primary-glow: 0 1px 6px rgba(168,122,36,.28);
+  --sk-code: #f3efe6; --sk-code-ink: #4a3b22; --sk-code-edge: rgba(176,127,38,.25); --sk-bar: linear-gradient(180deg, #fbfaf6, #f3f0e8); }
+:root[data-look="kin"][data-shade="dark"] { --look-acc: #e0b75a; --look-on: #1b1508; --sk-edge: rgba(224,183,90,.22); --sk-card: linear-gradient(180deg, #211f24, #18171b);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 140 60'%3E%3Cpath d='M140 55 L118 48 L109 52 L92 41 L83 44 L70 31 L61 33 L52 22' fill='none' stroke='%23e0b75a' stroke-width='1.3' stroke-linejoin='round' stroke-linecap='round' opacity='.7'/%3E%3Cpath d='M92 41 L96 30 L90 23' fill='none' stroke='%23e0b75a' stroke-width='1' stroke-linecap='round' opacity='.55'/%3E%3C/svg%3E");
+  --sk-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 2px 10px rgba(0,0,0,.3); --sk-label: #e0b75a;
+  --sk-code: #111013; --sk-code-ink: #ead9b0; --sk-code-edge: rgba(224,183,90,.18); --sk-bar: linear-gradient(180deg, #1c1b1f, #141316); }
+
+:root[data-look="chart"] { --look-acc: #6b4fd8; --look-on: #fff; --sk-radius: 14px; --sk-edge: rgba(107,79,216,.2); --sk-edge-style: solid;
+  --sk-card: linear-gradient(160deg, rgba(255,255,255,.92), rgba(240,238,252,.92));
+  --sk-orn: radial-gradient(1px 1px at 18% 22%, rgba(107,79,216,.45) 60%, transparent), radial-gradient(1px 1px at 72% 14%, rgba(107,79,216,.35) 60%, transparent), radial-gradient(1.4px 1.4px at 88% 62%, rgba(255,95,180,.4) 60%, transparent), radial-gradient(1px 1px at 46% 80%, rgba(107,79,216,.3) 60%, transparent);
+  --sk-orn-pos: 0 0; --sk-orn-size: 220px 140px; --sk-orn-rep: repeat;
+  --sk-shadow: 0 4px 16px rgba(60,50,140,.08); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .02em;
+  --sk-label: #6b4fd8; --sk-label-track: .3em; --sk-btn-r: 999px; --sk-chip-r: 999px;
+  /* (the big button: the accent, resolved where it is used) */
+  --sk-code: #eef0fa; --sk-code-ink: #2a3366; --sk-code-edge: rgba(107,79,216,.18); --sk-bar: linear-gradient(180deg, #f8f6ff, #eef0fa); }
+:root[data-look="chart"][data-shade="dark"] { --look-acc: #a8b4ff; --look-on: #0a0f22; --sk-edge: rgba(168,180,255,.2);
+  --sk-card: linear-gradient(160deg, rgba(32,42,88,.7), rgba(12,18,40,.92));
+  --sk-orn: radial-gradient(1px 1px at 18% 22%, #fff 60%, transparent), radial-gradient(1px 1px at 72% 14%, rgba(255,255,255,.7) 60%, transparent), radial-gradient(1.4px 1.4px at 88% 62%, rgba(255,210,122,.8) 60%, transparent), radial-gradient(1px 1px at 46% 80%, rgba(255,255,255,.55) 60%, transparent), radial-gradient(1px 1px at 8% 70%, rgba(255,255,255,.5) 60%, transparent);
+  --sk-shadow: 0 0 0 1px rgba(168,180,255,.04), 0 10px 28px rgba(0,0,12,.4); --sk-label: #a8b4ff;
+  --sk-code: rgba(4,6,13,.65); --sk-code-ink: #d6ddff; --sk-code-edge: rgba(168,180,255,.18); --sk-bar: linear-gradient(180deg, #0c1229, #090d1e); }
+
+:root[data-look="map"] { --look-acc: #8a3b12; --look-on: #fbf5e6; --sk-radius: 3px; --sk-edge: rgba(74,53,32,.42); --sk-edge-style: dashed;
+  --sk-card: radial-gradient(ellipse at 40% 30%, #fdf8eb, #f3e8cc);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 80'%3E%3Cg fill='none' stroke='%234a3520' stroke-width='.8' opacity='.16'%3E%3Cellipse cx='120' cy='80' rx='24' ry='14'/%3E%3Cellipse cx='120' cy='80' rx='44' ry='26'/%3E%3Cellipse cx='120' cy='80' rx='66' ry='40'/%3E%3Cellipse cx='120' cy='80' rx='90' ry='54'/%3E%3C/g%3E%3C/svg%3E");
+  --sk-orn-pos: right bottom; --sk-orn-size: 120px 80px;
+  --sk-shadow: 2px 3px 0 rgba(74,53,32,.08); --sk-head: Georgia, "Times New Roman", serif; --sk-head-w: 400; --sk-head-track: 0;
+  --sk-label: #8a3b12; --sk-label-track: .12em; --sk-btn-r: 3px; --sk-chip-r: 2px;
+  --sk-primary: #4a3520; --sk-primary-ink: #fbf5e6; --sk-primary-edge: #4a3520; --sk-primary-glow: 2px 2px 0 rgba(74,53,32,.25);
+  --sk-code: #f1e6c8; --sk-code-ink: #4a3520; --sk-code-edge: rgba(74,53,32,.3); --sk-bar: linear-gradient(180deg, #fbf5e6, #f1e5c6); }
+:root[data-look="map"][data-shade="dark"] { --look-acc: #ffcf8a; --look-on: #141b21; --sk-edge: rgba(236,220,185,.3);
+  --sk-card: radial-gradient(ellipse at 40% 30%, #222d36, #182027);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 80'%3E%3Cg fill='none' stroke='%23ecdcb9' stroke-width='.8' opacity='.12'%3E%3Cellipse cx='120' cy='80' rx='24' ry='14'/%3E%3Cellipse cx='120' cy='80' rx='44' ry='26'/%3E%3Cellipse cx='120' cy='80' rx='66' ry='40'/%3E%3Cellipse cx='120' cy='80' rx='90' ry='54'/%3E%3C/g%3E%3C/svg%3E");
+  --sk-shadow: 2px 3px 0 rgba(0,0,0,.25); --sk-label: #ffcf8a; --sk-primary: #ecdcb9; --sk-primary-ink: #141b21; --sk-primary-edge: #ecdcb9; --sk-primary-glow: 2px 2px 0 rgba(0,0,0,.35);
+  --sk-code: #121a20; --sk-code-ink: #ecdcb9; --sk-code-edge: rgba(236,220,185,.22); --sk-bar: linear-gradient(180deg, #1b242c, #141b21); }
+
+:root[data-look="chrono"] { --look-acc: #2d6f5e; --look-on: #fff; --sk-radius: 4px; --sk-edge: #c4c7cb; --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #fbfbfb, #ededeb);
+  --sk-orn: repeating-linear-gradient(90deg, rgba(0,0,0,.2) 0 1px, transparent 1px 9px);
+  --sk-orn-pos: left top; --sk-orn-size: 100% 4px;
+  --sk-shadow: inset 0 0 0 1px rgba(255,255,255,.7), 0 1px 2px rgba(0,0,0,.08); --sk-head: Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif; --sk-head-w: 400; --sk-head-track: .04em;
+  --sk-label: #5d636c; --sk-label-track: .22em; --sk-btn-r: 4px; --sk-chip-r: 3px;
+  --sk-primary: #1d1f22; --sk-primary-ink: #fff; --sk-primary-edge: #1d1f22; --sk-primary-glow: none;
+  --sk-code: #e2e3e1; --sk-code-ink: #1d1f22; --sk-code-edge: #c4c7cb; --sk-bar: linear-gradient(180deg, #f6f6f5, #e8e9e7); }
+:root[data-look="chrono"][data-shade="dark"] { --look-acc: #8ff0c6; --look-on: #04140e; --sk-edge: #2f333a;
+  --sk-card: linear-gradient(180deg, #1d2025, #141619);
+  --sk-orn: repeating-linear-gradient(90deg, rgba(255,255,255,.14) 0 1px, transparent 1px 9px);
+  --sk-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 2px 8px rgba(0,0,0,.35); --sk-label: #8b9097;
+  --sk-primary: initial; --sk-primary-ink: initial; --sk-primary-edge: initial;
+  --sk-code: #0a0b0d; --sk-code-ink: #9ff3cf; --sk-code-edge: #2a2d33; --sk-bar: linear-gradient(180deg, #17191d, #101215); }
+
+:root[data-look="aur"] { --look-acc: #1f8f72; --look-on: #fff; --sk-radius: 12px; --sk-edge: rgba(31,143,114,.2); --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #ffffff, #f4f8fb);
+  --sk-orn: linear-gradient(90deg, rgba(84,240,189,.7), rgba(143,108,255,.55) 55%, transparent);
+  --sk-orn-pos: left top; --sk-orn-size: 100% 2px;
+  --sk-shadow: 0 6px 20px rgba(30,60,90,.07); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .01em;
+  --sk-label: #1f8f72; --sk-label-track: .14em; --sk-btn-r: 10px; --sk-chip-r: 999px;
+  /* (the big button: the accent, resolved where it is used) */
+  --sk-code: #eaf2f6; --sk-code-ink: #1b2638; --sk-code-edge: rgba(31,143,114,.18); --sk-bar: linear-gradient(180deg, #f6f9fc, #e9f0f6); }
+:root[data-look="aur"][data-shade="dark"] { --look-acc: #54f0bd; --look-on: #032419; --sk-edge: rgba(190,230,255,.13);
+  --sk-card: linear-gradient(180deg, rgba(14,28,48,.94), rgba(8,16,30,.96));
+  --sk-shadow: 0 10px 30px rgba(0,0,0,.35); --sk-label: #54f0bd;
+  --sk-code: #040a14; --sk-code-ink: #c8f5e6; --sk-code-edge: rgba(84,240,189,.16); --sk-bar: linear-gradient(180deg, #071224, #050b16); }
+
+:root[data-look="drive"] { --look-acc: #c77a12; --look-on: #fff; --sk-radius: 8px; --sk-edge: rgba(35,36,58,.14); --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #ffffff, #f6f5fb);
+  --sk-orn: linear-gradient(90deg, transparent, rgba(227,154,46,.7), transparent);
+  --sk-orn-pos: left bottom; --sk-orn-size: 100% 2px;
+  --sk-shadow: 0 4px 14px rgba(35,36,58,.07); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .02em;
+  --sk-label: #b06a0c; --sk-label-track: .16em; --sk-btn-r: 8px; --sk-chip-r: 4px;
+  /* (the big button: the accent, resolved where it is used) */
+  --sk-code: #efedf5; --sk-code-ink: #23243a; --sk-code-edge: rgba(35,36,58,.12); --sk-bar: linear-gradient(180deg, #f6f5fb, #ebeaf3); }
+:root[data-look="drive"][data-shade="dark"] { --look-acc: #f2b14c; --look-on: #231703; --sk-edge: rgba(255,255,255,.07);
+  --sk-card: linear-gradient(180deg, #131624, #0d0f18);
+  --sk-shadow: 0 6px 18px rgba(0,0,0,.45); --sk-label: #f2b14c;
+  --sk-code: #07080c; --sk-code-ink: #ffd9a0; --sk-code-edge: rgba(242,177,76,.18); --sk-bar: linear-gradient(180deg, #0c0f1a, #080a12); }
+
+/* the rules: cards of every kind (outside a journey card) */
+:root[data-look] :is(.card, .hcard, .tcard, .tcol:not(.tnewcol), .settings-page section, .shop-wearing, .shop-earn, .qa-step, .qa-area, .qa-item, .chat-msg.claude, .chat-context, .cq-row, .start-panel, .linkmenu, .m-menu, .toast, .wbdoc, .wbbubble, .zoomctl, .wbtools, .wbpop, .gpanel, .dggroup):not(.jy, .jy *) {
+  --line: var(--sk-edge); /* (the border reads --line, so a state's own border colour still wins) */
+  border-radius: var(--sk-radius); border-style: var(--sk-edge-style); box-shadow: var(--sk-shadow); }
+:root[data-look] :is(.card, .hcard, .tcard, .tcol:not(.tnewcol), .settings-page section, .shop-wearing, .shop-earn, .qa-step, .qa-area, .qa-item, .chat-msg.claude, .chat-context, .start-panel):not(.jy, .jy *, .you) {
+  background-color: var(--panel); background-image: var(--sk-orn), var(--sk-card);
+  background-repeat: var(--sk-orn-rep, no-repeat), no-repeat; background-position: var(--sk-orn-pos), 0 0; background-size: var(--sk-orn-size), 100% 100%; }
+/* (the whiteboard's cards take the shape and the edge only: no images to raster as it pans and zooms) */
+/* (the states that had a shadow of their own) */
+:root[data-look] .hcard:hover { border-style: solid; box-shadow: 0 3px 12px rgba(0,0,0,.14); }
+:root[data-look] .hcard-live { box-shadow: 0 0 0 1px var(--ok); }
+:root[data-look] :is(.tcard:hover, .tcard:focus-visible) { box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+/* headings and the small labels on cards */
+:root[data-look] :is(h1, h2, h3, .home-head h2, .fsec-head h3, .settings-page h2, .settings-page h3) { font-family: var(--sk-head); font-weight: var(--sk-head-w); letter-spacing: var(--sk-head-track); }
+:root[data-look] :is(.hcard-name, .tcard-title) { font-family: var(--sk-head); }
+:root[data-look] :is(.card h4, .tcol-head h3, .fnav-head, .settings-page section > h3):not(.jy *) { font-family: var(--sk-head); color: var(--sk-label); text-transform: uppercase; letter-spacing: var(--sk-label-track); font-size: 11px; font-weight: 600; }
+/* buttons and chips */
+:root[data-look] :is(button, .go-btn, input, select, textarea):not(.tabs button, .shop-tab, .mode-seg button, .seg button, .jy *) { border-radius: var(--sk-btn-r); }
+:root[data-look] :is(button.primary, .go-btn, button.action-main.primary):not(.jy *) { background: var(--sk-primary, var(--accent)); color: var(--sk-primary-ink, var(--on-accent)); border-color: var(--sk-primary-edge, var(--accent));
+  box-shadow: var(--sk-primary-glow, 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent)); }
+:root[data-look="chrono"] :is(button.primary, .go-btn, button.action-main.primary):not(.jy *) { text-transform: uppercase; letter-spacing: .08em; font-family: var(--sk-head); }
+:root[data-look="map"] :is(button.primary, .go-btn, button.action-main.primary):not(.jy *) { font-family: var(--sk-head); }
+:root[data-look] .chip { border-radius: var(--sk-chip-r); }
+:root[data-look="map"] .chip { border-style: dashed; }
+:root[data-look="chrono"] :is(.chip, .fsec-count) { font-family: var(--sk-head); font-variant-numeric: tabular-nums; }
+/* code, commands and pre blocks */
+:root[data-look] :is(.cmd code, .copyable code, .md code, .md pre, .start-result pre):not(.jy *) { background: var(--sk-code); color: var(--sk-code-ink); border: 1px solid var(--sk-code-edge); }
+:root[data-look] .md pre code { border: 0; background: none; }
+/* the bars at the top, and the live section */
+:root[data-look] :is(header, #companion-bar) { background: var(--sk-bar); }
+/* the mode switch keeps the mode's own colour (the one lit is the mode on) */
+:root[data-look] .mode-seg.on { color: var(--mode-acc); background: color-mix(in srgb, var(--mode-acc) 16%, var(--panel)); }
+:root[data-look] .fsec-live { border-radius: var(--sk-radius); background-image: var(--sk-orn); background-repeat: no-repeat; background-position: var(--sk-orn-pos); background-size: var(--sk-orn-size); }
+:root[data-look] :is(.fnav, .frail) { background: var(--sk-bar); }
+
 /* ---------------------------------------------------------------- 2. the journey card */
 .jy { position: relative; overflow: hidden; isolation: isolate; padding: 14px 18px 6px; border-radius: 12px; margin: 8px 0 10px; }
 .jy.card { border: 1px solid var(--line); }

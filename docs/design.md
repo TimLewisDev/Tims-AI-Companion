@@ -383,9 +383,22 @@ through a feature, so most of it is in how it looks and sounds.
     `--panel`, `--ink`, `--dim`, `--line`), for light and for dark, and a backdrop behind
     the page, keyed on `data-look` on `<html>`. `data-shade` says which of light and dark
     shows (theme-init.js before the first paint, theme.js as the choice or Windows
-    changes). The modes' accents are untouched: a theme is the room, the mode is still
-    the colour of the work. theme-init.js puts the worn theme on before the first paint
-    from a copy in localStorage (`tattyLook`).
+    changes). theme-init.js puts the worn theme on before the first paint from a copy in
+    localStorage (`tattyLook`). On top of the palette, every theme has a **skin**
+    (looks.css 1b): tokens (card shape, edge and its style, shadow, an ornament such as
+    Kintsugi's gold seam, Star Chart's stars, the Map's contour rings, Chronograph's minute
+    track, Aurora's lit top edge, Night Drive's street glow; heading and label type; button
+    and chip shapes; the big button; code and command blocks; the bars) laid by one set of
+    rules on the parts every page is made of (`.card`, `.hcard`, `.tcard`, task columns,
+    settings sections, the shop's side panels, chat and QA items, menus and toasts, the
+    whiteboard's cards and toolbars: shape and edge only there, so panning rasters
+    nothing new), so a page needs nothing of its own to be themed. A card's edge is set
+    through `--line`, so a state's own border (live, ask, hover) still wins. The **accent**
+    is the theme's (`--look-acc`, `--look-on`), mixed a fifth of the way to the mode's, so
+    Engineering, Design and Production still read apart; the mode switch and Tatty himself
+    (`.tatty`, as the tray app draws him) keep the mode's own colour. Tokens that name the
+    accent are resolved where they are used, never in the token blocks (a custom property
+    resolves where it is declared, and the mixed accent lives on `body`).
   - **The Overview is a stage** (`overview`, features.js; proposed on
     `docs/overview/stage-view.html`): one scene in the theme worn, filling the page's main
     area, so the workflow is the only thing on it. From the top: the feature's line (id,
