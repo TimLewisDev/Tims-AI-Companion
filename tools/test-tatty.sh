@@ -56,6 +56,8 @@ cat >"$T/claude.sh" <<'EOS'
 #!/usr/bin/env bash
 # a User Stories headless run (it may run stories.sh): the stand-in is claude-p.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
+# a generated diagram's summaries and plan (they name their job in the system prompt): the stand-in is claude-dg.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"reading a class diagram"*|*"You draw the class diagram"*) exec bash "$(dirname "$0")/claude-dg.sh" "$@" ;; esac
 # the task panel's "Write it for me" (it names its job in the system prompt): the stand-in is claude-tw.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"You write up a task"*) exec bash "$(dirname "$0")/claude-tw.sh" "$@" ;; esac
 # the QA mode's drafts (they name their job in the system prompt) and Jira's answer to a create: the stand-in is claude-qa.sh, made with its tests
@@ -4080,6 +4082,150 @@ for cache_args in "" "--changes"; do
 	[ "$cache_rc" = 0 ] && ok "the cache checks ran to the end${cache_args:+ ($cache_args)}" ||
 		bad "the cache checks ran to the end${cache_args:+ ($cache_args)}" "exit $cache_rc: $(tail -n 3 "$T/cache.out")"
 done
+fi
+if section diagrams; then
+echo "# generated diagrams"
+# diagram.py's own checks (C# files read, linked, cached by blob; a review and a plan graph), a line a check
+$PY -I "$root/tools/test-tatty-diagram.py" >"$T/dg.out" 2>&1; dg_rc=$?
+while IFS= read -r line; do
+	case "$line" in
+	"ok "*) pass=$((pass + 1)) ;;
+	FAIL*) fail=$((fail + 1)) ;;
+	esac
+	case "$line" in "ok "* | *" passed, "*) ;; *) printf '%s\n' "$line" ;; esac
+done <"$T/dg.out"
+[ "$dg_rc" = 0 ] && ok "the diagram checks ran to the end" || bad "the diagram checks ran to the end" "exit $dg_rc: $(tail -n 3 "$T/dg.out")"
+# The model's runs: a stand-in that answers a summary run with a summary for every id it is given, and a plan
+# run with a small diagram (dg-slow: it takes a while, so it can be stopped).
+cat >"$T/claude-dg.py" <<'EOS'
+import json, re, sys, time, os
+d = os.path.dirname(os.path.abspath(__file__))
+args = " ".join(sys.argv[1:])
+text = sys.stdin.read()
+open(os.path.join(d, "dg.args"), "w", encoding="utf-8").write("\n".join(sys.argv[1:]) + "\n---\n" + text)
+if os.path.exists(os.path.join(d, "dg-slow")):
+    time.sleep(20)
+if "You draw the class diagram" in args:
+    out = {"nodes": [{"name": "Planner", "namespace": "G.Plan", "assembly": "Game", "kind": "class", "change": "new",
+                      "steps": ["§2"], "members": ["public void Plan()"], "summary": "Plans the work."},
+                     {"name": "Core", "namespace": "G", "change": "changed", "steps": ["§1"]}],
+           "edges": [{"from": "Planner", "to": "Core", "kind": "dataflow", "label": "the plan", "steps": ["§2"]}]}
+else:
+    out = {i: f"What {i} is for." for i in re.findall(r"^id: (.+)$", text, re.M)}
+print(json.dumps({"type": "result", "is_error": False, "result": json.dumps(out), "total_cost_usd": 0.002}))
+EOS
+printf '#!/usr/bin/env bash\nexec %s "%s" "$@"\n' "$PY" "$T/claude-dg.py" >"$T/claude-dg.sh"
+DGR="$T/dgrepo"
+mkdir -p "$DGR/Assets/Game" && git -C "$DGR" init -q -b main && git -C "$DGR" config core.autocrlf false
+printf 'namespace G { public class Core { public int A; } public class Old { } }\n' >"$DGR/Assets/Game/Core.cs"
+printf 'namespace G { public class Lib { } }\n' >"$DGR/Assets/Game/Lib.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m base
+DGRW=$(cd "$DGR" && { pwd -W 2>/dev/null || pwd; })
+# wait for a diagram run to end: its last "diagram" event, in $T/j
+dg_wait() {
+	local n=0
+	while [ $n -lt 60 ]; do
+		get /api/events >"$T/dgev"
+		$PY -c "import json,sys
+d=json.load(open(sys.argv[1])); ev=d if isinstance(d,list) else d.get('events',[])
+e=[x for x in ev if x.get('type')=='diagram' and x.get('runId')==sys.argv[2] and x.get('done')]
+e and open(sys.argv[3],'w').write(json.dumps(e[-1]))
+sys.exit(0 if e else 1)" "$T/dgev" "$1" "$T/j" && return 0
+		sleep 0.5; n=$((n + 1))
+	done
+	return 1
+}
+get "/api/diagram?scope=project" >"$T/j"
+has "no Project diagram yet" "$T/j" '"exists": false'
+post /api/diagram/settings '{"repo":"'"$T"'/none-such"}' >"$T/j"
+has "a folder outside git is refused" "$T/j" "isn't in a git repository"
+post /api/diagram/settings "{\"repo\":\"$DGRW\",\"exclude\":[\"Library/\"]}" >"$T/j"
+has "the repository is kept" "$T/j" "dgrepo"
+post /api/diagram/generate '{"scope":"project","runId":"bad id!"}' >"$T/j"
+has "a run id is checked" "$T/j" "runId"
+post /api/diagram/generate '{"scope":"project","runId":"dgproj1"}' >"$T/j"
+has "a Project diagram starts" "$T/j" '"runId": "dgproj1"'
+dg_wait dgproj1 && has "and is made" "$T/j" '"ok": true' || bad "and is made" "no end event"
+get "/api/diagram?scope=project" >"$T/j"
+[ "$(pick "$T/j" "d['nodeCount']")" = 3 ] && ok "every type is in it" || bad "every type is in it" "$(pick "$T/j" "d.get('nodeCount')")"
+has "with its groups" "$T/j" '"n:Assembly-CSharp/G"'
+hasnt "and not yet stale" "$T/j" '"stale": "There are'
+get "/api/diagram?scope=project&group=a:Assembly-CSharp" >"$T/j"
+[ "$(pick "$T/j" "len(d['nodes'])")" = 3 ] && ok "an opened group sends its classes" || bad "an opened group sends its classes" "$(head -c 300 "$T/j")"
+[ -n "$(find "$TATTY_HOME" -name 'index-*.json' -path '*diagrams*' 2>/dev/null)" ] && ok "the parsed files are cached" || bad "the parsed files are cached"
+printf 'namespace G { public class Extra { } }\n' >"$DGR/Assets/Game/Extra.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m extra
+get "/api/diagram?scope=project" >"$T/j"
+has "a new commit makes it stale" "$T/j" '"stale": "There are new commits'
+git -C "$DGR" reset -q --hard HEAD~1
+# a feature's branch, two work units (named in the commits), against main
+post /api/new-feature '{"name":"Diagrammed"}' >/dev/null
+post /api/start "{\"name\":\"Diagrammed\",\"row\":0,\"project\":\"$DGRW\",\"isolate\":false,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "the feature has its branch" "$T/j" '"branch": "feature/Diagrammed"'
+printf 'namespace G { public class Core { public int A; public Lib L; } }\n' >"$DGR/Assets/Game/Core.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "core uses lib (WU1)"
+printf 'namespace G { public class Added : Core { } }\n' >"$DGR/Assets/Game/New.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "a new type (WU2)"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
+has "a review knows the branch" "$T/j" '"branch": "feature/Diagrammed"'
+has "and its base" "$T/j" '"base": "main"'
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"review","runId":"dgrev01"}' >/dev/null
+dg_wait dgrev01 && has "the Review diagram is made" "$T/j" '"ok": true' || bad "the Review diagram is made" "no end event"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
+[ "$(pick "$T/j" "sorted((n['label'], n['state']) for n in d['nodes'])")" = "[('Added', 'added'), ('Core', 'changed'), ('Lib', 'unchanged'), ('Old', 'removed')]" ] &&
+	ok "added, changed, removed, and the unchanged type it links to" || bad "added, changed, removed, and the unchanged type it links to" "$(pick "$T/j" "[(n['label'], n['state']) for n in d['nodes']]")"
+[ "$(pick "$T/j" "{n['label']: n['units'] for n in d['nodes']}['Added']")" = "['WU2']" ] && ok "each change knows its work unit" || bad "each change knows its work unit" "$(pick "$T/j" "{n['label']: n['units'] for n in d['nodes']}")"
+[ "$(pick "$T/j" "[u['id'] for u in d['units']]")" = "['WU1', 'WU2']" ] && ok "the units to turn on and off" || bad "the units to turn on and off"
+# hover summaries: written once, kept by each type's signature
+post /api/diagram/summarise '{"scope":"feature","feature":"Diagrammed","kind":"review","runId":"dgsum01"}' >"$T/j"
+has "summaries start" "$T/j" '"types": 3'
+dg_wait dgsum01 && has "and are written" "$T/j" '"wrote": ' || bad "and are written" "no end event"
+grep -q 'haiku' "$T/dg.args" && ok "by a small model" || bad "by a small model" "$(head -c 300 "$T/dg.args")"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
+has "the hover card has them" "$T/j" 'What G.Added is for.'
+post /api/diagram/summarise '{"scope":"feature","feature":"Diagrammed","kind":"review","runId":"dgsum02"}' >"$T/j"
+has "a type with a summary isn't asked about again" "$T/j" "has a summary already"
+# the Plan diagram: a model's drawing, joined to the code
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=plan" >"$T/j"
+has "no plan, no Plan diagram" "$T/j" '"plan": false'
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan1"}' >"$T/j"
+has "and none is started" "$T/j" "no plan to draw"
+DGF=$(get "/api/feature?name=Diagrammed" | $PY -c "import json,sys; print(json.load(sys.stdin)['folder'])")
+printf '# Plan\n\n## Implementation Plan\n\n### \302\2471. Change the core\n\nIt changes Core.\n\n**Files:**\n- change `Assets/Game/Core.cs`\n\n### \302\2472. Add the planner\n\nA planner.\n\n**Files:**\n- new `Assets/Game/Planner.cs`\n\n```csharp\npublic sealed class Planner : IPlanner\n{\n}\n```\n\n## Affected Files\n| File | Status |\n|---|---|\n| `Assets/Game/Core.cs` | changed |\n' >"$DGF/Diagrammed - Comprehensive Tech Plan.md"
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan2"}' >/dev/null
+dg_wait dgplan2 && has "the Plan diagram is made" "$T/j" '"ok": true' || bad "the Plan diagram is made" "$(cat "$T/j" 2>/dev/null)"
+grep -q 'Declarations shown' "$T/dg.args" && grep -q 'sealed class Planner' "$T/dg.args" && ok "the model is shown the plan's declarations" || bad "the model is shown the plan's declarations"
+grep -q -- '--add-dir' "$T/dg.args" && grep -q 'Read,Glob,Grep' "$T/dg.args" && ok "and may only read the repository" || bad "and may only read the repository"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=plan" >"$T/j"
+[ "$(pick "$T/j" "{n['label']: n['state'] for n in d['nodes']}.get('Planner')")" = planned ] && ok "a new type is planned" || bad "a new type is planned" "$(pick "$T/j" "[(n['label'], n['state']) for n in d['nodes']]")"
+has "an existing one takes the code's members" "$T/j" '"sig": "public Lib L"'
+has "the plan's steps are its units" "$T/j" '"label": "Add the planner"'
+has "data flow, with what flows" "$T/j" '"label": "the plan"'
+printf '\nmore\n' >>"$DGF/Diagrammed - Comprehensive Tech Plan.md"
+touch -d '+5 seconds' "$DGF/Diagrammed - Comprehensive Tech Plan.md" 2>/dev/null
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=plan" >"$T/j"
+has "a changed plan makes it stale" "$T/j" '"stale": "The plan has changed'
+# a run can be stopped
+: >"$T/dg-slow"
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan3"}' >/dev/null
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan4"}' >"$T/j"
+has "one run a diagram" "$T/j" "being made already"
+sleep 1
+post /api/diagram/cancel '{"runId":"dgplan3"}' >"$T/j"
+has "Stop" "$T/j" '"ok": true'
+dg_wait dgplan3 && has "and it stops" "$T/j" '"error": "Stopped."' || bad "and it stops" "no end event"
+rm -f "$T/dg-slow"
+# where a box was dragged: a whiteboard of kind diagram
+post /api/whiteboard '{"kind":"diagram","ref":"review:Diagrammed","cards":{"c:G.Core":[10,20]}}' >"$T/j"
+has "a dragged box is kept" "$T/j" '"ok": true'
+get "/api/whiteboard?kind=diagram&ref=review:Diagrammed" >"$T/j"
+has "and read back" "$T/j" '"c:G.Core": ['
+post /api/whiteboard '{"kind":"diagram","ref":"review:No Such","cards":{}}' >"$T/j"
+has "not for a feature that isn't there" "$T/j" "no such whiteboard"
+for f in diagram.js diagram-layout.js diagram.css; do
+	[ "$(code -H "X-TT-Token: $K" "$U/static/$f")" = 200 ] && ok "serves $f" || bad "serves $f"
+done
+git -C "$DGR" switch -q main
 fi
 section end # (a mark for TATTY_TIMES)
 echo "# close"

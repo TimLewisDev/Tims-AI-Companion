@@ -62,6 +62,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import reviewdoc  # noqa: E402  the Review Suggestions document
 import compact_chat  # noqa: E402  the compact window's chat, one per project
+import diagram as dg  # noqa: E402  reading C# into generated diagrams
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "models.js": "text/javascript", "hub.js": "text/javascript", "hub.css": "text/css",
@@ -72,6 +73,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "taskboard.js": "text/javascript", "taskboard.css": "text/css",
           "tasks.js": "text/javascript", "tasks.css": "text/css", "qa.js": "text/javascript", "qa.css": "text/css", "tasktype.js": "text/javascript",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
+          "diagram.js": "text/javascript", "diagram-layout.js": "text/javascript", "diagram.css": "text/css",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "intake.js": "text/javascript", "intake.css": "text/css",
@@ -275,6 +277,7 @@ class State:
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.qa_runs = {}  # run id -> a QA draft the model is writing (see "QA")
+        self.diagram_runs = {}  # run id -> a diagram being made (see "diagrams")
         self.task_writes = {}  # run id -> the "Write it for me" run on a task's description (see "tasks: write it for me")
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
         self.chat_lock = threading.Lock()  # one change to a chat's file at a time
@@ -548,7 +551,7 @@ def restart_needs(state):
                 going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
                               "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
         asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
-        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes) + len(state.qa_runs)
+        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes) + len(state.qa_runs) + len(state.diagram_runs)
     return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
             "busy": busy, "cached": sessions_cache_file().exists()}
 
@@ -6314,7 +6317,7 @@ def watch_designs(state):
 # items and lines get ids from the page. Keys this section doesn't know (a
 # stories board's colours and exports) are kept as they are.
 
-WB_KINDS = ("design", "feature", "blank")
+WB_KINDS = ("design", "feature", "blank", "diagram")
 WB_ITEM_ID = re.compile(r"^n[0-9a-z]{1,24}$")
 WB_REF_MAX = 200     # a card id, or what an item or a line points at
 WB_TEXT_MAX = 4000
@@ -6454,6 +6457,10 @@ def wb_file(kind, ref):
             return None, None
         p = home() / "whiteboards" / f"{ref}.json"
         return (p, None) if p.is_file() else (None, None)
+    if kind == "diagram":  # "project", or "<plan|review>:<feature>"
+        if ref != "project" and not (ref.split(":", 1)[0] in DIAGRAM_KINDS and feature_dir(ref.split(":", 1)[-1])):
+            return None, None
+        return diagram_dir() / "boards" / f"{diagram_key(ref)}.json", None
     folder = design_dir(ref) if kind == "design" else feature_dir(ref) if kind == "feature" else None
     return (board_path(folder), folder) if folder else (None, None)
 
@@ -6473,7 +6480,7 @@ def wb_view(kind, ref):
 def wb_change(state, b):
     kind, ref = str(b.get("kind", "")), str(b.get("ref", ""))
     if kind not in WB_KINDS:
-        return 400, {"error": "kind: design, feature or blank"}
+        return 400, {"error": "kind: design, feature, blank or diagram"}
     p, _ = wb_file(kind, ref)
     if not p:
         return 404, {"error": "no such whiteboard"}
@@ -10020,6 +10027,688 @@ def compact_hooks(state):
         no_claude=NO_CLAUDE, no_window=NO_WINDOW, timeout=CHAT_TIMEOUT)
 
 
+# ---------------------------------------------------------------- diagrams
+# Generated diagrams (diagram.py does the reading): the classes of a C# repository and the links
+# between them. Three of them:
+#   project  the whole repository at HEAD (the Engineering home's Project diagram). It is large,
+#            so the page gets its groups and the links counted between them, and a group's classes
+#            only when it opens that group.
+#   review   a feature's branch against the commit it left its base at: the types it added,
+#            changed and removed, each tagged with the work units whose files declare it, plus the
+#            unchanged types they link to (drawn greyed).
+#   plan     drawn by a model from the feature's Comprehensive Tech Plan, then joined to the code:
+#            a class the plan names that exists takes its real members and group.
+# Everything is kept in <project home>/diagrams/: the graphs, the per-blob parse cache of each
+# repository (index-<hash>.json), the hover summaries (summaries.json, keyed by a type's
+# signature) and settings.json (the project's repo and the folders it leaves out). Dragged
+# positions are a whiteboard of kind "diagram" there too (boards/).
+
+DIAGRAM_KINDS = ("plan", "review")
+DIAGRAM_RUNS_MAX = 2
+DIAGRAM_GROUP_MAX = 1500  # classes one opened group sends at most
+DIAGRAM_RUN = re.compile(r"^[A-Za-z0-9_-]{6,40}$")
+_diagram_indexes = {}  # repo key -> diagram.Index
+_diagram_graphs = {}  # file -> (mtime, graph, lookups)
+_diagram_lock = threading.Lock()
+
+
+def diagram_dir():
+    return project_home() / "diagrams"
+
+
+def diagram_key(text):
+    return hashlib.sha1(str(text).lower().encode("utf-8")).hexdigest()[:16]
+
+
+def diagram_settings():
+    s = read_json(diagram_dir() / "settings.json", {})
+    exclude = s.get("exclude") if isinstance(s.get("exclude"), list) else list(dg.DEFAULT_EXCLUDE)
+    include = s.get("include") if isinstance(s.get("include"), list) else []
+    return {"repo": str(s.get("repo") or ""), "exclude": [str(x) for x in exclude][:40],
+            "include": [str(x) for x in include][:40]}
+
+
+def diagram_project_repo():
+    """The repository the Project diagram reads: the one chosen on its page, else the project's code repo."""
+    chosen = diagram_settings()["repo"]
+    if chosen and os.path.isdir(chosen):
+        return repo_of(chosen)
+    try:
+        active = hub_active(hub_load()) or {}
+    except OSError:
+        active = {}
+    repo = str(active.get("repo") or "")
+    if repo and os.path.isdir(repo):
+        return repo_of(repo)
+    return repo_of(str(active.get("root") or "")) if active.get("root") else ""
+
+
+def diagram_index(repo):
+    key = Path(repo).as_posix().lower()
+    with _diagram_lock:
+        ix = _diagram_indexes.get(key)
+        if ix is None:
+            ix = _diagram_indexes[key] = dg.Index(repo, diagram_dir() / f"index-{diagram_key(key)}.json")
+        return ix
+
+
+def diagram_path(scope, kind="", folder=None):
+    if scope == "project":
+        return diagram_dir() / "project.json"
+    return diagram_dir() / f"{kind}-{diagram_key(folder.name)}.json"
+
+
+def diagram_board_ref(scope, kind="", folder=None):
+    return "project" if scope == "project" else f"{kind}:{folder.name}"
+
+
+def diagram_load(p):
+    """(graph, lookups) of a kept diagram, read again only when its file changes; (None, None) if none."""
+    try:
+        when = lp(p).stat().st_mtime
+    except OSError:
+        return None, None
+    with _diagram_lock:
+        hit = _diagram_graphs.get(str(p))
+        if hit and hit[0] == when:
+            return hit[1], hit[2]
+    try:
+        g = json.loads(lp(p).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    by_group, by_node = {}, {}
+    for n in g.get("nodes", []):
+        by_group.setdefault(n.get("group"), []).append(n)
+    for e in g.get("edges", []):
+        by_node.setdefault(e["from"], []).append(e)
+        by_node.setdefault(e["to"], []).append(e)
+    look = {"byGroup": by_group, "byNode": by_node, "where": {n["id"]: n.get("group") for n in g.get("nodes", [])}}
+    with _diagram_lock:
+        _diagram_graphs[str(p)] = (when, g, look)
+    return g, look
+
+
+def diagram_save(p, g):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(g, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def diagram_head(repo, rev="HEAD"):
+    return git_read(repo, ("rev", rev), ("rev-parse", "--verify", "--quiet", rev + "^{commit}"),
+                    lambda code, out: out.strip() if code == 0 else "", keep=(0, 1))
+
+
+def diagram_feature_refs(folder):
+    """(repo, branch or "HEAD", base branch) a feature's Review diagram compares; repo "" when unknown."""
+    info = review_info(folder)
+    repo = info.get("repo") or ""
+    if not repo:
+        return "", "", ""
+    rec = branch_record(folder.name)
+    head = info.get("branch") or "HEAD"
+    base = str(rec.get("base") or "")
+    if not base or not diagram_head(repo, base):
+        for b in [default_branch(repo), "develop", "main", "master"]:
+            if b and b != head and diagram_head(repo, b):
+                base = b
+                break
+    return repo, head, base
+
+
+def diagram_plan_doc(folder):
+    docs = docs_of(folder)
+    return first_doc(docs, "Comprehensive Tech Plan") or first_doc(docs, "Tech Plan") or first_doc(docs, "Lite Brief")
+
+
+def diagram_kinds(folder):
+    """Which of a feature's diagrams can be made: plan (it has a plan) and review (its repo is known)."""
+    return {"plan": bool(diagram_plan_doc(folder)), "review": bool(diagram_feature_refs(folder)[0])}
+
+
+def diagram_rel(repo, path):
+    """A path a task result names, as the repo-relative path git uses; "" when it isn't one."""
+    s = str(path or "").strip()
+    m = re.search(r"`([^`]+)`", s)
+    s = m.group(1) if m else re.split(r"\s+[—–-]\s+|\s+\(", s, 1)[0]
+    s = s.strip().strip("`\"'").replace("\\", "/")
+    if not s:
+        return ""
+    if re.match(r"^[A-Za-z]:/|^/", s):
+        try:
+            return Path(s).resolve().relative_to(Path(repo).resolve()).as_posix()
+        except (ValueError, OSError):
+            return ""
+    return s.removeprefix("./")
+
+
+def diagram_unit_files(folder, repo, base_sha, head_sha):
+    """{work unit: set(repo paths)}: the files the task results of each unit's tasks list, and the files
+    of commits whose subject names a unit, e.g. "... (WU2)"."""
+    units = {}
+    status = first_doc(docs_of(folder), "Task Status")
+    if status:
+        text = read_doc(folder, status)
+        of_task = {}
+        for r in md_table(text, "# Task Board"):
+            unit = next((v for k, v in r.items() if k.strip().lower() in ("work unit", "unit", "wu")), "")
+            if r.get("ID") and unit:
+                of_task[r["ID"]] = unit.strip()
+        files = result_files(folder)
+        for tid, unit in of_task.items():
+            for f in task_result(folder, tid, files).get("files", []):
+                rel = diagram_rel(repo, f)
+                if rel:
+                    units.setdefault(unit, set()).add(rel)
+        for u in progress_of(text)[0]:
+            if u.get("id"):
+                units.setdefault(u["id"], set())
+    if base_sha and head_sha:
+        code, out = git(repo, "log", "--no-merges", "--name-only", "--format=@@%s", f"{base_sha}..{head_sha}", timeout=60)
+        unit = None
+        for line in (out.splitlines() if code == 0 else []):
+            if line.startswith("@@"):
+                m = re.search(r"\((WU\d+)\)\s*$", line)
+                unit = m.group(1) if m else None
+            elif unit and line.strip():
+                units.setdefault(unit, set()).add(line.strip())
+    return units
+
+
+def diagram_stale(scope, kind, folder, g):
+    """Why a kept diagram no longer matches the code or the plan, or ""."""
+    stamp = g.get("stamp") or {}
+    if scope == "project":
+        repo = diagram_project_repo()
+        if repo and stamp.get("head") and diagram_head(repo) != stamp["head"]:
+            return "There are new commits since this was made."
+        return ""
+    if kind == "plan":
+        doc = diagram_plan_doc(folder)
+        try:
+            when = lp(folder / doc).stat().st_mtime if doc else 0
+        except OSError:
+            when = 0
+        if doc and abs(when - float(stamp.get("plan") or 0)) > 1:
+            return "The plan has changed since this was made."
+        return ""
+    repo, head, _ = diagram_feature_refs(folder)
+    if repo and stamp.get("head") and diagram_head(repo, head) != stamp["head"]:
+        return "The branch has new commits since this was made."
+    return ""
+
+
+def diagram_view(st, q):
+    """GET /api/diagram: a kept diagram (or what making one would read), with its summaries and whether it is stale."""
+    scope = q.get("scope", ["feature"])[0]
+    kind = q.get("kind", ["review"])[0]
+    folder = None
+    if scope == "project":
+        p = diagram_path("project")
+    else:
+        folder = feature_dir(q.get("feature", [""])[0])
+        if not folder:
+            return 404, {"error": "no such feature"}
+        if kind not in DIAGRAM_KINDS:
+            return 400, {"error": "kind: plan or review"}
+        p = diagram_path("feature", kind, folder)
+    g, look = diagram_load(p)
+    sums = diagram_summaries()
+    running = [r["runId"] for r in st.diagram_runs.values() if r["path"] == str(p)]
+    base = {"scope": scope, "kind": kind if folder else "project", "running": running,
+            "board": diagram_board_ref(scope, kind, folder)}
+    if folder:
+        base["kinds"] = diagram_kinds(folder)
+        repo, head, against = diagram_feature_refs(folder)
+        base.update(repo=repo, branch=head, base=against, plan=diagram_plan_doc(folder) or "")
+    else:
+        base.update(repo=diagram_project_repo(), settings=diagram_settings())
+    if not g:
+        return 200, {**base, "exists": False}
+    group = q.get("group", [""])[0]
+    if scope == "project" and group:  # one opened group: its classes and every link they have
+        want = {group}
+        kids = {}
+        for gr in g["groups"]:
+            kids.setdefault(gr.get("parent"), []).append(gr["id"])
+        todo = [group]
+        while todo:
+            for k in kids.get(todo.pop(), []):
+                if k not in want:
+                    want.add(k)
+                    todo.append(k)
+        nodes = [n for gid in want for n in look["byGroup"].get(gid, [])][:DIAGRAM_GROUP_MAX]
+        ids = {n["id"] for n in nodes}
+        edges, seen, ends = [], set(), {}
+        for nid in ids:
+            for e in look["byNode"].get(nid, []):
+                if e["id"] in seen:
+                    continue
+                seen.add(e["id"])
+                edges.append(e)
+                for end in (e["from"], e["to"]):
+                    if end not in ids:
+                        ends[end] = look["where"].get(end)
+        return 200, {**base, "exists": True, "group": group, "nodes": [diagram_with_summary(n, sums) for n in nodes],
+                     "edges": edges, "ends": ends, "more": len(nodes) >= DIAGRAM_GROUP_MAX}
+    out = {**base, "exists": True, "stale": diagram_stale(scope, kind, folder, g), "stamp": g.get("stamp", {}),
+           "generated": g.get("generated", 0), "cost": g.get("cost", 0), "units": g.get("units", []),
+           "groups": [dict(gr, summary=sums.get("g:" + gr["id"], {}).get("text", "")) for gr in g["groups"]],
+           "gedges": g.get("gedges", [])}
+    if scope == "project":
+        counts = {}
+        for n in g["nodes"]:
+            counts[n["group"]] = counts.get(n["group"], 0) + 1
+        out.update(counts=counts, nodeCount=len(g["nodes"]), edgeCount=len(g["edges"]))
+    else:
+        out.update(nodes=[diagram_with_summary(n, sums) for n in g["nodes"]], edges=g["edges"],
+                   notes=g.get("notes", []))
+    return 200, out
+
+
+def diagram_with_summary(n, sums):
+    hit = sums.get(n.get("sig") or "") if n.get("sig") else None
+    if hit and not n.get("summary"):
+        return {**n, "summary": hit.get("text", "")}
+    return n
+
+
+def diagram_run_start(st, b, path, work):
+    """Register a diagram run (one per diagram, DIAGRAM_RUNS_MAX at once) and start it on a thread.
+    work(r, step) returns (graph or None, error, cost); the graph is kept at path. Steps and the end
+    are "diagram" events."""
+    run_id = str(b.get("runId", ""))
+    if not DIAGRAM_RUN.match(run_id):
+        return 400, {"error": "runId: 6 to 40 letters, digits, - or _"}
+    client = str(b.get("client", ""))[:40]
+    with st.cond:
+        if any(r["path"] == str(path) for r in st.diagram_runs.values()):
+            return 409, {"error": "This diagram is being made already."}
+        if len(st.diagram_runs) >= DIAGRAM_RUNS_MAX:
+            return 409, {"error": "Two diagrams are being made already: wait for one to finish."}
+        r = st.diagram_runs[run_id] = {"runId": run_id, "path": str(path), "started": time.time(), "proc": None,
+                                       "cancelled": False}
+
+    def step(text):
+        if r["cancelled"]:
+            raise DiagramStopped()
+        st.emit("diagram", runId=run_id, client=client, step=str(text)[:200])
+
+    def go():
+        g, error, cost = None, "", 0.0
+        try:
+            g, error, cost = work(r, step)
+            if g is not None and not error:
+                g["generated"] = time.time()
+                g["cost"] = round(cost, 4)
+                diagram_save(path, g)
+        except DiagramStopped:
+            error = "Stopped."
+        except Exception as e:  # a diagram must never take the server down
+            traceback.print_exc()
+            error = f"making the diagram failed: {e}"
+        finally:
+            with st.cond:
+                st.diagram_runs.pop(run_id, None)
+        st.emit("diagram", runId=run_id, client=client, done=True, ok=not error, error=error,
+                cost=round(cost, 4), scope=b.get("scope", ""), kind=b.get("kind", ""), feature=b.get("feature", ""))
+    threading.Thread(target=go, daemon=True).start()
+    return 202, {"runId": run_id}
+
+
+class DiagramStopped(Exception):
+    pass
+
+
+def diagram_generate(st, b):
+    """POST /api/diagram/generate {scope: project|feature, feature, kind: review|plan, runId}."""
+    scope = str(b.get("scope", "feature"))
+    if scope == "project":
+        repo = diagram_project_repo()
+        if not repo:
+            return 400, {"error": "No code repository is known for this project: choose its folder first."}
+        return diagram_run_start(st, b, diagram_path("project"), lambda r, step: diagram_make_project(st, r, step, repo))
+    folder = feature_dir(str(b.get("feature", "")))
+    if not folder:
+        return 404, {"error": "no such feature"}
+    kind = str(b.get("kind", ""))
+    if kind not in DIAGRAM_KINDS:
+        return 400, {"error": "kind: plan or review"}
+    if kind == "review":
+        repo, head, base = diagram_feature_refs(folder)
+        if not repo:
+            return 400, {"error": "No repository is known for this feature yet."}
+        if not base:
+            return 400, {"error": "The branch this feature started from can't be found."}
+        return diagram_run_start(st, b, diagram_path("feature", kind, folder),
+                                 lambda r, step: diagram_make_review(st, r, step, folder, repo, head, base))
+    if not diagram_plan_doc(folder):
+        return 400, {"error": "This feature has no plan to draw yet."}
+    if not claude_path():
+        return 501, {"error": NO_CLAUDE}
+    return diagram_run_start(st, b, diagram_path("feature", kind, folder),
+                             lambda r, step: diagram_make_plan(st, r, step, folder))
+
+
+def diagram_tree(repo, rev, step):
+    s = diagram_settings()
+    ix = diagram_index(repo)
+    files, dirs, sha = ix.tree(rev, exclude=tuple(s["exclude"]), include=tuple(s["include"]), step=step)
+    ix.save()
+    return files, dirs, sha
+
+
+def diagram_make_project(st, r, step, repo):
+    step("Listing the C# files at HEAD")
+    files, dirs, sha = diagram_tree(repo, "HEAD", step)
+    if files is None:
+        return None, "HEAD can't be read in that repository.", 0.0
+    if not files:
+        return None, "There are no C# files in that repository (or every folder is left out).", 0.0
+    step(f"Linking the types in {len(files)} files")
+    model = dg.Model(files, dirs)
+    g = dg.project_graph(model, step)
+    g["stamp"] = {"head": sha, "repo": repo, "exclude": diagram_settings()["exclude"]}
+    step(f"{len(g['nodes'])} types, {len(g['edges'])} links")
+    return g, "", 0.0
+
+
+def diagram_make_review(st, r, step, folder, repo, head, base):
+    head_sha = diagram_head(repo, head)
+    code, mb = git(repo, "merge-base", base, head_sha)
+    if code != 0 or not mb:
+        return None, f"{head} and {base} have no commit in common.", 0.0
+    step(f"Comparing {head} with {base}")
+    code, out = git(repo, "diff", "--name-status", "--no-renames", mb, head_sha, timeout=120)
+    if code != 0:
+        return None, "git couldn't compare the branch with its base.", 0.0
+    changed = {}
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[1].endswith(".cs"):
+            changed[parts[1]] = parts[0][:1]
+    if not changed:
+        return None, f"No C# file has changed on {head} since it left {base}.", 0.0
+    step(f"{len(changed)} C# file(s) changed; reading the branch")
+    hf, hd, _ = diagram_tree(repo, head_sha, step)
+    step("Reading the base")
+    bf, bd, _ = diagram_tree(repo, mb, step)
+    if hf is None or bf is None:
+        return None, "git couldn't read the branch or its base.", 0.0
+    step("Linking the types")
+    units = diagram_unit_files(folder, repo, mb, head_sha)
+    g = dg.review_graph(dg.Model(hf, hd), dg.Model(bf, bd), changed, units)
+    g["stamp"] = {"head": head_sha, "base": mb, "branch": head, "against": base, "repo": repo}
+    if not any(n["units"] for n in g["nodes"]) and units:
+        g["notes"] = ["No changed type is in a file a work unit's tasks name, so every unit shows the same."]
+    return g, "", 0.0
+
+
+def diagram_cancel(st, b):
+    r = st.diagram_runs.get(str(b.get("runId", "")))
+    if not r:
+        return 404, {"error": "nothing is running under that id"}
+    r["cancelled"] = True
+    if r.get("proc"):
+        kill_tree(r["proc"])
+    return 200, {"ok": True}
+
+
+def diagram_set(st, b):
+    """POST /api/diagram/settings {repo, exclude, include}: the Project diagram's repository and folders."""
+    s = diagram_settings()
+    if "repo" in b:
+        repo = str(b.get("repo") or "").strip()
+        if repo and not repo_of(repo):
+            return 400, {"error": "That folder isn't in a git repository."}
+        s["repo"] = Path(repo).as_posix() if repo else ""
+    for k in ("exclude", "include"):
+        if k in b:
+            v = b.get(k)
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                return 400, {"error": f"{k}: a list of folder prefixes"}
+            s[k] = [x.strip().replace("\\", "/") for x in v if x.strip()][:40]
+    write_json(diagram_dir() / "settings.json", s)
+    st.emit("diagram", settings=True)
+    return 200, s
+
+
+def diagram_summaries():
+    return read_json(diagram_dir() / "summaries.json", {})
+
+
+# -- hover summaries: a small model's plain words for each class and group, only when asked
+
+DIAGRAM_SUM_MAX = 60  # types one run writes at most
+DIAGRAM_SUM_SYSTEM = (
+    "You summarise C# types and groups of them for engineers reading a class diagram. For each item you "
+    "are given (its kind, base types, members, file and namespace, or for a group the types in it), write "
+    "one or two plain-English sentences, at most 45 words, saying what it is for and where it fits. Say what "
+    "it does, not what it is called; never list its members; no code, no markdown. If you can't tell, say "
+    "what it most likely is and say it is a guess. Reply with one JSON object only: {\"<the item's id>\": "
+    "\"<the summary>\", ...} with every id you were given.")
+
+
+def diagram_sum_lines(n):
+    bits = [f"id: {n['id']}", f"kind: {n.get('stereo') or n.get('kind')}"]
+    if n.get("file"):
+        bits.append(f"file: {n['file']}")
+    ms = [m["sig"] for m in (n.get("members") or [])][:15]
+    if ms:
+        bits.append("members: " + "; ".join(ms))
+    return "\n".join(bits)
+
+
+def diagram_summarise(st, b):
+    """POST /api/diagram/summarise {scope, feature, kind, group, ids, runId}: write the hover summaries of
+    the types asked for (ids), of a group and the types in it (group), or of every changed type and group of
+    a review or plan (neither). Kept in summaries.json by each type's signature, so a summary is written
+    again only when the type changes; the answer is "diagram" events with summaries: true."""
+    run_id = str(b.get("runId", ""))
+    if not DIAGRAM_RUN.match(run_id):
+        return 400, {"error": "runId: 6 to 40 letters, digits, - or _"}
+    if not claude_path():
+        return 501, {"error": NO_CLAUDE}
+    scope = str(b.get("scope", "feature"))
+    folder = None
+    if scope == "project":
+        p = diagram_path("project")
+    else:
+        folder = feature_dir(str(b.get("feature", "")))
+        if not folder or str(b.get("kind")) not in DIAGRAM_KINDS:
+            return 404, {"error": "no such diagram"}
+        p = diagram_path("feature", str(b.get("kind")), folder)
+    g, look = diagram_load(p)
+    if not g:
+        return 404, {"error": "Make the diagram first."}
+    sums = diagram_summaries()
+    groups = {x["id"]: x for x in g["groups"]}
+    want_ids = [str(x) for x in (b.get("ids") or []) if isinstance(x, str)][:DIAGRAM_SUM_MAX]
+    gid = str(b.get("group") or "")
+    nodes = {n["id"]: n for n in g["nodes"]} if scope != "project" else None
+    picked, picked_groups = [], []
+    if gid and gid in groups:
+        under = {gid}
+        changed = True
+        while changed:
+            changed = False
+            for x in g["groups"]:
+                if x.get("parent") in under and x["id"] not in under:
+                    under.add(x["id"])
+                    changed = True
+        picked_groups = sorted(under)[:12]
+        for x in sorted(under):
+            picked.extend(look["byGroup"].get(x, []))
+    if want_ids:
+        by_id = nodes or {n["id"]: n for gid2 in look["byGroup"] for n in look["byGroup"][gid2]}
+        picked.extend(by_id[i] for i in want_ids if i in by_id)
+    if not gid and not want_ids and scope != "project":
+        picked = [n for n in g["nodes"] if n.get("state") != "unchanged"]
+        picked_groups = [x["id"] for x in g["groups"]]
+    seen, todo = set(), []
+    for n in picked:
+        if n["id"] in seen or (n.get("sig") and n["sig"] in sums) or n.get("summary"):
+            continue
+        seen.add(n["id"])
+        todo.append(n)
+    more = max(0, len(todo) - DIAGRAM_SUM_MAX)
+    todo = todo[:DIAGRAM_SUM_MAX]
+    todo_groups = [x for x in picked_groups if "g:" + x not in sums][:20]
+    if not todo and not todo_groups:
+        return 200, {"done": True, "note": "Every one asked for has a summary already."}
+    parts = ["Types:"] + [diagram_sum_lines(n) + "\n" for n in todo] if todo else []
+    if todo_groups:
+        parts.append("Groups (id, then the types in it):")
+        for x in todo_groups:
+            names = [f"{n['label']} ({n.get('stereo') or n.get('kind')})" for n in look["byGroup"].get(x, [])[:40]]
+            kids = [y["label"] for y in g["groups"] if y.get("parent") == x][:30]
+            parts.append(f"id: g:{x}\nname: {groups[x]['label']}\n"
+                         + (f"types: {', '.join(names)}\n" if names else "") + (f"groups in it: {', '.join(kids)}\n" if kids else ""))
+    prompt = "\n".join(parts) + "\nReply with the JSON object described."
+    with st.cond:
+        if len(st.diagram_runs) >= DIAGRAM_RUNS_MAX:
+            return 409, {"error": "Two diagram runs are going already: wait for one to finish."}
+        r = st.diagram_runs[run_id] = {"runId": run_id, "path": "summaries", "started": time.time(), "proc": None, "cancelled": False}
+    client = str(b.get("client", ""))[:40]
+    st.emit("diagram", summaries=True, runId=run_id, client=client,
+            step=f"Writing {len(todo)} type summaries" + (f" and {len(todo_groups)} group ones" if todo_groups else "") + "…")
+
+    def go():
+        error, cost, wrote = "", 0.0, 0
+        try:
+            final, error = qa_claude(st, r, DIAGRAM_SUM_SYSTEM, prompt, str(diagram_dir()), None,
+                                     int(os.environ.get("TATTY_DIAGRAM_TIMEOUT", "300")),
+                                     os.environ.get("TATTY_DIAGRAM_BUDGET", "1"), os.environ.get("TATTY_DIAGRAM_MODEL", "haiku"))
+            cost = float((final or {}).get("total_cost_usd") or 0)
+            got = qa_json(final.get("result")) if final and not error else None
+            if not error and not got:
+                error = "The model's answer could not be read. Try again."
+            if got:
+                with _diagram_lock:
+                    keep = diagram_summaries()
+                    for n in todo:
+                        text = str(got.get(n["id"]) or "").strip()
+                        if text and n.get("sig"):
+                            keep[n["sig"]] = {"text": text[:600], "at": time.time()}
+                            wrote += 1
+                    for x in todo_groups:
+                        text = str(got.get("g:" + x) or "").strip()
+                        if text:
+                            keep["g:" + x] = {"text": text[:600], "at": time.time()}
+                            wrote += 1
+                    write_json(diagram_dir() / "summaries.json", keep)
+        except Exception as e:  # never take the server down
+            traceback.print_exc()
+            error = f"writing the summaries failed: {e}"
+        finally:
+            with st.cond:
+                st.diagram_runs.pop(run_id, None)
+        st.emit("diagram", summaries=True, runId=run_id, client=client, done=True, ok=not error, error=error,
+                cost=round(cost, 4), wrote=wrote, more=more)
+    threading.Thread(target=go, daemon=True).start()
+    return 202, {"runId": run_id, "types": len(todo), "groups": len(todo_groups), "more": more}
+
+
+# -- the Plan diagram: drawn by a model from the plan, joined to the code
+
+DIAGRAM_PLAN_SYSTEM = (
+    "You draw the class diagram of a technical plan for engineers: the types the plan adds or changes, the "
+    "existing types they link to that matter, and how data flows between them at runtime. You are given the "
+    "plan's steps (each with the files it touches and the C# declarations it shows), its Affected Files table "
+    "and its chosen approach; the plan itself and the repository can be read if a name is unclear, but keep "
+    "reading to a minimum. Use the exact type names the plan uses. Reply with one JSON object only:\n"
+    "{\"nodes\": [{\"name\": \"TypeName\", \"namespace\": \"Its.Namespace\", \"assembly\": \"its assembly or area\", "
+    "\"kind\": \"class|struct|interface|enum|record\", \"stereo\": \"MonoBehaviour, ScriptableObject, static ... or empty\", "
+    "\"change\": \"new|changed|existing\", \"steps\": [\"§1\"], \"members\": [\"public float Duration\"], "
+    "\"summary\": \"one or two plain sentences: what it is for\"}],\n"
+    " \"edges\": [{\"from\": \"TypeName\", \"to\": \"OtherType\", \"kind\": \"inherits|implements|has|creates|uses|dataflow\", "
+    "\"label\": \"for dataflow, what flows, at most 4 words\", \"steps\": [\"§2\"]}]}\n"
+    "At most 8 members a type (the ones the plan adds first), at most 120 types. Every new or changed type the "
+    "plan names must be there; steps are the § numbers of the steps that add or change it.")
+DIAGRAM_PLAN_DECL = re.compile(r"^\s*(?:\[[^\]]*\]\s*)*(?:(?:public|private|protected|internal|static|abstract|sealed|partial|readonly)\s+)*"
+                               r"(?:class|struct|interface|enum|record)\s+\w+[^{;\n]*", re.M)
+
+
+def diagram_plan_input(text):
+    """(the prompt's part from the plan, its steps [{id, label}]): each step's heading, first lines, Files and
+    the type declarations its code shows; the Affected Files table; the chosen approach."""
+    text = text.replace("\r", "")
+
+    def section(name):
+        m = re.search(r"^## " + re.escape(name) + r"\s*$(.*?)(?=^## |\Z)", text, re.S | re.M)
+        return m.group(1).strip() if m else ""
+
+    impl = section("Implementation Plan")
+    steps, out = [], []
+    for m in re.finditer(r"^### (§\d+[a-z]?)\.?\s*(.*?)\s*$(.*?)(?=^### |\Z)", impl, re.S | re.M):
+        sid, title, body = m.group(1), m.group(2), m.group(3)
+        steps.append({"id": sid, "label": title[:120]})
+        first = next((p.strip() for p in body.split("\n\n") if p.strip() and not p.strip().startswith(("**", "```", "-"))), "")
+        files = re.search(r"\*\*Files:\*\*\s*\n((?:\s*- .*\n?)+)", body)
+        decls = sorted({d.strip() for d in DIAGRAM_PLAN_DECL.findall(body)})[:20]
+        out.append(f"### {sid}. {title}\n{first[:500]}\n" + (f"Files:\n{files.group(1).strip()[:2500]}\n" if files else "")
+                   + ("Declarations shown:\n" + "\n".join(d[:200] for d in decls) + "\n" if decls else ""))
+    parts = []
+    approach = section("Chosen Approach")
+    if approach:
+        parts.append("## Chosen approach\n" + approach[:2500])
+    parts.append("## Steps\n" + "\n".join(out)[:60000])
+    affected = section("Affected Files")
+    if affected:
+        parts.append("## Affected Files\n" + affected[:15000])
+    return "\n\n".join(parts), steps
+
+
+def diagram_make_plan(st, r, step, folder):
+    doc = diagram_plan_doc(folder)
+    text = read_doc(folder, doc)
+    body, steps = diagram_plan_input(text)
+    repo, head, _ = diagram_feature_refs(folder)
+    model = None
+    head_sha = ""
+    if repo:
+        step("Reading the code the plan builds on")
+        files, dirs, head_sha = diagram_tree(repo, head or "HEAD", step)
+        if files:
+            model = dg.Model(files, dirs)
+    step(f"A model is drawing the plan's {len(steps)} step(s)…")
+    prompt = (f"The plan: {doc} (in the current folder)" + (f"; the repository: {repo}" if repo else "") + "\n\n" + body
+              + "\n\nDraw the diagram and reply with the JSON object described.")
+    tools = ("Read", "Glob", "Grep")
+    final, error = qa_claude(st, r, DIAGRAM_PLAN_SYSTEM, prompt, str(folder), tools,
+                             int(os.environ.get("TATTY_DIAGRAM_TIMEOUT_PLAN", "900")),
+                             os.environ.get("TATTY_DIAGRAM_BUDGET_PLAN", "3"), os.environ.get("TATTY_DIAGRAM_MODEL_PLAN", ""),
+                             add_dir=repo or None)
+    cost = float((final or {}).get("total_cost_usd") or 0)
+    if error:
+        return None, error, cost
+    got = qa_json(final.get("result"))
+    if not got or not isinstance(got.get("nodes"), list) or not got["nodes"]:
+        return None, "The model's answer could not be read as a diagram. Try again.", cost
+    step("Joining it to the code")
+    g = dg.plan_merge(model, got, steps)
+    try:
+        when = lp(folder / doc).stat().st_mtime
+    except OSError:
+        when = 0
+    g["stamp"] = {"plan": when, "doc": doc, "head": head_sha, "repo": repo}
+    return g, "", cost
+
+
+DIAGRAM_POSTS = {"/api/diagram/generate": diagram_generate, "/api/diagram/cancel": diagram_cancel,
+                 "/api/diagram/settings": diagram_set, "/api/diagram/summarise": diagram_summarise}
+
+
+def diagram_post(st, path, b):
+    if not isinstance(b, dict):
+        return 400, {"error": "a JSON object, please"}
+    work = DIAGRAM_POSTS.get(path)
+    if not work:
+        return 404, {"error": "not found"}
+    return work(st, b)
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -10236,6 +10925,9 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             code, answer = review_suggestions(st, folder)
+            return self.send(code, answer)
+        if path == "/api/diagram":
+            code, answer = diagram_view(st, q)
             return self.send(code, answer)
         if path == "/api/review":
             folder = feature_dir(q.get("name", [""])[0])
@@ -10626,6 +11318,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path.startswith("/api/qa/"):
             code, answer = qa_post(st, path, b)
+            return self.send(code, answer)
+        if path.startswith("/api/diagram/"):
+            code, answer = diagram_post(st, path, b)
             return self.send(code, answer)
         if path == "/api/doc/save":
             folder = feature_dir(str(b.get("name", "")))

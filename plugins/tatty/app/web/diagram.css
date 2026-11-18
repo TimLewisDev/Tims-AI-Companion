@@ -1,0 +1,127 @@
+/* A generated diagram (diagram.js) on its whiteboard. Kept cheap to draw at any zoom: one small
+   shadow, plain borders, no overflow:hidden on a box (only on the lines of text in it). */
+
+.dgpanel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.dghead { display: flex; align-items: center; gap: 10px; padding: 8px 16px; flex-wrap: wrap; }
+.dghead .spacer { flex: 1; }
+.dgstale { color: var(--warn); border: 1px solid var(--warn); border-radius: 10px; padding: 1px 8px; }
+.dgnote { margin: 0 16px 4px; color: var(--dim); }
+.dgnote:empty { display: none; }
+.dgbody { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.dgwrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.dgempty { max-width: 640px; display: flex; flex-direction: column; gap: 10px; }
+.dgfield { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.dgrepo { font-family: var(--mono); font-size: 12.5px; }
+.dgempty .linkish, .dgpeek .linkish { border: none; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+
+/* the bar over the board */
+.dgbar { display: flex; align-items: center; gap: 8px; padding: 6px 16px; flex-wrap: wrap; border-top: 1px solid var(--line); }
+.dgbar .spacer { flex: 1; }
+.dgsearch { width: 200px; font-size: 13px; }
+.dgunits, .dgkinds, .dgtools { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.dgbar .chip { cursor: pointer; background: var(--panel); }
+.dgbar .chip.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.dgbar .chip:not(.on) { opacity: 0.65; }
+.dgkey { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--dim); vertical-align: middle; margin-right: 5px; }
+.dgkind.k-implements .dgkey, .dgkind.k-uses .dgkey, .dgkind.k-creates .dgkey { border-top-style: dashed; }
+.dgkind.k-dataflow .dgkey { border-top-width: 4px; border-top-color: var(--accent); }
+
+/* a class */
+.dgbox { position: absolute; box-sizing: border-box; }
+.dgcard { width: 248px; background: var(--panel); border: 1px solid var(--line); border-radius: 2px; cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); font-size: 12px; color: var(--ink); }
+.dgcard-head { padding: 6px 10px 6px; border-bottom: 1px solid var(--line); text-align: center; height: 48px; box-sizing: border-box; }
+.dgstereo { font-size: 10.5px; color: var(--dim); height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dgstate { margin-left: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.dgname { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dgmembers { list-style: none; margin: 0; padding: 5px 10px; }
+.dgm, .dgpeek-members li { height: 17px; line-height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 11px; }
+.dgvis { display: inline-block; width: 12px; color: var(--dim); }
+.dgmore { padding: 0 10px 4px; height: 17px; }
+.m-added { color: var(--ok); font-weight: 600; }
+.m-removed { color: var(--bad); text-decoration: line-through; }
+.dgwait { padding: 14px; font-size: 12px; }
+
+/* what a change did to it */
+.dgcard.dg-added { border-color: var(--ok); border-width: 2px; }
+.dgcard.dg-added .dgcard-head { background: color-mix(in srgb, var(--ok) 12%, var(--panel)); }
+.dgcard.dg-added .dgstate { color: var(--ok); }
+.dgcard.dg-changed, .dgcard.dg-touched { border-color: var(--warn); border-width: 2px; }
+.dgcard.dg-changed .dgcard-head { background: color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+.dgcard.dg-changed .dgstate, .dgcard.dg-touched .dgstate { color: var(--warn); }
+.dgcard.dg-removed { border-color: var(--bad); border-width: 2px; border-style: dashed; }
+.dgcard.dg-removed .dgname { text-decoration: line-through; }
+.dgcard.dg-removed .dgstate { color: var(--bad); }
+.dgcard.dg-planned { border-color: var(--accent); border-width: 2px; border-style: dashed; }
+.dgcard.dg-planned .dgstate { color: var(--accent); }
+.dgwrap .dgcard.dg-unchanged { opacity: 0.55; background: var(--bg); }
+.dgpanel.dgproject .dgcard.dg-unchanged { opacity: 1; background: var(--panel); } /* the whole project: nothing is a change */
+
+/* a closed group, and a group zoomed out to one tile */
+.dggroup { width: 230px; height: 76px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 2px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.dggroup-name { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dggroup-kind { text-transform: uppercase; letter-spacing: .05em; font-size: 10px; }
+.dggroup.lv0 { border-left-color: var(--accent-design, var(--accent)); }
+.dggroup.lv2 { border-left-color: var(--dim); }
+.dgsolid { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); border: 2px solid var(--accent); border-radius: 2px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: zoom-in; padding: 20px; text-align: center; }
+.dgsolid-name { font-weight: 700; font-size: 44px; line-height: 1.1; color: var(--ink); overflow-wrap: anywhere; }
+.dgsolid-n { font-size: 30px; color: var(--dim); }
+.dgsolid.lv0 { background: color-mix(in srgb, var(--accent-design, var(--accent)) 10%, var(--panel)); border-color: var(--accent-design, var(--accent)); }
+
+/* an open group: a frame behind its members */
+.dgframe { position: absolute; box-sizing: border-box; border: 1.5px solid var(--line); border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.dgframe.lv0 { border-color: color-mix(in srgb, var(--accent-design, var(--accent)) 45%, var(--line)); background: color-mix(in srgb, var(--accent-design, var(--accent)) 3%, transparent); }
+.dgframe.lv1 { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.dgframe.lv2, .dgframe.lv3 { border-style: dashed; background: transparent; }
+.dgframe-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; height: 30px; box-sizing: border-box; font-size: 13px; font-weight: 700; color: var(--dim);
+  white-space: nowrap; overflow: hidden; }
+.dgframe-label { overflow: hidden; text-overflow: ellipsis; }
+.dgframe-close { pointer-events: auto; border: 1px solid var(--line); background: var(--panel); border-radius: 4px; padding: 0 5px; font-size: 11px; cursor: pointer; line-height: 16px; }
+
+/* finding and focusing */
+.dgbox.dg-hit { outline: 3px solid var(--warn); outline-offset: 2px; }
+.dgbox.dg-focus { outline: 3px solid var(--accent); outline-offset: 2px; }
+.dgbox.dg-off { opacity: 0.25; }
+
+/* the links, by kind and by what a change did to them */
+.wbline.host.k-implements .wbstroke, .wbline.host.k-uses .wbstroke, .wbline.host.k-creates .wbstroke { stroke-dasharray: 6 4; }
+.wbline.host.k-has .wbstroke { stroke-width: 1.8; }
+.wbline.host.k-dataflow .wbstroke { stroke: var(--accent); stroke-width: 4; }
+.wbline.host.k-uses .wbstroke { stroke-width: 1.2; }
+.wbline.host.st-added .wbstroke { stroke: var(--ok); }
+.wbline.host.st-removed .wbstroke { stroke: var(--bad); stroke-dasharray: 3 3; }
+.wbline.host.dg-off { opacity: 0.12; }
+.wblabel.host { font-size: 12px; fill: var(--dim); }
+.wblabel.host.dim { opacity: 0.6; }
+.wblabel.host.dg-off, .wblabel.host.dg-faint { display: none; }
+
+/* the hover card */
+.dgpeek { max-width: min(460px, calc(100vw - 16px)); }
+.dgpeek .dgsum { margin: 4px 0 6px; line-height: 1.4; }
+.dgpeek-members { list-style: none; margin: 6px 0; padding: 0; }
+.dg-chip-added { color: var(--ok); border-color: var(--ok); }
+.dg-chip-changed, .dg-chip-touched { color: var(--warn); border-color: var(--warn); }
+.dg-chip-removed { color: var(--bad); border-color: var(--bad); }
+.dg-chip-planned { color: var(--accent); border-color: var(--accent); }
+
+/* the pages it is on */
+.dgtabs { display: flex; gap: 4px; padding: 8px 16px 0; }
+.dgtabs a { padding: 4px 12px; border: 1px solid var(--line); border-bottom: none; border-radius: 6px 6px 0 0; color: var(--dim); text-decoration: none; }
+.dgtabs a.on { color: var(--ink); font-weight: 600; background: var(--panel); }
+#page-diagram.on { display: flex; flex-direction: column; min-height: 0; }
+#page-diagram .dgpanel { min-height: calc(100vh - 140px); }
+.fmain.fmain-diagram { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+/* zoomed out: a closed group's name is all that counts, and big enough to read */
+.dg-far .dggroup .dggroup-kind, .dg-far .dggroup .dim { display: none; }
+.dg-far .dggroup { justify-content: center; }
+.dg-far .dggroup-name { font-size: 24px; line-height: 1.15; white-space: normal; overflow-wrap: anywhere; max-height: 56px; }
+.dg-far .dgcard .dgname { font-size: 22px; }
+.wbline.host.dg-near .wbstroke { stroke: var(--accent); stroke-width: 2.4; }
+.wbline.host.dg-faint { opacity: 0.08; }
+.dggroup.dg-quiet { opacity: 0.6; background: var(--bg); border-left-color: var(--line); }
+.wbline.host.k-dataflow.st-added .wbstroke, .wbline.host.k-dataflow.st-unchanged .wbstroke { stroke: var(--accent); }
+.wblabel.host.k-dataflow { fill: var(--accent); font-weight: 600; }

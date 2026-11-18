@@ -92,6 +92,16 @@
 .wbarrowhead { fill: var(--dim); }
 .wbline.sel .wbarrowhead { fill: var(--accent); }
 .wblabel { font-size: 13px; fill: var(--ink); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+/* a host's lines (setLines): never selected; the host's cls says the rest (diagram.css) */
+.wbline.host .wbstroke { stroke-width: 1.6; }
+.wbline.host.dim { opacity: 0.45; }
+.wbm { stroke-linejoin: round; }
+.wbm.fill { fill: var(--dim); }
+.wbm.open { fill: none; stroke: var(--dim); stroke-width: 1.6; }
+.wbm.tri { fill: var(--bg); stroke: var(--dim); stroke-width: 1.4; }
+.wbm.dim { opacity: 0.55; }
+.wbback { pointer-events: none; }
+.wbro .wbcard { cursor: pointer; }
 
 /* ---------------------------------------------------------------- text fields */
 .wbtext { position: absolute; box-sizing: border-box; min-height: 34px; padding: 6px 10px; border-radius: 6px; cursor: move;

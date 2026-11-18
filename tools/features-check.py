@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -41,6 +41,8 @@ and the task's chip; a throwaway root and home only;
 --qa only the QA mode: a bug drafted and saved, a feature taken to a plan with drafted areas, results, a failure raised as a bug,
 and the dashboard (a throwaway root and home, a stand-in claude, a feature named T-0001; it writes bugs and plans);
 --stories walks only the User Stories board (a root with a board under design/);
+--diagram only a generated diagram, drawn from a sample graph in the page (its one write, a dragged box's place on the
+project's diagram board, is taken back);
 --tasks only the task boards (a root with a board under tasks/: the fixture's Sample);
 --jira only the Jira board (drawn from a sample board, with the page's api() stood in for: nothing is fetched or started);
 --export only Export to Tasks from the first User Stories board. It writes task
@@ -1061,6 +1063,126 @@ def click(p, x, y):
 def key(p, name, code):
     for kind in ("keyDown", "keyUp"):
         p.call("Input.dispatchKeyEvent", type=kind, key=name, code=name, windowsVirtualKeyCode=code)
+
+
+DIAGRAM_VIEW = {
+    "units": [{"id": "WU1", "label": "WU1"}, {"id": "WU2", "label": "WU2"}],
+    "groups": [{"id": "a:Game", "label": "Game", "parent": "", "level": 0},
+               {"id": "n:Game/G.Core", "label": "G.Core", "parent": "a:Game", "level": 1},
+               {"id": "n:Game/G.Lib", "label": "G.Lib", "parent": "a:Game", "level": 1}],
+    "nodes": [
+        {"id": "G.Core.Engine", "label": "Engine", "kind": "class", "stereo": "MonoBehaviour", "group": "n:Game/G.Core", "state": "changed",
+         "units": ["WU1"], "file": "Assets/Engine.cs", "line": 3, "summary": "Runs the game loop.",
+         "members": [{"sig": "public void Tick()", "vis": "public", "kind": "method", "state": "added"}, {"sig": "private int _n", "vis": "private", "kind": "field"}]},
+        {"id": "G.Core.Added", "label": "Added", "kind": "class", "stereo": "class", "group": "n:Game/G.Core", "state": "added",
+         "units": ["WU2"], "file": "Assets/Added.cs", "line": 1, "members": [{"sig": "public int A", "vis": "public", "kind": "field", "state": "added"}]},
+        {"id": "G.Lib.Pool", "label": "Pool", "kind": "class", "stereo": "static", "group": "n:Game/G.Lib", "state": "unchanged",
+         "units": [], "file": "Assets/Pool.cs", "line": 1, "members": []}],
+    "edges": [
+        {"id": "a", "from": "G.Core.Added", "to": "G.Core.Engine", "kind": "inherits", "state": "added", "units": ["WU2"]},
+        {"id": "b", "from": "G.Core.Engine", "to": "G.Lib.Pool", "kind": "uses", "state": "added", "units": ["WU1"]},
+        {"id": "c", "from": "G.Core.Engine", "to": "G.Lib.Pool", "kind": "dataflow", "state": "added", "units": ["WU1"], "label": "spare objects"}],
+    "gedges": [],
+}
+
+
+def check_diagram(p):
+    """A generated diagram (diagram.js on the whiteboard, read-only) drawn from a sample review graph in the
+    page itself, with real mouse input: the class boxes and their states, group frames, the links (a data flow
+    with its words), a work unit turned off and on (its added class goes and comes back where it was), the hover
+    card with its summary, a box dragged (its frame stretches, only its own links move), zoomed out until the
+    groups go solid and back in, and a double-click that adds nothing. Its one write is the dragged box's
+    place, kept on a diagram board of the project (POST /api/whiteboard kind diagram, ref project)."""
+    res = {}
+    try:
+        p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+        p.js("location.hash = '#mode'; 1")
+        time.sleep(0.3)
+        p.js("(() => { const box = document.createElement('div'); box.id = 'dgwalk'; box.className = 'dgwalk';"
+             " box.style.cssText = ''; Object.assign(box.style, { position: 'fixed', left: '0', top: '0', width: '1400px', height: '900px', zIndex: 40, display: 'flex', background: 'var(--bg)' });"
+             f" const d = makeDiagram({{ view: {json.dumps(DIAGRAM_VIEW)}, board: {{ data: {{}}, ref: 'project' }}, scope: 'feature', id: 'dgw' }});"
+             " Object.assign(d.element.style, { flex: '1' }); box.append(d.element); document.body.append(box); window.__dg = d; return 1; })()")
+        wait(p, "document.querySelectorAll('#dgw .dgcard').length >= 3")
+        time.sleep(0.5)
+        res["boxes"] = p.js("[...document.querySelectorAll('#dgw .dgcard')].map(n => n.querySelector('.dgname').textContent + ':' + [...n.classList].find(c => c.startsWith('dg-')))")
+        res["frames"] = p.js("[...document.querySelectorAll('#dgw .dgframe-label')].map(n => n.textContent)")
+        res["lines"] = p.js("document.querySelectorAll('#dgw .wbline.host').length")
+        res["inherits"] = p.js("!!document.querySelector('#dgw .wbline.host.k-inherits .wbstroke[marker-end]')")
+        res["flowWords"] = p.js("[...document.querySelectorAll('#dgw .wblabel.host.k-dataflow')].map(t => t.textContent)")
+        res["noTools"] = p.js("!document.querySelector('#dgw .wbtools')")
+        at = "(id => { const n = document.querySelector(`#dgw [data-wb=\"${id}\"]`); if (!n) return null; const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + 20]; })"
+        # the unchanged type a change links to is in a closed, greyed group: a click opens it
+        res["quietTile"] = p.js("!!document.querySelector('#dgw [data-wb=\"g:n:Game/G.Lib\"].dg-quiet')")
+        x, y = p.js(at + "('g:n:Game/G.Lib')")
+        click(p, x, y)
+        res["opened"] = wait(p, "!!document.querySelector('#dgw [data-wb=\"c:G.Lib.Pool\"].dg-unchanged')")
+        p.js("document.querySelector('#dgw-fit').click(); 1")
+        time.sleep(0.6)
+        before = p.js(at + "('c:G.Core.Added')")
+        p.js("[...document.querySelectorAll('#dgwalk .dgunit')].find(b => b.textContent === 'WU2').click(); 1")
+        time.sleep(0.3)
+        res["unitOff"] = p.js("!document.querySelector('#dgw [data-wb=\"c:G.Core.Added\"]') && document.querySelectorAll('#dgw .wbline.host.k-inherits').length === 0")
+        p.js("[...document.querySelectorAll('#dgwalk .dgunit')].find(b => b.textContent === 'WU2').click(); 1")
+        time.sleep(0.3)
+        res["unitBackInPlace"] = p.js(at + "('c:G.Core.Added')") == before
+        p.js("[...document.querySelectorAll('#dgwalk .dgunit')].find(b => b.textContent === 'WU1').click(); 1")
+        time.sleep(0.3)
+        res["changedLooksUnchangedWithItsUnitOff"] = p.js("document.querySelector('#dgw [data-wb=\"c:G.Core.Engine\"]').classList.contains('dg-unchanged')")
+        p.js("[...document.querySelectorAll('#dgwalk .dgunit')].find(b => b.textContent === 'WU1').click(); 1")
+        time.sleep(0.3)
+        # the hover card
+        x, y = p.js(at + "('c:G.Core.Engine')")
+        p.call("Input.dispatchMouseEvent", type="mouseMoved", x=x - 40, y=y - 40, button="none", buttons=0)
+        p.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y, button="none", buttons=0)
+        res["hover"] = wait(p, "!!document.querySelector('.dgpeek') && document.querySelector('.dgpeek').innerText.includes('Runs the game loop.')")
+        res["hoverLinksStandOut"] = p.js("document.querySelectorAll('#dgw .wbline.host.dg-near').length >= 1")
+        p.call("Input.dispatchMouseEvent", type="mouseMoved", x=5, y=890, button="none", buttons=0)
+        wait(p, "!document.querySelector('.dgpeek')")
+        # a drag: the frame stretches, the line to it moves, the other line is the same node untouched
+        lib_frame = "(() => { const f = [...document.querySelectorAll('#dgw .dgframe')].find(n => n.querySelector('.dgframe-label').textContent.includes('G.Lib')); return f ? f.style.top : ''; })()"
+        frame0 = p.js(lib_frame)
+        p.js("window.__ln = [...document.querySelectorAll('#dgw .wbline.host')]; window.__d0 = __ln.map(g => g.querySelector('.wbstroke').getAttribute('d')); 1")
+        x, y = p.js(at + "('c:G.Lib.Pool')")
+        # mid-drag: the line that doesn't touch the box is the same node, its path as it was
+        mouse(p, "mousePressed", x, y)
+        for i in range(1, 6):
+            mouse(p, "mouseMoved", x + 2 * i, y + 32 * i)
+        time.sleep(0.2)
+        res["otherLinesUntouched"] = p.js("(() => { const g = __ln.find(g => g.classList.contains('k-inherits')); const i = __ln.indexOf(g);"
+                                          " return !!g && g.isConnected && g.querySelector('.wbstroke').getAttribute('d') === __d0[i]; })()")
+        res["ownLinesFollow"] = p.js("(() => { const g = __ln.find(g => g.classList.contains('k-uses')); const i = __ln.indexOf(g);"
+                                     " return !!g && g.isConnected && g.querySelector('.wbstroke').getAttribute('d') !== __d0[i]; })()")
+        mouse(p, "mouseReleased", x + 10, y + 160)
+        time.sleep(0.4)
+        res["dragged"] = p.js("JSON.stringify(__dg.board.cardAt('c:G.Lib.Pool'))")
+        res["frameFollows"] = frame0 != p.js(lib_frame)  # (its one box moved: the frame round it went too)
+        server = p.js("(async () => JSON.stringify((await api('/api/whiteboard?kind=diagram&ref=project')).cards['c:G.Lib.Pool'] || null))()")
+        res["dragKept"] = server not in (None, "null")
+        # zoom out: the groups go solid; in again: the classes are back
+        for _ in range(12):
+            p.js("(() => { const b = document.querySelector('#dgw'); const r = b.getBoundingClientRect(); b.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true })); return 1; })()")
+            time.sleep(0.05)
+        time.sleep(0.6)
+        res["zoomedOut"] = p.js("document.querySelector('#dgw .zoom-pct').textContent")
+        res["solid"] = p.js("document.querySelectorAll('#dgw .dgsolid').length > 0 && document.querySelectorAll('#dgw .dgcard').length === 0")
+        for _ in range(14):
+            p.js("(() => { const b = document.querySelector('#dgw'); const r = b.getBoundingClientRect(); b.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true })); return 1; })()")
+            time.sleep(0.05)
+        time.sleep(0.6)
+        res["zoomedIn"] = p.js("document.querySelectorAll('#dgw .dgcard').length === 3 && document.querySelectorAll('#dgw .dgsolid').length === 0")
+        # read-only: a double-click on the background writes nothing
+        p.js("document.querySelector('#dgw-fit').click(); 1")
+        time.sleep(0.6)
+        r = p.js("(() => { const r = document.querySelector('#dgw').getBoundingClientRect(); return [r.left + 20, r.bottom - 120]; })()")
+        p.call("Input.dispatchMouseEvent", type="mousePressed", x=r[0], y=r[1], button="left", buttons=1, clickCount=2)
+        p.call("Input.dispatchMouseEvent", type="mouseReleased", x=r[0], y=r[1], button="left", buttons=0, clickCount=2)
+        time.sleep(0.3)
+        res["dblclickAddsNothing"] = p.js("!document.querySelector('#dgw .wbtext')")
+        res["errors"] = p.js("window.__errs || []")
+        p.js("(async () => { await api('/api/whiteboard', { kind: 'diagram', ref: 'project', cards: { 'c:G.Lib.Pool': null } }); document.querySelector('#dgwalk').remove(); return 1; })()")
+    except Exception as e:  # report how far it got
+        res["error"] = str(e)[:400]
+    return res
 
 
 def check_whiteboard(p):
@@ -2522,9 +2644,9 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
-                                "--whiteboard": check_whiteboard, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
+                                "--whiteboard": check_whiteboard, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
                                 "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
             print(json.dumps(out, indent=1))
             return 0

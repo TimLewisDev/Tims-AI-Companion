@@ -5,7 +5,7 @@
 // a click on one does; the board places and moves them, and saves where
 // everything is and what was added (POST /api/whiteboard; server.py,
 // "whiteboards"). Used by stories.js (a User Stories board), whiteboards.js
-// (blank ones) and features.js (a feature's).
+// (blank ones), features.js (a feature's) and diagram.js (a generated diagram, read-only).
 // Uses app.js's el, api, mdNode and calm.
 "use strict";
 
@@ -31,14 +31,24 @@ const WB_COMMENT = 26; // a comment's marker, square
 //   tools: [{ id, label, key, title, at(x, y) }]: the host's own placing tools
 //   corner: a node pinned top right (stories' group panel)
 //   empty: what an empty board says
-// The board: { element, setCards(list), frame(ids, ease), outline(ids, label, cls),
-//   reload(data), zoomBy(f), toWorld(cx, cy), setTool(id), cardAt(id) }.
-// A card is { id, node, w, h }; the board positions its node and marks it.
+//   readOnly: nothing can be added (no tools, no double-click text, no Delete): the host's
+//     cards still drag, and the view pans and zooms
+//   savePlaced: false: where o.place puts a card isn't saved (only a drag is)
+//   onZoom(z): the zoom changed (each drawn frame of a gesture too: keep it cheap)
+//   onDragging(id): a host card is being dragged (each frame)
+//   zmin: how far out the view may zoom (WB_ZMIN when not given)
+// The board: { element, back, setCards(list), setLines(list), placeCards(pos, keep), forget(ids), frame(ids, ease),
+//   outline(ids, label, cls), reload(data), zoomBy(f), toWorld(cx, cy), setTool(id), cardAt(id),
+//   view() }.
+// A card is { id, node, w, h }; the board positions its node and marks it. back is a layer
+// under the cards, in board units, for the host's own drawing (a diagram's group frames).
+// A host line is { id, from, to, end: "arrow" | "open" | "tri" | "", cls, label, dim }: drawn
+// curved between two cards, never saved, never selected; cls styles it (whiteboard.css .wbline.host).
 function makeWhiteboard(o) {
   const me = Math.random().toString(36).slice(2, 10); // this board's client id: its own changes aren't news to it
   const uid = "wb" + me;
   const num = (v, d) => (typeof v === "number" && isFinite(v) ? v : d);
-  const clampZ = z => Math.min(WB_ZMAX, Math.max(WB_ZMIN, z));
+  const clampZ = z => Math.min(WB_ZMAX, Math.max(o.zmin || WB_ZMIN, z));
   const newId = () => "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const NS = "http://www.w3.org/2000/svg";
   const svg = (tag, attrs = {}) => {
@@ -55,6 +65,10 @@ function makeWhiteboard(o) {
   const nodes = new Map(); // item id -> node
   const fresh = new Set(); // items made here and not saved yet (they have no text)
   let tool = "select", sel = null, lineFrom = "", editing = "", openComment = "", hideResolved = false, pending = false;
+  let hostLines = new Map(); // id -> a host line (setLines)
+  const lineEls = new Map(); // line id -> { g, paths, text } as drawn
+  const ends = new Map(); // card or item id -> Set of the line ids drawn to it
+  let layerBox = null; // [x0, y0, x1, y1] the line layer covers now
 
   // ----------------------------------------------------------- the nodes
 
@@ -63,18 +77,36 @@ function makeWhiteboard(o) {
   marker.append(svg("path", { d: "M0,0 L10,5 L0,10 z", class: "wbarrowhead" }));
   const defs = svg("defs");
   defs.append(marker);
+  // A host line's end, made the first time it's asked for: a filled arrow, an open one, or a
+  // hollow triangle (a class diagram's "inherits"); a dimmed one for greyed lines.
+  const ENDS = { arrow: ["M0,0 L10,5 L0,10 z", "wbm fill"], open: ["M0,0 L10,5 L0,10", "wbm open"], tri: ["M0,0 L10,5 L0,10 z", "wbm tri"] };
+  function endMarker(end, dim) {
+    const id = `${uid}-${end}${dim ? "-dim" : ""}`;
+    if (!defs.querySelector("#" + id)) {
+      const m = svg("marker", { id, viewBox: "-1 -1 12 12", refX: "10", refY: "5", markerWidth: end === "tri" ? "11" : "8",
+        markerHeight: end === "tri" ? "11" : "8", orient: "auto-start-reverse", markerUnits: "userSpaceOnUse" });
+      m.append(svg("path", { d: ENDS[end][0], class: ENDS[end][1] + (dim ? " dim" : "") }));
+      defs.append(m);
+    }
+    return `url(#${id})`;
+  }
   const linesG = svg("g");
   const layer = svg("svg", { class: "wblines", width: "0", height: "0" });
   layer.append(defs, linesG);
+  // a host line's label goes over the cards (a line runs under them, its words must not)
+  const labelsG = svg("g");
+  const labelLayer = svg("svg", { class: "wblines wblabels", width: "0", height: "0" });
+  labelLayer.append(labelsG);
   const frameBox = el("div", { class: "gframe", hidden: true });
+  const backBox = el("div", { class: "wblayer wbback" });
   const cardsBox = el("div", { class: "wblayer wbcards" });
   const itemsBox = el("div", { class: "wblayer" });
   // The world is the camera (where the view is) and its content what is on the
   // board, in the board's own units (see "drawing").
-  const content = el("div", { class: "wbcontent" }, layer, frameBox, cardsBox, itemsBox);
+  const content = el("div", { class: "wbcontent" }, backBox, layer, frameBox, cardsBox, labelLayer, itemsBox);
   const world = el("div", { class: "world", id: o.id ? o.id + "-world" : null }, content);
 
-  const tools = [...WB_TOOLS, ...(o.tools || [])];
+  const tools = o.readOnly ? [] : [...WB_TOOLS, ...(o.tools || [])];
   const toolBtns = new Map();
   const resolvedBtn = el("button", { type: "button", class: "wbtool wbresolved", title: "Hide resolved comments", "aria-pressed": "false",
     onclick: () => {
@@ -99,7 +131,7 @@ function makeWhiteboard(o) {
   const hint = el("div", { class: "wbhint", hidden: true, role: "status" });
   const empty = o.empty ? el("div", { class: "wbempty dim" }, o.empty) : "";
   if (o.corner) o.corner.classList.add("wbui");
-  const board = el("div", { class: "board wb", id: o.id || null, tabindex: "0" }, world, toolbar, zoomctl, o.corner || "", pop, hint, empty);
+  const board = el("div", { class: "board wb" + (o.readOnly ? " wbro" : ""), id: o.id || null, tabindex: "0" }, world, o.readOnly ? "" : toolbar, zoomctl, o.corner || "", pop, hint, empty);
 
   // ----------------------------------------------------------- where things are
 
@@ -158,7 +190,7 @@ function makeWhiteboard(o) {
   const WB_SHRUNK = 0.6; // zoomed out past this share of `drawn` mid-gesture: draw again,
   // or the picture has to fill far more of the board at the larger size
   let queued = 0, still = null, easeTimer = null, rect = null, gesture = false;
-  let drawn = view.z, drawnAt = 0;
+  let drawn = view.z, drawnAt = 0, toldZ = NaN;
 
   function draw() {
     world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z / drawn})`;
@@ -166,6 +198,7 @@ function makeWhiteboard(o) {
     const pct = Math.round(view.z * 100) + "%";
     if (zoomPct.textContent !== pct) zoomPct.textContent = pct; // a pan leaves it as it is: nothing to draw again
     movePop();
+    if (o.onZoom && view.z !== toldZ) { toldZ = view.z; o.onZoom(view.z); }
   }
 
   // A gesture is moving the view (an ease going on stops where it was going).
@@ -253,36 +286,101 @@ function makeWhiteboard(o) {
     if (empty) empty.hidden = cards.size + Object.keys(data.items).length > 0;
   }
 
+  // A line's shape: straight for a person's line, a gentle curve for a host's (bent the other
+  // way when a line also runs back, so the two don't lie on each other). [d, label x, label y, box].
+  function lineShape(a, b, curved, back) {
+    const p1 = edge(a, centre(b)), p2 = edge(b, centre(a));
+    if (!curved) {
+      return [`M${p1[0]},${p1[1]} L${p2[0]},${p2[1]}`, (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2 - 6,
+        [Math.min(p1[0], p2[0]), Math.min(p1[1], p2[1]), Math.max(p1[0], p2[0]), Math.max(p1[1], p2[1])]];
+    }
+    const dx = p2[0] - p1[0], dy = p2[1] - p1[1], len = Math.hypot(dx, dy) || 1;
+    const bend = (back ? 18 : 0) + Math.min(40, len * 0.08);
+    const nx = -dy / len * bend, ny = dx / len * bend;
+    const c1 = [p1[0] + dx * 0.3 + nx, p1[1] + dy * 0.3 + ny], c2 = [p1[0] + dx * 0.7 + nx, p1[1] + dy * 0.7 + ny];
+    const mx = 0.125 * p1[0] + 0.375 * c1[0] + 0.375 * c2[0] + 0.125 * p2[0];
+    const my = 0.125 * p1[1] + 0.375 * c1[1] + 0.375 * c2[1] + 0.125 * p2[1];
+    const xs = [p1[0], p2[0], c1[0], c2[0]], ys = [p1[1], p2[1], c1[1], c2[1]];
+    return [`M${p1[0]},${p1[1]} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${p2[0]},${p2[1]}`, mx, my - 5,
+      [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]];
+  }
+
+  function lineEl(id, ln, host) {
+    const a = boxOf(ln.from), b = boxOf(ln.to);
+    if (!a || !b) return null; // an end is gone (or hidden): kept, not drawn
+    const back = host && hostLines.has(ln.back || "");
+    const [d, lx, ly, box] = lineShape(a, b, host, back);
+    const g = host ? svg("g", { class: "wbline host" + (ln.cls ? " " + ln.cls : "") + (ln.dim ? " dim" : "") })
+      : svg("g", { class: "wbline" + (sel && sel.id === id ? " sel" : ""), "data-line": id });
+    const stroke = svg("path", { d, class: "wbstroke" });
+    if (host ? ln.end : ln.arrow) stroke.setAttribute("marker-end", host ? endMarker(ln.end, ln.dim) : `url(#${uid}-arrow)`);
+    const paths = host ? [stroke] : [svg("path", { d, class: "wbhit" }), stroke];
+    g.append(...paths);
+    let text = null;
+    if (ln.label) {
+      text = svg("text", { x: String(lx), y: String(ly), class: "wblabel" + (host ? " host" + (ln.cls ? " " + ln.cls : "") + (ln.dim ? " dim" : "") : ""), "text-anchor": "middle" });
+      text.textContent = ln.label;
+      if (host) labelsG.append(text); else g.append(text);
+    }
+    return { g, paths, text, ln, host, box };
+  }
+
   function drawLines() {
     linesG.replaceChildren();
+    labelsG.replaceChildren();
+    lineEls.clear();
+    ends.clear();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [id, ln] of Object.entries(data.lines)) {
-      const a = boxOf(ln.from), b = boxOf(ln.to);
-      if (!a || !b) continue; // an end is gone (or hidden): kept, not drawn
-      const p1 = edge(a, centre(b)), p2 = edge(b, centre(a));
-      x0 = Math.min(x0, p1[0], p2[0]); y0 = Math.min(y0, p1[1], p2[1]);
-      x1 = Math.max(x1, p1[0], p2[0]); y1 = Math.max(y1, p1[1], p2[1]);
-      const d = `M${p1[0]},${p1[1]} L${p2[0]},${p2[1]}`;
-      const g = svg("g", { class: "wbline" + (sel && sel.id === id ? " sel" : ""), "data-line": id });
-      const stroke = svg("path", { d, class: "wbstroke" });
-      if (ln.arrow) stroke.setAttribute("marker-end", `url(#${uid}-arrow)`);
-      g.append(svg("path", { d, class: "wbhit" }), stroke);
-      if (ln.label) {
-        const t = svg("text", { x: String((p1[0] + p2[0]) / 2), y: String((p1[1] + p2[1]) / 2 - 6), class: "wblabel", "text-anchor": "middle" });
-        t.textContent = ln.label;
-        g.append(t);
-      }
-      linesG.append(g);
-    }
-    // The layer is only as big as its lines: a huge one is slow to draw and to move.
-    const has = x0 <= x1, pad = WB_LINE_PAD;
-    if (!has) x0 = y0 = x1 = y1 = 0;
+    const add = (id, ln, host) => {
+      const got = lineEl(id, ln, host);
+      if (!got) return;
+      lineEls.set(id, got);
+      for (const end of [ln.from, ln.to]) { if (!ends.has(end)) ends.set(end, new Set()); ends.get(end).add(id); }
+      x0 = Math.min(x0, got.box[0]); y0 = Math.min(y0, got.box[1]);
+      x1 = Math.max(x1, got.box[2]); y1 = Math.max(y1, got.box[3]);
+      linesG.append(got.g);
+    };
+    for (const [id, ln] of hostLines) add(id, ln, true);
+    for (const [id, ln] of Object.entries(data.lines)) add(id, ln, false);
+    sizeLayer(x0 <= x1 ? [x0, y0, x1, y1] : null);
+    movePop();
+  }
+
+  // The layer is only as big as its lines: a huge one is slow to draw and to move.
+  function sizeLayer(box) {
+    layerBox = box;
+    const pad = WB_LINE_PAD, [x0, y0, x1, y1] = box || [0, 0, 0, 0];
     layer.style.left = x0 - pad + "px";
     layer.style.top = y0 - pad + "px";
-    layer.setAttribute("width", has ? String(x1 - x0 + pad * 2) : "0");
-    layer.setAttribute("height", has ? String(y1 - y0 + pad * 2) : "0");
+    layer.setAttribute("width", box ? String(x1 - x0 + pad * 2) : "0");
+    layer.setAttribute("height", box ? String(y1 - y0 + pad * 2) : "0");
     linesG.setAttribute("transform", `translate(${pad - x0},${pad - y0})`);
-    movePop();
+    const hasLabels = labelsG.childNodes.length > 0;
+    labelLayer.style.left = layer.style.left;
+    labelLayer.style.top = layer.style.top;
+    labelLayer.setAttribute("width", hasLabels ? layer.getAttribute("width") : "0");
+    labelLayer.setAttribute("height", hasLabels ? layer.getAttribute("height") : "0");
+    labelsG.setAttribute("transform", `translate(${pad - x0},${pad - y0})`);
+  }
+
+  // The lines to one thing, drawn again where it is now (a drag): the rest are left as they
+  // are, and the layer only grows (it is sized to fit again when the drag ends).
+  function redrawLinesOf(id) {
+    const ids = ends.get(id);
+    if (!ids) return;
+    let box = layerBox ? [...layerBox] : null;
+    for (const lid of ids) {
+      const cur = lineEls.get(lid);
+      if (!cur) continue;
+      const a = boxOf(cur.ln.from), b = boxOf(cur.ln.to);
+      if (!a || !b) continue;
+      const [d, lx, ly, lb] = lineShape(a, b, cur.host, cur.host && hostLines.has(cur.ln.back || ""));
+      for (const p of cur.paths) p.setAttribute("d", d);
+      if (cur.text) { cur.text.setAttribute("x", String(lx)); cur.text.setAttribute("y", String(ly)); }
+      cur.box = lb;
+      box = box ? [Math.min(box[0], lb[0]), Math.min(box[1], lb[1]), Math.max(box[2], lb[2]), Math.max(box[3], lb[3])] : [...lb];
+    }
+    if (box && (!layerBox || box.some((v, i) => v !== layerBox[i]))) sizeLayer(box);
   }
 
   function textNode(id, it) {
@@ -607,6 +705,7 @@ function makeWhiteboard(o) {
   board.addEventListener("auxclick", e => { if (e.button === 1) e.preventDefault(); });
   board.addEventListener("contextmenu", e => { if (!e.target.closest("input, textarea")) e.preventDefault(); });
 
+  let dragFrame = 0;
   board.addEventListener("pointermove", e => {
     if (!drag) return;
     const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
@@ -624,6 +723,15 @@ function makeWhiteboard(o) {
     if (cards.has(drag.id)) {
       data.cards[drag.id] = [s[0] + kx, s[1] + ky];
       positionCard(drag.id);
+      drag.node.classList.add("dragging");
+      // only this card's lines (and what is pinned to it) move: not every line on the board
+      if (Object.values(data.items).some(it => it.pin === drag.id)) layout();
+      else redrawLinesOf(drag.id);
+      if (o.onDragging && !dragFrame) {
+        const id = drag.id;
+        dragFrame = requestAnimationFrame(() => { dragFrame = 0; o.onDragging(id); });
+      }
+      return;
     } else {
       const it = data.items[drag.id];
       if (!it) return;
@@ -657,6 +765,7 @@ function makeWhiteboard(o) {
     if (d.moved) {
       if (cards.has(d.id)) {
         save({ cards: { [d.id]: data.cards[d.id] } });
+        drawLines(); // the layer sized to the lines again
         if (o.onMoved) o.onMoved(d.id);
       } else {
         // a comment let go over a card or a text pins to it
@@ -678,7 +787,7 @@ function makeWhiteboard(o) {
   board.addEventListener("pointercancel", end);
 
   board.addEventListener("dblclick", e => {
-    if (e.target.closest(".wbui, textarea, input")) return;
+    if (o.readOnly || e.target.closest(".wbui, textarea, input")) return;
     const t = e.target.closest(".wbtext");
     if (t) editText(t.dataset.wb);
     else if (!e.target.closest("[data-wb], [data-line]") && tool === "select") {
@@ -713,7 +822,7 @@ function makeWhiteboard(o) {
       else if (o.onEscape) o.onEscape();
       return;
     }
-    if ((e.key === "Delete" || e.key === "Backspace") && sel) { e.preventDefault(); removeThing(sel.id); return; }
+    if ((e.key === "Delete" || e.key === "Backspace") && sel && !o.readOnly) { e.preventDefault(); removeThing(sel.id); return; }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "+" || e.key === "=") zoomBy(1.25);
     else if (e.key === "-") zoomBy(1 / 1.25);
@@ -780,13 +889,43 @@ function makeWhiteboard(o) {
       cards.set(c.id, { node: c.node, w: c.w, h: c.h });
       if (!Array.isArray(data.cards[c.id])) {
         data.cards[c.id] = o.place ? o.place(c.id, data.cards) : [0, 0];
-        placed[c.id] = data.cards[c.id];
+        if (o.savePlaced !== false) placed[c.id] = data.cards[c.id];
       }
       if (c.node.parentNode !== cardsBox) cardsBox.append(c.node);
       positionCard(c.id);
     }
     if (Object.keys(placed).length) save({ cards: placed });
     layout();
+  }
+
+  // The host's lines (setLines): all of them, each time.
+  function setLines(list) {
+    hostLines = new Map((list || []).map(l => [l.id, l]));
+    for (const l of hostLines.values()) l.back = `${l.to}>${l.from}`;
+    // (a line running back is the one whose id is back's: hosts name lines "<from>><to>")
+    for (const l of hostLines.values()) if (!hostLines.has(l.back)) l.back = "";
+    drawLines();
+  }
+
+  // Put cards where the host says (a layout), without saving unless keep (a host's own move of
+  // several at once, e.g. a group dragged): a person's drag is saved by the board itself.
+  function placeCards(pos, keep) {
+    const kept = {};
+    for (const [id, p] of Object.entries(pos || {})) {
+      if (!Array.isArray(p)) continue;
+      data.cards[id] = [p[0], p[1]];
+      kept[id] = data.cards[id];
+      positionCard(id);
+    }
+    if (keep && Object.keys(kept).length) save({ cards: kept });
+    drawLines();
+  }
+
+  // Forget where these cards were put (saved as no place): the host places them again.
+  function forget(ids) {
+    const gone = {};
+    for (const id of ids || []) { delete data.cards[id]; gone[id] = null; }
+    if (Object.keys(gone).length) save({ cards: gone });
   }
 
   // The board as the server has it now (another window changed it). Put off
@@ -828,6 +967,6 @@ function makeWhiteboard(o) {
   setTool("select");
   drawItems();
   applyView(false);
-  return { element: board, setCards, frame, outline, zoomBy, toWorld, setTool, reload: take,
-    cardAt: id => data.cards[id] };
+  return { element: board, back: backBox, setCards, setLines, placeCards, forget, frame, outline, zoomBy, toWorld, setTool,
+    reload: take, cardAt: id => data.cards[id], view: () => ({ ...view }) };
 }

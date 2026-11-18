@@ -19,7 +19,8 @@ async function reviewPage(f, main) {
   let at = Math.max(0, items.findIndex(i => i.decision === "—"));
 
   const facts = el("div", { class: "small dim" }, "Branch ", el("code", {}, d.head.Branch || "?"), d.head.Base ? [" against ", el("code", {}, d.head.Base)] : "",
-    d.head.Reviewed ? [" · reviewed at ", el("code", {}, d.head.Reviewed.slice(0, 10))] : "", " · ", el("a", { href: featureHref(f.name, d.doc) }, "the document"));
+    d.head.Reviewed ? [" · reviewed at ", el("code", {}, d.head.Reviewed.slice(0, 10))] : "", " · ", el("a", { href: featureHref(f.name, d.doc) }, "the document"),
+    typeof featureDiagramHref === "function" ? [" · ", el("a", { href: featureDiagramHref(f.name, "review") }, "the diagram of what it changes")] : "");
 
   const counts = () => `${items.length - undecided().length} of ${items.length} decided`;
 

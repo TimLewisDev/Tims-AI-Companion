@@ -7,11 +7,11 @@
 const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
-  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"),
+  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"),
   qa: $("#page-qa"), qabug: $("#page-qabug"), qaplan: $("#page-qaplan") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering", jira: "production", tasks: "production", taskboard: "production",
+const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", jira: "production", tasks: "production", taskboard: "production",
   designs: "design", design: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
 // name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
 // decisions are painted from it (paintDecisions).
@@ -140,6 +140,7 @@ window.addEventListener("hashchange", closeSidePanel);
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #workflows/<session tag>[/ask/<question id>] · #chats/<chat id> (chat.js)
 // · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/code-diff (diff.js)
+// · #feature/<name>/diagram[/plan|/review] · #diagram (the Project diagram; diagram.js)
 // · #toolbox · #settings · #shop (shop.js) · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
@@ -149,8 +150,10 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate" };
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate",
+      diagram: parts[2] === "diagram" ? (parts[3] === "plan" || parts[3] === "review" ? parts[3] : "any") : "" };
   }
+  if (parts[0] === "diagram") return { page: "diagram" };
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
   if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
@@ -185,6 +188,7 @@ const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
 const featureBoardHref = name => "#feature/" + encodeURIComponent(name) + "/whiteboard";
 const featureValidateHref = name => "#feature/" + encodeURIComponent(name) + "/validate";
 const featureDiffHref = name => "#feature/" + encodeURIComponent(name) + "/code-diff";
+const featureDiagramHref = (name, kind) => "#feature/" + encodeURIComponent(name) + "/diagram" + (kind ? "/" + kind : "");
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
@@ -235,7 +239,12 @@ async function route() {
       clearInterval(homeTimer);
       homeTimer = setInterval(() => { if (!document.hidden && onFeatureList()) renderHome(true); }, 30000);
     }
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate, r.diagram);
+  else if (r.page === "diagram") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderProjectDiagram === "function") renderProjectDiagram(pageEls.diagram);
+    else pageEls.diagram.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "shop") {
     // A server started before an update serves the new pages but not a new script of theirs.
@@ -695,7 +704,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate) {
+async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate, diagram) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -723,9 +732,9 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     if (mine !== routeSeq) return; // (the person has gone elsewhere while it was read)
   }
   const main = el("div", { class: "fmain" });
-  const opts = { commit, suggestions, diff, decide, validate };
+  const opts = { commit, suggestions, diff, decide, validate, diagram };
   box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name), main));
-  featureView = { name, doc, board, opts, overview: !doc && !board && !commit && !suggestions && !diff && !decide && !validate, sig: decideSig(f) };
+  featureView = { name, doc, board, opts, overview: !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram, sig: decideSig(f) };
   // What is drawn is what was read last time; it is read again behind the page, and the page is
   // redrawn if anything changed (a decision written, a session started).
   if (!doc && cached) refreshFeature(name);
@@ -734,7 +743,10 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
   else if (suggestions) await reviewPage(f, main); // review-page.js
   else if (commit) await commitPage(f, main); // commit.js
   else if (board) await featureBoard(f, main);
-  else if (diff) {
+  else if (diagram) {
+    if (typeof featureDiagram === "function") await featureDiagram(f, main, diagram); // diagram.js
+    else main.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  } else if (diff) {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderCodeDiff === "function") renderCodeDiff(main, f);
     else main.replaceChildren(el("p", { class: "pad st missing" },
@@ -824,8 +836,9 @@ function featureNav(f, current, board, opts = {}) {
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
     f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
-    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate && !opts.diagram),
     item("Whiteboard", featureBoardHref(f.name), !!board),
+    item("Diagram", featureDiagramHref(f.name), !!opts.diagram), // diagram.js
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
     f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
@@ -1862,6 +1875,8 @@ async function showDoc(f, file, main, at) {
         el("h2", {}, meta ? (meta.doc || meta.name) : file),
         el("div", { class: "mode-toggle", role: "group", "aria-label": "Document mode" }, buttons.view, buttons.edit),
         changedAt,
+        // a plan can be seen as a diagram (diagram.js)
+        meta && /Tech Plan$|Lite Brief$/.test(meta.doc || "") ? el("a", { class: "small", href: featureDiagramHref(f.name, "plan") }, "View as a diagram") : "",
         el("span", { class: "right" }, copyable(d.path))),
       body);
     render();

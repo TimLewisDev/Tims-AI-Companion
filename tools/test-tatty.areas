@@ -25,6 +25,9 @@ file	tools/test-tatty.sections	*
 file	tools/test-tatty.areas	*
 file	tools/test-compact-chat.py	compactchat
 file	tools/test-tatty-cache.py	cache
+file	tools/test-tatty-diagram.py	diagrams
+file	plugins/tatty/app/diagram.py	diagrams
+file	plugins/tatty/app/web/diagram*	diagrams
 file	tools/build-installer.ps1	prebuilt,desktop
 file	plugins/tatty/scripts/tatty.sh	*
 file	plugins/tatty/scripts/tatty-root.sh	root,features,newfeature
@@ -57,7 +60,8 @@ banner	^Jira	jira,tasks
 banner	^planning IDs	planids
 banner	^questions	decide
 banner	^design \(user stories\)	stories,whiteboards,cache
-banner	^whiteboards	whiteboards,stories
+banner	^whiteboards	whiteboards,stories,diagrams
+banner	^diagrams	diagrams
 banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
 banner	^QA	qa
 banner	^archiving	archive

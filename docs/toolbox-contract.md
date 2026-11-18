@@ -128,6 +128,7 @@ connections", below), by argv, with no shell.
 | File | For |
 |---|---|
 | `<feature>/<Prefix> - <Doc>.md` and `<feature>/.tt/**/*.md` | a feature's documents and working notes: their order, the Stages table of a draft Comprehensive Tech Plan, the Work Unit and Task Boards of a Task Status, `Repo` paths |
+| a feature's Comprehensive Tech Plan (else Tech Plan, else Lite Brief), Task Status and `.tt/**/results/*.md` | its diagrams: the plan's `## Implementation Plan` (`### §n.` steps, their `**Files:**` lists and code), `## Affected Files` and `## Chosen Approach` for the Plan diagram; the Task Board's `Work unit` column and each result's `## Files Modified` (`change \`path\``) for a Review diagram's work units. Read only; if a heading or column is missing the diagram has no steps or units, nothing fails |
 | `${TT_EVENTS_HOME:-~/.claude/tt-events}/events.jsonl` | a feature's timeline and its project, and **followed as it is written** for the milestones Tatty celebrates (`folder`, `event`, `ts`, `key`, `prefix`, `qualifier`, `route`, `project`, …; see the toolbox's `tt-common/events.md`, which names a companion app as a reader) |
 | `${TT_WORKFLOW_HOME:-~/.claude/tt-workflow}/links.tsv`, `lite-links.tsv` | which project a feature folder is linked to, and the other way: which feature a session's project (its git root) is linked to |
 | `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json` | open sessions' names, so a new one isn't given the same name; a session's `cwd`, by its `sessionId` |
@@ -555,6 +556,11 @@ are therefore Tatty's own, outside the workflow's records:
     (repository, branch, the branch it was made from) and the state of its
     pull / merge request (see below);
   - `settings.json`: what the Settings page sets;
+  - `diagrams/` (in the project's home): the generated diagrams (`project.json`,
+    `review-<hash>.json`, `plan-<hash>.json`), each repository's parsed C# files
+    by git blob (`index-<hash>.json`), the hover summaries (`summaries.json`),
+    the Project diagram's repository and folders left out (`settings.json`), and
+    where boxes were dragged (`boards/`);
   - `session-models.json`: the model and effort each feature's workflow was
     started on, for its chats;
   - `sessions-cache.json`: the sessions going (and their feed) when an update

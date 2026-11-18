@@ -1555,6 +1555,87 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   `<home>/whiteboards/.deleted/`).
 - **A feature's whiteboard** (`#feature/<name>/whiteboard`, the **Whiteboard**
   item in its left rail): its documents are the cards, and a click opens one.
+- **For a generated diagram** (see "Generated diagrams") the board has options no
+  other host uses: `readOnly` (no tools, no double-click text, no Delete),
+  `savePlaced: false` (only a drag is saved, not where `place` put a card),
+  `onZoom`, `onDragging`, `zmin`, a `back` layer under the cards (the group
+  frames), `setLines` (the host's lines: curved, with an end of their own (a
+  filled or open arrow, a hollow triangle), never saved or selected; their words
+  over the cards), `placeCards(pos, keep)` and `forget(ids)`. For every host, a
+  card's drag now draws only that card's lines again (the layer only grows while
+  it goes on, and is sized again at the drop).
+
+## Generated diagrams
+
+A class diagram of C# code, drawn on the whiteboard (read-only), in three places:
+
+- **The Project diagram** (`#diagram`, the Engineering home's **Project diagram** tile): the whole repository at
+  HEAD. The repository is the one chosen on the page, else the project's code repo; folders can be left out
+  (by default `Packages/com.unity.`, `Library/`, `Temp/`, `obj/`, `bin/`).
+- **A feature's Review diagram** (`#feature/<name>/diagram/review`, the **Diagram** rail item, and a link on the
+  Review page): its branch against the commit it left its base at (`git merge-base` of the recorded base, else
+  origin's default branch, and the branch). The types it adds, changes ("changed": base list or members differ;
+  "edited": only bodies) and removes, with the unchanged types they link to, greyed.
+- **A feature's Plan diagram** (`#feature/<name>/diagram/plan`, and "View as a diagram" on a plan document): drawn
+  by a model from the Comprehensive Tech Plan (else the Tech Plan or Lite Brief) and joined to the code.
+
+**Reading the code (no LLM).** `app/diagram.py`, standard library only. `parse_cs` blanks comments, strings, char
+literals and preprocessor lines, then walks the `{ } ;` segments: namespaces (block and file-scoped), types
+(class, struct, interface, enum, record, nested ones too) with their base lists, members (fields, properties,
+methods, events; enum values) and the type names each body mentions. `Model` merges partial types and resolves a
+name only when it is visible (the type's own nested types and those round it, its namespace and its parents, the
+file's `using`s): a name nothing makes visible is not linked. Links: **inherits** / **implements** (the base list),
+**has** (a field's or property's type), **creates** (`new T(`), **uses** (any other mention); one a pair, the
+strongest. Groups are the assembly (the nearest `.asmdef`'s name, else a `.csproj`, else Unity's
+`Assembly-CSharp` / `-Editor`) and the namespace in it; with more than 40 assemblies an **area** above them
+(`Packages/<pkg>`, `Assets/Scripts/<x>`). Files are listed with `git ls-tree` and read with one
+`git cat-file --batch`; each blob is parsed once and kept in `<project home>/diagrams/index-<hash>.json`, so a
+file is read again only when it changes (a Unity repository of 14,564 files: 19,276 types and 83k links in about 15 s the first
+time, a second or two after).
+
+**Work units.** A Review diagram's types carry the work units whose files declare them: the files the task results
+list under Files Modified (`change \`path\`: ...`), by the Task Board's `Work unit` column, and the files of commits
+whose subject ends `(WU<n>)`. A Plan diagram's units are the plan's steps (`### §n.`).
+
+**The Plan run.** One headless `claude -p` (as QA's drafts: `qa_claude`, read-only Read/Glob/Grep, `--add-dir` the
+repository), given each step's heading, first lines, Files list and the type declarations its code shows, the
+Affected Files table and the Chosen Approach (about 35 KB for a 355 KB plan). It answers with nodes (name,
+namespace, kind, new / changed / existing, steps, members, a summary) and edges (with **data flow**, and what flows).
+`plan_merge` joins them to the code: an existing type takes its real members and group (a new one is still
+**planned**, though the branch may have built it already), and what a changed type already links to is shown,
+greyed. `TATTY_DIAGRAM_MODEL_PLAN` (the default model), `_BUDGET_PLAN` (3), `_TIMEOUT_PLAN` (900 s). A 17-step
+plan: $0.46, two minutes.
+
+**Hover summaries** are written only when asked ("Write summaries for this group" on a hover card): a small model
+(`TATTY_DIAGRAM_MODEL`, haiku; `_BUDGET` 1) given signatures only (kind, members, file), never whole files, at most
+60 types a run. Kept in `summaries.json` by each type's signature, so a summary is written again only when the type
+changes, and a group's by its id (34 types and a group: $0.06).
+
+**The page** (`web/diagram.js`, `diagram-layout.js`, `diagram.css`). `diagramPanel(o)` is the part a host puts on
+a page (made when, stale or not, Make the diagram / Make again / Stop, a run's steps); `makeDiagram(o)` the
+diagram. Simplified UML: a box is «stereotype» (MonoBehaviour, ScriptableObject, static, abstract, interface...), the
+name and five members (visibility `+ # ~ −`; added green, removed struck); inherits and implements end in a hollow
+triangle, has in a filled arrow, creates and uses in an open one (dashed); data flow is thick, in the accent, with
+its words over the boxes. State colours: added green, changed amber, removed red dashed, planned blue dashed,
+unchanged greyed.
+
+- **Groups:** an open group is a frame behind its members, a closed one a tile (a review's groups with no change in
+  them start closed, greyed: open one to see the types the change leans on). A group with one group in it opens
+  that one too. The Project diagram starts with every group closed and asks for a group's classes only when it is
+  opened (`GET /api/diagram?scope=project&group=<id>`: the classes, all their links, and the group of each far end).
+- **Semantic zoom:** below 40% the innermost open groups turn solid (a tile the size of the frame, its name as big as
+  it fits, its links lifted to it), below 22% the next ones out; the picture keeps its place. The swap waits for the
+  zoom to rest. A click on a solid tile zooms in to read it (60%).
+- **Layout** (`layoutTree`): inside a frame, layers (what a thing relies on goes above it, so arrows point up;
+  cycles broken by a depth-first walk, barycentre sweeps, wide layers wrapped, boxes with no link to a sibling in a
+  grid under them); frames of frames are shelved wide in the same order. It is made with every unit on, so turning
+  units off hides things where they are. A box a person drags is kept (a whiteboard of kind `diagram`); Reset
+  layout forgets them. The view is fitted on opening.
+- **Units:** a chip a work unit (or step) and All. Off, what only it added or removed goes, a changed type looks
+  unchanged, and its links go. **Unchanged links** hides the greyed types.
+- **Links:** with more than 40 boxes drawn each keeps its three strongest links, and hovering or clicking a box
+  shows all of its own (the rest step back); a link with neither end in the group opened last is faint; counts
+  show on a hovered box's links only. Legend chips turn kinds off. Search marks the boxes it finds; Enter frames them.
 
 ## Tests
 
@@ -1677,6 +1758,20 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   User Stories board (the panel, two stories exported, their IDs on the notes,
   the backlog, a task's panel, the panel again). It writes task files, so run
   it only on a throwaway root.
+  `test-tatty-diagram.py` (in the suite's `diagrams` section, a line a check) reads C# files (nested types,
+  partial types, file-scoped namespaces, a comment's or a constraint's `class`, braces in strings and chars, enum
+  values, a record's primary constructor), links them (usings, one name in two namespaces, a name nothing makes
+  visible), then on a scratch git repository: the blob cache (a blob seen before isn't parsed again), a folder left
+  out, a review of two work units (added, changed, removed, the unchanged type, members, links, units) and a plan
+  joined to the code. The section itself drives `/api/diagram*` with a stand-in claude (`claude-dg.sh`): a Project
+  diagram, an opened group, stale after a commit, a Review diagram of a branch whose commits name their units,
+  summaries (asked once), a Plan diagram (the declarations it is shown, read-only tools), stale after the plan
+  changes, one run a diagram, Stop, and a dragged box kept.
+  `features-check.py ... --diagram` draws a sample review graph in the page and walks it with real mouse input:
+  the boxes and their states, frames, a data flow's words, a closed greyed group opened, a unit off (its class
+  and link go) and on (back where it was), the hover card, a drag (mid-drag the other link is the same node,
+  untouched; the frame follows; the place is kept), zoomed out until the groups are solid and back, and a
+  double-click that adds nothing. Its one write (the dragged place) is taken back.
   `features-check.py ... --whiteboard` makes a blank whiteboard and writes on it
   with real mouse and keys (a text by the Text tool, one by double-click, a
   comment pinned to the first, a labelled line between them (its layer only as
