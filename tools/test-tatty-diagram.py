@@ -196,6 +196,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check("review: a new link", es.get(("Core", "Lib", "has"), {}).get("state") == "added", list(es))
     check("review: the new type's base", es.get(("Added", "Core", "inherits"), {}).get("state") == "added")
     check("review: units listed in order", [u["id"] for u in rg["units"]] == ["WU1", "WU2"])
+    many = {f"Assets/Game/D{i}.cs": dg.parse_cs(f"namespace G {{ public class D{i} {{ }} }}") for i in range(12)}
+    wide = dict(hf, **many, **{"Assets/Game/Wide.cs": dg.parse_cs("namespace G { public class Wide { "
+                                                                    + " ".join(f"public D{i} F{i};" for i in range(12)) + " } }")})
+    wg = dg.review_graph(dg.Model(wide, hd), dg.Model(bf, bd), {"Assets/Game/Wide.cs": "A"}, {})
+    check("review: a changed type shows its strongest few unchanged links", len(wg["nodes"]) == 1 + dg.NEIGHBOURS, len(wg["nodes"]))
 
     pg = dg.plan_merge(dg.Model(hf, hd), {"nodes": [
         {"name": "Core", "namespace": "G", "change": "changed", "steps": ["§1"], "members": ["public void Run()"]},
@@ -208,7 +213,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("plan: a new type is planned", pn.get("Planner", {}).get("state") == "planned" and pn["Planner"]["summary"] == "Plans.")
     check("plan: data flow kept, with its words", any(e["kind"] == "dataflow" and e.get("label") == "the plan" for e in pg["edges"]))
     check("plan: steps are the units", [u["id"] for u in pg["units"]] == ["§1", "§2"])
-    check("plan: what an existing type links to is shown", any(n["label"] == "Lib" and n["state"] == "unchanged" for n in pg["nodes"]))
+    check("plan: only the types the plan names", sorted(pn) == ["Core", "Planner"], sorted(pn))
     json.dumps(pg)
 
 print(f"{passed} passed, {failed} failed")

@@ -10183,7 +10183,7 @@ def diagram_rel(repo, path):
     return s.removeprefix("./")
 
 
-def diagram_unit_files(folder, repo, base_sha, head_sha):
+def diagram_unit_files(folder, repo, base_sha, head_sha, bases=()):
     """{work unit: set(repo paths)}: the files the task results of each unit's tasks list, and the files
     of commits whose subject names a unit, e.g. "... (WU2)"."""
     units = {}
@@ -10205,7 +10205,7 @@ def diagram_unit_files(folder, repo, base_sha, head_sha):
             if u.get("id"):
                 units.setdefault(u["id"], set())
     if base_sha and head_sha:
-        code, out = git(repo, "log", "--no-merges", "--name-only", "--format=@@%s", f"{base_sha}..{head_sha}", timeout=60)
+        code, out = git(repo, "log", "--no-merges", "--name-only", "--format=@@%s", head_sha, "--not", *(bases or [base_sha]), timeout=60)
         unit = None
         for line in (out.splitlines() if code == 0 else []):
             if line.startswith("@@"):
@@ -10414,22 +10414,54 @@ def diagram_make_project(st, r, step, repo):
     return g, "", 0.0
 
 
+def diagram_bases(repo, head, base):
+    """The branches a feature's branch may have taken work from: its recorded base and origin's copy of it,
+    origin's default branch, develop, main and master (local and origin's), those that exist and aren't the
+    branch itself."""
+    own = {head, f"origin/{head}"}
+    out = []
+    for n in [base, default_branch(repo), "develop", "main", "master"]:
+        for ref in ((n,) if not n or n.startswith("origin/") else (n, f"origin/{n}")):
+            if ref and ref not in own and ref not in out and diagram_head(repo, ref):
+                out.append(ref)
+    return out
+
+
+def diagram_own_changes(repo, head_sha, bases):
+    """(the commit compared with, {path: status} of the C# files the branch's own commits change). Its own
+    commits are those no base has, so work merged in from develop or a parent branch is left out however long
+    ago the recorded base was cut; the commit compared with is the merge-base with the base nearest the branch
+    (the fewest commits back)."""
+    best, best_n = "", None
+    for ref in bases:
+        code, mb = git(repo, "merge-base", ref, head_sha)
+        if code != 0 or not mb:
+            continue
+        code, n = git(repo, "rev-list", "--count", f"{mb}..{head_sha}")
+        if code == 0 and n.isdigit() and (best_n is None or int(n) < best_n):
+            best, best_n = mb, int(n)
+    if not best:
+        return "", {}
+    code, out = git(repo, "log", "--no-merges", "--name-only", "--format=", head_sha, "--not", *bases, "--", "*.cs", timeout=120)
+    own = {ln.strip() for ln in out.splitlines() if ln.strip()} if code == 0 else set()
+    code, out = git(repo, "diff", "--name-status", "--no-renames", best, head_sha, "--", "*.cs", timeout=120)
+    changed = {}
+    for line in (out.splitlines() if code == 0 else []):
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[1] in own:  # (a file it changed and changed back is no change)
+            changed[parts[1]] = parts[0][:1]
+    return best, changed
+
+
 def diagram_make_review(st, r, step, folder, repo, head, base):
     head_sha = diagram_head(repo, head)
-    code, mb = git(repo, "merge-base", base, head_sha)
-    if code != 0 or not mb:
+    bases = diagram_bases(repo, head, base)
+    step(f"Finding the commits {head} made itself")
+    mb, changed = diagram_own_changes(repo, head_sha, bases)
+    if not mb:
         return None, f"{head} and {base} have no commit in common.", 0.0
-    step(f"Comparing {head} with {base}")
-    code, out = git(repo, "diff", "--name-status", "--no-renames", mb, head_sha, timeout=120)
-    if code != 0:
-        return None, "git couldn't compare the branch with its base.", 0.0
-    changed = {}
-    for line in out.splitlines():
-        parts = line.split("\t")
-        if len(parts) == 2 and parts[1].endswith(".cs"):
-            changed[parts[1]] = parts[0][:1]
     if not changed:
-        return None, f"No C# file has changed on {head} since it left {base}.", 0.0
+        return None, f"No C# file is changed by {head}'s own commits.", 0.0
     step(f"{len(changed)} C# file(s) changed; reading the branch")
     hf, hd, _ = diagram_tree(repo, head_sha, step)
     step("Reading the base")
@@ -10437,7 +10469,7 @@ def diagram_make_review(st, r, step, folder, repo, head, base):
     if hf is None or bf is None:
         return None, "git couldn't read the branch or its base.", 0.0
     step("Linking the types")
-    units = diagram_unit_files(folder, repo, mb, head_sha)
+    units = diagram_unit_files(folder, repo, mb, head_sha, bases)
     g = dg.review_graph(dg.Model(hf, hd), dg.Model(bf, bd), changed, units)
     g["stamp"] = {"head": head_sha, "base": mb, "branch": head, "against": base, "repo": repo}
     if not any(n["units"] for n in g["nodes"]) and units:

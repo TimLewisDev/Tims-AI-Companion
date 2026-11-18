@@ -1573,9 +1573,12 @@ A class diagram of C# code, drawn on the whiteboard (read-only), in three places
   HEAD. The repository is the one chosen on the page, else the project's code repo; folders can be left out
   (by default `Packages/com.unity.`, `Library/`, `Temp/`, `obj/`, `bin/`).
 - **A feature's Review diagram** (`#feature/<name>/diagram/review`, the **Diagram** rail item, and a link on the
-  Review page): its branch against the commit it left its base at (`git merge-base` of the recorded base, else
-  origin's default branch, and the branch). The types it adds, changes ("changed": base list or members differ;
-  "edited": only bodies) and removes, with the unchanged types they link to, greyed.
+  Review page): only what the branch's **own commits** change. Its own commits are those no base has (`git log
+  --no-merges <branch> --not <bases>`, the bases being the recorded base, origin's default branch, develop, main and
+  master, local and origin's), so work merged in from develop or a parent branch is never the feature's, however
+  stale the recorded base is. Each such file is compared with the merge-base of the nearest base (the fewest commits
+  back). The types it adds, changes ("changed": base list or members differ; "edited": only bodies) and removes,
+  with the unchanged types they link to, greyed: at most 8 a changed type (`NEIGHBOURS`, the strongest links first).
 - **A feature's Plan diagram** (`#feature/<name>/diagram/plan`, and "View as a diagram" on a plan document): drawn
   by a model from the Comprehensive Tech Plan (else the Tech Plan or Lite Brief) and joined to the code.
 
@@ -1602,8 +1605,8 @@ repository), given each step's heading, first lines, Files list and the type dec
 Affected Files table and the Chosen Approach (about 35 KB for a 355 KB plan). It answers with nodes (name,
 namespace, kind, new / changed / existing, steps, members, a summary) and edges (with **data flow**, and what flows).
 `plan_merge` joins them to the code: an existing type takes its real members and group (a new one is still
-**planned**, though the branch may have built it already), and what a changed type already links to is shown,
-greyed. `TATTY_DIAGRAM_MODEL_PLAN` (the default model), `_BUDGET_PLAN` (3), `_TIMEOUT_PLAN` (900 s). A 17-step
+**planned**, though the branch may have built it already). Only the types the plan names are drawn: the code's
+own links are added between them, and no other type is. `TATTY_DIAGRAM_MODEL_PLAN` (the default model), `_BUDGET_PLAN` (3), `_TIMEOUT_PLAN` (900 s). A 17-step
 plan: $0.46, two minutes.
 
 **Hover summaries** are written only when asked ("Write summaries for this group" on a hover card): a small model

@@ -4166,6 +4166,12 @@ printf 'namespace G { public class Core { public int A; public Lib L; } }\n' >"$
 git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "core uses lib (WU1)"
 printf 'namespace G { public class Added : Core { } }\n' >"$DGR/Assets/Game/New.cs"
 git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "a new type (WU2)"
+# work on develop merged into the branch is develop's, not the feature's, though the recorded base (main) is behind
+git -C "$DGR" switch -qc develop main
+printf 'namespace G { public class FromMain { } }\n' >"$DGR/Assets/Game/FromMain.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "develop moves on"
+git -C "$DGR" switch -q feature/Diagrammed
+git -C "$DGR" $GITID merge -q --no-edit develop
 get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
 has "a review knows the branch" "$T/j" '"branch": "feature/Diagrammed"'
 has "and its base" "$T/j" '"base": "main"'
@@ -4174,6 +4180,7 @@ dg_wait dgrev01 && has "the Review diagram is made" "$T/j" '"ok": true' || bad "
 get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
 [ "$(pick "$T/j" "sorted((n['label'], n['state']) for n in d['nodes'])")" = "[('Added', 'added'), ('Core', 'changed'), ('Lib', 'unchanged'), ('Old', 'removed')]" ] &&
 	ok "added, changed, removed, and the unchanged type it links to" || bad "added, changed, removed, and the unchanged type it links to" "$(pick "$T/j" "[(n['label'], n['state']) for n in d['nodes']]")"
+hasnt "what develop brought in by a merge isn't the feature's" "$T/j" "FromMain"
 [ "$(pick "$T/j" "{n['label']: n['units'] for n in d['nodes']}['Added']")" = "['WU2']" ] && ok "each change knows its work unit" || bad "each change knows its work unit" "$(pick "$T/j" "{n['label']: n['units'] for n in d['nodes']}")"
 [ "$(pick "$T/j" "[u['id'] for u in d['units']]")" = "['WU1', 'WU2']" ] && ok "the units to turn on and off" || bad "the units to turn on and off"
 # hover summaries: written once, kept by each type's signature

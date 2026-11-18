@@ -691,6 +691,9 @@ def member_diff(old, new):
     return out
 
 
+NEIGHBOURS = 8  # unchanged types one changed type shows at most (the strongest links first)
+
+
 def review_graph(head, base, changed, unit_files, neighbours=True):
     """The types declared in the changed files, at head (added, changed) and at base (removed),
     with the unchanged types they link to. changed: {path: status letter}; unit_files: {unit: set(paths)}."""
@@ -727,9 +730,16 @@ def review_graph(head, base, changed, unit_files, neighbours=True):
                 n["state"] = "changed" if not same else "touched"
         n["units"] = units_for([f for f in (h or b)["files"] if f in changed])
         nodes[tid] = n
-    for tid in sorted(head_ids | base_ids):
-        new = {(to, k): f for to, k, f in head.links(tid)} if tid in head.types else {}
-        old = {(to, k): f for to, k, f in base.links(tid)} if tid in base.types else {}
+    changed_ids = head_ids | base_ids
+
+    def trim(links):  # to unchanged types: only the strongest few (a changed type can mention a hundred)
+        other = sorted((key for key in links if key[0] not in changed_ids), key=lambda key: (EDGE_RANK[key[1]], key[0]))
+        keep = set(other[:NEIGHBOURS])
+        return {key: v for key, v in links.items() if key[0] in changed_ids or key in keep}
+
+    for tid in sorted(changed_ids):
+        new = trim({(to, k): f for to, k, f in head.links(tid)}) if tid in head.types else {}
+        old = trim({(to, k): f for to, k, f in base.links(tid)}) if tid in base.types else {}
         for (to, k), files in new.items():
             st = "unchanged" if (to, k) in old else ("added" if tid in base.types or tid in head_ids else "unchanged")
             if tid not in base.types:
@@ -812,16 +822,16 @@ def plan_merge(head, drawn, steps):
         if str(e.get("label") or "").strip():
             ed["label"] = str(e["label"]).strip()[:60]
         edges.append(ed)
-    # existing types the plan changes: also show what they already depend on, greyed
+    # only what the plan names: the code's own links are drawn between those types, and no type is added
     if head:
-        for tid, n in list(nodes.items()):
-            if n["state"] != "changed" or tid not in head.types:
+        drawn = {(x["from"], x["to"]) for x in edges}
+        for tid in list(nodes):
+            if tid not in head.types:
                 continue
-            for to, k, _ in head.links(tid)[:40]:
-                if to not in nodes:
-                    nodes[to] = node_of(head, to, "unchanged")
-                if not any(x["from"] == tid and x["to"] == to for x in edges):
+            for to, k, _ in head.links(tid):
+                if to in nodes and (tid, to) not in drawn:
                     edges.append(edge(tid, to, k))
+                    drawn.add((tid, to))
     g = finish("plan", head or Model({}, {}), nodes, edges, use_area=False)
     g["units"] = [{"id": str(s.get("id"))[:20], "label": str(s.get("label") or s.get("id"))[:120]}
                   for s in steps if isinstance(s, dict) and s.get("id")]
