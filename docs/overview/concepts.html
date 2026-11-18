@@ -1,0 +1,1060 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tatty feature Overview: concept board</title>
+<!--
+  A board for choosing the look of a feature's Overview page. Nothing here is
+  used by the app, so the app's CSP (no inline styles) does not apply; whichever
+  direction wins is rebuilt inside features.js under the CSP (CSSOM, WAAPI and
+  adoptedStyleSheets only).
+
+  Every direction draws the same fake feature from the same model (NODES +
+  preset()), through the same states, with the same three controls at a gate:
+  Continue, Skip and Stop. What a manual Continue and a Skip need from the app
+  is written up beside this file in continue-and-skip.md.
+
+  Motion is driven from requestAnimationFrame and the Web Animations API, not
+  gated on prefers-reduced-motion (this machine reports "reduce" because the OS
+  animation effects are off). The Motion switch in the header turns it off.
+-->
+<style>
+:root {
+  --bg: #f7f6f3; --panel: #fff; --ink: #1f2328; --dim: #6a737d; --line: #e1e0dc;
+  --accent: #3b6ea8; --accent-soft: #eaf2fb;
+  font: 14px/1.45 system-ui, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg);
+}
+body { margin: 0; color: var(--ink); background: var(--bg); }
+body.mode-design { --accent: #a9641f; --accent-soft: #fbf1e6; }
+body.mode-production { --accent: #7d5bbd; --accent-soft: #f1ecfb; }
+body.dark { --bg: #16181d; --panel: #1f2228; --ink: #e6e6e6; --dim: #9aa3ad; --line: #33363d; --accent: #7aa7da; --accent-soft: #22303f; }
+body.dark.mode-design { --accent: #e0a86a; --accent-soft: #3a2c1c; }
+body.dark.mode-production { --accent: #b49ae6; --accent-soft: #2d2640; }
+
+header.top { position: sticky; top: 0; z-index: 20; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 20px 8px; box-shadow: 0 2px 8px rgba(0,0,0,.05); }
+header.top h1 { font-size: 17px; margin: 0 12px 0 0; display: inline-block; }
+header.top .lead { color: var(--dim); display: inline; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 8px; align-items: center; }
+.ctl { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ctl > span { color: var(--dim); font-size: 12px; margin-right: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); color: var(--ink); padding: 4px 9px; font: inherit; font-size: 12.5px; cursor: pointer; border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: 0; }
+.seg button:hover { background: var(--accent-soft); }
+.seg button.on { background: var(--accent); color: #fff; }
+label.chk { font-size: 12.5px; display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+button.act { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+button.act.ghost { background: var(--panel); color: var(--accent); }
+
+main { padding: 18px 20px 40px; }
+.intro { max-width: 1180px; margin: 0 auto 14px; }
+.intro p, .intro li { color: var(--dim); }
+.intro b, .intro code { color: var(--ink); }
+.intro code { background: var(--accent-soft); padding: 0 4px; border-radius: 4px; }
+.grid { display: grid; gap: 22px; max-width: 1180px; margin: 0 auto; }
+section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 16px; }
+section.card.starred { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+section.card > header { display: flex; align-items: center; gap: 10px; }
+section.card > header .letter { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 13px; }
+section.card > header h3 { margin: 0; font-size: 16px; flex: 1; }
+section.card > header button { font: inherit; font-size: 12.5px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+section.card > header button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pitch { color: var(--dim); margin: 6px 0 12px; max-width: 900px; }
+dl.notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 12px 0 8px; }
+dl.notes dt { font-size: 12px; font-weight: 700; color: var(--ink); }
+dl.notes dd { margin: 2px 0 0; font-size: 12.5px; color: var(--dim); }
+section.card textarea { width: 100%; box-sizing: border-box; min-height: 44px; font: inherit; font-size: 12.5px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--bg); color: var(--ink); resize: vertical; }
+.out { max-width: 1180px; margin: 24px auto 0; }
+.out textarea { width: 100%; min-height: 120px; margin-top: 8px; font: 12px/1.4 ui-monospace, Consolas, monospace; }
+
+/* ------------------------------------------------------------------ the mock, shared */
+.mock { position: relative; border-radius: 14px; overflow: hidden; padding: 18px 22px 16px; display: grid; gap: 6px; isolation: isolate; min-height: 470px; align-content: start; }
+.m-head { display: flex; align-items: flex-start; gap: 12px; position: relative; z-index: 2; }
+.hero { flex: 1; min-height: 92px; }
+.h-id { font-size: 12px; opacity: .7; margin-bottom: 4px; }
+.h-kick { font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; opacity: .8; }
+.h-big { font-size: 28px; font-weight: 650; line-height: 1.15; margin: 2px 0 3px; }
+.h-sub { font-size: 13px; opacity: .78; }
+.m-more { font: inherit; font-size: 18px; line-height: 1; padding: 4px 10px 8px; border-radius: 9px; cursor: pointer; background: transparent; color: inherit; border: 1px solid currentColor; opacity: .55; }
+.m-more:hover { opacity: 1; }
+.m-menu { position: absolute; right: 0; top: 40px; z-index: 6; min-width: 180px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.2); padding: 4px; font-family: system-ui, "Segoe UI", sans-serif; }
+.m-menu button { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px; padding: 6px 10px; border: 0; background: none; color: inherit; border-radius: 6px; cursor: pointer; }
+.m-menu button:hover { background: var(--accent-soft); }
+.m-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+.m-journey { position: relative; z-index: 1; }
+.m-journey svg { display: block; width: 100%; height: auto; aspect-ratio: 1000 / 260; overflow: visible; }
+.m-foot { display: flex; flex-direction: column; gap: 10px; position: relative; z-index: 2; }
+.panel { max-width: 880px; }
+.m-foot .dock { justify-content: flex-end; }
+.pbox { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; border-radius: 12px; }
+.pbox .say { flex: 1; min-width: 160px; }
+.pbox .say b { display: block; font-size: 15px; }
+.pbox .say span { font-size: 12.5px; opacity: .75; }
+.btn { font: inherit; font-size: 13.5px; cursor: pointer; border-radius: 10px; padding: 9px 15px; border: 1px solid transparent; background: transparent; color: inherit; }
+.btn.go { font-size: 15px; font-weight: 700; padding: 11px 20px; }
+.btn.quiet { opacity: .7; border-color: transparent !important; }
+.btn[disabled] { opacity: .35; cursor: not-allowed; }
+.btn.demo { font-size: 11.5px; opacity: .6; border: 1px dashed currentColor; padding: 3px 8px; border-radius: 6px; }
+.pnote { flex-basis: 100%; font-size: 12px; opacity: .65; margin-top: -2px; }
+.dock { display: flex; gap: 6px; flex-wrap: wrap; }
+.dock button { font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 999px; cursor: pointer; background: transparent; color: inherit; border: 1px solid currentColor; opacity: .6; }
+.dock button:hover { opacity: 1; }
+.sbar { display: inline-flex; gap: 3px; align-items: flex-end; height: 16px; }
+.sbar i { width: 4px; height: 100%; border-radius: 2px; background: currentColor; animation: sb 1s ease-in-out infinite; transform-origin: bottom; }
+.sbar i:nth-child(2) { animation-delay: .15s; } .sbar i:nth-child(3) { animation-delay: .3s; } .sbar i:nth-child(4) { animation-delay: .45s; }
+@keyframes sb { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+.act-t { font-size: 13px; }
+.fx { position: absolute; inset: 0; pointer-events: none; z-index: 8; overflow: hidden; }
+.fx i { position: absolute; width: 7px; height: 7px; border-radius: 50%; }
+.mock svg .pop { transform-box: fill-box; transform-origin: center; }
+.mock svg .pop-b { transform-box: fill-box; transform-origin: 50% 100%; }
+body.still .mock *, body.still .mock::before, body.still .mock::after { animation: none !important; transition: none !important; }
+
+/* ------------------------------------------------------------------ A: Star Chart */
+.t-star { --star: #7f8fbf; --orbit: rgba(40,60,120,.32); --p-todo: #eef2fc; --acc: var(--accent); --hull: #18213d;
+  background: linear-gradient(180deg, #f6f3ff 0%, #dfe7fb 60%, #cad7f3 100%); color: #18213d; font-family: "Segoe UI", system-ui, sans-serif;
+  --fx1: var(--accent); --fx2: #ffb34d; --fx3: #18213d; }
+body.dark .t-star { --star: #fff; --orbit: rgba(150,180,255,.28); --p-todo: #121a36; --acc: color-mix(in srgb, var(--accent) 55%, #a8d8ff); --hull: #fff;
+  background: radial-gradient(ellipse at 50% 130%, #1d2d5c 0%, #0a0f24 55%, #04060d 100%); color: #dfe7ff; --fx1: #fff; --fx2: #ffd27a; --fx3: var(--acc); }
+.t-star .h-big { font-weight: 300; font-size: 31px; letter-spacing: .01em; }
+.t-star .h-kick { color: var(--acc); }
+.t-star .star { fill: var(--star); }
+.t-star .orbit { fill: none; stroke: var(--orbit); stroke-dasharray: 2 7; }
+.t-star .course { fill: none; stroke: var(--orbit); stroke-width: 1.5; stroke-dasharray: 3 7; }
+.t-star .course-done { fill: none; stroke: var(--acc); stroke-width: 2.2; stroke-linecap: round; }
+.t-star .course-glow { fill: none; stroke: var(--acc); stroke-width: 9; opacity: .18; stroke-linecap: round; }
+.t-star .pl .halo, .t-star .pl .ring, .t-star .pl .band { fill: none; }
+.t-star .pl .body { fill: var(--p-todo); stroke: var(--orbit); stroke-width: 1.5; }
+.t-star .pl.done .body { fill: var(--acc); stroke: none; }
+.t-star .pl.done .band { stroke: var(--acc); opacity: .55; stroke-width: 1.4; }
+.t-star .pl.now .body { fill: var(--hull); stroke: var(--acc); stroke-width: 2; }
+.t-star .pl.now .halo { fill: var(--acc); opacity: .22; }
+.t-star .pl.next .body { fill: none; stroke: var(--acc); stroke-width: 2; }
+.t-star .pl.next .ring { stroke: var(--acc); stroke-dasharray: 3 4; stroke-width: 1.5; }
+.t-star .pl.skip { opacity: .42; }
+.t-star .pl.out { opacity: .4; }
+.t-star .slash { stroke: #ff7a7a; stroke-width: 2; stroke-linecap: round; }
+.t-star .ghost { fill: none; stroke: currentColor; stroke-dasharray: 1 3; }
+.t-star .lbl { font-size: 9.5px; letter-spacing: .14em; text-anchor: middle; fill: currentColor; opacity: .85; }
+.t-star .lbl2 { font-size: 9px; text-anchor: middle; fill: currentColor; opacity: .55; }
+.t-star .grp { font-size: 10px; letter-spacing: .6em; text-anchor: middle; fill: var(--acc); opacity: .75; }
+.t-star .hull { fill: var(--hull); stroke: var(--acc); stroke-width: 1.2; }
+.t-star .flame { stroke: #ffae55; stroke-width: 3.5; stroke-linecap: round; }
+.t-star .pbox { background: color-mix(in srgb, currentColor 6%, transparent); border: 1px solid var(--orbit); backdrop-filter: blur(3px); }
+.t-star .btn { border-color: var(--orbit); }
+.t-star .btn.go { background: var(--acc); color: #071026; border: 0; box-shadow: 0 0 26px color-mix(in srgb, var(--acc) 60%, transparent); }
+.t-star .fx i { width: 3px; height: 3px; border-radius: 0; box-shadow: 0 0 6px 1px currentColor; }
+
+/* ------------------------------------------------------------------ B: Expedition Map */
+.t-map { --ink: #4a3520; --paper: #f6ebd0; --acc: color-mix(in srgb, var(--accent) 75%, #8a3b12);
+  background: radial-gradient(ellipse at 50% 45%, #f8eed6 35%, #e6d1a4 100%); color: #4a3520; font-family: "Segoe UI", system-ui, sans-serif;
+  --fx1: var(--acc); --fx2: #c9a227; --fx3: #4a3520; }
+body.dark .t-map { --ink: #ecdcb9; --paper: #1b242c; --acc: color-mix(in srgb, var(--accent) 60%, #ffcf8a);
+  background: radial-gradient(ellipse at 50% 45%, #26323c 30%, #10161b 100%); color: #ecdcb9; --fx1: var(--acc); --fx2: #ffe08a; --fx3: #ecdcb9; }
+.t-map .h-big { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-weight: 400; font-size: 32px; }
+.t-map .h-kick { font-family: "Ink Free", "Segoe Print", cursive; letter-spacing: .02em; text-transform: none; font-size: 15px; }
+.t-map .contour { fill: none; stroke: var(--ink); opacity: .13; stroke-width: 1.2; }
+.t-map .trail { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-dasharray: 1 7; stroke-linecap: round; opacity: .5; }
+.t-map .trail-done { fill: none; stroke: var(--ink); stroke-width: 3.2; stroke-linecap: round; }
+.t-map .detour { fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; }
+.t-map .wp-dot { fill: var(--ink); }
+.t-map .pole { stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; }
+.t-map .flag { fill: var(--acc); }
+.t-map .nextring { fill: none; stroke: var(--acc); stroke-width: 2.2; stroke-dasharray: 3 3; }
+.t-map .xm { fill: var(--ink); opacity: .55; font-size: 17px; text-anchor: middle; font-weight: 700; }
+.t-map .lbl { font-family: "Ink Free", "Segoe Print", cursive; font-size: 13px; fill: var(--ink); text-anchor: middle; }
+.t-map .lbl.struck { text-decoration: line-through; opacity: .5; }
+.t-map .lbl.faint { opacity: .4; font-size: 11px; }
+.t-map .lbl.todo { opacity: .6; }
+.t-map .ridge { font-family: Georgia, serif; font-style: italic; font-size: 12px; fill: var(--ink); opacity: .55; text-anchor: middle; letter-spacing: .3em; }
+.t-map .hiker { fill: var(--acc); stroke: var(--paper); stroke-width: 3; }
+.t-map .shadow { fill: #000; opacity: .16; }
+.t-map .tent { fill: var(--acc); stroke: var(--ink); stroke-width: 1.4; stroke-linejoin: round; }
+.t-map .tent.todo { fill: none; opacity: .5; stroke-dasharray: 2 3; }
+.t-map .rose { fill: none; stroke: var(--ink); opacity: .45; }
+.t-map .rose-t { fill: var(--ink); opacity: .6; font-family: Georgia, serif; font-size: 11px; text-anchor: middle; }
+.t-map .pbox { background: color-mix(in srgb, var(--paper) 60%, transparent); border: 1.5px dashed color-mix(in srgb, var(--ink) 45%, transparent); }
+.t-map .btn { border-color: color-mix(in srgb, var(--ink) 45%, transparent); font-family: Georgia, serif; }
+.t-map .btn.go { background: var(--ink); color: var(--paper); transform: rotate(-.6deg); box-shadow: 2px 3px 0 color-mix(in srgb, var(--ink) 30%, transparent); }
+.t-map .fx i { width: 6px; height: 9px; border-radius: 1px; }
+
+/* ------------------------------------------------------------------ C: Blueprint */
+.t-print { --acc2: var(--accent); --red: #d9412f;
+  background-color: #f7fbff; color: #12407a; font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  background-image: linear-gradient(rgba(30,90,170,.13) 1px, transparent 1px), linear-gradient(90deg, rgba(30,90,170,.13) 1px, transparent 1px),
+    linear-gradient(rgba(30,90,170,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(30,90,170,.05) 1px, transparent 1px);
+  background-size: 50px 50px, 50px 50px, 10px 10px, 10px 10px; --fx1: #12407a; --fx2: var(--accent); --fx3: #d9412f; }
+body.dark .t-print { --acc2: color-mix(in srgb, var(--accent) 35%, #ffe7a0); --red: #ff6b5b; background-color: #0f3b73; color: #e8f1ff;
+  background-image: linear-gradient(rgba(255,255,255,.09) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.09) 1px, transparent 1px),
+    linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+  --fx1: #fff; --fx2: var(--acc2); --fx3: #ff6b5b; }
+.t-print .tblock { display: grid; grid-template-columns: 1.1fr 2.6fr .8fr 1.2fr; border: 1.5px solid currentColor; max-width: 820px; }
+.t-print .tblock > div { border-right: 1px solid currentColor; padding: 4px 8px; font-size: 13px; }
+.t-print .tblock > div:nth-child(4) { border-right: 0; }
+.t-print .tblock > div.wide { grid-column: 1 / -1; border-top: 1px solid currentColor; border-right: 0; }
+.t-print .tblock small { display: block; font-size: 9px; letter-spacing: .2em; opacity: .65; }
+.t-print .h-big { font-weight: 700; font-size: 25px; letter-spacing: .02em; text-transform: uppercase; }
+.t-print .box { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.t-print .hatchf { opacity: .55; }
+.t-print .bx.todo .box { opacity: .35; stroke-dasharray: 2 3; }
+.t-print .bx.next .box { stroke: var(--acc2); stroke-dasharray: 9 4; stroke-width: 2; }
+.t-print .bx.now .box { stroke: var(--acc2); stroke-dasharray: 5 4; stroke-width: 2.4; }
+.t-print .bx.skip { opacity: .7; }
+.t-print .bx.skip .box { opacity: .45; }
+.t-print .wire { stroke: currentColor; opacity: .4; stroke-width: 1.2; fill: none; }
+.t-print .wire.on { opacity: .95; }
+.t-print .dimline { stroke: currentColor; opacity: .6; stroke-width: 1; fill: none; }
+.t-print .dimtext { font-size: 10px; letter-spacing: .25em; fill: currentColor; text-anchor: middle; opacity: .8; }
+.t-print .num { font-size: 9px; fill: currentColor; opacity: .65; }
+.t-print .glyph { font-size: 16px; text-anchor: middle; fill: currentColor; }
+.t-print .bx.now .glyph, .t-print .bx.next .glyph { fill: var(--acc2); }
+.t-print .lbl { font-size: 9.5px; letter-spacing: .08em; text-anchor: middle; fill: currentColor; }
+.t-print .strike { stroke: var(--red); stroke-width: 2.6; stroke-linecap: round; fill: none; stroke-dasharray: 1; }
+.t-print .stamp rect { fill: none; stroke: var(--red); stroke-width: 2; }
+.t-print .stamp text { fill: var(--red); font-weight: 700; font-size: 12px; text-anchor: middle; letter-spacing: .12em; }
+.t-print .bigstamp rect { fill: none; stroke: var(--red); stroke-width: 3.5; }
+.t-print .bigstamp text { fill: var(--red); font-weight: 700; font-size: 30px; text-anchor: middle; letter-spacing: .25em; }
+.t-print .wood { fill: #f2c46d; stroke: #8a6a1f; stroke-width: .6; } .t-print .lead { fill: #333; } .t-print .eraser { fill: #e88; }
+.t-print .ghost { fill: none; stroke: currentColor; stroke-dasharray: 1 4; opacity: .35; }
+.t-print .ghost-t { font-size: 8.5px; letter-spacing: .2em; fill: currentColor; opacity: .45; text-anchor: middle; }
+.t-print .pbox { border: 1.5px solid currentColor; border-radius: 2px; background: color-mix(in srgb, currentColor 5%, transparent); }
+.t-print .btn { border-color: currentColor; border-radius: 2px; text-transform: uppercase; letter-spacing: .06em; font-size: 12.5px; }
+.t-print .btn.go { background: var(--acc2); color: #0d2f5c; border-color: var(--acc2); font-size: 14px; }
+body:not(.dark) .t-print .btn.go { color: #fff; }
+.t-print .dock button { border-radius: 2px; }
+.t-print .fx i { width: 10px; height: 2px; border-radius: 0; }
+
+/* ------------------------------------------------------------------ D: Transit Line */
+.t-metro { --rail: #dcdee3; --rail-ink: #8b919c; --st-fill: #fff; --panel2: #fff;
+  background: #fbfbf8; color: #1b1f2a; font-family: "Segoe UI", system-ui, sans-serif; --fx1: var(--accent); --fx2: #f2b705; --fx3: #e5484d; }
+body.dark .t-metro { --rail: #343944; --rail-ink: #707784; --st-fill: #15181f; --panel2: #1e222b; background: #15181f; color: #eef1f6; }
+.t-metro .board { background: #101114; color: #ffb54a; font-family: Consolas, "Cascadia Mono", monospace; border-radius: 8px; padding: 9px 14px; display: grid;
+  grid-template-columns: 70px 1fr auto; gap: 3px 18px; font-size: 15px; letter-spacing: .06em; box-shadow: inset 0 0 0 2px #26282e, 0 6px 16px rgba(0,0,0,.15); max-width: 640px; perspective: 400px; }
+.t-metro .board .k { color: #b87a2c; font-size: 12px; align-self: center; }
+.t-metro .board .s { color: #7fe08a; font-size: 12.5px; align-self: center; }
+.t-metro .board .s.wait { color: #ffd84a; }
+.t-metro .board span { display: inline-block; backface-visibility: hidden; }
+.t-metro .h-id { font-weight: 700; }
+.t-metro .rail { stroke: var(--rail); stroke-width: 12; stroke-linecap: round; fill: none; }
+.t-metro .rail-done { stroke: var(--accent); stroke-width: 12; stroke-linecap: round; fill: none; }
+.t-metro .band { fill: var(--accent); opacity: .22; }
+.t-metro .band-t { font-size: 10px; font-weight: 800; letter-spacing: .25em; fill: var(--accent); text-anchor: middle; }
+.t-metro .st { fill: var(--st-fill); stroke: var(--rail-ink); stroke-width: 4; }
+.t-metro .st.done, .t-metro .st.now, .t-metro .st.next { stroke: var(--accent); }
+.t-metro .st.skip { stroke-dasharray: 3 3; stroke-width: 2.5; }
+.t-metro .nring { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.t-metro .lbl { font-size: 12.5px; font-weight: 700; fill: currentColor; }
+.t-metro .lbl.todo { opacity: .55; }
+.t-metro .lbl.faint { opacity: .35; text-decoration: line-through; font-weight: 500; }
+.t-metro .lbl2 { font-size: 10.5px; font-weight: 700; fill: var(--rail-ink); text-anchor: middle; }
+.t-metro .express { font-size: 17px; font-weight: 900; fill: var(--accent); text-anchor: middle; }
+.t-metro .car { fill: #20242e; } body.dark .t-metro .car { fill: #e9ecf2; }
+.t-metro .stripe { fill: var(--accent); } .t-metro .win { fill: #cfe6ff; } body.dark .t-metro .win { fill: #2b3c55; }
+.t-metro .door { fill: #4a5263; } body.dark .t-metro .door { fill: #9aa4b5; }
+.t-metro .lamp { fill: #ffe08a; }
+.t-metro .pbox { background: var(--panel2); border-left: 8px solid var(--accent); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.07); }
+.t-metro .btn { border-color: var(--rail-ink); border-radius: 999px; font-weight: 700; }
+.t-metro .btn.go { background: var(--accent); color: #fff; border: 0; text-transform: uppercase; letter-spacing: .05em; }
+.t-metro .dock button { border-radius: 6px; font-weight: 600; }
+
+/* ------------------------------------------------------------------ E: Neon Circuit */
+.t-neon { --n1: var(--accent); --n2: #c2189a; --tile: #ffffff; --grid2: rgba(60,30,110,.22); --grid: rgba(120,60,200,.16);
+  background: linear-gradient(160deg, #f7f1ff 0%, #ecf4ff 100%); color: #2a1747; font-family: Bahnschrift, "Segoe UI", system-ui, sans-serif;
+  --fx1: var(--n1); --fx2: var(--n2); --fx3: #ffb300; }
+body.dark .t-neon { --n1: color-mix(in srgb, var(--accent) 40%, #3ff0ff); --n2: #ff4fd8; --tile: #170a2c; --grid2: rgba(170,130,255,.25); --grid: rgba(255,79,216,.22);
+  background: linear-gradient(160deg, #1a0b2e 0%, #2b0f45 45%, #0d1b3a 100%); color: #efe6ff; --fx3: #fff; }
+.t-neon::before { content: ""; position: absolute; left: -30%; right: -30%; bottom: -45%; height: 75%; z-index: -1;
+  background-image: linear-gradient(var(--grid) 1.5px, transparent 1.5px), linear-gradient(90deg, var(--grid) 1.5px, transparent 1.5px);
+  background-size: 44px 44px; transform: perspective(260px) rotateX(62deg); animation: floor 3s linear infinite; }
+@keyframes floor { to { background-position: 0 44px; } }
+.t-neon .h-big { font-weight: 700; font-size: 30px; letter-spacing: .03em; text-transform: uppercase; text-shadow: 0 0 18px color-mix(in srgb, var(--n1) 70%, transparent); }
+.t-neon .h-kick { color: var(--n2); font-weight: 700; }
+.t-neon .trace { fill: none; stroke: var(--grid2); stroke-width: 5; stroke-linejoin: round; }
+.t-neon .trace-on { fill: none; stroke: var(--n1); stroke-width: 4; stroke-linejoin: round; }
+.t-neon .flow { fill: none; stroke: #fff; stroke-width: 3; stroke-dasharray: 10 70; stroke-linecap: round; opacity: .9; }
+body:not(.dark) .t-neon .flow { stroke: var(--n2); }
+.t-neon .bridge { fill: none; stroke: var(--n2); stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 1; }
+.t-neon .tile rect.face { fill: var(--tile); stroke: var(--grid2); stroke-width: 2; }
+.t-neon .tile.done rect.face { stroke: var(--n1); fill: color-mix(in srgb, var(--n1) 16%, var(--tile)); }
+.t-neon .tile.now rect.face { stroke: var(--n2); stroke-width: 2.5; fill: color-mix(in srgb, var(--n2) 20%, var(--tile)); }
+.t-neon .tile.next rect.face { stroke: var(--n1); stroke-dasharray: 7 4; stroke-width: 2.2; }
+.t-neon .tile.skip, .t-neon .tile.out { opacity: .33; }
+.t-neon .tl { font-size: 12.5px; font-weight: 700; letter-spacing: .1em; text-anchor: middle; fill: currentColor; }
+.t-neon .ts { font-size: 9px; letter-spacing: .28em; text-anchor: middle; fill: currentColor; opacity: .7; }
+.t-neon .tile.done .ts { fill: var(--n1); opacity: 1; }
+.t-neon .tile.now .ts { fill: var(--n2); opacity: 1; }
+.t-neon .tile.next .ts { fill: var(--n1); opacity: 1; }
+.t-neon .cell { fill: var(--grid2); } .t-neon .cell.on { fill: var(--n1); }
+.t-neon .lock { fill: none; stroke: currentColor; stroke-width: 1.4; opacity: .5; }
+.t-neon .spark { fill: #fff; } body:not(.dark) .t-neon .spark { fill: var(--n2); }
+.t-neon .pbox { background: color-mix(in srgb, var(--tile) 70%, transparent); border: 1px solid var(--n1); box-shadow: inset 0 0 18px color-mix(in srgb, var(--n1) 30%, transparent); }
+.t-neon .btn { border-color: var(--grid2); letter-spacing: .06em; text-transform: uppercase; font-size: 12.5px; font-weight: 600; }
+.t-neon .btn.go { background: linear-gradient(90deg, var(--n1), var(--n2)); color: #13061f; border: 0; font-weight: 800; font-size: 14.5px;
+  box-shadow: 0 0 22px color-mix(in srgb, var(--n2) 55%, transparent); }
+.t-neon .fx i { width: 4px; height: 4px; box-shadow: 0 0 8px 2px currentColor; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Feature Overview: five directions</h1>
+  <p class="lead">One fake feature, five looks. Try each through every state, press Continue / Skip / Stop on the mocks, and star the ones worth keeping.</p>
+  <div class="controls">
+    <div class="ctl"><span>State</span><div class="seg" id="states"></div></div>
+    <div class="ctl"><span>Mode</span><div class="seg" id="modes"></div></div>
+    <div class="ctl"><span>Theme</span><div class="seg" id="themes"></div></div>
+    <label class="chk"><input type="checkbox" id="motion" checked> Motion</label>
+    <label class="chk"><input type="checkbox" id="auto"> Auto-finish stages</label>
+    <label class="chk"><input type="checkbox" id="autocont"> Auto-continue (tour)</label>
+    <button class="act ghost" id="resetall">Reset all</button>
+  </div>
+</header>
+
+<main>
+  <div class="intro">
+    <p><b>The idea.</b> The Overview stops being a board of buttons and becomes a journey: where you are is the hero, the route
+    is the centrepiece, and the one thing to do next is a single big button. Documents, timeline, usage, the branch and the
+    housekeeping (Stages, Cancel, Archive, Refresh) go into a dock and a <b>⋯</b> menu.</p>
+    <details>
+      <summary>The gate: manual Continue, Skip and Stop</summary>
+      <p>When a stage closes, the workflow <b>stops at a gate</b> and nothing starts until you say so:
+      <b>Continue</b> starts the next stage, <b>Skip</b> leaves it out and moves the gate to the stage after,
+      <b>Stop</b> parks the feature (the session can end; Continue later picks it up).
+      Skip is only offered for stages the workflow can leave out: <code>Explore</code>, <code>Scope</code>, <code>Approach</code>,
+      <code>Whole plan</code> and <code>Review</code>. Requirements, Technical design, Sign-off, Breakdown and Build are required, so their Skip is greyed out with the reason.</p>
+      <p>What the app needs for this (toolbox and Tatty) is in <code>continue-and-skip.md</code>, beside this file.</p>
+    </details>
+    <details>
+      <summary>The states</summary>
+      <ul>
+        <li><b>Running</b>: a session is working on Scope. The ambient motion shows it is alive.</li>
+        <li><b>At a gate</b>: Scope is closed, Approach is next and waiting for you.</li>
+        <li><b>Decisions</b>: the session is waiting on three decisions.</li>
+        <li><b>Skipped</b>: Scope was skipped at its gate; Technical design is running.</li>
+        <li><b>Left out</b>: Explore and Whole plan were left out before starting (the stage picker); Build is at unit 4 of 6.</li>
+        <li><b>Complete</b>: everything done and merged.</li>
+      </ul>
+      <p>Tick <b>Auto-finish stages</b> to have running stages close on their own, and <b>Auto-continue</b> to also press Continue for you, which plays the whole journey.</p>
+    </details>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="out">
+    <button class="act" id="copy">Copy my picks and notes</button>
+    <span id="copied" class="dim"></span>
+    <p class="dim" style="color: var(--dim); font-size: 12.5px">Stars and notes are kept in this browser (localStorage). Paste the copied text back into the chat; a mix ("C's blueprint with D's departure board") is a fine answer.</p>
+    <textarea id="outtext" readonly hidden></textarea>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// ------------------------------------------------------------------ the model
+const NODES = [
+  { k: "explore", l: "Explore", skip: true },
+  { k: "req", l: "Requirements", plan: true },
+  { k: "scope", l: "Scope", plan: true, skip: true },
+  { k: "approach", l: "Approach", plan: true, skip: true },
+  { k: "tech", l: "Tech design", plan: true },
+  { k: "whole", l: "Whole plan", plan: true, skip: true },
+  { k: "signoff", l: "Sign-off", plan: true },
+  { k: "breakdown", l: "Breakdown" },
+  { k: "build", l: "Build", units: 6 },
+  { k: "review", l: "Review", skip: true },
+  { k: "done", l: "Done" },
+];
+const N = NODES.length;
+const FEATURE = { id: "TAT-0042", title: "Ships take up one combat shape", branch: "feature/TAT-0042-ships-one-combat-shape" };
+const ACTIVITY = ["Reading Combat/ShapeRuntime.cs", "2 agents researching the code", "Writing the stage's section", "The adversary is challenging it", "Checking 14 repo facts", "Thinking"];
+const STATES = [["running", "Running"], ["gate", "At a gate"], ["decide", "Decisions"], ["skipped", "Skipped"], ["leftout", "Left out"], ["complete", "Complete"]];
+let MOTION = true, AUTO = false, AUTOCONT = false, STATE = "gate";
+
+function preset(name) {
+  const st = Array(N).fill("todo"); let cur = 0, mode = "running", units = 0, dec = 0;
+  const set = (a, b, v) => { for (let i = a; i <= b; i++) st[i] = v; };
+  switch (name) {
+    case "running": set(0, 1, "done"); st[2] = "now"; cur = 2; break;
+    case "gate": set(0, 2, "done"); st[3] = "next"; cur = 3; mode = "gate"; break;
+    case "decide": set(0, 2, "done"); st[3] = "now"; cur = 3; mode = "decide"; dec = 3; break;
+    case "skipped": set(0, 1, "done"); st[2] = "skip"; st[3] = "done"; st[4] = "now"; cur = 4; break;
+    case "leftout": st[0] = "out"; set(1, 4, "done"); st[5] = "out"; set(6, 7, "done"); st[8] = "now"; cur = 8; units = 3; break;
+    case "complete": set(0, N - 1, "done"); cur = N - 1; mode = "complete"; units = 6; break;
+  }
+  return { st, cur, mode, units, dec };
+}
+const lastDone = (m, before) => { for (let i = before - 1; i >= 0; i--) if (m.st[i] === "done") return i; return -1; };
+const nextOpen = (m, from) => { for (let i = from + 1; i < N; i++) if (m.st[i] === "todo" || m.st[i] === "next") return i; return -1; };
+function markerAt(m) {
+  if (m.mode === "gate" || m.mode === "paused") { const d = lastDone(m, m.cur); return d < 0 ? m.cur : d; }
+  return m.cur;
+}
+
+function act(card, kind) {
+  const m = card.m; let ev = null;
+  if (kind === "continue" && (m.mode === "gate" || m.mode === "paused")) {
+    const from = markerAt(m); m.st[m.cur] = "now"; m.mode = "running"; ev = { kind: "advance", from, to: m.cur };
+  } else if (kind === "skip" && (m.mode === "gate" || m.mode === "paused") && NODES[m.cur].skip) {
+    const s = m.cur; const n = nextOpen(m, s); if (n < 0) return;
+    m.st[s] = "skip";
+    if (NODES[n].k === "done") { m.st[n] = "done"; m.cur = N - 1; m.mode = "complete"; ev = { kind: "complete", at: s, skipped: s }; }
+    else { m.st[n] = "next"; m.cur = n; ev = { kind: "skip", at: s, to: n }; }
+  } else if (kind === "stop" && m.mode === "gate") {
+    m.mode = "paused"; ev = { kind: "stop" };
+  } else if (kind === "decide" && m.mode === "decide") {
+    m.mode = "running"; m.dec = 0; ev = { kind: "decided", at: m.cur };
+  } else if (kind === "finish" && m.mode === "running") {
+    const i = m.cur, u = NODES[i].units;
+    if (u && m.units < u - 1) { m.units++; ev = { kind: "unit", at: i }; }
+    else {
+      if (u) m.units = u;
+      m.st[i] = "done"; const n = nextOpen(m, i);
+      if (n < 0 || NODES[n].k === "done") { if (n >= 0) m.st[n] = "done"; m.cur = N - 1; m.mode = "complete"; ev = { kind: "complete", at: i }; }
+      else { m.st[n] = "next"; m.cur = n; m.mode = "gate"; ev = { kind: "finish", at: i, to: n }; }
+    }
+  }
+  if (!ev) return;
+  card.ev = ev; render(card);
+}
+
+// ------------------------------------------------------------------ helpers
+const NS = "http://www.w3.org/2000/svg";
+function S(tag, attrs, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function T(txt, attrs, parent) { const e = S("text", attrs, parent); e.textContent = txt; return e; }
+function H(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+function seeded(s) { return () => (s = (s * 16807) % 2147483647) / 2147483647; }
+const lerp = (a, b, p) => a + (b - a) * p;
+const ease = { io: p => p < .5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2, out: p => 1 - (1 - p) ** 3, back: p => { const c = 1.7; return 1 + (c + 1) * (p - 1) ** 3 + c * (p - 1) ** 2; } };
+function smooth(p) {
+  let d = `M${p[0][0]},${p[0][1]}`;
+  for (let i = 0; i < p.length - 1; i++) {
+    const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2;
+    d += ` C${p1[0] + (p2[0] - p0[0]) / 6},${p1[1] + (p2[1] - p0[1]) / 6} ${p2[0] - (p3[0] - p1[0]) / 6},${p2[1] - (p3[1] - p1[1]) / 6} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+const poly = p => "M" + p.map(q => q.join(",")).join(" L");
+// Length along the path at each node, searched forwards so a winding path can't match a later pass.
+function lens(path, pts) {
+  const L = path.getTotalLength(), K = 700, smp = [];
+  for (let k = 0; k <= K; k++) { const q = path.getPointAtLength(L * k / K); smp.push([q.x, q.y, L * k / K]); }
+  let s = 0;
+  const at = pts.map(p => { let best = 1e18, bl = 0, bi = s; for (let k = s; k <= K; k++) { const d = (smp[k][0] - p[0]) ** 2 + (smp[k][1] - p[1]) ** 2; if (d < best - 1e-6) { best = d; bl = smp[k][2]; bi = k; } } s = bi; return bl; });
+  return { L, at };
+}
+const dash = (el, len, L) => { el.style.strokeDasharray = `${Math.max(0, len)} ${L + 20}`; };
+function tween(ms, f, e, done) {
+  e = e || ease.io;
+  if (!MOTION) { f(1); if (done) done(); return; }
+  const t0 = performance.now();
+  (function step(now) { const p = Math.min(1, Math.max(0, (now - t0) / ms)); f(e(p)); if (p < 1) requestAnimationFrame(step); else if (done) done(); })(t0);
+}
+function anim(el, kf, o) { if (!MOTION || !el) return null; return el.animate(kf, Object.assign({ duration: 600, easing: "cubic-bezier(.2,.8,.2,1)" }, o || {})); }
+function drawIn(el, ms, delay) { return anim(el, [{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: ms || 700, delay: delay || 0, fill: "backwards", easing: "ease-out" }); }
+function svgPt(card, x, y) {
+  const svg = card.mock.querySelector("svg"), r = svg.getBoundingClientRect(), mr = card.mock.getBoundingClientRect(), s = r.width / 1000;
+  return [r.left - mr.left + x * s, r.top - mr.top + y * s];
+}
+function burst(card, x, y, n, spread) {
+  if (!MOTION) return;
+  const [px, py] = svgPt(card, x, y), fx = card.mock.querySelector(".fx"), cs = getComputedStyle(card.mock);
+  const cols = ["--fx1", "--fx2", "--fx3"].map(v => cs.getPropertyValue(v).trim() || "#fff");
+  for (let i = 0; i < (n || 18); i++) {
+    const d = document.createElement("i"); d.style.left = px + "px"; d.style.top = py + "px";
+    d.style.background = cols[i % 3]; d.style.color = cols[i % 3]; fx.appendChild(d);
+    const a = Math.random() * Math.PI * 2, v = (spread || 60) * (.5 + Math.random()), rot = Math.random() * 540 - 270;
+    const k = d.animate([
+      { transform: "translate(-50%,-50%) rotate(0deg) scale(1)", opacity: 1 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * v}px), calc(-50% + ${Math.sin(a) * v + 18}px)) rotate(${rot}deg) scale(.4)`, opacity: 0 }],
+      { duration: 700 + Math.random() * 600, easing: "cubic-bezier(.1,.7,.3,1)" });
+    k.onfinish = () => d.remove();
+  }
+}
+function shake(el, px) { anim(el, [{ transform: "translate(0,0)" }, { transform: `translate(${-px}px,0)` }, { transform: `translate(${px}px,0)` }, { transform: `translate(${-px / 2}px,0)` }, { transform: "translate(0,0)" }], { duration: 320 }); }
+
+function heroText(m) {
+  const cur = NODES[m.cur], ld = lastDone(m, m.cur);
+  const unit = cur.units ? ` · unit ${Math.min(m.units + 1, cur.units)} of ${cur.units}` : "";
+  switch (m.mode) {
+    case "running": return { kick: "Now", big: cur.l + unit, sub: "Claude is working on it · 14 min so far" };
+    case "gate": return { kick: ld >= 0 ? `${NODES[ld].l} complete` : "Ready to start", big: `Next: ${cur.l}`, sub: "Nothing starts until you continue" };
+    case "paused": return { kick: "Stopped", big: `Holding before ${cur.l}`, sub: "Continue whenever you're ready, in a new session" };
+    case "decide": return { kick: cur.l, big: `${m.dec} decisions need you`, sub: "The session is waiting on your call" };
+    case "complete": return { kick: "Merged", big: "Journey complete", sub: "Merged into develop · 2 days, 4 hours" };
+  }
+}
+
+// ------------------------------------------------------------------ A: Star Chart
+const STAR = {
+  id: "A", key: "star", name: "Star Chart", cls: "t-star",
+  pitch: "The feature is a voyage across a star chart. Each stage is a world on the course; Tatty's ship orbits the one being worked on, and at a gate it waits at the edge of the next world until you launch.",
+  why: "The most 'journey' for the least clutter. The dark sky makes the one big button glow, and the orbiting ship gives the page gentle, constant life while a session runs.",
+  watch: "It's dark-first: the light 'dawn' version is weaker. Space can feel a little detached from engineering documents.",
+  cost: "Medium. One SVG arc, a ship, a starfield. Motion is rAF and WAAPI; the stars are the only per-frame work.",
+  voc: { cont: "Launch to", skip: "Slingshot past", stop: "Hold orbit" },
+  pts() { return NODES.map((n, i) => { const t = i / (N - 1); return [70 + 860 * t, 200 - 120 * Math.sin(Math.PI * (.06 + .88 * t))]; }); },
+  draw(svg, m) {
+    const pts = this.pts(), g = S("g", {}, svg), rnd = seeded(7), stars = [];
+    for (let i = 0; i < 110; i++) stars.push(S("circle", { cx: (rnd() * 1000).toFixed(1), cy: (rnd() * 260).toFixed(1), r: (.4 + rnd() * 1.3).toFixed(2), class: "star" }, g));
+    S("ellipse", { cx: 500, cy: 330, rx: 540, ry: 250, class: "orbit" }, g);
+    S("ellipse", { cx: 500, cy: 330, rx: 470, ry: 205, class: "orbit" }, g);
+    const d = smooth(pts), course = S("path", { d, class: "course" }, g), lg = lens(course, pts), mk = markerAt(m);
+    const glow = S("path", { d, class: "course-glow" }, g), done = S("path", { d, class: "course-done" }, g);
+    dash(glow, lg.at[mk], lg.L); dash(done, lg.at[mk], lg.L);
+    T("PLAN", { x: (pts[1][0] + pts[6][0]) / 2, y: Math.min(...pts.slice(1, 7).map(p => p[1])) - 34, class: "grp" }, g);
+    const rad = [], nodes = pts.map((p, i) => {
+      const n = NODES[i], s = m.st[i], r = n.plan ? 8 : 13; rad.push(r);
+      const outer = S("g", { transform: `translate(${p[0]},${p[1]})` }, g), ng = S("g", { class: "pl pop " + s }, outer);
+      if (s === "out") { S("circle", { r: 5, class: "ghost" }, ng); T(n.l.toUpperCase(), { y: 22, class: "lbl" }, ng); T("left out", { y: 34, class: "lbl2" }, ng); return ng; }
+      S("circle", { r: r + 9, class: "halo" }, ng); S("circle", { r: r + 6, class: "ring" }, ng); S("circle", { r, class: "body" }, ng);
+      if (s === "done") S("ellipse", { rx: r + 7, ry: 3, class: "band", transform: "rotate(-18)" }, ng);
+      if (s === "skip") S("line", { x1: -r - 5, y1: r + 5, x2: r + 5, y2: -r - 5, class: "slash" }, ng);
+      T(n.l.toUpperCase(), { y: r + 22, class: "lbl" }, ng);
+      if (n.units && s !== "todo") T(`${m.units}/${n.units} units`, { y: r + 34, class: "lbl2" }, ng);
+      if (s === "skip") T("skipped", { y: r + 34, class: "lbl2" }, ng);
+      return ng;
+    });
+    const ship = S("g", {}, g), bob = S("g", {}, ship);
+    const flame = S("path", { d: "M-6,0 L-17,0", class: "flame" }, bob);
+    S("path", { d: "M12,0 L-8,-7 L-4,0 L-8,7 Z", class: "hull" }, bob);
+    const place = l => {
+      const a = course.getPointAtLength(l), b = course.getPointAtLength(Math.min(lg.L, l + 2)), c = course.getPointAtLength(Math.max(0, l - 2));
+      ship.setAttribute("transform", `translate(${a.x},${a.y}) rotate(${Math.atan2(b.y - c.y, b.x - c.x) * 180 / Math.PI})`);
+    };
+    place(lg.at[mk]);
+    return { stars, nodes, rad, ship, bob, flame, place, lg, done, glow, pts };
+  },
+  tick(t, c) {
+    const r = c.refs, m = c.m;
+    r.stars.forEach((s, i) => s.setAttribute("opacity", (.3 + .7 * Math.abs(Math.sin(t / 1300 + i * 1.7))).toFixed(2)));
+    r.nodes.forEach((g, i) => {
+      if (m.st[i] === "now") g.querySelector(".halo").setAttribute("r", (r.rad[i] + 9 + Math.sin(t / 280) * 3).toFixed(1));
+      if (m.st[i] === "next") g.querySelector(".ring").setAttribute("transform", `rotate(${(t / 22) % 360})`);
+    });
+    r.flame.setAttribute("opacity", (.45 + .55 * Math.random()).toFixed(2));
+    if (c.moving) return;
+    const orbit = m.mode === "running" || m.mode === "decide" || m.mode === "complete";
+    r.bob.setAttribute("transform", orbit ? `rotate(${(t / (m.mode === "decide" ? 30 : 12)) % 360}) translate(0,-${r.rad[m.cur] + 15})` : `translate(0,${(Math.sin(t / 380) * 2.5).toFixed(2)})`);
+  },
+  play(c, ev) {
+    const r = c.refs;
+    if (ev.kind === "advance") {
+      c.moving = true; r.bob.setAttribute("transform", "");
+      const a = r.lg.at[ev.from], b = r.lg.at[ev.to];
+      dash(r.done, a, r.lg.L); dash(r.glow, a, r.lg.L);
+      anim(r.glow, [{ opacity: .18, strokeWidth: 9 }, { opacity: .7, strokeWidth: 16 }, { opacity: .18, strokeWidth: 9 }], { duration: 1500 });
+      tween(1500, p => { const l = lerp(a, b, p); r.place(l); dash(r.done, l, r.lg.L); dash(r.glow, l, r.lg.L); }, ease.io, () => { c.moving = false; burst(c, ...r.pts[ev.to], 10, 40); });
+      anim(r.nodes[ev.to], [{ transform: "scale(.4)", opacity: .2 }, { transform: "scale(1)", opacity: 1 }], { duration: 900, delay: 900, fill: "backwards", easing: ease.backCss });
+    }
+    if (ev.kind === "finish" || ev.kind === "unit" || ev.kind === "complete") {
+      anim(r.nodes[ev.at], [{ transform: "scale(1)" }, { transform: "scale(1.6)" }, { transform: "scale(1)" }], { duration: 700 });
+      burst(c, ...r.pts[ev.at], ev.kind === "unit" ? 8 : 22, ev.kind === "unit" ? 30 : 70);
+    }
+    if (ev.kind === "finish") anim(r.nodes[ev.to], [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], { duration: 800, delay: 350, fill: "backwards" });
+    if (ev.kind === "skip") {
+      anim(r.nodes[ev.at], [{ transform: "scale(1) rotate(0deg)", opacity: 1 }, { transform: "scale(.6) rotate(-40deg)", opacity: .2 }, { transform: "scale(1) rotate(0deg)", opacity: .42 }], { duration: 900 });
+      anim(r.bob, [{ transform: "translate(0,0) rotate(0)" }, { transform: "translate(10px,-18px) rotate(-30deg)" }, { transform: "translate(0,0) rotate(0)" }], { duration: 700 });
+      anim(r.nodes[ev.to], [{ opacity: 0 }, { opacity: 1 }], { duration: 600, delay: 400, fill: "backwards" });
+    }
+    if (ev.kind === "complete") { r.pts.forEach((p, i) => setTimeout(() => burst(c, p[0], p[1], 8, 40), i * 90)); }
+    if (ev.kind === "decided") anim(r.nodes[ev.at], [{ filter: "brightness(2)" }, { filter: "brightness(1)" }], { duration: 700 });
+  },
+  panelIn: [{ opacity: 0, transform: "translateY(12px) scale(.98)" }, { opacity: 1, transform: "none" }],
+};
+
+// ------------------------------------------------------------------ B: Expedition Map
+const MAP = {
+  id: "B", key: "map", name: "Expedition Map", cls: "t-map",
+  pitch: "An expedition map. The trail inks itself in as you go, a flag is planted at every stage you close, the hiker hops along while a session works, and a skipped stage gets a detour drawn round it.",
+  why: "The warmest and most human of the five. A skip reads instantly (the detour), and handwritten labels make the feature feel like your own trip rather than a process.",
+  watch: "Parchment and script fonts can tip into twee. The handwriting fonts (Ink Free, Segoe Print) are Windows-only, so macOS needs a fallback.",
+  cost: "Medium. The contour lines are generated paths; the ink, the flags and the detours are dash and transform animations.",
+  voc: { cont: "Set out for", skip: "Detour round", stop: "Make camp" },
+  pts() { return NODES.map((n, i) => { const t = i / (N - 1); return [60 + 880 * t, 128 + 50 * Math.sin(t * Math.PI * 2.4 + .4)]; }); },
+  draw(svg, m) {
+    const pts = this.pts(), g = S("g", {}, svg), rnd = seeded(11);
+    [[230, 40, 7], [700, 235, 6], [900, 30, 4], [470, 150, 3]].forEach(([cx, cy, k]) => {
+      for (let j = 1; j <= k; j++) {
+        const R = j * 22, q = [];
+        for (let a = 0; a < 24; a++) { const ang = a / 24 * Math.PI * 2, rr = R * (1 + .16 * Math.sin(ang * 3 + j) + .06 * rnd()); q.push([cx + Math.cos(ang) * rr * 1.5, cy + Math.sin(ang) * rr * .8]); }
+        q.push(q[0], q[1]);
+        S("path", { d: smooth(q), class: "contour" }, g);
+      }
+    });
+    const rose = S("g", { transform: "translate(965,40)" }, g);
+    S("circle", { r: 16, class: "rose" }, rose); S("path", { d: "M0,-20 L4,0 L0,20 L-4,0 Z", class: "rose" }, rose); T("N", { y: -24, class: "rose-t" }, rose);
+    const d = smooth(pts), trail = S("path", { d, class: "trail" }, g), lg = lens(trail, pts), mk = markerAt(m);
+    const done = S("path", { d, class: "trail-done" }, g); dash(done, lg.at[mk], lg.L);
+    T("the planning ridge", { x: (pts[1][0] + pts[6][0]) / 2, y: 46, class: "ridge" }, g);
+    const detours = {}, nodes = pts.map((p, i) => {
+      const n = NODES[i], s = m.st[i], ng = S("g", { transform: `translate(${p[0]},${p[1]})` }, g), inner = S("g", { class: "pop-b" }, ng);
+      const lb = T(n.l, { y: 30, class: "lbl" }, ng);
+      if (n.k === "done") {
+        S("path", { d: "M-15,4 L0,-22 L15,4 Z", class: "tent " + (s === "done" ? "" : "todo") }, inner); S("path", { d: "M0,-22 L0,4", class: "pole" }, inner);
+        return inner;
+      }
+      if (s === "done") { S("circle", { r: 3.5, class: "wp-dot" }, inner); S("path", { d: "M0,2 L0,-30", class: "pole" }, inner); S("path", { d: "M0,-30 L17,-24 L0,-18 Z", class: "flag" }, inner); }
+      else if (s === "next") { S("circle", { r: 9, class: "nextring" }, inner); S("circle", { r: 3, class: "wp-dot" }, inner); }
+      else if (s === "now") { S("circle", { r: 3, class: "wp-dot" }, inner); }
+      else if (s === "todo") { S("circle", { r: 3.5, class: "wp-dot", opacity: .6 }, inner); lb.classList.add("todo"); }
+      else if (s === "skip") {
+        T("✕", { y: 6, class: "xm" }, inner); lb.classList.add("struck");
+        const up = p[1] > 128 ? 1 : -1;
+        detours[i] = S("path", { d: `M${p[0] - 34},${p[1]} C${p[0] - 30},${p[1] + up * 48} ${p[0] + 30},${p[1] + up * 48} ${p[0] + 34},${p[1]}`, class: "detour", pathLength: 1 }, g);
+      } else if (s === "out") { lb.classList.add("faint"); lb.textContent = n.l + " (left out)"; }
+      if (n.units && s !== "todo") T(`${m.units} of ${n.units} units`, { y: 44, class: "lbl faint" }, ng);
+      return inner;
+    });
+    const hk = S("g", {}, g), bob = S("g", {}, hk);
+    S("ellipse", { rx: 8, ry: 2.5, cy: 9, class: "shadow" }, hk);
+    S("circle", { r: 8, class: "hiker" }, bob);
+    const place = l => { const a = trail.getPointAtLength(l); hk.setAttribute("transform", `translate(${a.x},${a.y})`); };
+    place(lg.at[mk]);
+    return { nodes, detours, hk, bob, place, lg, done, pts };
+  },
+  tick(t, c) {
+    const r = c.refs, m = c.m;
+    r.nodes.forEach((g, i) => { if (m.st[i] === "next") { const ring = g.querySelector(".nextring"); if (ring) ring.setAttribute("transform", `rotate(${(t / 30) % 360}) scale(${1 + .1 * Math.sin(t / 300)})`); } });
+    if (c.moving) return;
+    const y = m.mode === "running" ? -Math.abs(Math.sin(t / 240)) * 7 : m.mode === "complete" ? -Math.abs(Math.sin(t / 160)) * 10 : Math.sin(t / 700) * 1.2;
+    r.bob.setAttribute("transform", `translate(0,${y.toFixed(2)})`);
+  },
+  play(c, ev) {
+    const r = c.refs;
+    if (ev.kind === "advance") {
+      c.moving = true; const a = r.lg.at[ev.from], b = r.lg.at[ev.to]; dash(r.done, a, r.lg.L);
+      tween(1700, p => { const l = lerp(a, b, p); r.place(l); dash(r.done, l, r.lg.L); r.bob.setAttribute("transform", `translate(0,${(-Math.abs(Math.sin(p * Math.PI * 7)) * 8).toFixed(1)})`); }, ease.io, () => { c.moving = false; });
+    }
+    if (ev.kind === "finish" || ev.kind === "complete") {
+      anim(r.nodes[ev.at], [{ transform: "scaleY(0)" }, { transform: "scaleY(1.2)", offset: .7 }, { transform: "scaleY(1)" }], { duration: 650, easing: "ease-out" });
+      burst(c, r.pts[ev.at][0], r.pts[ev.at][1] - 20, 20, 60);
+    }
+    if (ev.kind === "finish") anim(r.nodes[ev.to], [{ opacity: 0, transform: "scale(.2)" }, { opacity: 1, transform: "scale(1)" }], { duration: 700, delay: 500, fill: "backwards" });
+    if (ev.kind === "unit") { anim(r.bob, [{ transform: "translate(0,0)" }, { transform: "translate(0,-16px)" }, { transform: "translate(0,0)" }], { duration: 450 }); burst(c, ...r.pts[ev.at], 8, 30); }
+    if (ev.kind === "skip" || (ev.kind === "complete" && ev.skipped != null)) {
+      drawIn(r.detours[ev.at], 900);
+      anim(r.nodes[ev.at], [{ opacity: 0, transform: "scale(2)" }, { opacity: 1, transform: "scale(1)" }], { duration: 500, delay: 200, fill: "backwards" });
+    }
+    if (ev.kind === "complete") { anim(r.nodes[N - 1], [{ transform: "scale(0)" }, { transform: "scale(1.3)", offset: .7 }, { transform: "scale(1)" }], { duration: 800, delay: 300, fill: "backwards" }); setTimeout(() => burst(c, r.pts[N - 1][0], r.pts[N - 1][1] - 20, 40, 110), 500); }
+  },
+  panelIn: [{ opacity: 0, transform: "perspective(600px) rotateX(-70deg)", transformOrigin: "top" }, { opacity: 1, transform: "perspective(600px) rotateX(0deg)", transformOrigin: "top" }],
+};
+
+// ------------------------------------------------------------------ C: Blueprint
+const PRINT = {
+  id: "C", key: "print", name: "Blueprint", cls: "t-print",
+  pitch: "An engineering drawing. Every stage is a part on the sheet: the active one is being drafted (a pencil traces its outline), finished parts are hatched in, and a skip is a red-pencil strike with an N/A stamp. The header is the drawing's title block.",
+  why: "The most on-theme for an engineering pipeline. Mono type suits IDs, branches and file names, it stays very readable, and the red pencil gives Skip real weight.",
+  watch: "It gets busy if overdone, and the grid needs restraint in light mode. It's the least playful of the five.",
+  cost: "Low to medium. Rectangles, lines and dash-offset animations; the title block is plain HTML.",
+  voc: { cont: "Draft", skip: "Mark N/A", stop: "Pin the sheet" },
+  pts() { return NODES.map((n, i) => [64 + 872 * i / (N - 1), 132]); },
+  hero(card, h) {
+    const m = card.m, w = H("div", "tblock");
+    w.innerHTML = `<div><small>DRAWING</small>${FEATURE.id}</div><div><small>TITLE</small>${FEATURE.title}</div><div><small>SHEET</small>${String(Math.min(m.cur + 1, N)).padStart(2, "0")} / ${N}</div><div><small>STATUS</small>${h.kick}</div>`;
+    const big = H("div", "wide"); big.innerHTML = `<div class="h-big"></div><div class="h-sub">${h.sub}</div>`; w.appendChild(big);
+    const bt = big.querySelector(".h-big");
+    if (card.ev && MOTION) tween(Math.min(900, h.big.length * 40), p => { bt.textContent = h.big.slice(0, Math.round(h.big.length * p)) + (p < 1 ? "▍" : ""); }, p => p);
+    else bt.textContent = h.big;
+    return w;
+  },
+  draw(svg, m, card) {
+    const pts = this.pts(), g = S("g", {}, svg), id = "hatch-" + card.dir.key;
+    const defs = S("defs", {}, g), pat = S("pattern", { id, width: 6, height: 6, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
+    S("line", { x1: 0, y1: 0, x2: 0, y2: 6, stroke: "currentColor", "stroke-width": 1 }, pat);
+    const mkid = "arrow-" + card.dir.key, mk = S("marker", { id: mkid, viewBox: "0 0 8 8", refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: "auto" }, defs);
+    S("path", { d: "M0,0 L8,4 L0,8 Z", fill: "currentColor" }, mk);
+    const size = i => NODES[i].plan ? [60, 40] : [72, 50];
+    const x0 = pts[1][0] - 34, x1 = pts[6][0] + 34;
+    S("path", { d: `M${x0},84 L${x1},84 M${x0},78 L${x0},90 M${x1},78 L${x1},90`, class: "dimline" }, g);
+    T("PLAN · 6 STAGES", { x: (x0 + x1) / 2, y: 76, class: "dimtext" }, g);
+    S("path", { d: `M${pts[0][0] - 36},222 L${pts[N - 1][0] + 36},222`, class: "dimline", "marker-end": `url(#${mkid})`, "marker-start": `url(#${mkid})` }, g);
+    T(`${FEATURE.id} · ${N} STAGES · SCALE 1:1`, { x: 500, y: 240, class: "dimtext" }, g);
+    for (let i = 0; i < N - 1; i++) {
+      const a = pts[i][0] + size(i)[0] / 2, b = pts[i + 1][0] - size(i + 1)[0] / 2;
+      S("path", { d: `M${a},132 L${b - 2},132`, class: "wire" + (m.st[i] === "done" && m.st[i + 1] !== "todo" ? " on" : ""), "marker-end": `url(#${mkid})` }, g);
+    }
+    const boxes = [], nodes = pts.map((p, i) => {
+      const n = NODES[i], s = m.st[i], [w, h] = size(i);
+      const outer = S("g", { transform: `translate(${p[0]},${p[1]})` }, g), ng = S("g", { class: "bx pop " + s }, outer);
+      T(n.l.toUpperCase(), { y: h / 2 + 15, class: "lbl" }, outer);
+      if (s === "out") { S("rect", { x: -w / 2, y: -h / 2, width: w, height: h, class: "ghost" }, ng); T("OMITTED", { y: 3, class: "ghost-t" }, ng); boxes.push(null); return ng; }
+      if (s === "done") S("rect", { x: -w / 2, y: -h / 2, width: w, height: h, fill: `url(#${id})`, class: "hatchf" }, ng);
+      const box = S("rect", { x: -w / 2, y: -h / 2, width: w, height: h, class: "box", pathLength: 100 }, ng); boxes.push(box);
+      T(String(i + 1).padStart(2, "0"), { x: -w / 2 + 4, y: -h / 2 + 10, class: "num" }, ng);
+      const glyph = { done: "✓", now: "✎", next: "›", todo: "", skip: "" }[s];
+      if (glyph) T(glyph, { y: 6, class: "glyph" }, ng);
+      if (n.units && s !== "todo") T(`${m.units}/${n.units}`, { x: w / 2 - 4, y: h / 2 - 5, class: "num", "text-anchor": "end" }, ng);
+      if (s === "skip") {
+        S("path", { d: `M${-w / 2 - 6},${h / 2 + 4} L${w / 2 + 6},${-h / 2 - 4}`, class: "strike", pathLength: 1 }, ng);
+        const st = S("g", { class: "stamp pop", transform: "rotate(-14)" }, ng); S("rect", { x: -20, y: -10, width: 40, height: 20, rx: 2 }, st); T("N/A", { y: 4.5 }, st);
+      }
+      return ng;
+    });
+    let big = null;
+    if (m.mode === "complete") { big = S("g", { class: "bigstamp pop", transform: "translate(500,150) rotate(-8)" }, g); S("rect", { x: -120, y: -26, width: 240, height: 48, rx: 4 }, big); T("SHIPPED", { y: 11 }, big); }
+    const pen = S("g", {}, g), pi = S("g", { transform: "rotate(-40)" }, pen);
+    S("path", { d: "M0,0 L8,-3 L8,3 Z", class: "wood" }, pi); S("path", { d: "M0,0 L3,-1.1 L3,1.1 Z", class: "lead" }, pi);
+    S("rect", { x: 8, y: -3, width: 28, height: 6, class: "wood" }, pi); S("rect", { x: 36, y: -3, width: 5, height: 6, class: "eraser" }, pi);
+    if (m.mode === "complete") pen.setAttribute("opacity", 0);
+    return { nodes, boxes, pen, pts, size, big };
+  },
+  penAt(c, t) {
+    const r = c.refs, m = c.m, i = m.cur, [w, h] = r.size(i), p = r.pts[i];
+    if (m.mode === "running" || m.mode === "decide") {
+      const per = 2 * (w + h), u = ((t / (m.mode === "decide" ? 9000 : 3200)) % 1) * per;
+      let x, y;
+      if (u < w) { x = -w / 2 + u; y = -h / 2; } else if (u < w + h) { x = w / 2; y = -h / 2 + (u - w); }
+      else if (u < 2 * w + h) { x = w / 2 - (u - w - h); y = h / 2; } else { x = -w / 2; y = h / 2 - (u - 2 * w - h); }
+      return [p[0] + x, p[1] + y];
+    }
+    return [p[0] + w / 2 + 6, p[1] - h / 2 - 10 + Math.sin(t / 400) * 3];
+  },
+  tick(t, c) {
+    const r = c.refs, m = c.m;
+    const b = r.boxes[m.cur]; if (b && m.st[m.cur] === "now") b.style.strokeDashoffset = (-(t / 40) % 9).toFixed(2);
+    if (c.moving || m.mode === "complete") return;
+    const [x, y] = this.penAt(c, t); r.pen.setAttribute("transform", `translate(${x.toFixed(1)},${y.toFixed(1)})`);
+  },
+  play(c, ev) {
+    const r = c.refs;
+    if (ev.kind === "advance") {
+      c.moving = true; const a = r.pts[ev.from], b = r.pts[ev.to];
+      tween(1100, p => r.pen.setAttribute("transform", `translate(${lerp(a[0], b[0], p)},${lerp(a[1] - 30, b[1] - 30, p) - Math.sin(p * Math.PI) * 40})`), ease.io, () => { c.moving = false; });
+      const bx = r.boxes[ev.to]; if (bx) anim(bx, [{ strokeDasharray: "100", strokeDashoffset: 100 }, { strokeDasharray: "100", strokeDashoffset: 0 }], { duration: 900, delay: 900, fill: "backwards" });
+    }
+    if (ev.kind === "finish" || ev.kind === "complete" || ev.kind === "unit") {
+      const bx = r.boxes[ev.at];
+      if (bx && ev.kind !== "unit") anim(bx, [{ strokeDasharray: "100", strokeDashoffset: 100 }, { strokeDasharray: "100", strokeDashoffset: 0 }], { duration: 800 });
+      const hf = r.nodes[ev.at].querySelector(".hatchf"); if (hf) anim(hf, [{ opacity: 0 }, { opacity: .55 }], { duration: 500, delay: 650, fill: "backwards" });
+      burst(c, ...r.pts[ev.at], ev.kind === "unit" ? 6 : 16, 50);
+    }
+    if (ev.kind === "finish") anim(r.nodes[ev.to], [{ opacity: 0 }, { opacity: 1 }], { duration: 500, delay: 600, fill: "backwards" });
+    if (ev.kind === "skip" || (ev.kind === "complete" && ev.skipped != null)) {
+      const ng = r.nodes[ev.at]; drawIn(ng.querySelector(".strike"), 380);
+      anim(ng.querySelector(".stamp"), [{ opacity: 0, transform: "scale(2.6) rotate(-14deg)" }, { opacity: 1, transform: "scale(1) rotate(-14deg)" }], { duration: 300, delay: 380, fill: "backwards", easing: "cubic-bezier(.5,0,.75,0)" });
+      setTimeout(() => shake(c.mock, 4), MOTION ? 680 : 0);
+    }
+    if (ev.kind === "complete" && r.big) {
+      r.nodes.forEach((n, i) => anim(n, [{ opacity: .2 }, { opacity: 1 }], { duration: 300, delay: i * 70, fill: "backwards" }));
+      anim(r.big, [{ opacity: 0, transform: "scale(3)" }, { opacity: 1, transform: "scale(1)" }], { duration: 350, delay: N * 70 + 100, fill: "backwards", easing: "cubic-bezier(.5,0,.75,0)" });
+      setTimeout(() => { shake(c.mock, 6); burst(c, 500, 150, 30, 120); }, MOTION ? N * 70 + 450 : 0);
+    }
+  },
+  panelIn: [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0 0 0)" }],
+};
+
+// ------------------------------------------------------------------ D: Transit Line
+const METRO = {
+  id: "D", key: "metro", name: "Transit Line", cls: "t-metro",
+  pitch: "A transit line. Stages are stations, the plan is its own section of the line, and a little train waits at the platform with its doors shut until you depart. A skip runs express through the station. The header is a departure board that flips to show what's now and what's next.",
+  why: "Understood at a glance, bold and flat, and it scales to long routes. 'Now / Next / Waiting for you' on the departure board is the clearest status of the five.",
+  watch: "It's the least 'magic' of the five. 'Express' is a great word for skip, but left-out stations ('closed') need a clear look.",
+  cost: "Low. A straight line, circles and one train; the board flip is WAAPI.",
+  voc: { cont: "Depart for", skip: "Run express past", stop: "Hold at platform" },
+  pts() { return NODES.map((n, i) => [60 + 880 * i / (N - 1), 150]); },
+  hero(card, h) {
+    const m = card.m, w = H("div"), b = H("div", "board"), cur = NODES[m.cur].l, ld = lastDone(m, m.cur);
+    const rows = {
+      running: [["NOW", cur, "IN PROGRESS", ""], ["NEXT", NODES[nextOpen(m, m.cur)]?.l || "Done", "ON YOUR SIGNAL", "wait"]],
+      gate: [["ARRIVED", ld >= 0 ? NODES[ld].l : "Start", "COMPLETE", ""], ["NEXT", cur, "READY TO DEPART", "wait"]],
+      paused: [["HELD", ld >= 0 ? NODES[ld].l : "Start", "AT PLATFORM", "wait"], ["NEXT", cur, "WHEN YOU ARE", "wait"]],
+      decide: [["NOW", cur, "HELD AT SIGNAL", "wait"], ["NEEDS", `${m.dec} decisions`, "YOUR CALL", "wait"]],
+      complete: [["ARRIVED", "Done", "MERGED", ""], ["ROUTE", `${N} stops`, "COMPLETE", ""]],
+    }[m.mode];
+    rows.forEach(([k, v, s, cls]) => { b.append(H("span", "k", k), H("span", "", v), H("span", "s " + cls, s)); });
+    w.append(H("div", "h-id", `${FEATURE.id} · ${FEATURE.title}`), b, H("div", "h-sub", "&nbsp;" + h.sub));
+    w.querySelector(".h-sub").style.marginTop = "6px";
+    if (card.ev) [...b.children].forEach((s, i) => anim(s, [{ transform: "rotateX(90deg)", opacity: .2 }, { transform: "rotateX(0deg)", opacity: 1 }], { duration: 260, delay: i * 55, fill: "backwards" }));
+    return w;
+  },
+  draw(svg, m) {
+    const pts = this.pts(), g = S("g", {}, svg), mk = markerAt(m), y = 150;
+    S("rect", { x: pts[1][0] - 22, y: 176, width: pts[6][0] - pts[1][0] + 44, height: 6, rx: 3, class: "band" }, g);
+    T("PLAN LINE", { x: (pts[1][0] + pts[6][0]) / 2, y: 198, class: "band-t" }, g);
+    S("path", { d: `M${pts[0][0]},${y} L${pts[N - 1][0]},${y}`, class: "rail" }, g);
+    const done = S("path", { d: `M${pts[0][0]},${y} L${pts[mk][0]},${y}`, class: "rail-done" }, g);
+    const nodes = pts.map((p, i) => {
+      const n = NODES[i], s = m.st[i], ng = S("g", { transform: `translate(${p[0]},${y})` }, g), inner = S("g", { class: "pop" }, ng);
+      const big = n.k === "breakdown" || n.k === "done";
+      const lb = T(n.l, { transform: "translate(4,-22) rotate(-38)", class: "lbl" }, ng);
+      if (s === "out") { lb.classList.add("faint"); T("closed", { y: 30, class: "lbl2" }, ng); return inner; }
+      if (s === "todo") lb.classList.add("todo");
+      if (s === "next") S("circle", { r: 14, class: "nring" }, inner);
+      if (big) S("rect", { x: -16, y: -10, width: 32, height: 20, rx: 10, class: "st " + s }, inner);
+      else S("circle", { r: s === "skip" ? 6 : 9, class: "st " + s }, inner);
+      if (s === "skip") { T("»", { x: -18, y: 6, class: "express" }, ng); T("»", { x: 18, y: 6, class: "express" }, ng); T("express", { y: 30, class: "lbl2" }, ng); }
+      if (n.units && s !== "todo") T(`${m.units}/${n.units} units`, { y: 30, class: "lbl2" }, ng);
+      return inner;
+    });
+    const tr = S("g", {}, g), tb = S("g", {}, tr);
+    S("rect", { x: -27, y: -11, width: 54, height: 22, rx: 10, class: "car" }, tb);
+    S("rect", { x: -27, y: 3, width: 54, height: 3, class: "stripe" }, tb);
+    [-19, -9, 13].forEach(x => S("rect", { x, y: -6, width: 7, height: 6, rx: 1.5, class: "win" }, tb));
+    const dl = S("rect", { x: 0, y: -8, width: 4, height: 15, class: "door" }, tb), dr = S("rect", { x: 4, y: -8, width: 4, height: 15, class: "door" }, tb);
+    const lamp = S("circle", { cx: 24, cy: -3, r: 2.2, class: "lamp" }, tb);
+    const place = x => tr.setAttribute("transform", `translate(${x},${y})`);
+    place(pts[mk][0]);
+    return { nodes, tr, tb, dl, dr, lamp, place, done, pts };
+  },
+  tick(t, c) {
+    const r = c.refs, m = c.m;
+    r.nodes.forEach((g, i) => { if (m.st[i] === "next") { const ring = g.querySelector(".nring"); ring.setAttribute("r", (13 + Math.sin(t / 260) * 3).toFixed(1)); ring.setAttribute("opacity", (.6 + .4 * Math.sin(t / 260)).toFixed(2)); } });
+    r.lamp.setAttribute("opacity", m.mode === "gate" || m.mode === "paused" ? (Math.sin(t / 250) > 0 ? 1 : .25) : 1);
+    if (c.moving) return;
+    const open = m.mode === "running" || m.mode === "decide";
+    r.dl.setAttribute("transform", open ? "translate(-3,0)" : ""); r.dr.setAttribute("transform", open ? "translate(3,0)" : "");
+    r.tb.setAttribute("transform", m.mode === "running" ? `translate(0,${(Math.sin(t / 45) * .5).toFixed(2)})` : "");
+  },
+  play(c, ev) {
+    const r = c.refs, y = 150;
+    if (ev.kind === "advance") {
+      c.moving = true; const a = r.pts[ev.from][0], b = r.pts[ev.to][0];
+      r.dl.setAttribute("transform", ""); r.dr.setAttribute("transform", "");
+      tween(1400, p => { const x = lerp(a, b, p); r.place(x); r.done.setAttribute("d", `M${r.pts[0][0]},${y} L${x},${y}`); }, ease.io, () => {
+        c.moving = false;
+        anim(r.dl, [{ transform: "translate(0,0)" }, { transform: "translate(-3px,0)" }], { duration: 300 });
+        anim(r.dr, [{ transform: "translate(0,0)" }, { transform: "translate(3px,0)" }], { duration: 300 });
+      });
+    }
+    if (ev.kind === "finish" || ev.kind === "complete" || ev.kind === "unit") {
+      anim(r.nodes[ev.at], [{ transform: "scale(1)" }, { transform: "scale(1.7)" }, { transform: "scale(1)" }], { duration: 600 });
+      burst(c, r.pts[ev.at][0], y, ev.kind === "unit" ? 8 : 18, 55);
+    }
+    if (ev.kind === "finish") anim(r.nodes[ev.to], [{ opacity: 0, transform: "scale(.2)" }, { opacity: 1, transform: "scale(1)" }], { duration: 600, delay: 300, fill: "backwards" });
+    if (ev.kind === "skip") {
+      const ng = r.nodes[ev.at].parentNode;
+      [...ng.querySelectorAll(".express")].forEach((e, i) => anim(e, [{ transform: "translate(-40px,0)", opacity: 0 }, { transform: "translate(0,0)", opacity: 1 }], { duration: 500, delay: i * 120, fill: "backwards" }));
+      anim(r.tb, [{ transform: "translate(0,0)" }, { transform: "translate(6px,0)" }, { transform: "translate(0,0)" }], { duration: 300, iterations: 2 });
+    }
+    if (ev.kind === "complete") { r.place(r.pts[N - 1][0]); r.pts.forEach((p, i) => setTimeout(() => burst(c, p[0], y, 6, 40), i * 70)); setTimeout(() => burst(c, r.pts[N - 1][0], y, 40, 110), 800); }
+  },
+  panelIn: [{ opacity: 0, transform: "translateX(40px)" }, { opacity: 1, transform: "none" }],
+};
+
+// ------------------------------------------------------------------ E: Neon Circuit
+const NEON = {
+  id: "E", key: "neon", name: "Neon Circuit", cls: "t-neon",
+  pitch: "A neon circuit board over a scrolling grid floor. Stages are level tiles wired together: current flows along the finished traces, the next tile flashes READY, a running tile pulses, and a skip arcs a bridge over the tile. It sits naturally next to coins and the shop.",
+  why: "The most juice and the most game-like. The flowing current makes 'a session is running' unmistakable, and powering up a tile on Continue is very satisfying.",
+  watch: "The loudest of the five, so it may clash with the calm UI elsewhere in Tatty. Glow filters and the moving floor cost GPU over RDP at 4K; it needs a performance check.",
+  cost: "Medium to high. SVG glow filters, an animated floor, particles and a flowing dash.",
+  voc: { cont: "Power up", skip: "Bridge over", stop: "Power down" },
+  pts() { const r1 = [90, 254, 418, 582, 746, 910].map(x => [x, 62]), r2 = [910, 746, 582, 418, 254].map(x => [x, 196]); return r1.concat(r2); },
+  draw(svg, m, card) {
+    const pts = this.pts(), g = S("g", {}, svg), fid = "glow-" + card.dir.key, mk = markerAt(m);
+    const f = S("filter", { id: fid, x: "-50%", y: "-50%", width: "200%", height: "200%" }, S("defs", {}, g));
+    S("feGaussianBlur", { stdDeviation: 3.5, result: "b" }, f); const mg = S("feMerge", {}, f); S("feMergeNode", { in: "b" }, mg); S("feMergeNode", { in: "SourceGraphic" }, mg);
+    const trace = S("path", { d: poly(pts), class: "trace" }, g), lg = lens(trace, pts);
+    const on = S("path", { d: poly(pts.slice(0, mk + 1)), class: "trace-on", filter: `url(#${fid})` }, g);
+    const flow = S("path", { d: poly(pts.slice(0, mk + 1)), class: "flow" }, g);
+    if (mk === 0) { on.setAttribute("d", ""); flow.setAttribute("d", ""); }
+    const bridges = {}, cells = [], nodes = pts.map((p, i) => {
+      const n = NODES[i], s = m.st[i], ng = S("g", { transform: `translate(${p[0]},${p[1]})` }, g), inner = S("g", { class: "tile pop " + s }, ng);
+      S("rect", { x: -64, y: -26, width: 128, height: 52, rx: 10, class: "face" }, inner);
+      T(n.l.toUpperCase(), { y: -2, class: "tl" }, inner);
+      const word = { done: "ONLINE", now: n.units ? "" : "RUNNING", next: "READY ▶", todo: "LOCKED", skip: "BYPASSED", out: "OFFLINE" }[s];
+      if (word) T(word, { y: 15, class: "ts", "data-w": s }, inner);
+      if (s === "todo") { const lk = S("g", { transform: "translate(48,-22)" }, inner); S("rect", { x: 0, y: 5, width: 9, height: 7, rx: 1.5, class: "lock" }, lk); S("path", { d: "M2,5 L2,3 A2.5,2.5 0 0 1 7,3 L7,5", class: "lock" }, lk); }
+      if (n.units && s !== "todo" && s !== "out") for (let u = 0; u < n.units; u++) cells.push(S("rect", { x: -44 + u * 15, y: 8 + (s === "now" ? 0 : 10), width: 12, height: 5, rx: 1, class: "cell" + (u < m.units ? " on" : "") }, inner));
+      if (s === "skip") {
+        const a = pts[i - 1] || p, b = pts[i + 1] || p, row1 = p[1] < 130;
+        const sx = row1 ? p[0] - 82 : p[0] + 82, ex = row1 ? p[0] + 82 : p[0] - 82, cy = row1 ? p[1] - 72 : p[1] + 72;
+        bridges[i] = S("path", { d: `M${sx},${p[1]} C${sx},${cy} ${ex},${cy} ${ex},${p[1]}`, class: "bridge", pathLength: 1, filter: `url(#${fid})` }, g);
+      }
+      return inner;
+    });
+    const spark = S("circle", { r: 0, class: "spark", filter: `url(#${fid})` }, g);
+    return { nodes, bridges, trace, lg, on, flow, spark, pts };
+  },
+  tick(t, c) {
+    const r = c.refs, m = c.m;
+    r.flow.style.strokeDashoffset = (-(t / 9) % 80).toFixed(1);
+    r.nodes.forEach((g, i) => {
+      const s = m.st[i];
+      if (s === "now") g.querySelector(".face").setAttribute("opacity", (.75 + .25 * Math.sin(t / 220)).toFixed(2));
+      if (s === "next") { const w = g.querySelector(".ts"); if (w) w.setAttribute("opacity", Math.sin(t / 180) > -.2 ? 1 : .15); }
+      if (s === "now" && m.mode === "decide") { const w = g.querySelector(".ts"); if (w) { w.textContent = "AWAITING INPUT"; w.setAttribute("opacity", Math.sin(t / 300) > 0 ? 1 : .3); } }
+    });
+  },
+  play(c, ev) {
+    const r = c.refs;
+    if (ev.kind === "advance") {
+      const a = r.lg.at[ev.from], b = r.lg.at[ev.to];
+      r.on.setAttribute("d", poly(r.pts.slice(0, ev.from + 1))); r.flow.setAttribute("d", poly(r.pts.slice(0, ev.from + 1)));
+      if (ev.from === 0) { r.on.setAttribute("d", ""); r.flow.setAttribute("d", ""); }
+      tween(900, p => { const q = r.trace.getPointAtLength(lerp(a, b, p)); r.spark.setAttribute("cx", q.x); r.spark.setAttribute("cy", q.y); r.spark.setAttribute("r", p < 1 ? 6 : 0); }, ease.io, () => {
+        r.spark.setAttribute("r", 0);
+        const d = poly(r.pts.slice(0, ev.to + 1)); r.on.setAttribute("d", d); r.flow.setAttribute("d", d);
+        anim(r.nodes[ev.to], [{ filter: "brightness(3)", transform: "scale(1.12)" }, { filter: "brightness(1)", transform: "scale(1)" }], { duration: 600 });
+        burst(c, ...r.pts[ev.to], 22, 70);
+      });
+    }
+    if (ev.kind === "finish" || ev.kind === "complete" || ev.kind === "unit") {
+      anim(r.nodes[ev.at], [{ opacity: 1 }, { opacity: .2 }, { opacity: 1 }, { opacity: .4 }, { opacity: 1 }], { duration: 420 });
+      burst(c, ...r.pts[ev.at], ev.kind === "unit" ? 8 : 26, 70);
+    }
+    if (ev.kind === "finish") anim(r.nodes[ev.to], [{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "scale(1)" }], { duration: 500, delay: 350, fill: "backwards" });
+    if (ev.kind === "skip" || (ev.kind === "complete" && ev.skipped != null)) {
+      drawIn(r.bridges[ev.at], 650);
+      setTimeout(() => { const p = r.pts[ev.at]; burst(c, p[0], p[1] < 130 ? p[1] - 54 : p[1] + 54, 14, 40); }, MOTION ? 600 : 0);
+      anim(r.nodes[ev.at], [{ opacity: 1 }, { opacity: .33 }], { duration: 500 });
+    }
+    if (ev.kind === "complete") r.nodes.forEach((n, i) => anim(n, [{ filter: "brightness(1)" }, { filter: "brightness(2.5)" }, { filter: "brightness(1)" }], { duration: 400, delay: 300 + i * 80 }));
+    if (ev.kind === "complete") setTimeout(() => burst(c, 500, 130, 50, 160), MOTION ? 300 + N * 80 : 0);
+  },
+  panelIn: [{ opacity: 0, transform: "translateX(-8px)" }, { opacity: 1, transform: "translateX(5px)", offset: .25 }, { opacity: .3, offset: .4 }, { opacity: 1, transform: "translateX(-2px)", offset: .6 }, { opacity: 1, transform: "none" }],
+};
+
+ease.backCss = "cubic-bezier(.34,1.56,.64,1)";
+const DIRS = [STAR, MAP, PRINT, METRO, NEON];
+
+// ------------------------------------------------------------------ the shared parts of a mock
+function heroNode(card) {
+  const h = heroText(card.m);
+  if (card.dir.hero) return card.dir.hero(card, h);
+  const w = H("div");
+  w.append(H("div", "h-id", `${FEATURE.id} · ${FEATURE.title}`), H("div", "h-kick", h.kick), H("div", "h-big", h.big), H("div", "h-sub", h.sub));
+  if (card.ev) { anim(w.children[2], [{ opacity: 0, transform: "translateY(10px)", filter: "blur(4px)" }, { opacity: 1, transform: "none", filter: "blur(0)" }], { duration: 550, delay: 120, fill: "backwards" }); }
+  return w;
+}
+
+function panelNode(card) {
+  const m = card.m, v = card.dir.voc, cur = NODES[m.cur], box = H("div", "pbox");
+  card.actEl = null;
+  if (m.mode === "running") {
+    const act = H("span", "act-t", ACTIVITY[card.actIdx = 0]);
+    const say = H("div", "say"); say.append(H("b", "", "Working on " + cur.l)); say.append(act); card.actEl = act;
+    box.append(H("span", "sbar", "<i></i><i></i><i></i><i></i>"), say, H("span", "act-t", "14 min · $0.84"),
+      btn("Open session ↗", "open", ""), btn("▸ simulate: stage closes", "finish", "demo"));
+  } else if (m.mode === "gate" || m.mode === "paused") {
+    const say = H("div", "say"); say.append(H("b", "", m.mode === "paused" ? `Stopped before ${cur.l}` : `${cur.l} is next`), H("span", "", m.mode === "paused" ? "The session can close; Continue starts a fresh one." : "Nothing runs until you choose."));
+    const sk = btn(`${v.skip} ${cur.l}`, "skip", "");
+    if (!cur.skip) { sk.disabled = true; sk.title = `${cur.l} is required, so it can't be skipped`; }
+    box.append(say, btn(`${v.cont} ${cur.l} ▶`, "continue", "go"), sk);
+    if (m.mode === "gate") box.append(btn(v.stop, "stop", "quiet"));
+    box.append(H("div", "pnote", cur.skip ? `Skip leaves ${cur.l} out of this feature; it is marked skipped in the plan.` : `${cur.l} is required by the workflow, so it can't be skipped.`));
+  } else if (m.mode === "decide") {
+    const say = H("div", "say"); say.append(H("b", "", `${m.dec} decisions on ${cur.l}`), H("span", "", "Answer them here; the waiting session picks them up."));
+    box.append(say, btn(`Decide now (${m.dec}) ▶`, "decide", "go"), btn("Open session ↗", "open", "quiet"));
+  } else if (m.mode === "complete") {
+    const say = H("div", "say"); say.append(H("b", "", "Merged into develop"), H("span", "", "Request !1234 · 11 stages · 6 units · $4.12"));
+    box.append(say, btn("Open the merge request ↗", "open", "go"), btn("Archive", "open", ""));
+  }
+  return box;
+}
+function btn(label, act, cls) { const b = H("button", "btn " + cls); b.textContent = label; b.dataset.act = act; return b; }
+
+function dockNode() {
+  const d = H("div", "dock");
+  ["Documents · 7", "Whiteboard", "Timeline", "Usage · $4.12", "⎇ Branch"].forEach(s => { const b = H("button"); b.textContent = s; b.title = "Would open a drawer"; d.append(b); });
+  return d;
+}
+
+function render(card) {
+  const root = card.mock;
+  root.querySelector(".hero").replaceChildren(heroNode(card));
+  const svg = root.querySelector("svg"); svg.replaceChildren();
+  card.moving = false;
+  card.refs = card.dir.draw(svg, card.m, card);
+  const panel = root.querySelector(".panel"); panel.replaceChildren(panelNode(card));
+  const ev = card.ev; card.ev = null; card.age = 0;
+  if (ev) {
+    if (card.dir.panelIn && ev.kind !== "unit") anim(panel.firstChild, card.dir.panelIn, { duration: 520, delay: ev.kind === "advance" ? 250 : 120, fill: "backwards" });
+    card.dir.play(card, ev);
+  }
+  if (card.dir.tick) card.dir.tick(performance.now(), card);
+}
+
+// ------------------------------------------------------------------ the board
+const BOARD_KEY = "tatty-overview-board";
+const saved = (() => { try { return JSON.parse(localStorage.getItem(BOARD_KEY) || "{}"); } catch { return {}; } })();
+saved.stars = saved.stars || {}; saved.notes = saved.notes || {};
+const save = () => { try { localStorage.setItem(BOARD_KEY, JSON.stringify(saved)); } catch {} };
+const CARDS = [];
+
+function seg(id, items, current, onPick) {
+  const host = document.getElementById(id);
+  items.forEach(([k, label]) => {
+    const b = H("button"); b.textContent = label; b.dataset.k = k; if (k === current) b.classList.add("on");
+    b.onclick = () => { host.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); onPick(k); };
+    host.append(b);
+  });
+}
+
+function makeCard(dir) {
+  const sec = H("section", "card"); sec.id = "dir-" + dir.id;
+  if (saved.stars[dir.id]) sec.classList.add("starred");
+  sec.innerHTML = `<header><span class="letter">${dir.id}</span><h3>${dir.name}</h3><button class="reset">Reset</button><button class="shortlist">☆ shortlist</button></header>
+    <p class="pitch"></p>
+    <div class="mock ${dir.cls}">
+      <div class="m-head"><div class="hero"></div><button class="m-more" title="Stages, Cancel, Archive, Refresh">⋯</button>
+        <div class="m-menu" hidden><button>Stages ▾</button><button>Refresh</button><button>Cancel workflow</button><hr><button>Archive</button><button>Delete…</button></div></div>
+      <div class="m-journey"><svg viewBox="0 0 1000 260" preserveAspectRatio="xMidYMid meet"></svg></div>
+      <div class="m-foot"><div class="panel"></div></div>
+      <div class="fx"></div>
+    </div>
+    <dl class="notes"><div><dt>Why it might win</dt><dd class="why"></dd></div><div><dt>Watch out</dt><dd class="watch"></dd></div><div><dt>Build cost</dt><dd class="cost"></dd></div></dl>
+    <textarea placeholder="Notes on ${dir.name}…"></textarea>`;
+  sec.querySelector(".pitch").textContent = dir.pitch;
+  sec.querySelector(".why").textContent = dir.why; sec.querySelector(".watch").textContent = dir.watch; sec.querySelector(".cost").textContent = dir.cost;
+  sec.querySelector(".m-foot").append(dockNode());
+  const card = { dir, sec, mock: sec.querySelector(".mock"), m: preset(STATE), age: 0, visible: true };
+  const star = sec.querySelector(".shortlist");
+  const paintStar = () => { const on = !!saved.stars[dir.id]; star.textContent = on ? "★ shortlisted" : "☆ shortlist"; star.classList.toggle("on", on); sec.classList.toggle("starred", on); };
+  star.onclick = () => { saved.stars[dir.id] = !saved.stars[dir.id]; save(); paintStar(); }; paintStar();
+  const ta = sec.querySelector("textarea"); ta.value = saved.notes[dir.id] || ""; ta.oninput = () => { saved.notes[dir.id] = ta.value; save(); };
+  sec.querySelector(".reset").onclick = () => { card.m = preset(STATE); render(card); };
+  const menu = sec.querySelector(".m-menu");
+  sec.querySelector(".m-more").onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; if (!menu.hidden) anim(menu, [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }], { duration: 200 }); };
+  document.addEventListener("click", () => { menu.hidden = true; });
+  card.mock.querySelector(".panel").addEventListener("click", e => { const b = e.target.closest("button[data-act]"); if (b && !b.disabled && b.dataset.act !== "open") act(card, b.dataset.act); });
+  document.getElementById("grid").append(sec);
+  CARDS.push(card);
+  new IntersectionObserver(es => es.forEach(x => { card.visible = x.isIntersecting; })).observe(card.mock);
+  render(card);
+}
+
+seg("states", STATES, STATE, k => { STATE = k; CARDS.forEach(c => { c.m = preset(k); render(c); }); });
+const MODES = [["engineering", "Engineering"], ["design", "Design"], ["production", "Production"]];
+seg("modes", MODES, "engineering", k => { document.body.classList.remove("mode-design", "mode-production"); if (k !== "engineering") document.body.classList.add("mode-" + k); });
+const startDark = matchMedia("(prefers-color-scheme: dark)").matches;
+if (startDark) document.body.classList.add("dark");
+seg("themes", [["light", "Light"], ["dark", "Dark"]], startDark ? "dark" : "light", k => document.body.classList.toggle("dark", k === "dark"));
+document.getElementById("motion").onchange = e => { MOTION = e.target.checked; document.body.classList.toggle("still", !MOTION); CARDS.forEach(render); };
+document.getElementById("auto").onchange = e => { AUTO = e.target.checked; };
+document.getElementById("autocont").onchange = e => { AUTOCONT = e.target.checked; if (AUTOCONT) { AUTO = true; document.getElementById("auto").checked = true; } };
+document.getElementById("resetall").onclick = () => CARDS.forEach(c => { c.m = preset(STATE); render(c); });
+
+DIRS.forEach(makeCard);
+
+setInterval(() => {
+  for (const c of CARDS) {
+    c.age++;
+    if (AUTO && c.m.mode === "running" && c.age >= 4) act(c, "finish");
+    else if (AUTOCONT && (c.m.mode === "gate" || c.m.mode === "paused") && c.age >= 3) act(c, "continue");
+    else if (AUTOCONT && c.m.mode === "decide" && c.age >= 3) act(c, "decide");
+    else if (AUTOCONT && c.m.mode === "complete" && c.age >= 6) { c.m = preset("gate"); c.m.st.fill("todo"); c.m.st[0] = "next"; c.m.cur = 0; c.m.mode = "gate"; render(c); }
+  }
+}, 1000);
+
+(function frame(t) {
+  if (MOTION) for (const c of CARDS) {
+    if (!c.visible || !c.refs) continue;
+    if (c.actEl) { const k = Math.floor(t / 2600) % ACTIVITY.length; if (k !== c.actIdx) { c.actIdx = k; c.actEl.textContent = ACTIVITY[k]; anim(c.actEl, [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: 300 }); } }
+    if (c.dir.tick) c.dir.tick(t, c);
+  }
+  requestAnimationFrame(frame);
+})(performance.now());
+
+document.getElementById("copy").onclick = () => {
+  const lines = ["Feature Overview concept board: my picks", ""];
+  DIRS.forEach(d => { const star = saved.stars[d.id], note = (saved.notes[d.id] || "").trim(); if (star || note) lines.push(`${star ? "★" : "·"} ${d.id} ${d.name}${note ? ": " + note : ""}`); });
+  if (lines.length === 2) lines.push("(nothing starred or noted yet)");
+  const text = lines.join("\n"), out = document.getElementById("outtext");
+  out.hidden = false; out.value = text; out.select();
+  const done = ok => { document.getElementById("copied").textContent = ok ? "Copied." : "Select the text below and copy it."; };
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => done(true), () => done(document.execCommand("copy")));
+  else done(document.execCommand("copy"));
+};
+</script>
+</body>
+</html>
