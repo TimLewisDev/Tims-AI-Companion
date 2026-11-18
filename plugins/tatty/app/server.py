@@ -82,6 +82,8 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
           "wallet.js": "text/javascript", "shop.js": "text/javascript", "shop.css": "text/css",
+          "looks.js": "text/javascript", "looks.css": "text/css", "look-chart.js": "text/javascript", "look-map.js": "text/javascript",
+          "look-kin.js": "text/javascript", "look-chrono.js": "text/javascript", "look-aur.js": "text/javascript", "look-drive.js": "text/javascript",
           "theme.css": "text/css", "theme.js": "text/javascript", "theme-init.js": "text/javascript", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
@@ -2785,9 +2787,18 @@ def shop_catalogue():
     """shop.json, read each time it is wanted (it is small, and an edit then needs no restart)."""
     data = read_json(SHOP_FILE, {})
     keep = lambda key, need: [x for x in data.get(key, []) if isinstance(x, dict) and all(x.get(k) for k in need)]
+    avatars, items = keep("avatars", ("id",)), keep("items", ("id", "slot"))
+    # what is owned is one list of ids, so a theme may not share an id with an avatar or an accessory
+    taken = {x["id"] for x in avatars + items}
     return {"welcome": int(data.get("welcome", 0) or 0),
             "rewards": {k: v for k, v in (data.get("rewards") or {}).items() if isinstance(v, int)},
-            "avatars": keep("avatars", ("id",)), "slots": keep("slots", ("id",)), "items": keep("items", ("id", "slot"))}
+            "avatars": avatars, "slots": keep("slots", ("id",)), "items": items,
+            "themes": [t for t in keep("themes", ("id",)) if t["id"] not in taken]}
+
+
+def free_themes(cat):
+    """The themes everyone owns (price 0); the first is the one worn when none is chosen."""
+    return [t["id"] for t in cat["themes"] if not t.get("price")] or ["minimal"]
 
 
 def wallet_path():
@@ -2797,22 +2808,25 @@ def wallet_path():
 
 def wallet_load(cat=None):
     """The wallet as stored, every part checked, or a new one (with shop.json's welcome gift) when
-    there is none yet. The free avatars are always owned, and the one chosen is always owned."""
+    there is none yet. The free avatars and themes are always owned, and the ones chosen are always owned."""
     cat = cat or shop_catalogue()
-    free = [a["id"] for a in cat["avatars"] if not a.get("price")]
+    themes = free_themes(cat)
+    free = [a["id"] for a in cat["avatars"] if not a.get("price")] + themes
     w = read_json(wallet_path(), {})
     fresh = not w
     coins = w.get("coins") if isinstance(w.get("coins"), int) else (cat["welcome"] if fresh else 0)
     owned = [x for x in w.get("owned", []) if isinstance(x, str)] if isinstance(w.get("owned"), list) else []
     owned = [f for f in free if f not in owned] + owned
-    avatar = w.get("avatar") if w.get("avatar") in owned else (free[0] if free else "")
+    avatars = [a for a in free if a not in themes]
+    avatar = w.get("avatar") if w.get("avatar") in owned and w.get("avatar") not in themes else (avatars[0] if avatars else "")
+    theme = w.get("theme") if w.get("theme") in owned and any(t["id"] == w.get("theme") for t in cat["themes"]) else themes[0]
     outfit = w.get("outfit") if isinstance(w.get("outfit"), dict) else {}
     outfit = {str(k): v for k, v in outfit.items() if isinstance(v, str) and v in owned}
     paid = w.get("paid") if isinstance(w.get("paid"), dict) else {}
     log = w.get("log") if isinstance(w.get("log"), list) else []
     if fresh and coins:
         log = [{"ts": time.time(), "amount": coins, "reason": "Welcome to the shop"}]
-    return {"coins": max(0, coins), "owned": owned, "avatar": avatar, "outfit": outfit, "paid": paid,
+    return {"coins": max(0, coins), "owned": owned, "avatar": avatar, "outfit": outfit, "theme": theme, "paid": paid,
             "log": [e for e in log if isinstance(e, dict)][-WALLET_LOG:]}
 
 
@@ -2832,15 +2846,16 @@ def wallet_view(w=None):
     """What the page is told: the balance, what is owned and worn, the last few transactions, and which
     project the wallet is (None where there is none: the Hub window)."""
     w = w or wallet_load()
-    return {"coins": w["coins"], "owned": w["owned"], "avatar": w["avatar"], "outfit": w["outfit"], "log": w["log"][-10:],
-            "project": project_status()}
+    return {"coins": w["coins"], "owned": w["owned"], "avatar": w["avatar"], "outfit": w["outfit"], "theme": w["theme"],
+            "log": w["log"][-10:], "project": project_status()}
 
 
 def wallet_glance():
-    """For the status poll: the balance, and what Tatty looks like (the avatar and what he wears),
-    so every window, and each tray app's Tatty, catches up on a change made in another."""
+    """For the status poll: the balance, what Tatty looks like (the avatar and what he wears) and the
+    theme the app wears, so every window, and each tray app's Tatty, catches up on a change made in another."""
     w = wallet_load()
-    return {"coins": w["coins"], "look": w["avatar"] + "|" + ",".join(f"{k}={v}" for k, v in sorted(w["outfit"].items()))}
+    return {"coins": w["coins"], "look": w["avatar"] + "|" + ",".join(f"{k}={v}" for k, v in sorted(w["outfit"].items())),
+            "theme": w["theme"]}
 
 
 def wallet_log(w, amount, reason):
@@ -2918,8 +2933,8 @@ def debug_lock(state, b):
     if hashlib.sha256(str(b.get("password", "")).encode("utf-8")).hexdigest() != DEBUG_KEY:
         return 403, {"error": "wrong password"}
     cat = shop_catalogue()
-    free = [a["id"] for a in cat["avatars"] if not a.get("price")]
-    names = {x["id"]: str(x.get("name") or x["id"]) for x in cat["avatars"] + cat["items"]}
+    free = [a["id"] for a in cat["avatars"] if not a.get("price")] + free_themes(cat)
+    names = {x["id"]: str(x.get("name") or x["id"]) for x in cat["avatars"] + cat["items"] + cat["themes"]}
     iid = str(b.get("id", ""))
 
     def lock(w):
@@ -2935,6 +2950,8 @@ def debug_lock(state, b):
         w["outfit"] = {k: v for k, v in w["outfit"].items() if v not in gone}
         if w["avatar"] in gone:
             w["avatar"] = free[0] if free else ""
+        if w["theme"] in gone:
+            w["theme"] = free_themes(cat)[0]
         if gone:
             wallet_log(w, 0, "Debug: locked " + ", ".join(names.get(x, x) for x in gone))
         return 200, {}
@@ -2951,16 +2968,18 @@ def debug_lock(state, b):
 
 
 def shop_act(state, b):
-    """The page's purchases and choices: (code, answer). action: buy {id} (an avatar or an accessory),
-    wear {slot, id} (an accessory owned; id "" takes that spot's off), choose {id} (an avatar owned).
-    A refusal says why, and (not enough coins) how many more are needed."""
+    """The page's purchases and choices: (code, answer). action: buy {id} (an avatar, an accessory or a
+    theme), wear {slot, id} (an accessory owned; id "" takes that spot's off), choose {id} (an avatar
+    owned), theme {id} (a theme owned: the one the app wears). A refusal says why, and (not enough
+    coins) how many more are needed."""
     cat = shop_catalogue()
     action, iid = str(b.get("action", "")), str(b.get("id", ""))
-    if action not in ("buy", "wear", "choose"):
-        return 400, {"error": "action: buy, wear or choose"}
+    if action not in ("buy", "wear", "choose", "theme"):
+        return 400, {"error": "action: buy, wear, choose or theme"}
     avatars = {a["id"]: a for a in cat["avatars"]}
     items = {i["id"]: i for i in cat["items"]}
-    things = {**items, **avatars}
+    themes = {t["id"]: t for t in cat["themes"]}
+    things = {**themes, **items, **avatars}
     slots = {x["id"] for x in cat["slots"]}
     slot = str(b.get("slot", ""))
 
@@ -2989,6 +3008,13 @@ def shop_act(state, b):
             if iid not in w["owned"]:
                 return 409, {"error": "buy it first"}
             w["outfit"][slot] = iid
+            return 200, {}
+        if action == "theme":
+            if iid not in themes:
+                return 404, {"error": "there's no such theme"}
+            if iid not in w["owned"]:
+                return 409, {"error": "buy it first"}
+            w["theme"] = iid
             return 200, {}
         if iid not in avatars:
             return 404, {"error": "there's no such avatar"}

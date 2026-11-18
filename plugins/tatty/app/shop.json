@@ -1,5 +1,5 @@
 {
-  "_": "Tatty's shop: what can be bought and what it costs. server.py prices from this file, and the page (shop.js) names and draws from it; the drawings themselves are avatar.js's, by the same ids. Rarity follows the price: up to 60 common, 120 rare, 180 epic, more legendary.",
+  "_": "Tatty's shop: what can be bought and what it costs. server.py prices from this file, and the page (shop.js) names and draws from it; the drawings themselves are avatar.js's, by the same ids. Rarity follows the price: up to 60 common, 120 rare, 180 epic, more legendary. Themes are the exception: they name their own rarity, and are drawn by looks.js and look-<id>.js; the free one (price 0) is everyone's.",
   "welcome": 100,
   "rewards": {
     "big": 50, "mid": 20, "small": 8,
@@ -14,6 +14,15 @@
     {"id": "dino", "name": "Little Dino", "tagline": "Tiny arms, big heart", "price": 600},
     {"id": "cat", "name": "Dapper Cat", "tagline": "Effortlessly cool", "price": 600},
     {"id": "owl", "name": "Wise Owl", "tagline": "Thinks it through", "price": 600}
+  ],
+  "themes": [
+    {"id": "minimal", "name": "Minimal", "tagline": "Clean and quiet. Everyone's to start with", "price": 0, "rarity": "common"},
+    {"id": "chart", "name": "Star Chart", "tagline": "Launch your feature into the stars", "price": 900, "rarity": "rare"},
+    {"id": "map", "name": "Expedition Map", "tagline": "Plant a flag at every stage", "price": 900, "rarity": "rare"},
+    {"id": "chrono", "name": "Chronograph", "tagline": "Every stage, a precise tick", "price": 1200, "rarity": "epic"},
+    {"id": "drive", "name": "Night Drive", "tagline": "Light the city, lamp by lamp", "price": 1200, "rarity": "epic"},
+    {"id": "kin", "name": "Kintsugi", "tagline": "Mend the feature with gold", "price": 1500, "rarity": "legendary"},
+    {"id": "aur", "name": "Aurora", "tagline": "Northern lights over every stage you pass", "price": 1500, "rarity": "legendary"}
   ],
   "slots": [
     {"id": "hat", "name": "Hats"}, {"id": "eyes", "name": "Eyes"}, {"id": "face", "name": "Face"},

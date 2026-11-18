@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """features-check.py: walk Tatty's Features pages in a headless
 Chromium browser (or a companion's WebView2, with `attach <port>`) the way a
-person would: the home page's feature cards, one feature's overview (tracker,
+person would: the home page's feature cards, one feature's overview (journey,
 documents, work units, timeline), a document, a [[wikilink]] inside it, Back,
 the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
@@ -1436,12 +1436,12 @@ def check_stages(p):
     res["planIn"] = choose("Plan")
     res["reviewOut"] = choose("Review")
     key(p, "Escape", 27)
-    res["trackerNoReview"] = p.js("[...document.querySelectorAll('.tracker li .label')].map(l => l.textContent)")
+    res["trackerNoReview"] = p.js("[...(document.querySelector('#journey') || { dataset: { stages: '' } }).dataset.stages.split('|')].filter(x => x && !x.endsWith(':out')).map(x => x.split(':')[0])")  # (the journey's stages, less those left out)
     time.sleep(0.4)
     open_menu()
     res["reviewIn"] = choose("Review")
     key(p, "Escape", 27)
-    res["trackerBack"] = p.js("[...document.querySelectorAll('.tracker li .label')].map(l => l.textContent)")
+    res["trackerBack"] = p.js("[...(document.querySelector('#journey') || { dataset: { stages: '' } }).dataset.stages.split('|')].filter(x => x && !x.endsWith(':out')).map(x => x.split(':')[0])")
     return res
 
 
@@ -2658,9 +2658,10 @@ def main(argv):
                                bars: document.querySelectorAll('#page-home .hcard .bar span').length,
                                barWidth: (document.querySelector('#page-home .hcard .bar span') || {style: {}}).style.width || '' })""")
         p.js(f"location.hash = '#feature/' + encodeURIComponent({json.dumps(feature)}); 1")
-        wait(p, "!!document.querySelector('#page-feature .tracker')")
-        out["feature"] = p.js("""({ tracker: [...document.querySelectorAll('.tracker li')].map(li => li.querySelector('.label').textContent + ':' + li.className),
-                                  substeps: [...document.querySelectorAll('.tracker .substeps .chip')].map(c => c.textContent + ':' + c.className.replace('chip ', '')),
+        wait(p, "!!document.querySelector('#page-feature #journey')")
+        out["feature"] = p.js("""({ tracker: document.querySelector('#journey').dataset.stages.split('|'), mode: document.querySelector('#journey').dataset.mode,
+                                  look: document.querySelector('#journey').className,
+                                  substeps: [...document.querySelectorAll('.jy-under .chip')].map(c => c.textContent + ':' + c.className.replace('chip ', '')),
                                   docs: [...document.querySelectorAll('.fnav > .fnav-item')].map(a => a.querySelector('span').textContent),
                                   notes: document.querySelectorAll('.fnav-notes .fnav-item').length,
                                   units: [...document.querySelectorAll('table.units tr')].map(tr => tr.innerText.replace(/\\s+/g, ' ').trim()),

@@ -36,9 +36,10 @@ const EARN_WORDS = [
   ["story", "A user story accepted or rejected"],
 ];
 
-const shopRarity = (price, kind) => kind === "avatar"
-  ? (price >= 600 ? "legendary" : price ? "epic" : "yours")
+const shopRarity = (price, kind, t) => kind === "theme" ? (t && t.rarity) || (price ? "rare" : "common")
+  : kind === "avatar" ? (price >= 600 ? "legendary" : price ? "epic" : "yours")
   : price <= 60 ? "common" : price <= 120 ? "rare" : price <= 180 ? "epic" : "legendary";
+const hasLooks = () => typeof TattyLooks !== "undefined";
 const coinNode = () => { const s = el("span", { class: "coin" }); s.innerHTML = TattyWallet.COIN; return s; };
 
 TattyWallet.onChange(n => { if (shopBalance && shopBalance.isConnected) shopBalance.textContent = n.toLocaleString(); });
@@ -128,6 +129,7 @@ function tryOn(thing, kind) {
   clearTimeout(tryTimer);
   const w = shopNow;
   TattySfx.play("hover");
+  if (kind === "theme") return tryLook(thing);
   const owned = w.owned.includes(thing.id);
   if (kind === "avatar") setStage(thing.id, w.outfit);
   else { setStage(w.avatar, { ...w.outfit, [kind]: thing.id }); }
@@ -140,16 +142,50 @@ function tryOff() {
   clearTimeout(tryTimer);
   // a moment's grace, so sliding from one card to the next doesn't flash back in between
   tryTimer = setTimeout(() => {
+    if (hasLooks()) { TattyLooks.tryOff(); paintLookPreview(shopNow.theme); }
     if (!shopStage || !shopStage.box.isConnected) return;
     setStage(shopNow.avatar, shopNow.outfit);
     shopStage.box.querySelector(".shop-trying").hidden = true;
   }, 120);
 }
 
+// ------------------------------------------------------------------ themes
+// A theme is tried on the whole app: a hand over its card puts it on (looks.js tryOn), and the big
+// preview above the shelf draws the Overview's journey in it. Leaving the shelf puts the worn one back.
+
+let lookPreview = null; // the preview's journey card while the Themes tab is on screen
+
+function lookName(id) { return ((shopNow.catalogue.themes || []).find(t => t.id === id) || {}).name || id; }
+
+function paintLookPreview(id, trying) {
+  if (!lookPreview || !lookPreview.isConnected) return;
+  const tag = lookPreview.parentElement.querySelector(".shop-look-tag");
+  const owned = shopNow.owned.includes(id);
+  tag.textContent = trying && id !== shopNow.theme ? `Trying on: ${lookName(id)}${owned ? "" : " · in the shop"}` : `Wearing: ${lookName(id)}`;
+  if (lookPreview.journey.dir && lookPreview.journey.dir.id === id) return;
+  lookPreview.journey.setLook(id);
+}
+
+function tryLook(t) {
+  if (!hasLooks()) return;
+  TattyLooks.tryOn(t.id);
+  paintLookPreview(t.id, true);
+}
+
+async function wearLook(id, card, quiet) {
+  try { await shopPost({ action: "theme", id }); } catch (e) { TattySfx.play("denied"); return; }
+  if (hasLooks()) TattyLooks.follow(shopNow.theme);
+  TattySfx.play("equip");
+  paintLookPreview(shopNow.theme);
+  if (lookPreview && lookPreview.isConnected) TattyWallet.burst(centreOf(lookPreview), quiet ? 26 : 12, { reach: quiet ? 140 : 80 });
+  drawShelves(false);
+}
+
 // ------------------------------------------------------------------ the shelves
 
 function shopThings(tab) {
   const cat = shopNow.catalogue;
+  if (tab === "themes") return (cat.themes || []).map(t => ({ ...t, kind: "theme" }));
   return tab === "avatars" ? cat.avatars.map(a => ({ ...a, kind: "avatar" })) : cat.items.filter(i => i.slot === tab).map(i => ({ ...i, kind: i.slot }));
 }
 
@@ -157,13 +193,28 @@ function drawShelves(entering) {
   if (!shopBox || !shopBox.isConnected) return;
   const w = shopNow, cat = w.catalogue;
   const tabs = shopBox.querySelector("#shop-tabs"), grid = shopBox.querySelector("#shop-grid");
-  tabs.replaceChildren(...[["avatars", "Avatars"], ...cat.slots.map(s => [s.id, s.name])].map(([id, name]) => {
+  const themed = hasLooks() && (cat.themes || []).length;
+  if (shopTab === "themes" && !themed) shopTab = "avatars";
+  tabs.replaceChildren(...[["avatars", "Avatars"], ...(themed ? [["themes", "Themes"]] : []), ...cat.slots.map(s => [s.id, s.name])].map(([id, name]) => {
     const things = shopThings(id), have = things.filter(t => w.owned.includes(t.id)).length;
     return el("button", {
       type: "button", role: "tab", class: "shop-tab" + (id === shopTab ? " on" : ""), "aria-selected": String(id === shopTab),
       onclick: () => { if (shopTab === id) return; shopTab = id; TattySfx.play("tab"); drawShelves(true); },
     }, name, el("span", { class: "count" }, `${have}/${things.length}`));
   }));
+  // the Themes tab: a big preview of the Overview's journey above the shelf, in the theme worn
+  const main = grid.parentElement;
+  let box = main.querySelector("#shop-look-preview");
+  if (shopTab === "themes") {
+    if (!box) {
+      box = el("div", { class: "shop-look-preview", id: "shop-look-preview" }, el("div", { class: "shop-look-tag" }));
+      lookPreview = TattyLooks.journey(TattyLooks.sample("running"), { look: w.theme });
+      box.append(lookPreview);
+      main.insertBefore(box, grid);
+    }
+    paintLookPreview(w.theme);
+  } else if (box) { box.remove(); lookPreview = null; }
+  grid.classList.toggle("looks", shopTab === "themes");
   grid.replaceChildren(...shopThings(shopTab).map((t, i) => {
     const card = shopCard(t);
     if (entering && TattyWallet.motion()) { card.classList.add("enter"); card.style.animationDelay = `${Math.min(i, 24) * 22}ms`; }
@@ -176,19 +227,20 @@ function drawShelves(entering) {
 function shopCard(t) {
   const w = shopNow, kind = t.kind;
   const owned = w.owned.includes(t.id);
-  const worn = kind === "avatar" ? w.avatar === t.id : w.outfit[kind] === t.id;
-  const price = t.price || 0, rarity = shopRarity(price, kind);
-  const thumb = el("span", { class: "sc-thumb" });
-  thumb.innerHTML = kind === "avatar"
+  const worn = kind === "theme" ? w.theme === t.id : kind === "avatar" ? w.avatar === t.id : w.outfit[kind] === t.id;
+  const price = t.price || 0, rarity = shopRarity(price, kind, t);
+  const thumb = el("span", { class: "sc-thumb" + (kind === "theme" ? " look" : "") });
+  if (kind === "theme") thumb.append(TattyLooks.journey(TattyLooks.sample(), { look: t.id, mini: true, still: true }));
+  else thumb.innerHTML = kind === "avatar"
     ? TattyAvatar.svg(t.id, { scale: 0.78, box: "shop", outfit: w.outfit })
     : TattyAvatar.svg(w.avatar, { scale: 0.78, box: "shop", outfit: { [kind]: t.id } });
-  const note = kind === "avatar" ? t.tagline || "" : TattyAvatar.swap(w.avatar, t.id);
+  const note = kind === "avatar" || kind === "theme" ? t.tagline || "" : TattyAvatar.swap(w.avatar, t.id);
   const act = !owned ? (price ? el("span", { class: "sc-price" }, coinNode(), price.toLocaleString()) : "Free")
-    : worn ? (kind === "avatar" ? "Chosen" : "Take off") : kind === "avatar" ? "Choose" : "Wear";
+    : worn ? (kind === "avatar" ? "Chosen" : kind === "theme" ? "Wearing" : "Take off") : kind === "avatar" ? "Choose" : "Wear";
   const card = el("button", {
     type: "button", "data-id": t.id,
     class: `shop-card r-${rarity}${owned ? " owned" : " locked"}${worn ? " worn" : ""}${!owned && price > w.coins ? " dear" : ""}${shopNew.has(t.id) ? " new" : ""}`,
-    title: owned ? (worn ? `${t.name}: ${kind === "avatar" ? "he is this one" : "he's wearing it"}` : `${t.name}: yours`) : `${t.name}: ${price} coins`,
+    title: owned ? (worn ? `${t.name}: ${kind === "theme" ? "the app is wearing it" : kind === "avatar" ? "he is this one" : "he's wearing it"}` : `${t.name}: yours`) : `${t.name}: ${price} coins`,
   },
     el("span", { class: "sc-rarity" }, rarity),
     thumb,
@@ -251,6 +303,10 @@ function deny(card, need) {
 async function shopAct(t, card) {
   const w = shopNow;
   if (!w.owned.includes(t.id)) return buy(t, card);
+  if (t.kind === "theme") {
+    if (w.theme === t.id) { TattySfx.play("tryon"); return; }
+    return wearLook(t.id, card);
+  }
   if (t.kind === "avatar") {
     if (w.avatar === t.id) { TattySfx.play("tryon"); if (shopStage) shopStage.anim.play("celebrate", 1.2); return; }
     return choose(t.id, card);
@@ -277,7 +333,7 @@ async function buy(t, card) {
     TattyWallet.burst(centreOf(card), 26, { reach: 110, size: 1.2 });
   }, 380);
   // and on he goes, straight away
-  setTimeout(() => (t.kind === "avatar" ? choose(t.id, null, true) : wear(t.kind, t.id, null, true)), 720);
+  setTimeout(() => (t.kind === "theme" ? wearLook(t.id, null, true) : t.kind === "avatar" ? choose(t.id, null, true) : wear(t.kind, t.id, null, true)), 720);
 }
 
 async function choose(id, card, quiet) {
@@ -314,7 +370,7 @@ document.addEventListener("tt-event", e => {
     return;
   }
   if (ev.type !== "wallet") return;
-  Object.assign(shopNow, { coins: ev.coins, owned: ev.owned, avatar: ev.avatar, outfit: ev.outfit, log: ev.log || shopNow.log });
+  Object.assign(shopNow, { coins: ev.coins, owned: ev.owned, avatar: ev.avatar, outfit: ev.outfit, theme: ev.theme || shopNow.theme, log: ev.log || shopNow.log });
   drawShelves(false);
   if (shopStage && shopStage.box.querySelector(".shop-trying").hidden) setStage(shopNow.avatar, shopNow.outfit);
 });

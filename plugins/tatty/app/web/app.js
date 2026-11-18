@@ -989,6 +989,7 @@ const booted = (async () => {
     setMod(st.mod);
     setInstalledModes(st.modes); // which discipline plugins there are (modes.js)
     if (window.TattyWallet) TattyWallet.sync(st.coins, st.look); // the purse beside the gear, and the tray app's Tatty (wallet.js)
+    if (window.TattyLooks) TattyLooks.follow(st.theme); // the theme the app wears (looks.js)
     // A launch from the shortcut opens on the Hub (hub.js): the full panel, not the bubble.
     hubPending = !!(st.hub && st.hub.pending);
     if (hubPending && companion) $("#expand").click();
@@ -1001,6 +1002,7 @@ const booted = (async () => {
       setMod(st.mod);
       setInstalledModes(st.modes); // a plugin installed meanwhile turns up here
       if (window.TattyWallet) TattyWallet.sync(st.coins, st.look); // coins earned or spent, or a new look, in another window
+      if (window.TattyLooks) TattyLooks.follow(st.theme); // or a theme put on there
     } catch { /* the SSE badge says so */ }
   }, 15000);
 })();

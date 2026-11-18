@@ -36,6 +36,7 @@ file	plugins/tatty/skills/*	reviewstep,mergestep,chats,intake
 file	plugins/tatty/hooks/*	live,tabs,milestones
 file	plugins/tatty/app/compact_chat.py	compactchat,chats
 file	plugins/tatty/app/reviewdoc.py	reviewstep,reviewrepo
+file	plugins/tatty/app/shop.json	coins,milestones
 file	plugins/tatty/app/launcher/*	desktop,prebuilt,launching
 file	plugins/tatty/app/companion/*	desktop,prebuilt,launching
 file	plugins/tatty/.claude-plugin/*	settings,launching,selfupdate,hub,clone

@@ -2092,10 +2092,59 @@ get /api/events >"$T/ev"
 	ok "a negative amount takes them away" || bad "a negative amount takes them away" "$(coins)"
 [ "$(dbg '{"password":"letmein","amount":"lots"}')" = 400 ] && [ "$(dbg '{"password":"letmein","amount":1000000}')" = 400 ] &&
 	ok "an amount that isn't a sensible number is refused" || bad "an amount that isn't a sensible number is refused"
+# Themes: the app wears one (looks.js). Minimal is everyone's; the rest are bought like anything else,
+# put on with the theme action, and said in the status and the "wallet" event so every window follows.
+get /api/wallet >"$T/w"
+[ "$(pick "$T/w" "d['theme'] == 'minimal' and 'minimal' in d['owned']")" = True ] &&
+	ok "the app wears Minimal, everyone's to start with" || bad "the app wears Minimal, everyone's to start with" "$(head -c 300 "$T/w")"
+[ "$(pick "$T/w" "[t['id'] for t in d['catalogue']['themes']] == ['minimal', 'chart', 'map', 'chrono', 'drive', 'kin', 'aur'] and all(t.get('rarity') for t in d['catalogue']['themes']) and [t['id'] for t in d['catalogue']['themes'] if not t.get('price')] == ['minimal']")" = True ] &&
+	ok "the catalogue sells six themes, each with its rarity" || bad "the catalogue sells six themes, each with its rarity" "$(pick "$T/w" "d['catalogue']['themes']")"
+[ "$(pick "$T/w" "not {t['id'] for t in d['catalogue']['themes']} & {x['id'] for x in d['catalogue']['avatars'] + d['catalogue']['items']}")" = True ] &&
+	ok "no theme shares an id with an avatar or an accessory" || bad "no theme shares an id with an avatar or an accessory"
+$PY - "$root/plugins/tatty/app" <<'PYEOF' >"$T/looks" 2>&1
+import json, os, re, sys
+here = sys.argv[1]
+cat = json.load(open(os.path.join(here, "shop.json"), encoding="utf-8"))
+files = dict(re.findall(r'(\w+): "(look-\w+\.js)"', open(os.path.join(here, "web", "looks.js"), encoding="utf-8").read()))
+css = open(os.path.join(here, "web", "looks.css"), encoding="utf-8").read()
+bad = []
+for t in cat["themes"]:
+    if t["id"] == "minimal":
+        continue
+    f = files.get(t["id"])
+    if not f or not re.search(r'id: "%s"' % t["id"], open(os.path.join(here, "web", f), encoding="utf-8").read()):
+        bad.append(t["id"] + ": no look file registers it")
+    for shade in ('[data-look="%s"] {' % t["id"], '[data-look="%s"][data-shade="dark"] {' % t["id"]):
+        if shade not in css:
+            bad.append(t["id"] + ": no palette " + shade)
+print(json.dumps(bad))
+PYEOF
+has "every theme sold has a look file and a light and a dark palette" "$T/looks" '[]'
+[ "$(shop '{"action":"theme","id":"no-such-theme"}')" = 404 ] && ok "a theme it doesn't sell can't be worn" || bad "a theme it doesn't sell can't be worn"
+[ "$(shop '{"action":"theme","id":"party"}')" = 404 ] && ok "nor can a hat be worn as one" || bad "nor can a hat be worn as one"
+[ "$(shop '{"action":"theme","id":"chart"}')" = 409 ] && ok "a theme not bought can't be worn" || bad "a theme not bought can't be worn"
+dbg '{"password":"letmein","amount":3000}' >/dev/null
+had=$(coins)
+[ "$(shopto '{"action":"buy","id":"chart"}')" = 200 ] && [ "$(pick "$T/shop" "d['coins'] == $had - 900 and 'chart' in d['owned'] and d['theme'] == 'minimal'")" = True ] &&
+	ok "Star Chart bought for 900" || bad "Star Chart bought for 900" "$(cat "$T/shop")"
+[ "$(shopto '{"action":"theme","id":"chart"}')" = 200 ] && [ "$(pick "$T/shop" "d['theme']")" = chart ] &&
+	ok "and worn" || bad "and worn" "$(cat "$T/shop")"
+[ "$(pick "$TATTY_HOME/wallet.json" "d['theme']")" = chart ] && ok "the wallet keeps it" || bad "the wallet keeps it"
+get /api/status >"$T/s"
+[ "$(pick "$T/s" "d['theme']")" = chart ] && ok "the status says the theme worn, for the other windows" || bad "the status says the theme worn, for the other windows" "$(head -c 300 "$T/s")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[(e['did'], e['theme']) for e in d if e['type'] == 'wallet'][-1]")" = "('theme', 'chart')" ] &&
+	ok "and the wallet event says it" || bad "and the wallet event says it" "$(pick "$T/ev" "[(e.get('did'), e.get('theme')) for e in d if e['type'] == 'wallet']")"
+[ "$(shopto '{"action":"theme","id":"minimal"}')" = 200 ] && [ "$(pick "$T/shop" "d['theme']")" = minimal ] &&
+	ok "Minimal can always be put back on" || bad "Minimal can always be put back on" "$(cat "$T/shop")"
+shop '{"action":"theme","id":"chart"}' >/dev/null
 # ... and unlocks can be taken away again, to be bought again: but only with the password, never a free one.
 dbl() { curl -s -o "$T/dbl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/debug/lock"; }
 [ "$(dbl '{"password":"nope","id":"party"}')" = 403 ] && ok "debug lock: a wrong password is refused" || bad "debug lock: a wrong password is refused"
 [ "$(dbl '{"password":"letmein","id":"polished"}')" = 409 ] && ok "a free avatar can't be locked" || bad "a free avatar can't be locked" "$(cat "$T/dbl")"
+[ "$(dbl '{"password":"letmein","id":"minimal"}')" = 409 ] && ok "nor the free theme" || bad "nor the free theme" "$(cat "$T/dbl")"
+[ "$(dbl '{"password":"letmein","id":"chart"}')" = 200 ] && [ "$(pick "$T/dbl" "'chart' not in d['owned'] and d['theme'] == 'minimal'")" = True ] &&
+	ok "a theme worn, locked again, is taken off: Minimal again" || bad "a theme worn, locked again, is taken off: Minimal again" "$(cat "$T/dbl")"
 [ "$(dbl '{"password":"letmein","id":"no-such-thing"}')" = 404 ] && ok "nor something that isn't unlocked" || bad "nor something that isn't unlocked"
 shopto '{"action":"wear","slot":"hat","id":"party"}' >/dev/null
 [ "$(dbl '{"password":"letmein","id":"party"}')" = 200 ] && [ "$(pick "$T/dbl" "'party' not in d['owned'] and d['outfit'] == {}")" = True ] &&
@@ -2105,15 +2154,15 @@ get /api/events >"$T/ev"
 dbg '{"password":"letmein","amount":3000}' >/dev/null
 [ "$(shop '{"action":"buy","id":"party"}')" = 200 ] && ok "so it can be bought again" || bad "so it can be bought again"
 shop '{"action":"buy","id":"owl"}' >/dev/null; shop '{"action":"choose","id":"owl"}' >/dev/null
-[ "$(dbl '{"password":"letmein","id":"all"}')" = 200 ] && [ "$(pick "$T/dbl" "d['owned'] == ['polished'] and d['avatar'] == 'polished' and d['outfit'] == {}")" = True ] &&
+[ "$(dbl '{"password":"letmein","id":"all"}')" = 200 ] && [ "$(pick "$T/dbl" "d['owned'] == ['polished', 'minimal'] and d['avatar'] == 'polished' and d['outfit'] == {} and d['theme'] == 'minimal'")" = True ] &&
 	ok "all of them, and the avatar chosen falls back to a free one" || bad "all of them, and the avatar chosen falls back to a free one" "$(cat "$T/dbl")"
 hasnt "the password itself isn't in the server" "$root/plugins/tatty/app/server.py" "tatemon"
 # A wallet edited by hand can't give him what he doesn't own.
-$PY -c "import json, sys; p = sys.argv[1]; w = json.load(open(p)); w.update(coins='lots', outfit={'hat': 'crown'}, avatar='owl'); json.dump(w, open(p, 'w'))" "$TATTY_HOME/wallet.json"
+$PY -c "import json, sys; p = sys.argv[1]; w = json.load(open(p)); w.update(coins='lots', outfit={'hat': 'crown'}, avatar='owl', theme='aur'); json.dump(w, open(p, 'w'))" "$TATTY_HOME/wallet.json"
 get /api/wallet >"$T/w"
-[ "$(pick "$T/w" "d['coins'] == 0 and d['outfit'] == {} and d['avatar'] == 'polished'")" = True ] &&
+[ "$(pick "$T/w" "d['coins'] == 0 and d['outfit'] == {} and d['avatar'] == 'polished' and d['theme'] == 'minimal'")" = True ] &&
 	ok "a mangled wallet is read safely" || bad "a mangled wallet is read safely" "$(head -c 300 "$T/w")"
-for f in avatar.js avatar.css sfx.js wallet.js shop.js shop.css; do
+for f in avatar.js avatar.css sfx.js wallet.js shop.js shop.css looks.js looks.css look-chart.js look-map.js look-kin.js look-chrono.js look-aur.js look-drive.js; do
 	[ "$(code "$U/static/$f")" = 200 ] || bad "$f served"
 done
 ok "the shop's scripts and styles are served"

@@ -22,6 +22,7 @@
   const button = el("button", { type: "button", id: "theme-toggle", class: "themebtn" });
   function paint() {
     const now = effective(), next = now === "dark" ? "light" : "dark";
+    root.dataset.shade = now; // which of a look's two palettes shows (looks.css)
     button.textContent = now === "dark" ? "☀" : "☾"; // the sun to go to light, the moon to go to dark
     button.title = `Switch to ${next} mode`;
     button.setAttribute("aria-label", `Switch to ${next} mode`);

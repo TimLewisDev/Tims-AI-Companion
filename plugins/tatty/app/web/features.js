@@ -789,6 +789,12 @@ async function refreshFeature(name) {
   v.sig = decideSig(fresh);
 }
 
+// A theme put on (looks.js): the Overview's Continue takes its words. (The journey card changes look itself.)
+document.addEventListener("tt-look", () => {
+  const v = featureView, f = v && featureCache.get(v.name), b = document.getElementById("step-continue");
+  if (b && f) try { b.textContent = TattyLooks.continueLabel(journeyModel(f)); } catch (e) { /* it keeps its words */ }
+});
+
 // A workflow session writes its questions into the feature's documents while its page is open. Asking whether
 // any wait is cheap (the server answers from the documents' modified times), so it is asked every few seconds
 // and the feature read again only when the count differs from what the page shows.
@@ -971,6 +977,73 @@ function reviewChips(f) {
     if (n === 4 && m.url) return el("a", { class: cls, href: m.url, target: "_blank", rel: "noopener", title: m.url }, word);
     return el("span", { class: cls, title: n === 1 && r.total ? `${r.decided} of ${r.total} decided` : n === 4 && m.branch ? m.branch : "" }, word);
   }));
+}
+
+// The feature as a journey for looks.js: every stage of its route in order (a full route's Plan opened
+// up into the plan's own stages), each one done, now, next (waiting for you at a gate), todo, skip or
+// out (left out of this feature), and the mode: running (a session is working), decide (something
+// waits on you), gate (nothing runs until you continue) or complete (merged).
+const PLAN_SHORT = { "Scope & Constraints": "Scope", "Technical Design": "Tech design" };
+const PLAN_STAGES = ["Requirements", "Scope & Constraints", "Approach", "Technical Design", "Whole plan", "Sign-off"];
+function journeyModel(f) {
+  const { steps, at, done } = pipeline(f);
+  const off = new Set((f.profile?.stages || []).filter(s => !s.on).map(s => s.key));
+  const word = s => { s = (s || "").toLowerCase(); return /not selected/.test(s) ? "out" : /skipped|dropped/.test(s) ? "skip" : statusClass(s) === "done" ? "done" : statusClass(s) === "now" ? "now" : "todo"; };
+  const byPlace = i => done || i < at ? "done" : i === at ? "now" : "todo";
+  const nodes = [], st = [];
+  const rows = (f.stages || []).filter(r => r.stage !== "Familiarisation");
+  const fam = (f.stages || []).find(r => r.stage === "Familiarisation");
+  steps.forEach((s, i) => {
+    const key = s.toLowerCase();
+    if (s === "Plan") {
+      const plan = rows.length ? rows : PLAN_STAGES.map(stage => ({ stage, status: "" }));
+      let nowSeen = false;
+      for (const r of plan) {
+        nodes.push({ k: r.stage, l: PLAN_SHORT[r.stage] || r.stage, plan: true });
+        let w = rows.length ? word(r.status) : "todo";
+        if (w !== "out" && w !== "skip") {
+          if (i < at || done) w = "done";
+          else if (i > at) w = "todo";
+          else if (w === "now" || (w === "todo" && !nowSeen)) { w = nowSeen ? "todo" : "now"; nowSeen = true; }
+        }
+        st.push(w);
+      }
+      return;
+    }
+    const units = s === "Build" && f.units && f.units.total ? f.units.total : 0;
+    nodes.push({ k: key, l: s, units });
+    let w = byPlace(i);
+    if (i === 0 && fam && word(fam.status) === "out") w = "out";
+    if ((key === "explore" || key === "review") && off.has(key)) w = "out";
+    if (s === "Done") w = done ? "done" : "todo";
+    st.push(w);
+  });
+  let cur = st.indexOf("now");
+  if (cur < 0) cur = st.indexOf("todo");
+  if (cur < 0) cur = st.length - 1;
+  const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
+  const a = f.action || {};
+  const mode = done ? "complete" : sessions.some(s => LIVE.has(s.status)) ? "running" : a.kind === "decide" || a.kind === "unitgate" ? "decide" : "gate";
+  if (mode === "gate" && st[cur] === "now") st[cur] = "next";
+  if (mode === "complete") cur = st.length - 1;
+  return { nodes, st, cur, mode, units: (f.units && f.units.done) || 0, dec: (f.decide && f.decide.open) || 0, what: a.what || "",
+    base: (f.merge && f.merge.base) || "" };
+}
+
+// The journey across the top of the Overview, in the look the app wears (looks.js), and under it
+// the Review step's chips once the build is done.
+function journeyCard(f) {
+  if (!window.TattyLooks) return tracker(f);
+  let m;
+  try { m = journeyModel(f); } catch (e) { return tracker(f); }
+  if (!m.nodes.length) return tracker(f);
+  const card = TattyLooks.journey(m, { key: f.name });
+  card.id = "journey";
+  // what it shows, in words, for the walks (features-check.py): Label:state|... and the mode
+  card.dataset.stages = m.nodes.map((n, i) => `${n.l}:${m.st[i]}`).join("|");
+  card.dataset.mode = m.mode;
+  const reviewing = f.phase === "complete" ? reviewChips(f) : "";
+  return reviewing ? el("div", {}, card, el("div", { class: "jy-under" }, reviewing)) : card;
 }
 
 function tracker(f) {
@@ -1683,7 +1756,10 @@ function actionBar(f) {
   } else if (a.kind === "continue") {
     covered = a.row;
     said = rows[a.row].text;
-    opener("step-continue", "Continue", close => startPanel(f, rows[a.row], a.row, close));
+    // (in the look the app wears: "Gild through to Approach"; Minimal's is plain "Continue")
+    let label = "Continue";
+    try { if (window.TattyLooks) label = TattyLooks.continueLabel(journeyModel(f)); } catch (e) { /* the plain word */ }
+    opener("step-continue", label, close => startPanel(f, rows[a.row], a.row, close));
   } else if (a.kind === "unitgate") {
     covered = a.row == null ? -1 : a.row; // (its buttons are the "Where it stands" card's: unitgate.js)
   } else if (a.kind === "decide" || a.kind === "commit") {
@@ -1776,7 +1852,7 @@ function overview(f) {
         el("button", { type: "button", onclick: () => route() }, "Refresh"), // (drawn from what is known at once, read again behind it)
         archiveCombo(f))), // archive.js
     el("div", { class: "dim small" }, copyable(f.folder)),
-    tracker(f),
+    journeyCard(f),
     mergeCard(f),
     process, ended,
     units, usage, events);

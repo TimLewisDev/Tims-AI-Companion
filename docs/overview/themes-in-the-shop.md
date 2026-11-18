@@ -1,8 +1,18 @@
 # Overview themes in the shop: what the app needs
 
+> **Built in 0.41.0**, from round three (`themes-round3.html`): M1 Hairline as the free Minimal, Star
+> Chart and Expedition Map kept, Steam Railway and Deep Dive dropped, and Kintsugi, Chronograph, Aurora
+> and Night Drive added. What was built, and how, is in `docs/design.md` ("Coins and the shop",
+> Themes). The decisions below were taken as: wallets stay per project; each theme names its own
+> rarity in `shop.json` (rare 900, epic 1,200, legendary 1,500: themes are rarer than avatars, so
+> dearer); buying wears the theme at once; the default is M1. Two things went differently from this
+> note: a theme dresses the whole app (a palette and a backdrop per theme, light and dark), not only
+> the Overview, and Star Chart's id is `chart`, because `star` is already the Star sticker's (what is
+> owned is one list of ids). This note is kept as the record of the plan; it is not kept up to date.
+
 `themes.html` (beside this file) is the design: three free defaults to pick one from, four themes to
-sell, and a "Shop ▸ Themes" mock. This note lists what Tatty itself would need to make that real. Nothing
-here is built yet. The line numbers are where things are today and will move.
+sell, and a "Shop ▸ Themes" mock. This note lists what Tatty itself would need to make that real. The
+line numbers were where things were then.
 
 ## What is being sold
 

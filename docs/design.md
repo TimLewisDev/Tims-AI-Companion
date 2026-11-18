@@ -367,6 +367,42 @@ through a feature, so most of it is in how it looks and sounds.
   (`{action: "wear", slot, id}`, an accessory owned, in its own spot; `id: ""`
   takes it off) and chooses an avatar unlocked (`{action: "choose", id}`). Each
   change is a `wallet` event, for the other windows.
+- **Themes** dress the whole app. `shop.json`'s `themes` lists them, each with its own
+  `rarity` (themes don't follow the price bands): Minimal, free and everyone's; Star
+  Chart and Expedition Map (rare, 900); Chronograph and Night Drive (epic, 1,200);
+  Kintsugi and Aurora (legendary, 1,500). They were chosen on the boards in
+  `docs/overview/` (`themes.html`, round two; `themes-round3.html`, round three: M1
+  Hairline as the free one, A and B kept, E to H new). A theme is bought like anything
+  else and put on with `{action: "theme", id}` (404 for no such theme, 409 until it is
+  bought); buying wears it at once. The wallet keeps `theme` (checked like the avatar:
+  one not owned, or no longer sold, is Minimal), `/api/status` and the `wallet` event
+  carry it, and every window follows (`TattyLooks.follow`). A theme's id may not be an
+  avatar's or an accessory's (what is owned is one list), and `shop_catalogue` drops one
+  that is. A theme is two things:
+  - **The whole app** (`web/looks.css`): a palette, theme.css's layer-2 neutrals (`--bg`,
+    `--panel`, `--ink`, `--dim`, `--line`), for light and for dark, and a backdrop behind
+    the page, keyed on `data-look` on `<html>`. `data-shade` says which of light and dark
+    shows (theme-init.js before the first paint, theme.js as the choice or Windows
+    changes). The modes' accents are untouched: a theme is the room, the mode is still
+    the colour of the work. theme-init.js puts the worn theme on before the first paint
+    from a copy in localStorage (`tattyLook`).
+  - **The journey** on a feature's Overview, in place of the old tracker list
+    (`journeyCard`, features.js): a hero line (where the feature is, what is next) over
+    the theme's scene. `journeyModel(f)` turns the feature into stages and states for any
+    route (a full route's Plan opened up into the plan's own stages; done, now, next at a
+    gate, todo, skipped, left out) and a mode (running while a session is live, decide when
+    something waits on you, gate until you continue, complete once merged). The Review
+    step's chips stay under it, and Continue takes the theme's words ("Gild through to
+    Approach"; Minimal's is plain Continue). `web/looks.js` holds the registry, the drawing
+    kit and Minimal (Hairline) built in; each other theme is a module, `look-<id>.js`,
+    loaded only when it is worn or shown in the shop. When the same feature's journey is
+    drawn again changed (a stage closed, the route moved on, a skip, a decision, the merge)
+    the change is played. Everything goes through the DOM, the CSSOM and the Web Animations
+    API (the CSP refuses style attributes), gated on the shop's Motion switch; a journey
+    ticks only while it is on screen and the window is visible.
+  The shop's **Themes** tab has a big preview of the journey above the shelf; a hand over
+  a card puts that theme on the whole app to try, and the shelf's thumbnails stand still
+  (only the preview moves), to keep the paint cost down over Remote Desktop.
 - **The drawings** are `web/avatar.js`, made from the concept board where the look
   was chosen (`docs/avatar/concepts.html`: the board is the design record, and
   `tools/make-avatar-js.py` makes avatar.js from it, leaving out the directions
@@ -390,7 +426,7 @@ through a feature, so most of it is in how it looks and sounds.
   says so); buying pours coins from the balance into the card with a till's
   ka-ching, the card pops and sparkles, and he puts it on and celebrates; a thing
   too dear shakes, bonks and says how many more it needs, and he goes "oops". The
-  rarer a thing (by price: common, rare, epic, legendary), the more its card shines.
+  rarer a thing (by price: common, rare, epic, legendary; a theme names its own), the more its card shines.
   The side shows what he wears (a chip takes each off), what pays and how much, and
   the last few transactions.
 - **Sound and motion.** The sounds (`web/sfx.js`) are worked out rather than shipped,
@@ -698,7 +734,7 @@ folders and Claude Code's own install records; see
     a checkout.
   - **The Review step.** The toolbox's last phase is `complete` (built and
     validated). Tatty adds one more step after it, Review, on all three routes
-    (the tracker reads Explore, Plan, Breakdown, Build, Review, Done), and the
+    (the journey reads Explore, the plan's stages, Breakdown, Build, Review, Done), and the
     feature is Done only when its request is merged. The step has phases, shown
     as chips under it: **Review, Decide, Apply, Commit, Merge**. They are read from
     the Review Suggestions document (below); `review_rows` (called by
@@ -1390,7 +1426,7 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   `stages.sh set`; a stage that has begun or must stay (Requirements, Technical Design,
   Sign-off, Build) comes back 409 with the toolbox's reason, and shows in the menu as a
   disabled row whose tooltip says it. After a change the page redraws and the menu opens again.
-  The tracker drops Explore and Review when they are left out; the draft plan's chips show a
+  The journey shows a stage left out as left out (Explore, Review, or a plan stage); the draft plan's rows show a
   left-out stage as skipped (and, once signed off, `stages_of` takes it from the profile
   instead of calling every stage closed). Plan out means a small change: a new feature then
   offers the lite route first (`liteFirst`). The Start panel says how many stages it will work
