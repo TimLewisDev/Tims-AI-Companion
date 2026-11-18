@@ -386,9 +386,23 @@ through a feature, so most of it is in how it looks and sounds.
     changes). The modes' accents are untouched: a theme is the room, the mode is still
     the colour of the work. theme-init.js puts the worn theme on before the first paint
     from a copy in localStorage (`tattyLook`).
-  - **The journey** on a feature's Overview, in place of the old tracker list
-    (`journeyCard`, features.js): a hero line (where the feature is, what is next) over
-    the theme's scene. `journeyModel(f)` turns the feature into stages and states for any
+  - **The Overview is a stage** (`overview`, features.js; proposed on
+    `docs/overview/stage-view.html`): one scene in the theme worn, filling the page's main
+    area, so the workflow is the only thing on it. From the top: the feature's line (id,
+    title, chips, Cancel workflow, Stages, Refresh, Archive: the old head, so its buttons
+    keep their ids), the hero (where the feature is, what is next), the journey across the
+    full width in the free height, then over its ground the **gate**, the one place to act
+    (what "Where it stands" held: the unit gate and commit cards, the action bar, warnings,
+    the Review step's chips, a line per live session with Open session, More options, the
+    project line), and the **dock**, whose pills open the other cards in a drawer over the
+    stage (Documents with the folder, Branch & merge, Last session, Build, Timeline, Usage;
+    each is built with the page and hidden, so the page's selectors still find them, and the
+    one open stays open across redraws; Esc closes it). Inside a stage the neutrals follow
+    the scene (glass in its colours; Minimal keeps the page's own) and the big button takes
+    the theme's colour. The stage scrolls only when the gate grows (a Start panel open). On
+    the Overview the rail is collapsed by default to a strip of the pages' icons, with what
+    waits as a badge (`tt-rail-overview`, apart from the other pages' `tt-rail`). A server
+    without looks.js gets the old cards (`overviewCards`). The journey: `journeyModel(f)` turns the feature into stages and states for any
     route (a full route's Plan opened up into the plan's own stages; done, now, next at a
     gate, todo, skipped, left out) and a mode (running while a session is live, decide when
     something waits on you, gate until you continue, complete once merged). The Review

@@ -359,8 +359,17 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .frail .fnav { flex: 1 1 auto; border-right: none; min-height: 0; padding-top: 0; }
 .frail-bar { flex: none; padding: 6px 8px 0; }
 .rail-toggle { padding: 0 8px; line-height: 1.4; font-size: 15px; }
-.frail.collapsed { flex-basis: 40px; }
-.frail.collapsed .fnav { display: none; }
+.frail.collapsed { flex-basis: 44px; }
+/* collapsed: a strip of the pages' icons (features.js NAV_ICONS), with what waits as a badge */
+.frail.collapsed .fnav { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; overflow: visible; }
+.frail.collapsed .fnav > :not([data-ic]) { display: none; }
+.frail.collapsed .fnav [data-ic] { position: relative; width: 32px; height: 30px; padding: 0; display: grid; place-items: center; border: 0; background: none; color: var(--dim); }
+.frail.collapsed .fnav [data-ic] > span { display: none; }
+.frail.collapsed .fnav [data-ic]::before { content: attr(data-ic); font-size: 15px; }
+.frail.collapsed .fnav [data-ic].on { color: var(--accent); background: var(--accent-soft); }
+.frail.collapsed .fnav [data-badge]::after { content: attr(data-badge); position: absolute; top: 0; right: -2px; font-size: 9px; line-height: 13px; padding: 0 4px; border-radius: 7px; background: var(--accent); color: var(--on-accent); }
+.fnav .fnav-docs-ic { display: none; }
+.frail.collapsed .fnav-docs-ic { display: grid; cursor: pointer; margin-top: 6px; border-top: 1px solid var(--line) !important; border-radius: 0; }
 .fnav-item.open { box-shadow: inset 3px 0 0 var(--accent); }
 .wf-layout { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .fnav-head { margin: 14px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }

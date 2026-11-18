@@ -59,7 +59,11 @@
       r.flame.setAttribute("opacity", (.45 + .55 * Math.random()).toFixed(2));
       if (c.moving) return;
       const orbit = m.mode === "running" || m.mode === "decide" || m.mode === "complete";
-      r.bob.setAttribute("transform", orbit ? `rotate(${((t / (m.mode === "decide" ? 30 : 12)) % 360).toFixed(1)}) translate(0,-${r.rad[m.cur] + 15})` : `translate(0,${(Math.sin(t / 380) * 2.5).toFixed(2)})`);
+      if (!orbit) { r.bob.setAttribute("transform", `translate(0,${(Math.sin(t / 380) * 2.5).toFixed(2)})`); return; }
+      // a flat orbit above the world, so the ship never crosses the label under it
+      const R = r.rad[m.cur] + 15, rx = R * 1.15, ry = R * .42, a = (t / (m.mode === "decide" ? 30 : 12)) % 360 * Math.PI / 180;
+      const x = Math.cos(a) * rx, y = Math.sin(a) * ry - R * .55, head = Math.atan2(Math.cos(a) * ry, -Math.sin(a) * rx) * 180 / Math.PI;
+      r.bob.setAttribute("transform", `translate(${x.toFixed(1)},${y.toFixed(1)}) rotate(${head.toFixed(1)})`);
     },
     play(c, ev) {
       const r = c.refs, N = c.m.nodes.length;

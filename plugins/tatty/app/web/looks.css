@@ -74,6 +74,73 @@
 .jy.mini .fx { display: none; }
 .jy-under { margin: -4px 0 10px; }
 
+/* ---------------------------------------------------------------- 2b. the Overview as a stage (features.js overview)
+   The journey card fills the page's main area: the top line, the hero, the scene in the free height
+   and, over its ground, the gate and the dock. A drawer opens over it from the right. */
+.fmain:has(> .overview.sv) { padding: 0; overflow: hidden; position: relative; }
+.overview.sv { position: absolute; inset: 0; max-width: none; display: block; }
+.overview.sv > .jy { position: absolute; inset: 0; margin: 0; border: 0; border-radius: 0; display: flex; flex-direction: column;
+  padding: 12px clamp(16px, 3vw, 56px) 12px; overflow: auto; }
+.overview.sv > .jy .jy-scene { margin: auto 0; padding: 6px 0; flex: none; }
+.overview.sv > .jy .jy-scene svg { max-width: 1800px; margin: 0 auto; }
+.overview.sv > .jy > :not(.jy-scene):not(.fx) { position: relative; z-index: 3; flex: none; }
+.overview.sv .jy-hero { margin-top: 12px; min-height: 0; }
+.overview.sv .jy .h-kick { font-size: 12.5px; }
+.overview.sv .jy .h-big { font-size: clamp(28px, 2.8vw, 46px); margin: 4px 0; }
+.overview.sv .jy .h-sub { font-size: 15px; }
+.overview.sv .chr-win .cw-n { font-size: 34px; }
+/* the top line: the old head, smaller, in the scene's colours */
+.sv-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sv-top h2 { margin: 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.sv-top .ov-title { font-weight: 400; opacity: .8; margin-left: 8px; }
+.sv-top .sv-when { color: inherit; opacity: .6; }
+.sv-top .ov-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+/* the gate */
+.sv-gate-wrap { width: 100%; max-width: 1120px; margin: 0 auto 10px; }
+.overview.sv .sv-gate { padding: 12px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+  backdrop-filter: blur(6px); box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.sv-gate .sv-gate-h { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .65; color: inherit; }
+.sv-gate .action { margin: 0; }
+.sv-gate .sv-steps { margin: 6px 0 2px; }
+.sv-lines { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 2px; }
+.sv-sess { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.sv-sess .go-btn { margin-left: auto; }
+.sv-gate .more-options { margin-top: 8px; }
+.sv-gate .project-line { margin-top: 8px; }
+/* the dock */
+.sv-dock { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 0 auto; }
+.sv-dock button { font-size: 12px; padding: 4px 12px; border-radius: 999px; background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--ink); border: 1px solid var(--line); backdrop-filter: blur(4px); }
+.sv-dock button.open, .sv-dock button:hover { border-color: var(--accent); color: var(--accent); }
+/* the drawer: the app's own colours, over the stage */
+.sv-drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(520px, 92%); z-index: 20; background: var(--panel); color: var(--ink);
+  border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(0,0,0,.28); display: flex; flex-direction: column; }
+.sv-drawer[hidden] { display: none; }
+.sv-drawer-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.sv-drawer-head h3 { margin: 0; font-size: 15px; flex: 1; }
+.sv-drawer-body { overflow: auto; padding: 12px 14px 20px; }
+.sv-pane[hidden] { display: none; }
+.sv-folder { margin-bottom: 8px; }
+/* Inside a stage the neutrals follow the scene, so the gate's cards, chips and buttons read on it:
+   glass in the scene's colours (Minimal keeps the page's own). */
+.overview.sv > .jy.t-star { --panel: rgba(255,255,255,.62); --bg: rgba(255,255,255,.45); --ink: #18213d; --dim: #5e6787; --line: rgba(40,60,120,.22); }
+[data-shade="dark"] .overview.sv > .jy.t-star { --panel: rgba(12,18,40,.62); --bg: rgba(8,12,30,.5); --ink: #dfe7ff; --dim: #8f9bc4; --line: rgba(150,180,255,.24); }
+.overview.sv > .jy.t-map { --panel: rgba(251,245,230,.72); --bg: rgba(246,235,208,.6); --dim: #7d6447; --line: rgba(74,53,32,.25); }
+[data-shade="dark"] .overview.sv > .jy.t-map { --panel: rgba(27,36,44,.72); --bg: rgba(16,22,27,.6); --dim: #a89a7c; --line: rgba(236,220,185,.2); }
+.overview.sv > .jy.t-kin { --panel: rgba(250,249,246,.72); --bg: rgba(239,236,229,.6); --ink: #2c2924; --dim: #77716a; --line: rgba(176,127,38,.3); }
+[data-shade="dark"] .overview.sv > .jy.t-kin { --panel: rgba(27,26,30,.72); --bg: rgba(18,17,20,.6); --ink: #e8e2d4; --dim: #9c958a; --line: rgba(224,183,90,.28); }
+.overview.sv > .jy.t-chr { --panel: rgba(246,246,245,.72); --bg: rgba(233,234,232,.6); --ink: #1d1f22; --dim: #6b7078; --line: rgba(139,144,151,.4); }
+[data-shade="dark"] .overview.sv > .jy.t-chr { --panel: rgba(23,25,29,.75); --bg: rgba(15,17,20,.6); --ink: #e3e6e9; --dim: #8b9097; --line: rgba(93,99,108,.6); }
+.overview.sv > .jy.t-aur { --panel: rgba(6,14,28,.6); --bg: rgba(4,10,22,.45); --ink: #e8f0f8; --dim: #9fb3c8; --line: rgba(190,230,255,.22); --on-accent: #032419; }
+.overview.sv > .jy.t-drv { --panel: rgba(12,14,22,.66); --bg: rgba(8,9,14,.5); --ink: #ede9e2; --dim: #a29fae; --line: rgba(255,207,122,.24); --on-accent: #231703; }
+/* the one big button takes the theme's own colour (Minimal keeps the mode's accent) */
+.overview.sv > .jy.t-star .sv-gate .action-main.primary, .overview.sv > .jy.t-star .sv-gate a.go-btn.action-main { background: var(--acc); border-color: var(--acc); color: #071026; box-shadow: 0 0 22px color-mix(in srgb, var(--acc) 55%, transparent); }
+.overview.sv > .jy.t-map .sv-gate .action-main.primary, .overview.sv > .jy.t-map .sv-gate a.go-btn.action-main { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.overview.sv > .jy.t-kin .sv-gate .action-main.primary, .overview.sv > .jy.t-kin .sv-gate a.go-btn.action-main { background: linear-gradient(180deg, #f3d98b, #c3913a); border-color: #b07f26; color: #2a1d05; }
+.overview.sv > .jy.t-chr .sv-gate .action-main.primary, .overview.sv > .jy.t-chr .sv-gate a.go-btn.action-main { background: var(--c-go); border-color: var(--c-go); color: var(--c-go-ink); letter-spacing: .06em; }
+.overview.sv > .jy.t-aur .sv-gate .action-main.primary, .overview.sv > .jy.t-aur .sv-gate a.go-btn.action-main { background: color-mix(in srgb, var(--accent) 25%, #8ff5d3); border-color: transparent; color: #032419; box-shadow: 0 0 22px color-mix(in srgb, #8ff5d3 35%, transparent); }
+.overview.sv > .jy.t-drv .sv-gate .action-main.primary, .overview.sv > .jy.t-drv .sv-gate a.go-btn.action-main { background: #f2b14c; border-color: #f2b14c; color: #231703; box-shadow: 0 0 20px rgba(242,177,76,.35); }
+
 /* ---------------------------------------------------------------- 3. the scenes */
 /* The shop's Themes tab (shop.js): the big preview above the shelf */
 .shop-look-preview { margin: 0 0 14px; }

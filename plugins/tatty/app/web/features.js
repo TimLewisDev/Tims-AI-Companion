@@ -733,8 +733,9 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
   }
   const main = el("div", { class: "fmain" });
   const opts = { commit, suggestions, diff, decide, validate, diagram };
-  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name), main));
-  featureView = { name, doc, board, opts, overview: !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram, sig: decideSig(f) };
+  const isOverview = !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram;
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name, isOverview), main));
+  featureView = { name, doc, board, opts, overview: isOverview, sig: decideSig(f) };
   // What is drawn is what was read last time; it is read again behind the page, and the page is
   // redrawn if anything changed (a decision written, a session started).
   if (!doc && cached) refreshFeature(name);
@@ -825,9 +826,13 @@ function waitingItems(f) {
     v ? { rail: "Validation", sub: `${v} to check`, href: featureValidateHref(f.name), page: "validate" } : null].filter(Boolean);
 }
 
+// The rail's pages have an icon each, which is all a collapsed rail shows (with what waits as a badge).
+const NAV_ICONS = { Overview: "◎", Whiteboard: "▦", Diagram: "◇", "Code Diff": "±", Commit: "✓", "Review suggestions": "✎", Decisions: "?", Validation: "☑" };
 function featureNav(f, current, board, opts = {}) {
   const item = (label, href, on, sub, file) => {
-    const a = el("a", { class: "fnav-item" + (on ? " on" : ""), href }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
+    const ic = !file && NAV_ICONS[label];
+    const a = el("a", { class: "fnav-item" + (on ? " on" : ""), href, "data-ic": ic || null, title: ic ? label + (sub ? " · " + sub : "") : null,
+      "data-badge": ic && sub ? (sub.match(/\d+/) || [""])[0] || null : null }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
     if (opts.side && file) {
       a.dataset.key = f.name + "/" + file;
       a.addEventListener("click", e => { e.preventDefault(); openInPane(f.name, file, ""); });
@@ -850,6 +855,9 @@ function featureNav(f, current, board, opts = {}) {
     f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
     // decide-page.js. While questions wait it pulses to be seen (not on the Decide page itself, where it is already open)
     ...waitingItems(f).map((w, n) => (a => { if (!n && !opts[w.page]) a.classList.add("decide-pulse"); return a; })(item(w.rail, w.href, !!opts[w.page], w.sub))),
+    // (collapsed, the documents are one icon, which opens the rail)
+    el("button", { type: "button", class: "fnav-item fnav-docs-ic", "data-ic": "≡", title: `Documents (${f.docList.length})`,
+      onclick: e => { const t = e.currentTarget.closest(".frail")?.querySelector(".rail-toggle"); if (t) t.click(); } }, el("span", {}, "Documents")),
     el("div", { class: "fnav-head" }, "Documents"),
     docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
     f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
@@ -858,10 +866,13 @@ function featureNav(f, current, board, opts = {}) {
         ns.map(n => item(n.name, featureHref(f.name, n.file), current === n.file, "", n.file))))) : "");
 }
 
-// The rail with its collapse button at the top left: collapsed it is a narrow
-// strip holding just the button. Collapsed or not is kept for next time.
-function documentsRail(nav, feature) {
-  const rail = el("div", { class: "frail" + (localStorage.getItem("tt-rail") === "collapsed" ? " collapsed" : ""), "data-feature": feature });
+// The rail with its collapse button at the top left: collapsed it is a narrow strip of
+// the pages' icons. Collapsed or not is kept for next time, apart for the Overview (a
+// stage, so collapsed until the person opens it) and the other pages.
+function documentsRail(nav, feature, onOverview) {
+  const key = onOverview ? "tt-rail-overview" : "tt-rail";
+  const kept = localStorage.getItem(key);
+  const rail = el("div", { class: "frail" + ((kept || (onOverview ? "collapsed" : "open")) === "collapsed" ? " collapsed" : ""), "data-feature": feature });
   const toggle = el("button", { type: "button", class: "rail-toggle" });
   const sync = () => {
     const collapsed = rail.classList.contains("collapsed");
@@ -872,7 +883,7 @@ function documentsRail(nav, feature) {
   };
   toggle.addEventListener("click", () => {
     rail.classList.toggle("collapsed");
-    localStorage.setItem("tt-rail", rail.classList.contains("collapsed") ? "collapsed" : "open");
+    localStorage.setItem(key, rail.classList.contains("collapsed") ? "collapsed" : "open");
     sync();
   });
   sync();
@@ -1021,9 +1032,11 @@ function journeyModel(f) {
   let cur = st.indexOf("now");
   if (cur < 0) cur = st.indexOf("todo");
   if (cur < 0) cur = st.length - 1;
-  const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
+  // a session that is open but idle (or asking) is waiting for the person, not working
+  const going = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s).filter(s => LIVE.has(s.status));
+  const busy = going.some(s => MOVING.has(sessionStatus(s, sessionEvents.get(s.tag) || [])[2]));
   const a = f.action || {};
-  const mode = done ? "complete" : sessions.some(s => LIVE.has(s.status)) ? "running" : a.kind === "decide" || a.kind === "unitgate" ? "decide" : "gate";
+  const mode = done ? "complete" : a.kind === "decide" || a.kind === "unitgate" ? "decide" : busy ? "running" : going.length ? "waiting" : "gate";
   if (mode === "gate" && st[cur] === "now") st[cur] = "next";
   if (mode === "complete") cur = st.length - 1;
   return { nodes, st, cur, mode, units: (f.units && f.units.done) || 0, dec: (f.decide && f.decide.open) || 0, what: a.what || "",
@@ -1775,7 +1788,128 @@ function actionBar(f) {
     said ? el("p", { class: "action-said" }, said) : "", node, slot) };
 }
 
+// ------------------------------------------------------------- the Overview as a stage
+// The feature's Overview is one scene in the theme the app wears, filling the window (proposed on
+// docs/overview/stage-view.html): a top line (whose feature, its chips, the page's few actions), the
+// hero (where it is, what is next), the journey across the full width, the gate (the one place to
+// act: what "Where it stands" held, the live sessions in a line each), and a dock whose pills open
+// the other cards in a drawer over the stage. Every drawer's card is built with the page (hidden
+// until asked for), so nothing is lost and the page's selectors still find them.
+let stageDrawer = null; // the drawer open, kept across the redraws a feature's changes cause
+
 function overview(f) {
+  if (!window.TattyLooks) return overviewCards(f);
+  let m;
+  try { m = journeyModel(f); } catch (e) { return overviewCards(f); }
+  if (!m.nodes.length) return overviewCards(f);
+  const act = actionBar(f);
+  const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
+  const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind }, el("p", {}, r.kind === "warn" ? "⚠ " : "", r.text), stepActions(f, r, i));
+  const more = rest.filter(x => x.r.kind !== "warn").map(stand1);
+  const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
+  // the live sessions: a line each in the gate, which keeps up as they report
+  const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
+  const going = sessions.filter(s => LIVE.has(s.status));
+  statusViews.clear();
+  const lines = going.map(s => {
+    const status = el("span", { class: "chip" }), bar = stateBar();
+    const go = el("a", { class: "go-btn" + (f.action && f.action.kind === "session" ? " action-main" : "") });
+    const paint = () => {
+      paintStatus(status, bar, sessionStatus(sessionInfo.get(s.tag) || s, sessionEvents.get(s.tag) || []));
+      const open = (sessionEvents.get(s.tag) || []).filter(ev => ev.type === "ask" && !answers.has(ev.id)).pop();
+      go.href = "#workflows/" + encodeURIComponent(s.tag) + (open ? "/ask/" + encodeURIComponent(open.id) : "");
+      go.textContent = open ? "Go to the question" : "Open session ↗";
+      go.classList.toggle("waiting", !!open);
+    };
+    paint();
+    statusViews.set(s.tag, { update: paint });
+    const stage = (s.name || "").split(" : ").pop();
+    return el("div", { class: "sv-sess live-link" }, el("span", { class: "pulse" }), el("strong", { title: s.name }, stage || s.name), status, go);
+  });
+  const gate = el("section", { class: "card sv-gate" },
+    el("h4", { class: "sv-gate-h" }, "Where it stands"),
+    f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
+    unitGateCard(f), commitCard(f), // unitgate.js, commit.js
+    act.node,
+    ...rest.filter(x => x.r.kind === "warn").map(stand1),
+    f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "",
+    lines.length ? el("div", { class: "sv-lines" }, lines) : "",
+    more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
+    !act.node && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
+    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
+  // the drawers: today's cards, one click away
+  const last = !going.length && sessions[0];
+  const shown = going[0] || last;
+  usageViews.clear();
+  let usage = "";
+  if (shown) { const w = usageWidget(shown.usage); usageViews.set(shown.tag, { tag: shown.tag, update: w.update }); usage = w.node; }
+  const docItems = [...f.docList.map(d => el("a", { class: "fnav-item", href: featureHref(f.name, d.file) }, el("span", {}, d.doc), el("span", { class: "dim small" }, ago(d.updated)))),
+    ...f.notes.map(n => el("a", { class: "fnav-item", href: featureHref(f.name, n.file) }, el("span", {}, n.name), el("span", { class: "dim small" }, n.group)))];
+  const panes = [
+    ["docs", `Documents · ${f.docList.length}`, el("div", {}, el("div", { class: "dim small sv-folder" }, copyable(f.folder)), docItems.length ? docItems : el("p", { class: "dim" }, "None yet."))],
+    ["merge", "Branch & merge", mergeCard(f)],
+    ["session", "Last session", last && last.status === "ended" ? el("details", { class: "card ended-session", open: true },
+      el("summary", {}, `Last session: ${last.name}, ended`), sessionPanel(f, last, () => {}, true)) : ""],
+    ["build", f.units && f.units.total ? `Build · ${f.units.done}/${f.units.total}` : "Build", f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
+      bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
+      el("table", { class: "units" }, el("tbody", {}, f.unitList.map(u => el("tr", {},
+        el("td", { class: "mono" }, u.id), el("td", {}, u.outcome), el("td", {}, chip(u.status || "—", statusClass(u.status)))))))) : ""],
+    ["timeline", "Timeline", f.events.length ? el("section", { class: "card" }, el("h4", {}, "Timeline"),
+      el("ul", { class: "timeline" }, f.events.map(e => el("li", {},
+        el("span", { class: "dim small mono" }, e.ts ? new Date(e.ts).toLocaleString() : ""),
+        el("span", {}, (e.qualifier ? e.qualifier + " " : "") + (EVENTS[e.event] || e.event)),
+        e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : ""],
+    ["usage", "Usage", usage],
+  ].filter(([, , node]) => node);
+  if (stageDrawer && !panes.some(([k]) => k === stageDrawer)) stageDrawer = null;
+  const title = el("h3", {});
+  const body = el("div", { class: "sv-drawer-body" }, panes.map(([k, , node]) => el("div", { class: "sv-pane", "data-k": k, hidden: true }, node)));
+  const drawer = el("aside", { class: "sv-drawer", hidden: true, "aria-label": "Details" },
+    el("div", { class: "sv-drawer-head" }, title, el("button", { type: "button", title: "Close (Esc)", onclick: () => openPane(null) }, "×")), body);
+  const pills = panes.map(([k, label]) => el("button", { type: "button", "data-k": k, onclick: () => openPane(stageDrawer === k ? null : k) }, label));
+  function openPane(k) {
+    stageDrawer = k;
+    drawer.hidden = !k;
+    for (const p of body.children) p.hidden = p.dataset.k !== k;
+    for (const b of pills) b.classList.toggle("open", b.dataset.k === k);
+    if (k) title.textContent = panes.find(p => p[0] === k)[1];
+  }
+  // the top line: whose feature, its chips, the page's actions (the old head, so its buttons keep their ids)
+  const head = el("div", { class: "ov-head sv-top" },
+    el("h2", {}, f.name, f.title ? el("span", { class: "ov-title" }, f.title) : ""), chip(ROUTES[f.route] || f.route, "route"),
+    chip(phaseWord(f), phaseDone(f) ? "done" : "now"),
+    el("span", { class: "dim small sv-when" }, "updated " + ago(f.updated)),
+    el("span", { class: "ov-acts" },
+      f.task || going.length ? el("button", { type: "button", id: "feature-cancel",
+        title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
+          const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
+          if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
+        } }, "Cancel workflow") : "",
+      stagesButton(f), // stages.js
+      el("button", { type: "button", onclick: () => route() }, "Refresh"),
+      archiveCombo(f))); // archive.js
+  const stage = TattyLooks.journey(m, { key: f.name });
+  stage.id = "journey";
+  // what it shows, in words, for the walks (features-check.py): Label:state|... and the mode
+  stage.dataset.stages = m.nodes.map((n, i) => `${n.l}:${m.st[i]}`).join("|");
+  stage.dataset.mode = m.mode;
+  const fx = stage.querySelector(".fx");
+  stage.insertBefore(head, stage.firstChild);
+  stage.insertBefore(el("div", { class: "sv-gate-wrap" }, gate), fx);
+  if (pills.length) stage.insertBefore(el("div", { class: "sv-dock" }, pills), fx);
+  const root = el("div", { class: "overview sv" }, stage, drawer);
+  if (stageDrawer) openPane(stageDrawer);
+  return root;
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || !stageDrawer) return;
+  const close = document.querySelector(".overview.sv .sv-drawer-head button");
+  if (close) close.click();
+});
+
+// The Overview as cards, as it was before the stage: what a page draws when looks.js isn't there
+// (a server older than this page).
+function overviewCards(f) {
   const act = actionBar(f);
   const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
   const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind },

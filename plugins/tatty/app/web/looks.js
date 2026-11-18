@@ -12,7 +12,8 @@
 //
 // A journey draws a model, never a feature: { nodes: [{k, l, plan, units}], st: [done|now|next|todo|
 // skip|out], cur, mode: running|gate|decide|complete, units, dec, base }. features.js makes it from a
-// feature (journeyModel); the shop draws a sample one. When the same feature's model changes between two
+// feature (journeyModel); the shop draws a sample one. (waiting: a session is open but idle, the
+// stage being worked on is where it stands.) When the same feature's model changes between two
 // draws, the change is played: a stage closed, the route moved on, a skip, a decision, the merge.
 //
 // The page's CSP allows no inline styles: SVG is built through the DOM, styling is classes and the
@@ -128,6 +129,7 @@
         ? { kick: cur.l, big: `${m.dec} ${m.dec === 1 ? "decision needs" : "decisions need"} you`, sub: "Answer them and the work goes on" }
         : { kick: cur.l, big: "Waiting on you", sub: m.what === "validate" ? "Checks wait for your result" : "Something needs your call" };
       case "complete": return { kick: "Merged", big: "Journey complete", sub: m.base ? `Merged into ${m.base}` : "The work is merged" };
+      case "waiting": return { kick: cur.l + unit, big: "Waiting for you", sub: "Its session is idle: open it to carry on" };
       default: return { kick: ld >= 0 ? `${m.nodes[ld].l} complete` : "Ready to start", big: `Next: ${cur.l}`, sub: "Nothing starts until you continue" };
     }
   }
