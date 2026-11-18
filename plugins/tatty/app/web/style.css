@@ -137,6 +137,9 @@ body.companion:not(.expanded) #alert:not([hidden]) { display: flex; flex: none; 
 .pnav a.on { color: var(--accent); background: var(--bg); font-weight: 600; }
 .gear { position: relative; color: var(--dim); text-decoration: none; font-size: 16px; line-height: 1; margin-left: 6px; padding: 2px 4px; border-radius: 6px; }
 .gear:hover, .gear.on { color: var(--accent); background: var(--bg); }
+/* The light/dark button (theme.js), beside the gear: a button dressed as the gear. */
+.themebtn { position: relative; color: var(--dim); background: none; border: 0; cursor: pointer; font: inherit; font-size: 16px; line-height: 1; margin-left: 6px; padding: 2px 4px; border-radius: 6px; }
+.themebtn:hover { color: var(--accent); background: var(--bg); }
 .gear .dot { position: absolute; top: 0; right: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .settings-page { padding: 16px 24px; max-width: 720px; overflow: auto; flex: 1; }
 .settings-page h2 { margin: 0 0 12px; }

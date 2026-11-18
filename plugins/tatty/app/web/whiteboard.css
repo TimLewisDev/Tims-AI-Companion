@@ -14,17 +14,28 @@
 .g6 { --note: #d3f3f1; --note-edge: #6fc2bb; }
 .g7 { --note: #ffe2b8; --note-edge: #e0a454; }
 .gu { --note: #eceae4; --note-edge: #b9b5aa; }
+/* The dark notes, twice (see theme.css): by Windows' setting unless light was
+   chosen, and when dark was. Keep the two blocks identical. */
 @media (prefers-color-scheme: dark) {
-  .g0 { --note: #4a4421; --note-edge: #a8962e; }
-  .g1 { --note: #4d3029; --note-edge: #b06a55; }
-  .g2 { --note: #263f27; --note-edge: #5c9a5c; }
-  .g3 { --note: #233650; --note-edge: #5a87bd; }
-  .g4 { --note: #382a4d; --note-edge: #8a6ab8; }
-  .g5 { --note: #4a2a3b; --note-edge: #b8698f; }
-  .g6 { --note: #213f3d; --note-edge: #4f9a93; }
-  .g7 { --note: #4a3820; --note-edge: #b88440; }
-  .gu { --note: #2c2f34; --note-edge: #5d636b; }
+  :root:not([data-theme="light"]) .g0 { --note: #4a4421; --note-edge: #a8962e; }
+  :root:not([data-theme="light"]) .g1 { --note: #4d3029; --note-edge: #b06a55; }
+  :root:not([data-theme="light"]) .g2 { --note: #263f27; --note-edge: #5c9a5c; }
+  :root:not([data-theme="light"]) .g3 { --note: #233650; --note-edge: #5a87bd; }
+  :root:not([data-theme="light"]) .g4 { --note: #382a4d; --note-edge: #8a6ab8; }
+  :root:not([data-theme="light"]) .g5 { --note: #4a2a3b; --note-edge: #b8698f; }
+  :root:not([data-theme="light"]) .g6 { --note: #213f3d; --note-edge: #4f9a93; }
+  :root:not([data-theme="light"]) .g7 { --note: #4a3820; --note-edge: #b88440; }
+  :root:not([data-theme="light"]) .gu { --note: #2c2f34; --note-edge: #5d636b; }
 }
+:root[data-theme="dark"] .g0 { --note: #4a4421; --note-edge: #a8962e; }
+:root[data-theme="dark"] .g1 { --note: #4d3029; --note-edge: #b06a55; }
+:root[data-theme="dark"] .g2 { --note: #263f27; --note-edge: #5c9a5c; }
+:root[data-theme="dark"] .g3 { --note: #233650; --note-edge: #5a87bd; }
+:root[data-theme="dark"] .g4 { --note: #382a4d; --note-edge: #8a6ab8; }
+:root[data-theme="dark"] .g5 { --note: #4a2a3b; --note-edge: #b8698f; }
+:root[data-theme="dark"] .g6 { --note: #213f3d; --note-edge: #4f9a93; }
+:root[data-theme="dark"] .g7 { --note: #4a3820; --note-edge: #b88440; }
+:root[data-theme="dark"] .gu { --note: #2c2f34; --note-edge: #5d636b; }
 
 /* ---------------------------------------------------------------- the board */
 .board { position: relative; flex: 1; min-height: 320px; overflow: hidden; cursor: default; outline: none;

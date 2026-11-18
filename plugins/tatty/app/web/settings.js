@@ -65,6 +65,7 @@ function drawSettings() {
       restartPanel(u),
       el("p", { class: "dim small" }, when),
       el("div", { class: "actions" }, look, u.status === "available" || (!s.autoUpdate && u.status !== "checkout") ? install : null)),
+    themeSettings(s),
     llmSettings(),
     sessionSettings(),
     stepSettings(),
@@ -188,6 +189,34 @@ function restartPanel(u) {
     r.stale ? el("p", { class: "dim small", id: "restart-stale" },
       `${plural(r.stale, "session")} started before the update, so still on the old mod and skills until started again.`) : null,
     r.server ? [go, say] : null);
+}
+
+// Theme (theme.js): the button in the header flips light and dark; this is where to
+// go back to following Windows. Saved as it changes.
+function themeSettings(s) {
+  const radio = (value, label, hint) => {
+    const input = el("input", { type: "radio", name: "theme", id: "theme-" + (value || "windows"), value });
+    input.checked = (s.theme || "") === value;
+    input.addEventListener("change", async () => {
+      const saved = window.TattyTheme ? await TattyTheme.set(value) : null;
+      if (saved) settingsNow = saved;
+    });
+    return el("label", { class: "opt-row" }, input, el("span", {}, el("strong", {}, label), el("br"), el("span", { class: "dim small" }, hint)));
+  };
+  const section = el("section", { id: "theme-settings" },
+    el("h3", {}, "Theme"),
+    el("p", { class: "dim small" }, "The ☀ / ☾ button beside the gear switches between light and dark. Your choice is kept; Match Windows goes back to following Windows' own setting."),
+    radio("", "Match Windows", "Light or dark as Windows is."),
+    radio("light", "Light", ""),
+    radio("dark", "Dark", ""));
+  // the header button changes it too: keep the choice shown here in step
+  const follow = e => {
+    if (!section.isConnected) { document.removeEventListener("tt-theme", follow); return; }
+    const want = $("#theme-" + (e.detail || "windows"));
+    if (want) want.checked = true;
+  };
+  document.addEventListener("tt-theme", follow);
+  return section;
 }
 
 // Chats (chat.js): who writes the summary of what a side chat is about, and the

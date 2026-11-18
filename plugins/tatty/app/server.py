@@ -80,7 +80,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
           "wallet.js": "text/javascript", "shop.js": "text/javascript", "shop.css": "text/css",
-          "theme.css": "text/css", "style.css": "text/css"}
+          "theme.css": "text/css", "theme.js": "text/javascript", "theme-init.js": "text/javascript", "style.css": "text/css"}
 KINDS = {"text", "markdown", "table", "status", "reply"}
 MAX_BODY = 1 << 20
 MAX_WAIT = 55  # seconds one long-poll request may wait server-side
@@ -343,7 +343,9 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      # (tatty: Tatty itself, no tokens; model: a small model), and the model chats use ("" Claude's own)
                      "chatSummary": "tatty", "chatModel": "",
                      # branches (see "branches and merging" below): what a workflow's new branch name starts with
-                     "branchPrefix": "feature/"}
+                     "branchPrefix": "feature/",
+                     # the page's theme (web/theme.js): "light" or "dark" once the person has chosen, "" to follow Windows
+                     "theme": ""}
 
 
 def load_settings():
@@ -362,6 +364,8 @@ def save_settings(changes):
     now.update({k: v for k, v in changes.items() if k in now and isinstance(v, type(now[k]))})
     if now["chatSummary"] not in ("tatty", "model"):
         now["chatSummary"] = "tatty"
+    if now["theme"] not in ("", "light", "dark"):
+        now["theme"] = ""
     if not re.fullmatch(r"(?:[A-Za-z0-9_-]+/)*", now["branchPrefix"]) or len(now["branchPrefix"]) > 30:
         now["branchPrefix"] = SETTINGS_DEFAULTS["branchPrefix"]
     home().mkdir(parents=True, exist_ok=True)

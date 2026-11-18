@@ -2130,6 +2130,24 @@ post /api/settings '{"autoUpdate":"yes"}' >"$T/set"
 post /api/settings '{"autoUpdate":true}' >/dev/null
 has "the choice is kept in Tatty's home" "$TATTY_HOME/settings.json" '"autoUpdate": true'
 [ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served" || bad "settings.js served"
+# The light/dark button (theme.js): the choice is kept in the settings, "" follows Windows.
+[ "$(pick "$T/set" "d['theme']")" = "" ] && ok "the theme follows Windows by default" || bad "the theme follows Windows by default" "$(head -c 200 "$T/set")"
+post /api/settings '{"theme":"dark"}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = dark ] && ok "dark chosen" || bad "dark chosen" "$(head -c 200 "$T/set")"
+has "the theme is kept in Tatty's home" "$TATTY_HOME/settings.json" '"theme": "dark"'
+post /api/settings '{"theme":"nonsense"}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = "" ] && ok "a theme that is neither light nor dark goes back to Windows" || bad "a theme that is neither light nor dark goes back to Windows"
+post /api/settings '{"theme":"light"}' >/dev/null
+post /api/settings '{"theme":5}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = light ] && ok "a wrong type is ignored" || bad "a wrong type is ignored" "$(head -c 200 "$T/set")"
+post /api/settings '{"theme":""}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = "" ] && ok "Match Windows clears the choice" || bad "Match Windows clears the choice"
+for f in theme.js theme-init.js; do
+	[ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"
+done
+curl -s "$U/static/theme.css" >"$T/theme.css"
+[ "$($PY -c "import sys; t = open(sys.argv[1], encoding='utf-8').read(); a = t.split('prefers-color-scheme: dark) {')[1].split('}')[0]; b = t.split('data-theme=\"dark\"] {')[1].split('}')[0]; print(a.split('{', 1)[1].split() == b.split())" "$T/theme.css")" = True ] &&
+	ok "theme.css: Windows' dark values and the chosen dark's are the same" || bad "theme.css: Windows' dark values and the chosen dark's are the same"
 
 # Run from a checkout (no install record), there is nothing to update.
 post /api/update '{"action":"check"}' >/dev/null; upd_wait

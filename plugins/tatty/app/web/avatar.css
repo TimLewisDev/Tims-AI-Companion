@@ -26,8 +26,9 @@
 /* On a dark page the black things (a top hat, headphones, a pirate hat) would vanish:
    a faint light edge keeps their shape. */
 @media (prefers-color-scheme: dark) {
-  .tatty .acc { filter: drop-shadow(0 0 .7px rgba(255, 255, 255, .75)); }
+  :root:not([data-theme="light"]) .tatty .acc { filter: drop-shadow(0 0 .7px rgba(255, 255, 255, .75)); }
 }
+:root[data-theme="dark"] .tatty .acc { filter: drop-shadow(0 0 .7px rgba(255, 255, 255, .75)); }
 
 /* Where avatar.js draws the tray app's copy, out of sight, to read its colours back. */
 .tatty-bake { position: fixed; left: -10000px; top: 0; pointer-events: none; }
