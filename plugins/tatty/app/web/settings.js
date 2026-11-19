@@ -72,6 +72,7 @@ function drawSettings() {
     chatSettings(s),
     branchSettings(s),
     mergeSkillSettings(),
+    mrSettings(s),
     jiraSettings(s),
     debugSettings()));
 }
@@ -289,6 +290,28 @@ function mergeSkillSettings() {
     el("label", { class: "field-row" }, el("strong", {}, "Skill"), input, list,
       el("span", { class: "dim small" }, "Leave blank for Auto: the session looks through the skills it can see for one that opens merge requests, and otherwise uses glab or gh.")),
     about);
+}
+
+// The Merge request page (mr.js): what kind of host this project's requests are on, when its name doesn't
+// say, and the model that looks into a comment. Tatty only reads the host (glab, gh) and never posts to it.
+function mrSettings(s) {
+  const host = el("select", { id: "set-mrHost", "aria-label": "Merge request host" },
+    [["", "Automatic (from the git remote's name)"], ["gitlab", "GitLab"], ["github", "GitHub"], ["bitbucket", "Bitbucket"], ["other", "Something else"]].map(([v, l]) => el("option", { value: v }, l)));
+  api("/api/merge/skill").then(r => { host.value = r.mrHost || ""; }).catch(() => {});
+  host.addEventListener("change", async () => {
+    try { const r = await api("/api/mr/host", { host: host.value }); host.value = r.mrHost; } catch (e) { alert(String(e.message || e)); }
+  });
+  const model = el("input", { id: "set-mrModel", value: s.mrModel, placeholder: "sonnet", "aria-label": "Model for looking into comments" });
+  model.addEventListener("change", async () => {
+    try { settingsNow = await api("/api/settings", { mrModel: model.value.trim() }); } catch (e) { alert(String(e)); }
+  });
+  return el("section", { id: "mr-settings" },
+    el("h3", {}, "Merge request page"),
+    el("p", { class: "dim small" }, "The feature's Merge request page reads the request, its comments and its diff through glab (GitLab) or gh (GitHub), signed in as you. Tatty never posts, replies or resolves anything there: a reply is a draft for you to copy."),
+    el("label", { class: "field-row" }, el("strong", {}, "Host"), host,
+      el("span", { class: "dim small" }, "Set it when the repository's address doesn't say (a self-hosted server). Other hosts show the link and the branch's own diff.")),
+    el("label", { class: "field-row" }, el("strong", {}, "Model"), model,
+      el("span", { class: "dim small" }, "The model that looks into a comment, reading the code. Blank: sonnet.")));
 }
 
 // The Jira board's reading (jira.js): which tickets, through which MCP server

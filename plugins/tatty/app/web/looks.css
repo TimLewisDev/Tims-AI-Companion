@@ -239,6 +239,16 @@
 .sv-lines { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 2px; }
 .sv-sess { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 .sv-sess .go-btn { margin-left: auto; }
+/* Everything in the gate down to "More options" is centred (the buttons, the said line, the cards, the steps and
+   the session lines); More options and the project line under it keep their own alignment. */
+.overview.sv .sv-gate { text-align: center; }
+.overview.sv .sv-gate > .more-options, .overview.sv .sv-gate > .project-line { text-align: left; }
+.sv-gate .action-bar, .sv-gate .start-actions, .sv-gate .substeps { justify-content: center; }
+.sv-gate .commit-card { justify-content: center; }
+.sv-gate .commit-card p { flex: 1 1 100%; }
+.sv-gate .sv-sess { justify-content: center; }
+.sv-gate .sv-sess .go-btn { margin-left: 0; }
+.sv-gate .sv-lines { align-items: center; }
 .sv-gate .more-options { margin-top: 8px; }
 .sv-gate .project-line { margin-top: 8px; }
 /* the dock */

@@ -55,6 +55,7 @@ banner	^milestones	milestones,coins,cache
 banner	^coins and the shop	coins
 banner	^branches	branches,worktrees,mergestep,startstep,archive,cache
 banner	^committing	commit
+banner	^the merge request page	mr,mergestep,commit
 banner	^the Review step	reviewstep,reviewrepo,mergestep
 banner	^starting a session	startstep,newfeature,models,live,tabs,branches,worktrees,reviewrepo,reviewstep,jira,tasks,stories,decide,planids
 banner	^Jira	jira,tasks

@@ -150,7 +150,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate",
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", mr: parts[2] === "merge-request", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate",
       diagram: parts[2] === "diagram" ? (parts[3] === "plan" || parts[3] === "review" ? parts[3] : "any") : "" };
   }
   if (parts[0] === "diagram") return { page: "diagram" };
@@ -239,7 +239,7 @@ async function route() {
       clearInterval(homeTimer);
       homeTimer = setInterval(() => { if (!document.hidden && onFeatureList()) renderHome(true); }, 30000);
     }
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate, r.diagram);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate, r.diagram, r.mr);
   else if (r.page === "diagram") {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderProjectDiagram === "function") renderProjectDiagram(pageEls.diagram);
@@ -704,7 +704,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate, diagram) {
+async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate, diagram, mr) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -732,8 +732,8 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     if (mine !== routeSeq) return; // (the person has gone elsewhere while it was read)
   }
   const main = el("div", { class: "fmain" });
-  const opts = { commit, suggestions, diff, decide, validate, diagram };
-  const isOverview = !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram;
+  const opts = { commit, suggestions, diff, decide, validate, diagram, mr };
+  const isOverview = !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram && !mr;
   box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name, isOverview), main));
   featureView = { name, doc, board, opts, overview: isOverview, sig: decideSig(f) };
   // What is drawn is what was read last time; it is read again behind the page, and the page is
@@ -743,6 +743,11 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
   else if (validate) await validatePage(f, main); // validate-page.js
   else if (suggestions) await reviewPage(f, main); // review-page.js
   else if (commit) await commitPage(f, main); // commit.js
+  else if (mr) {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof mrPage === "function") await mrPage(f, main); // mr.js
+    else main.replaceChildren(el("p", { class: "pad st missing" }, "The merge request page didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
   else if (board) await featureBoard(f, main);
   else if (diagram) {
     if (typeof featureDiagram === "function") await featureDiagram(f, main, diagram); // diagram.js
@@ -827,7 +832,10 @@ function waitingItems(f) {
 }
 
 // The rail's pages have an icon each, which is all a collapsed rail shows (with what waits as a badge).
-const NAV_ICONS = { Overview: "◎", Whiteboard: "▦", Diagram: "◇", "Code Diff": "±", Commit: "✓", "Review suggestions": "✎", Decisions: "?", Validation: "☑" };
+// The Merge request rail item shows once the feature has a branch and its build is complete (or a request exists).
+const mrNavShown = f => !!(f.merge && f.merge.branch && (f.phase === "complete" || f.merge.url)) && typeof featureMrHref === "function";
+const mrNavSub = m => m.mr ? `${m.mr.open} open${m.number ? " · " + (m.host === "github" ? "#" : "!") + m.number : ""}` : m.state || "";
+const NAV_ICONS = { Overview: "◎", Whiteboard: "▦", Diagram: "◇", "Code Diff": "±", Commit: "✓", "Merge request": "⇄", "Review suggestions": "✎", Decisions: "?", Validation: "☑" };
 function featureNav(f, current, board, opts = {}) {
   const item = (label, href, on, sub, file) => {
     const ic = !file && NAV_ICONS[label];
@@ -847,12 +855,13 @@ function featureNav(f, current, board, opts = {}) {
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
     f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
-    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate && !opts.diagram),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate && !opts.diagram && !opts.mr),
     item("Whiteboard", featureBoardHref(f.name), !!board),
     item("Diagram", featureDiagramHref(f.name), !!opts.diagram), // diagram.js
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
     f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
+    mrNavShown(f) ? item("Merge request", featureMrHref(f.name), !!opts.mr, mrNavSub(f.merge)) : "", // mr.js
     // decide-page.js. While questions wait it pulses to be seen (not on the Decide page itself, where it is already open)
     ...waitingItems(f).map((w, n) => (a => { if (!n && !opts[w.page]) a.classList.add("decide-pulse"); return a; })(item(w.rail, w.href, !!opts[w.page], w.sub))),
     // (collapsed, the documents are one icon, which opens the rail)
@@ -1750,7 +1759,8 @@ function mergeCard(f) {
   const mergeRow = (f.rows || []).findIndex(r => r.phase === "merge");
   const mrSlot = el("div", { id: "merge-start-slot" });
   let mrButton = "", mrSkill = "";
-  if (m.url) mrButton = el("div", { class: "start-actions" }, el("a", { class: "go-btn", id: "merge-go", href: m.url, target: "_blank", rel: "noopener" }, "Go to MR"));
+  if (m.url) mrButton = el("div", { class: "start-actions" }, el("a", { class: "go-btn", id: "merge-go", href: m.url, target: "_blank", rel: "noopener" }, "Go to MR"),
+    typeof featureMrHref === "function" ? el("a", { class: "go-btn", id: "merge-view", href: featureMrHref(f.name) }, "View in Tatty") : "");
   else if (m.state !== "merged" && f.phase === "complete") {
     const create = el("button", { type: "button", class: "primary", id: "merge-create" }, "Create merge request");
     if (mergeRow < 0) { create.disabled = true; create.title = "Finish the review (or skip it) first: the request is made at the merge step."; }

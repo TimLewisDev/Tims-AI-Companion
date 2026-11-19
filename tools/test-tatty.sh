@@ -47,7 +47,7 @@ export CLAUDE_CODE_USE_BEDROCK=0 # the toolbox lists first-party model ids, what
 LLMS_FX="${TATTY_TOOLBOX:-/none}/tools/fixtures/llms"
 if [ -f "$LLMS_FX/fake-copilot.sh" ]; then export TT_COPILOT_BIN="$LLMS_FX/fake-copilot.sh" TT_CODEX_BIN="$LLMS_FX/fake-codex.sh"; fi
 # The host's command-line tools for the merge step: glab answers with what $T/glab-answer holds, gh isn't there.
-export TATTY_GLAB="$T/glab.sh" TATTY_GH="$T/none-such"
+export TATTY_GLAB="$T/glab.sh" TATTY_GH="$T/gh.sh"
 # The updates run the claude command: a stand-in logs what it is asked and, for
 # `plugin update`, raises the version in the install record. The server's own
 # look at start-up is put off, so only the checks the tests ask for happen.
@@ -60,6 +60,8 @@ cat >"$T/claude.sh" <<'EOS'
 [ "${1:-}" = -p ] && case "$*" in *"reading a class diagram"*|*"You draw the class diagram"*) exec bash "$(dirname "$0")/claude-dg.sh" "$@" ;; esac
 # the task panel's "Write it for me" (it names its job in the system prompt): the stand-in is claude-tw.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"You write up a task"*) exec bash "$(dirname "$0")/claude-tw.sh" "$@" ;; esac
+# the merge request page's agent (it names its job in the system prompt): the stand-in is claude-mr.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"review comment on their merge request"*) exec bash "$(dirname "$0")/claude-mr.sh" "$@" ;; esac
 # the QA mode's drafts (they name their job in the system prompt) and Jira's answer to a create: the stand-in is claude-qa.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"You turn a tester"*|*"You break a feature"*|*mcp__atlassian__createJiraIssue*) exec bash "$(dirname "$0")/claude-qa.sh" "$@" ;; esac
 # a chat's turn (it names its conversation): the stand-in is claude-chat.sh, made with its tests
@@ -1548,6 +1550,156 @@ gate_status Done "In Progress"
 [ "$(upost unit-commit '{"name":"Gate Demo"}')" = 409 ] && ok "no break, no commit" || bad "no break, no commit"
 [ "$(upost unit-continue '{"name":"Gate Demo"}')" = 409 ] && ok "and no Continue" || bad "and no Continue"
 
+fi
+if section mr; then
+echo "# the merge request page"
+[ "$(code "$U/static/mr.js")" = 200 ] && ok "mr.js served" || bad "mr.js served"
+[ "$(code "$U/static/mr.css")" = 200 ] && ok "mr.css served" || bad "mr.css served"
+MR="$T/mrrepo"
+mkdir -p "$MR/src" "$MR/docs" && git -C "$MR" init -q -b main && git -C "$MR" config user.email t@example.com && git -C "$MR" config user.name Tester
+printf 'a\nb\nc\n' >"$MR/src/widget.txt"; printf 'hello\n' >"$MR/docs/a.md"; git -C "$MR" add -A; git -C "$MR" commit -q -m "feat: base [KEY-1]"
+git -C "$MR" remote add origin https://gitlab.example.com/group/proj.git
+git -C "$MR" switch -q -c feature/Mr-Demo; printf 'a\nB\nc\nd\n' >"$MR/src/widget.txt"; git -C "$MR" add -A; git -C "$MR" commit -q -m "feat: widget [KEY-2]"
+MRW=$(cd "$MR" && { pwd -W 2>/dev/null || pwd; })
+MD="$FX/features/Mr Demo"; mkdir -p "$MD"; printf '# Ticket\n' >"$MD/Mr Demo - Ticket.md"
+$PY -c "import json,os,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)) if os.path.exists(p) else {}; d['mr demo']={'repo':sys.argv[2],'branch':'feature/Mr-Demo','base':'main','created':1,'merge':{'state':'opened','url':'https://gitlab.example.com/group/proj/-/merge_requests/7','number':7,'host':'gitlab'}}; json.dump(d,open(p,'w'))" "$TATTY_HOME" "$MRW"
+post /api/project "{\"name\":\"Mr Demo\",\"path\":\"$MRW\"}" >/dev/null
+# the host's CLI stands in: glab answers with canned JSON by what it is asked, and keeps what it was asked
+printf '%s' '{"iid":7,"title":"Add the widget","description":"Adds a widget.","state":"opened","draft":false,"web_url":"https://gitlab.example.com/group/proj/-/merge_requests/7","source_branch":"feature/Mr-Demo","target_branch":"main","sha":"abc123","author":{"username":"alex"},"head_pipeline":{"status":"success","web_url":"https://gitlab.example.com/p/1"}}' >"$T/mr-mr.json"
+printf '%s' '[{"id":"d1","notes":[{"id":11,"system":false,"body":"Please guard against null here.","author":{"username":"sam"},"created_at":"2026-11-01T10:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":2}},{"id":12,"system":false,"body":"Thanks.","author":{"username":"alex"},"created_at":"2026-11-01T11:00:00Z","resolvable":true,"resolved":false}]},{"id":"d2","notes":[{"id":21,"system":false,"body":"Looks good overall.","author":{"username":"sam"},"created_at":"2026-11-02T10:00:00Z","resolvable":false}]},{"id":"d3","notes":[{"id":31,"system":true,"body":"added 1 commit","author":{"username":"alex"}}]},{"id":"d4","notes":[{"id":41,"system":false,"body":"Typo.","author":{"username":"sam"},"created_at":"2026-11-03T10:00:00Z","resolvable":true,"resolved":true,"position":{"new_path":"docs/a.md","new_line":1}}]},{"id":"d5","notes":[{"id":61,"system":false,"body":"Rename this?","author":{"username":"sam"},"created_at":"2026-11-04T10:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":3}}]},{"id":"bad id;","notes":[{"id":51,"system":false,"body":"x"}]}]' >"$T/mr-disc.json"
+printf '%s' '{"changes":[{"old_path":"src/widget.txt","new_path":"src/widget.txt","new_file":false,"deleted_file":false,"renamed_file":false,"diff":"@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n"},{"old_path":"docs/a.md","new_path":"docs/a.md","new_file":true,"deleted_file":false,"renamed_file":false,"diff":"@@ -0,0 +1 @@\n+hello\n"}]}' >"$T/mr-changes.json"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/glab.log"\ncase "$*" in\n*"mr list"*) cat "%s/glab-answer" ;;\n*/discussions*) cat "%s/mr-disc.json" ;;\n*/changes*) cat "%s/mr-changes.json" ;;\n*"api projects/"*) cat "%s/mr-mr.json" ;;\nesac\n' "$T" "$T" "$T" "$T" "$T" >"$T/glab.sh"
+echo '[]' >"$T/glab-answer"; : >"$T/glab.log"
+get "/api/mr?name=Mr%20Demo" >"$T/j"
+pick "$T/j" "(d['mr']['provider'], d['mr']['title'], d['mr']['id'], d['mr']['state'], d['mr']['author'], d['mr']['source'], d['mr']['target'], d['mr']['pipeline']['status'])" >"$T/f"
+has "the request is read from GitLab" "$T/f" "('gitlab', 'Add the widget', '7', 'opened', 'alex', 'feature/Mr-Demo', 'main', 'passed')"
+[ "$(pick "$T/j" "[t['id'] for t in d['mr']['threads']]")" = "['d1', 'd2', 'd4', 'd5']" ] && ok "its threads: system notes and odd ids left out" || bad "its threads" "$(pick "$T/j" "[t['id'] for t in d['mr']['threads']]")"
+pick "$T/j" "(d['mr']['threads'][0]['path'], d['mr']['threads'][0]['line'], len(d['mr']['threads'][0]['notes']), d['mr']['threads'][0]['resolved'])" >"$T/f"
+has "a thread knows its file, line and notes" "$T/f" "('src/widget.txt', 2, 2, False)"
+[ "$(pick "$T/j" "(d['mr']['threads'][1]['path'], d['mr']['threads'][2]['resolved'])")" = "('', True)" ] && ok "a general comment has no file; a resolved thread says so" || bad "general and resolved"
+[ "$(pick "$T/j" "[(f['path'], f['add'], f['del']) for f in d['mr']['files']]")" = "[('src/widget.txt', 2, 1), ('docs/a.md', 1, 0)]" ] && ok "its files, with their counts" || bad "its files" "$(pick "$T/j" "d['mr']['files']")"
+[ "$(pick "$T/j" "(d['state'], d['busy'], d['onSource'])")" = "({}, [], True)" ] && ok "nothing looked into yet, and the repo is on its branch" || bad "state, busy, onSource"
+hasnt "the host was only read, never written to" "$T/glab.log" " -X"
+hasnt "(nor with a field)" "$T/glab.log" " -f "
+N1=$(wc -l <"$T/glab.log")
+get "/api/mr?name=Mr%20Demo" >"$T/j2"
+[ "$(wc -l <"$T/glab.log")" = "$N1" ] && ok "a second look within a minute doesn't ask the host again" || bad "a second look within a minute doesn't ask the host again"
+get "/api/mr?name=Mr%20Demo&force=1" >"$T/j2"
+[ "$(wc -l <"$T/glab.log")" -gt "$N1" ] && ok "Refresh does" || bad "Refresh does"
+get "/api/mr/diff?name=Mr%20Demo&path=src/widget.txt" >"$T/j"
+[ "$(pick "$T/j" "[l for h in d['hunks'] for l in h['lines'] if l[0] in '+-']")" = "['-b', '+B', '+d']" ] && ok "a file's diff, lazily" || bad "a file's diff" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['threads']")" = "['d1', 'd5']" ] && ok "with the threads on it" || bad "with the threads on it"
+[ "$(code -H "X-TT-Token: $K" "$U/api/mr/diff?name=Mr%20Demo&path=nope.txt")" = 404 ] && ok "a file that isn't in it" || bad "a file that isn't in it"
+[ "$(code -H "X-TT-Token: $K" "$U/api/mr?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
+get "/api/feature?name=Mr%20Demo" >"$T/j"
+[ "$(pick "$T/j" "(d['merge']['mr']['open'], d['merge']['mr']['total'])")" = "(2, 3)" ] && ok "the rail is told how many comments are open" || bad "the rail's count" "$(pick "$T/j" "d['merge']")"
+# the agent that looks into a comment
+cat >"$T/claude-mr.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0"); prompt=$(cat); printf '%s\n' "$@" >"$d/mr.args"; printf '%s' "$prompt" >"$d/mr.prompt"
+[ -f "$d/mr-slow" ] && sleep 2
+[ -f "$d/mr-fail" ] && { echo "network is down" >&2; exit 1; }
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/src/widget.txt"}}]}}'
+case "$prompt" in
+*"Looks good overall"*) act=rebut; reply="Thanks, nothing to change." ;;
+*) act=act; reply="Good catch: I will guard it." ;;
+esac
+printf '{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"action":"%s","summary":"The null guard is missing.","reasoning":"widget.txt line 2 uses it unguarded.","change":{"description":"Return early when it is null.","files":["src/widget.txt"]},"draftReply":"%s"},"total_cost_usd":0.02}\n' "$act" "$reply"
+EOS
+mrpost() { curl -s -o "$T/mj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/mr/$1"; }
+mrwait() { local i; for i in $(seq 1 60); do get "/api/mr?name=Mr%20Demo" >"$T/mw"; [ "$(pick "$T/mw" "len(d['busy'])")" = 0 ] && return 0; sleep 0.3; done; return 1; }
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"host":"nonsense"}' "$U/api/mr/host")" = 400 ] && ok "a host kind is one of the known ones" || bad "a host kind is checked"
+[ "$(mrpost recommend '{"name":"Mr Demo","thread":"nope"}')" = 400 ] && ok "a comment that isn't there" || bad "a comment that isn't there"
+[ "$(mrpost recommend '{"name":"No Such","thread":"d1"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(mrpost recommend '{"name":"Mr Demo","thread":"d1"}')" = 202 ] && ok "Recommend action starts the agent" || bad "Recommend action starts the agent" "$(cat "$T/mj")"
+mrwait && ok "and it finishes" || bad "and it finishes"
+pick "$T/mw" "(d['state']['d1']['recommendation']['action'], d['state']['d1']['recommendation']['summary'], d['state']['d1']['recommendation']['change']['files'], d['state']['d1']['draft']['text'])" >"$T/f"
+has "its recommendation is kept" "$T/f" "('act', 'The null guard is missing.', ['src/widget.txt'], '')"
+has "the agent was given the comment" "$T/mr.prompt" "Please guard against null here."
+has "and the diff around it" "$T/mr.prompt" "+B"
+has "it may only read" "$T/mr.args" "Read,Glob,Grep"
+has "and answers in a shape" "$T/mr.args" "--json-schema"
+[ "$(pick "$T/mw" "d['state']['d1']['draft']['text']")" = "" ] && ok "(an act's reply isn't put in the draft until it is ticked)" || bad "an act's reply waits for the tick"
+[ "$(mrpost recommend '{"name":"Mr Demo","thread":"d2"}')" = 202 ] && ok "another comment" || bad "another comment"
+mrwait
+pick "$T/mw" "(d['state']['d2']['recommendation']['action'], d['state']['d2']['draft']['text'])" >"$T/f"
+has "a rebut's reply is drafted at once (not sent)" "$T/f" "('rebut', 'Thanks, nothing to change.')"
+touch "$T/mr-slow"
+[ "$(mrpost recommend '{"name":"Mr Demo","thread":"d4"}')" = 202 ] && ok "a slow one" || bad "a slow one"
+[ "$(mrpost recommend '{"name":"Mr Demo","thread":"d4"}')" = 409 ] && ok "the same comment twice is refused" || bad "the same comment twice is refused"
+mrwait; rm -f "$T/mr-slow"
+touch "$T/mr-fail"; mrpost recommend '{"name":"Mr Demo","thread":"d5"}' >/dev/null; mrwait; rm -f "$T/mr-fail"
+get "/api/mr?name=Mr%20Demo" >"$T/mw"
+has "a failed run says why" "$T/mw" "network is down"
+[ "$(pick "$T/mw" "d['state']['d5']['recommendation'].get('action')")" = "None" ] && ok "and keeps no recommendation it didn't make" || bad "no recommendation kept"
+touch "$T/mr-fail"; mrpost recommend '{"name":"Mr Demo","thread":"d4"}' >/dev/null; mrwait; rm -f "$T/mr-fail"
+get "/api/mr?name=Mr%20Demo" >"$T/mw"
+[ "$(pick "$T/mw" "(d['state']['d4']['recommendation']['action'], 'network is down' in d['state']['d4']['recommendation']['error'])")" = "('act', True)" ] && ok "a failed second look keeps the earlier recommendation, and says why" || bad "a failed second look"
+# ticking Make this change
+[ "$(mrpost select '{"name":"Mr Demo","thread":"d1","on":true}')" = 200 ] && ok "Make this change is ticked" || bad "Make this change is ticked" "$(cat "$T/mj")"
+get "/api/mr?name=Mr%20Demo" >"$T/mw"
+pick "$T/mw" "(d['state']['d1']['selected'], d['state']['d1']['draft']['text'], d['state']['d1']['draft']['edited'])" >"$T/f"
+has "the reply is drafted for it, and is only a draft" "$T/f" "(True, 'Good catch: I will guard it.', False)"
+hasnt "nothing was sent to the host" "$T/glab.log" " -X"
+[ "$(mrpost draft '{"name":"Mr Demo","thread":"d1","text":"Good catch, fixed."}')" = 200 ] && ok "an edited reply is kept" || bad "an edited reply is kept"
+get "/api/mr?name=Mr%20Demo" >"$T/mw"
+[ "$(pick "$T/mw" "(d['state']['d1']['draft']['text'], d['state']['d1']['draft']['edited'])")" = "('Good catch, fixed.', True)" ] && ok "marked as the person's own" || bad "marked as the person's own"
+[ "$(mrpost select '{"name":"Mr Demo","thread":"d5","on":true}')" = 200 ] && ok "ticking a comment nobody has looked into starts that" || bad "ticking a comment nobody has looked into"
+has "(and says it is waiting)" "$T/mj" '"waiting": true'
+mrwait; get "/api/mr?name=Mr%20Demo" >"$T/mw"
+[ "$(pick "$T/mw" "d['state']['d5']['recommendation']['action']")" = act ] && ok "and its recommendation arrives" || bad "its recommendation arrives"
+[ "$(pick "$T/mw" "d['state']['d5']['draft']['text']")" = "Good catch: I will guard it." ] && ok "and fills the draft, because it was ticked" || bad "fills the draft"
+mrpost select '{"name":"Mr Demo","thread":"d5","on":false}' >/dev/null
+# making the changes
+[ "$(mrpost change '{"name":"Mr Demo"}')" = 200 ] && ok "Make 1 change starts a session" || bad "Make 1 change starts a session" "$(cat "$T/mj")"
+has "it runs the skill for it" "$T/mj" "Prompt: /tatty:mr-change"
+has "with the facts after it" "$T/mj" "Changes: "
+has "naming the state file and the script" "$T/mj" "mrstate.sh"
+has "named for the stage" "$T/mj" '"name": "Mr Demo : MR changes"'
+has "the comment is in the changes file" "$MD/.tt/MR Changes.md" "Please guard against null here."
+has "with what was recommended" "$MD/.tt/MR Changes.md" "Return early when it is null."
+STATE=$(grep -o 'State: [^\\"]*state.json' "$T/mj" | head -1 | sed 's/^State: //')
+[ -f "$STATE" ] && ok "the state file is where it said" || bad "the state file is where it said" "$STATE"
+MRS="$root/plugins/tatty/scripts/mrstate.sh"
+expect_rc() { local n=$1 want=$2; shift 2; "$@" >"$T/o" 2>&1; local rc=$?; [ "$rc" = "$want" ] && ok "$n" || bad "$n" "exit $rc: $(head -c 200 "$T/o")"; }
+expect_rc "a comment that wasn't chosen can't be given a result" 1 bash "$MRS" result "$STATE" d2 applied "x"
+expect_rc "a result must be applied, skipped or blocked" 2 bash "$MRS" result "$STATE" d1 done "x"
+expect_rc "the session records what it did" 0 bash "$MRS" result "$STATE" d1 applied "guarded the null"
+bash "$MRS" show "$STATE" >"$T/o"; has "and it is listed" "$T/o" "d1	act	applied	guarded the null"
+[ "$(mrpost change '{"name":"Mr Demo"}')" = 409 ] && ok "with every ticked change made, there is nothing to start" || bad "nothing left to start" "$(cat "$T/mj")"
+# after the commit, the reply says where
+printf 'x\n' >"$MR/src/guard.txt"
+sha_before=$(git -C "$MR" rev-parse --short HEAD)
+[ "$(curl -s -o "$T/fc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Mr Demo","files":["src/guard.txt"],"message":"fix: guard it"}' "$U/api/commit")" = 200 ] && ok "the change is committed from the Commit page" || bad "the change is committed" "$(cat "$T/fc")"
+SHA=$(git -C "$MR" rev-parse --short HEAD)
+get "/api/mr?name=Mr%20Demo" >"$T/mw"
+pick "$T/mw" "(d['state']['d1']['draft']['commit'], d['state']['d1']['draft']['text'])" >"$T/f"
+has "the reply is told the commit" "$T/f" "('$SHA', 'Good catch, fixed. (Fixed in $SHA.)')"
+[ "$(pick "$T/mw" "d['state']['d2']['draft']['commit']")" = "" ] && ok "a comment that wasn't changed isn't" || bad "a comment that wasn't changed isn't"
+hasnt "and still nothing was written to the host" "$T/glab.log" " -X"
+# no command for the host: the link and the branch's own diff
+post /api/mr/host '{"host":"bitbucket"}' >/dev/null
+get "/api/mr?name=Mr%20Demo&force=1" >"$T/j"
+pick "$T/j" "(d['mr'].get('local'), 'src/widget.txt' in [f['path'] for f in d['mr']['files']], d['mr']['threads'])" >"$T/f"
+has "another host: the branch's own diff, no comments" "$T/f" "(True, True, [])"
+has "and it says why" "$T/j" "has no command Tatty can use here"
+# GitHub, through gh
+post /api/mr/host '{"host":"github"}' >/dev/null
+printf '%s' '{"number":7,"title":"Add the widget","body":"Adds it.","state":"OPEN","isDraft":true,"author":{"login":"alex"},"headRefName":"feature/Mr-Demo","baseRefName":"main","url":"https://github.example.com/group/proj/pull/7","headRefOid":"abc","statusCheckRollup":[{"conclusion":"FAILURE"}]}' >"$T/gh-pr.json"
+printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"src/widget.txt","line":2,"originalLine":2,"comments":{"nodes":[{"id":"C1","author":{"login":"sam"},"body":"Guard this.","createdAt":"2026-11-01T10:00:00Z","url":"https://github.example.com/group/proj/pull/7#r1","diffHunk":"@@ -1,3 +1,4 @@\n a\n-b\n+B"}]}}]},"comments":{"nodes":[{"id":"IC_1","author":{"login":"sam"},"body":"Nice.","createdAt":"2026-11-02T10:00:00Z","url":"https://github.example.com/group/proj/pull/7#c1"}]}}}}}' >"$T/gh-gql.json"
+printf 'diff --git a/src/widget.txt b/src/widget.txt\nindex 1..2 100644\n--- a/src/widget.txt\n+++ b/src/widget.txt\n@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n' >"$T/gh-diff.txt"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/gh.log"\ncase "$*" in\n"pr view"*) cat "%s/gh-pr.json" ;;\n"api graphql"*) cat "%s/gh-gql.json" ;;\n"pr diff"*) cat "%s/gh-diff.txt" ;;\nesac\n' "$T" "$T" "$T" "$T" >"$T/gh.sh"
+: >"$T/gh.log"
+get "/api/mr?name=Mr%20Demo&force=1" >"$T/j"
+pick "$T/j" "(d['mr']['provider'], d['mr']['id'], d['mr']['state'], d['mr']['draft'], d['mr']['pipeline']['status'])" >"$T/f"
+has "GitHub: the pull request" "$T/f" "('github', '7', 'opened', True, 'failed')"
+pick "$T/j" "[(t['id'], t['path'], t['line'], t['hunk'][:7]) for t in d['mr']['threads']]" >"$T/f"
+has "its review threads and general comments" "$T/f" "[('PRRT_1', 'src/widget.txt', 2, '@@ -1,3'), ('IC_1', '', 0, '')]"
+[ "$(pick "$T/j" "[(f['path'], f['add'], f['del']) for f in d['mr']['files']]")" = "[('src/widget.txt', 2, 1)]" ] && ok "and its files from the diff" || bad "GitHub files"
+hasnt "gh was only asked to read" "$T/gh.log" "--method"
+hasnt "(no comment was created)" "$T/gh.log" "addPullRequestReview"
+rm -f "$T/gh.sh"
+post /api/mr/host '{"host":""}' >/dev/null
 fi
 if section reviewstep; then
 echo "# the Review step: suggestions, decisions, the changes, the commit"

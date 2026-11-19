@@ -61,6 +61,8 @@ PLUGIN = HERE.parent  # plugins/tatty: the plugin's folder (its install, or a ch
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import reviewdoc  # noqa: E402  the Review Suggestions document
+import mrhost  # noqa: E402  a merge request read from its host
+import mrstate  # noqa: E402  what Tatty keeps about a feature's merge request
 import compact_chat  # noqa: E402  the compact window's chat, one per project
 import diagram as dg  # noqa: E402  reading C# into generated diagrams
 WEB = HERE / "web"
@@ -77,7 +79,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "intake.js": "text/javascript", "intake.css": "text/css",
-          "review.js": "text/javascript", "commit.js": "text/javascript", "unitgate.js": "text/javascript", "commit.css": "text/css",
+          "review.js": "text/javascript", "commit.js": "text/javascript", "mr.js": "text/javascript", "mr.css": "text/css", "unitgate.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
@@ -280,6 +282,7 @@ class State:
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
         self.qa_runs = {}  # run id -> a QA draft the model is writing (see "QA")
         self.diagram_runs = {}  # run id -> a diagram being made (see "diagrams")
+        self.mr_runs = {}  # "<feature>|<thread id>" -> the agent looking into a merge request comment (see "the merge request page")
         self.task_writes = {}  # run id -> the "Write it for me" run on a task's description (see "tasks: write it for me")
         self.chat_runs = {}  # chat id -> the turn (or summary) it is answering now (see "chats")
         self.chat_lock = threading.Lock()  # one change to a chat's file at a time
@@ -349,6 +352,8 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      "chatSummary": "tatty", "chatModel": "",
                      # branches (see "branches and merging" below): what a workflow's new branch name starts with
                      "branchPrefix": "feature/",
+                     # the merge request page (see "the merge request page"): the model that looks into a comment ("" = sonnet)
+                     "mrModel": "",
                      # the page's theme (web/theme.js): "light" or "dark" once the person has chosen, "" to follow Windows
                      "theme": "",
                      # the "theme" the person had before a worn look moved it to the look's own mode
@@ -558,7 +563,7 @@ def restart_needs(state):
                 going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
                               "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
         asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
-        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes) + len(state.qa_runs) + len(state.diagram_runs)
+        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes) + len(state.qa_runs) + len(state.diagram_runs) + len(state.mr_runs)
     return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
             "busy": busy, "cached": sessions_cache_file().exists()}
 
@@ -2795,7 +2800,7 @@ def feature_summary(state, folder, detail=False):
            "route": route, "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
-           "tasks": tasks, "merge": {**merge_view(folder.name), "skill": merge_skill_get()}, "review": review_view(folder), "decide": decide_view(state, folder), "validate": decide_view(state, folder, "validate"),
+           "tasks": tasks, "merge": {**merge_view(folder.name), "skill": merge_skill_get(), "mr": mr_counts(folder)}, "review": review_view(folder), "decide": decide_view(state, folder), "validate": decide_view(state, folder, "validate"),
            "live": next(({"name": x["name"], "status": x["status"], "tag": x["tag"]} for x in sessions_of(state, folder)
                          if x["status"] in ("starting", "running", "lost")), None)}
     if detail:
@@ -3673,6 +3678,7 @@ def feature_commit(state, folder, body):
             os.unlink(tmp)
         except OSError:
             pass
+    mr_after_commit(state, folder, sha.strip())  # the comments this commit answers get "Fixed in <sha>" in their reply drafts
     review, _ = review_load(folder)
     reviewed = bool(review and review.status == "Applied")
     if reviewed:  # the changes the review led to are committed: the review is done
@@ -3680,25 +3686,7 @@ def feature_commit(state, folder, body):
     return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo, "reviewDone": reviewed}
 
 
-HUNK_HEAD = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-
-
-def parse_unified(text):
-    """The hunks of a unified diff, in the shape the Code Diff page draws ({oldStart, oldLines, newStart,
-    newLines, lines: [" x", "-x", "+x"]}), and whether git said the file is binary."""
-    hunks, cur = [], None
-    for raw in text.split("\n"):
-        line = raw.rstrip("\r")
-        m = HUNK_HEAD.match(line)
-        if m:
-            cur = {"oldStart": int(m.group(1)), "oldLines": int(m.group(2) or 1) if m.group(2) != "0" else 0,
-                   "newStart": int(m.group(3)), "newLines": int(m.group(4) or 1) if m.group(4) != "0" else 0, "lines": []}
-            hunks.append(cur)
-        elif cur is not None and line[:1] in (" ", "-", "+"):
-            cur["lines"].append(line)
-        elif cur is None and line.startswith("Binary files "):
-            return [], True
-    return hunks, False
+parse_unified = mrhost.parse_unified  # (a unified diff's hunks, in the Code Diff page's shape)
 
 
 def commit_diff(folder, path):
@@ -4495,11 +4483,505 @@ def skill_list(repos):
     return sorted(found, key=lambda x: (x["from"] != "this project", x["from"] != "you", x["name"].lower()))
 
 
+MR_HOSTS = ("", "gitlab", "github", "bitbucket", "other")
+
+
+def mr_host_set(host):
+    """(http code, answer): what kind of host this project's merge requests are on ("" = from the git remote's name)."""
+    host = str(host or "").strip().lower()
+    if host not in MR_HOSTS:
+        return 400, {"error": "gitlab, github, bitbucket, other, or blank for automatic"}
+    with BRANCH_LOCK:
+        rows = read_json(project_home() / "project-settings.json", {})
+        rows["mrHost"] = host
+        write_json(project_home() / "project-settings.json", rows)
+    return 200, {"mrHost": host}
+
+
 def merge_skill_view(folder=None):
     repos = [diagram_project_repo()]
     if folder:
         repos.append(commit_repo(folder)[1])
-    return {"skill": merge_skill_get(), "skills": skill_list(list(dict.fromkeys(r for r in repos if r)))}
+    return {"skill": merge_skill_get(), "mrHost": mr_override(), "skills": skill_list(list(dict.fromkeys(r for r in repos if r)))}
+
+
+# ---------------------------------------------------------------- the merge request page
+# A feature's merge / pull request, read from its host and shown on its Merge request page (web/mr.js):
+# the request, its comment threads and its diff, a recommended action for a comment (an agent that reads the
+# code), and the comments chosen to change, made in a session of their own and committed from the Commit page.
+# Reads only: nothing here posts, replies to, resolves or otherwise writes to the host. A reply is a draft
+# kept for the person to copy. The host is read through glab or gh (as the Merge step already does); the
+# normalised record is mrhost.py's. Kept in <project home>/mr/: <key>.json (the request as last read),
+# <key>.diff.json (its diffs by file) and <key>.state.json (recommendations, chosen threads, drafts, results:
+# written only by mrstate.py).
+
+MR_FRESH = 60  # seconds a request read from the host is shown before the host is asked again
+MR_RUNS_MAX = 3  # recommendations running at once, all features
+MR_TIMEOUT = float(os.environ.get("TATTY_MR_TIMEOUT", "600"))
+SKILL_MRCHANGE = "tatty:mr-change"
+MR_ACTIONS = ("act", "rebut", "ask")
+MR_SCHEMA = {"type": "object", "properties": {
+    "action": {"type": "string", "enum": list(MR_ACTIONS)}, "summary": {"type": "string"}, "reasoning": {"type": "string"},
+    "change": {"type": "object", "properties": {"description": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}}},
+               "required": ["description", "files"]},
+    "draftReply": {"type": "string"}}, "required": ["action", "summary", "reasoning", "change", "draftReply"]}
+MR_SYSTEM = (
+    "You help an engineer decide what to do about one review comment on their merge request. You can read the repository "
+    "(Read, Glob, Grep) but not change it. First check what the comment claims against the code: open the file and the "
+    "lines it points at, and look at how the same thing is done elsewhere in the repository. Then choose one action. "
+    "act: the comment is right and a change is needed. rebut: the code is right or the comment is mistaken (say why, with "
+    "evidence from the code). ask: you can't tell without the reviewer or the engineer (say what to ask). "
+    "Write the reply the engineer could post under the comment, in their voice: short, polite, specific, citing what you "
+    "read. For act, say what will be changed, not that it is done. Describe the change in a few sentences and list the "
+    "files it touches. Never name a file or line you did not read. Answer with the JSON asked for and nothing else.")
+
+
+def mr_key(folder):
+    h = hashlib.sha1(folder.resolve().as_posix().lower().encode("utf-8")).hexdigest()[:8]
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", folder.name)[:60] + "-" + h
+
+
+def mr_file(folder, kind=""):
+    return project_home() / "mr" / (mr_key(folder) + {"": ".json", "diff": ".diff.json", "state": ".state.json"}[kind])
+
+
+def mr_cached(folder):
+    """The request as last read from the host, or None."""
+    got = read_json(mr_file(folder), {})
+    return got or None
+
+
+def mr_origin(repo):
+    code, out, _ = git_run(repo, ["remote", "get-url", "origin"], timeout=30)
+    return out.strip() if code == 0 else ""
+
+
+def mr_override():
+    v = read_json(project_home() / "project-settings.json", {}).get("mrHost", "")
+    return v if isinstance(v, str) else ""
+
+
+def mr_runner(state, repo, tool):
+    """run(args) -> (exit code, stdout, stderr) for the host's CLI, in the repo: argv only, no shell."""
+    exe = merge_cli(tool)
+
+    def run(args):
+        if not exe:
+            return 127, "", f"{tool} isn't installed"
+        argv = ([state.bash] if exe.endswith(".sh") else []) + [exe, *args]
+        try:
+            p = subprocess.run(argv, cwd=repo, capture_output=True, stdin=subprocess.DEVNULL, encoding="utf-8",
+                               errors="replace", timeout=90, creationflags=NO_WINDOW)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return 1, "", str(e)
+        return p.returncode, p.stdout, p.stderr
+
+    return run, bool(exe)
+
+
+def mr_number(state, folder):
+    """The request's number on its host: what Tatty recorded, else read from its link, else looked for by branch."""
+    v = merge_view(folder.name)
+    if v["number"]:
+        return str(v["number"])
+    m = re.search(r"/(?:merge_requests|pull)/(\d+)", v["url"] or "")
+    if m:
+        return m.group(1)
+    v = merge_check(state, folder, force=True)
+    m = re.search(r"/(?:merge_requests|pull)/(\d+)", v["url"] or "")
+    return str(v["number"] or (m.group(1) if m else ""))
+
+
+def mr_local(folder, repo, rec, why):
+    """With no CLI for the host: the request's link and the branch's own diff against its base."""
+    v = merge_view(folder.name)
+    base = rec.get("base") or default_branch(repo) or "main"
+    head = rec.get("branch") or current_branch(repo) or "HEAD"
+    code, out, _ = git_run(repo, ["diff", "--no-color", "--no-ext-diff", "--no-renames", "-U3", f"{base}...{head}"], timeout=120)
+    files, diffs = mrhost.files_from_git(out) if code == 0 else ([], {})
+    mr = mrhost.normal("", v["number"] or "", v["url"], feature_title(folder.name, folder) or folder.name, "", v["state"] or "",
+                       False, "", head, base, "", {"status": "", "url": ""}, files, [])
+    mr["local"] = True
+    return mr, diffs, why
+
+
+def mr_load(state, folder, force=False):
+    """(the request as last read or None, why it couldn't be read now or ''). Reads the host when the copy is old."""
+    cache = mr_cached(folder)
+    if isinstance(cache, dict) and not force and time.time() - float(cache.get("fetched") or 0) < MR_FRESH:
+        return cache, ""
+    rec, repo = commit_repo(folder)
+    if not repo:
+        return cache, "No repository is known for this feature yet."
+    info = mrhost.detect(mr_origin(repo), mr_override())
+    tool = {"gitlab": "glab", "github": "gh"}.get(info["kind"], "")
+    number = mr_number(state, folder) if rec.get("branch") else ""
+    if not number:
+        return cache, "No merge request is recorded for this feature's branch yet."
+    run, have = mr_runner(state, repo, tool) if tool else (None, False)
+    try:
+        if not tool or not have:
+            why = (f"{info['kind'] or 'This host'} has no command Tatty can use here" if not tool else f"{tool} isn't installed")
+            mr, diffs, why = mr_local(folder, repo, rec, why + ": showing the branch's own diff only.")
+        elif tool == "glab":
+            mr, diffs = mrhost.gitlab(run, info["path"], number)
+            why = ""
+        else:
+            owner, _, name = info["path"].partition("/")
+            mr, diffs = mrhost.github(run, owner, name, number)
+            why = ""
+    except (mrhost.HostError, ValueError) as e:
+        return cache, str(e)
+    mr["fetched"] = time.time()
+    mr["kind"] = info["kind"]
+    write_json(mr_file(folder, "diff"), diffs)
+    write_json(mr_file(folder), mr)
+    return mr, why
+
+
+def mr_state(folder):
+    return mrstate.load(mr_file(folder, "state"))
+
+
+def mr_view(state, folder, force=False):
+    """What GET /api/mr answers: {mr, why, state, busy, branch, onSource, repo}."""
+    rec, repo = commit_repo(folder)
+    mr, why = mr_load(state, folder, force)
+    here = current_branch(repo) if repo else ""
+    with state.cond:
+        runs = {k.split("|", 1)[1]: r.get("step", "") for k, r in state.mr_runs.items() if k.split("|", 1)[0] == folder.name.lower()}
+    busy = list(runs)
+    return {"mr": mr, "why": why, "state": mr_state(folder)["threads"], "busy": busy, "step": runs, "branch": here,
+            "onSource": bool(mr and mr.get("source") and here == mr["source"]) if mr and mr.get("source") else None,
+            "repo": repo, "link": merge_view(folder.name)["url"]}
+
+
+def mr_counts(folder):
+    """{open, total} threads of the request as last read, for the rail; None when it hasn't been read."""
+    mr = mr_cached(folder)
+    if not isinstance(mr, dict):
+        return None
+    threads = [t for t in mr.get("threads") or [] if t.get("resolvable", True)]
+    return {"open": sum(1 for t in threads if not t.get("resolved")), "total": len(threads)}
+
+
+def mr_diff(folder, path):
+    """(http code, answer): one file's hunks from the request's last-read diff."""
+    mr = mr_cached(folder)
+    if not isinstance(mr, dict):
+        return 404, {"error": "The merge request hasn't been read yet."}
+    if not any(f["path"] == path for f in mr.get("files") or []):
+        return 404, {"error": "No such file in the merge request."}
+    text = read_json(mr_file(folder, "diff"), {}).get(path, "")
+    hunks, binary = mrhost.parse_unified(text)
+    total = sum(len(h["lines"]) for h in hunks)
+    return 200, {"path": path, "binary": binary, "hunks": clean_hunks(hunks), "cut": total > DIFF_LINES,
+                 "threads": [t["id"] for t in mr.get("threads") or [] if t.get("path") == path]}
+
+
+def mr_thread(folder, tid):
+    mr = mr_cached(folder)
+    return next((t for t in (mr or {}).get("threads") or [] if t.get("id") == tid), None), mr
+
+
+def mr_hunk_text(thread, diff_text):
+    """The lines of the file's diff around where a comment sits, for the agent."""
+    if thread.get("hunk"):
+        return thread["hunk"]
+    hunks, _ = mrhost.parse_unified(diff_text or "")
+    line = int(thread.get("line") or 0)
+    pick = next((h for h in hunks if h["newStart"] <= line < h["newStart"] + max(h["newLines"], 1)), hunks[0] if hunks else None)
+    if not pick:
+        return ""
+    return f"@@ -{pick['oldStart']},{pick['oldLines']} +{pick['newStart']},{pick['newLines']} @@\n" + "\n".join(pick["lines"][:120])
+
+
+def mr_prompt(mr, thread, diff_text):
+    where = f"{thread['path']}:{thread['line']}" if thread.get("path") else "(a general comment, not on a line)"
+    lines = [f"Merge request: {mr.get('title', '')}", f"Branch {mr.get('source', '')} into {mr.get('target', '')}", ""]
+    if mr.get("description"):
+        lines += ["Its description:", str(mr["description"])[:2500], ""]
+    lines += [f"The comment thread is on {where}" + (" (outdated: the code has changed since)" if thread.get("outdated") else "") + ":", ""]
+    for n in thread.get("notes") or []:
+        lines += [f"{n.get('author') or 'someone'}:", str(n.get("body", ""))[:3000], ""]
+    hunk = mr_hunk_text(thread, diff_text)
+    if hunk:
+        lines += ["The diff around it:", hunk, ""]
+    lines.append("You are in the repository, on the branch the comment was made on. Decide what to do about this comment.")
+    return "\n".join(lines) + "\n"
+
+
+def mr_clean_recommendation(got, seen):
+    got = got if isinstance(got, dict) else {}
+    change = got.get("change") if isinstance(got.get("change"), dict) else {}
+    files = [str(f)[:300] for f in (change.get("files") or []) if isinstance(f, (str, int))][:12]
+    return {"action": got.get("action") if got.get("action") in MR_ACTIONS else "ask", "summary": str(got.get("summary") or "")[:300],
+            "reasoning": str(got.get("reasoning") or "")[:3000], "change": {"description": str(change.get("description") or "")[:1500], "files": files},
+            "draftReply": str(got.get("draftReply") or "")[:3000], "seen": seen, "ts": int(time.time())}
+
+
+def mr_recommend_start(state, folder, b):
+    """Start the agent that looks into one comment: (http code, answer). The answer is an "mr" event."""
+    tid = str(b.get("thread", ""))
+    thread, mr = mr_thread(folder, tid)
+    if not mrhost.good_id(tid) or not thread:
+        return 400, {"error": "No such comment: refresh the page."}
+    claude = claude_path()
+    if not claude:
+        return 501, {"error": NO_CLAUDE}
+    rec, repo = commit_repo(folder)
+    if not repo:
+        return 400, {"error": "No repository is known for this feature yet."}
+    diff_text = read_json(mr_file(folder, "diff"), {}).get(thread.get("path") or "", "")
+    prompt = mr_prompt(mr, thread, diff_text)
+    model = os.environ.get("TATTY_MR_MODEL") or load_settings().get("mrModel") or "sonnet"
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    argv += ["-p", "--output-format", "stream-json", "--verbose", "--system-prompt", MR_SYSTEM, "--json-schema", json.dumps(MR_SCHEMA),
+             "--setting-sources", "user", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config",
+             "--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--permission-mode", "dontAsk",
+             "--max-budget-usd", os.environ.get("TATTY_MR_BUDGET", "1.5"), "--add-dir", Path(repo).as_posix(), "--model", model]
+    key = f"{folder.name.lower()}|{tid}"
+    with state.cond:
+        if key in state.mr_runs:
+            return 409, {"error": "That comment is being looked into already."}
+        if len(state.mr_runs) >= MR_RUNS_MAX:
+            return 409, {"error": f"{MR_RUNS_MAX} comments are being looked into already: wait for one to finish."}
+        r = state.mr_runs[key] = {"key": key, "status": "running", "step": "Starting", "started": time.time(), "proc": None, "cancelled": False}
+    threading.Thread(target=mr_recommend_work, args=(state, folder, tid, len(thread.get("notes") or []), r, argv, prompt, repo, model), daemon=True).start()
+    state.emit("mr", name=folder.name, thread=tid, busy=True)
+    return 202, {"ok": True}
+
+
+def mr_fill_draft(t, rec):
+    """The recommendation's reply into an empty, unedited draft (never over what the person wrote)."""
+    d = t["draft"]
+    if rec.get("draftReply") and not d.get("edited") and not d.get("text"):
+        d["text"] = rec["draftReply"]
+
+
+def mr_recommend_work(state, folder, tid, seen, r, argv, prompt, cwd, model):
+    env = claude_child_env(state)
+    if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
+    final, error, got = None, "", None
+    try:
+        with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as errf:
+            p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf, encoding="utf-8",
+                                 errors="replace", env=env, creationflags=NO_WINDOW, start_new_session=os.name != "nt")
+            r["proc"] = p
+            if r.get("cancelled"):
+                kill_tree(p)
+            timer = threading.Timer(MR_TIMEOUT, lambda: (r.update(timedOut=True), kill_tree(p)))
+            timer.start()
+            try:
+                p.stdin.write(prompt)
+                p.stdin.close()
+            except OSError:
+                pass
+            for line in p.stdout:
+                state.touch()
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(msg, dict) and msg.get("type") == "assistant":
+                    for block in (msg.get("message") or {}).get("content") or []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            inp = block.get("input") or {}
+                            what = Path(str(inp.get("file_path") or inp.get("path") or "")).name
+                            r["step"] = {"Read": f"Reading {what or 'a file'}", "Glob": "Looking for files",
+                                         "Grep": "Searching the code"}.get(block.get("name", ""), "Working")
+                            state.emit("mr", name=folder.name, thread=tid, busy=True, step=r["step"])
+                elif isinstance(msg, dict) and msg.get("type") == "result":
+                    final = msg
+            p.wait()
+            timer.cancel()
+            errf.seek(0)
+            said = [ln.strip() for ln in errf.read().splitlines() if ln.strip()]
+        if r.get("cancelled"):
+            error = "Stopped."
+        elif r.get("timedOut"):
+            error = f"It took longer than {max(1, int(MR_TIMEOUT // 60))} minute(s) and was stopped."
+        elif final is None:
+            error = said[-1] if said else f"claude exited {p.returncode} saying nothing"
+        elif final.get("is_error") or final.get("subtype") != "success":
+            error = str(final.get("result") or final.get("subtype") or "the run failed")[:400]
+        else:
+            got = final.get("structured_output") if isinstance(final.get("structured_output"), dict) else qa_json(final.get("result"))
+            if not got:
+                error = "The agent's answer wasn't in the shape asked for."
+    except OSError as e:
+        error = f"couldn't run claude: {e}"
+    finally:
+        with state.cond:
+            state.mr_runs.pop(r["key"], None)
+    if not error:
+        rec = mr_clean_recommendation(got, seen)
+        rec["model"] = model
+        rec["cost"] = round(float(final.get("total_cost_usd") or 0), 4) if final else 0
+        rec["error"] = ""
+
+        def how(data):
+            t = mrstate.thread(data, tid)
+            t["recommendation"] = rec
+            if t.get("selected") or rec["action"] != "act":
+                mr_fill_draft(t, rec)
+        mrstate.change(mr_file(folder, "state"), how)
+    else:
+        def failed(data):
+            t = mrstate.thread(data, tid)
+            t["recommendation"] = {**(t.get("recommendation") or {}), "error": error}
+        mrstate.change(mr_file(folder, "state"), failed)
+    state.emit("mr", name=folder.name, thread=tid, done=True, ok=not error, error=error)
+
+
+def mr_cancel(state, folder, b):
+    key = f"{folder.name.lower()}|{b.get('thread', '')}"
+    r = state.mr_runs.get(key)
+    if not r:
+        return 200, {"ok": False}
+    r["cancelled"] = True
+    if r.get("proc"):
+        kill_tree(r["proc"])
+    return 200, {"ok": True}
+
+
+def mr_draft_set(folder, b):
+    """Keep a draft reply the person edited. (http code, answer)"""
+    tid, text = str(b.get("thread", "")), str(b.get("text", ""))[:6000]
+    if not mrhost.good_id(tid) or not mr_thread(folder, tid)[0]:
+        return 400, {"error": "No such comment: refresh the page."}
+
+    def how(data):
+        d = mrstate.thread(data, tid)["draft"]
+        d["text"], d["edited"] = text, True
+    mrstate.change(mr_file(folder, "state"), how)
+    return 200, {"ok": True}
+
+
+def mr_select(state, folder, b):
+    """Tick or untick Make this change on a comment. Ticking fills its reply draft from the recommendation (never sent),
+    and looks into the comment first when nobody has. (http code, answer)"""
+    tid, on = str(b.get("thread", "")), bool(b.get("on"))
+    if not mrhost.good_id(tid) or not mr_thread(folder, tid)[0]:
+        return 400, {"error": "No such comment: refresh the page."}
+    need = []
+
+    def how(data):
+        t = mrstate.thread(data, tid)
+        t["selected"] = on
+        if on and (t.get("recommendation") or {}).get("action"):
+            mr_fill_draft(t, t["recommendation"])
+        elif on:
+            need.append(tid)
+    mrstate.change(mr_file(folder, "state"), how)
+    started = None
+    if need:
+        code, started = mr_recommend_start(state, folder, {"thread": tid})
+        if code not in (202, 409):
+            return code, started
+    state.emit("mr", name=folder.name, thread=tid)
+    return 200, {"ok": True, "waiting": bool(need)}
+
+
+def mr_changes_file(folder):
+    return folder / ".tt" / "MR Changes.md"
+
+
+def mr_write_changes(folder, mr, data, chosen):
+    """The comments to change and what was recommended for each, as the session reads them."""
+    out = [f"# {folder.name}: merge request comments to change", "",
+           f"Merge request: {mr.get('title', '')} ({mr.get('url', '')})", f"Branch {mr.get('source', '')} into {mr.get('target', '')}", ""]
+    for tid in chosen:
+        thread = next((t for t in mr.get("threads") or [] if t["id"] == tid), None)
+        if not thread:
+            continue
+        rec = (data["threads"].get(tid) or {}).get("recommendation") or {}
+        where = f"{thread['path']}:{thread['line']}" if thread.get("path") else "general comment"
+        out += [f"## Comment `{tid}`: {where}", ""]
+        for n in thread.get("notes") or []:
+            out += [f"**{n.get('author') or 'someone'}:**", "", str(n.get("body", "")), ""]
+        out += [f"Recommended: **{rec.get('action', '')}**. {rec.get('summary', '')}", "", f"Why: {rec.get('reasoning', '')}", "",
+                f"The change: {(rec.get('change') or {}).get('description', '')}",
+                "Files: " + (", ".join((rec.get("change") or {}).get("files") or []) or "(not named)"), ""]
+    p = lp(mr_changes_file(folder))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(out), encoding="utf-8")
+
+
+def mr_change_context(folder, repo, branch):
+    return "\n".join(["Context from Tatty:", f"Feature: {folder.name}", f"Folder: {folder.as_posix()}", f"Repository: {repo}",
+                      f"Branch: {branch or '(the branch that is checked out)'}", f"Changes: {mr_changes_file(folder).as_posix()}",
+                      f"State: {mr_file(folder, 'state').as_posix()}", f"Script: {(PLUGIN / 'scripts' / 'mrstate.sh').as_posix()}"])
+
+
+def mr_change_row(folder):
+    rec, repo = commit_repo(folder)
+    return {"prefix": "", "kind": "primary", "phase": "mr-change", "skill": SKILL_MRCHANGE, "verb": "", "arg": "",
+            "text": "Make the changes chosen from the merge request's comments.", "stage": "MR changes",
+            "hint": "\n" + mr_change_context(folder, repo, current_branch(repo) if repo else "")}
+
+
+def mr_change_session(folder):
+    """(the command, the repo, an error) for the session that makes the chosen changes."""
+    rec, repo = commit_repo(folder)
+    if not repo:
+        return "", "", "No repository is known for this feature yet."
+    return f"/{SKILL_MRCHANGE} \n" + mr_change_context(folder, repo, current_branch(repo)), repo, ""
+
+
+def mr_change(state, folder, b):
+    """Start the session that makes the changes for the ticked comments. (http code, answer)
+    A comment nobody has looked into yet is looked into first: the answer is 202 with who is being waited for."""
+    mr = mr_cached(folder)
+    if not isinstance(mr, dict):
+        return 409, {"error": "The merge request hasn't been read yet."}
+    data = mr_state(folder)
+    chosen = [tid for tid, t in data["threads"].items() if t.get("selected") and not (t.get("result") or {}).get("status") == "applied"]
+    if not chosen:
+        return 409, {"error": "Tick Make this change on a comment first."}
+    recs = {tid: data["threads"][tid].get("recommendation") or {} for tid in chosen}
+    failed = [tid for tid, r in recs.items() if not r.get("action") and r.get("error")]
+    if failed:  # (looked into and couldn't: say so rather than trying again for ever)
+        return 409, {"error": f"A comment couldn't be looked into: {recs[failed[0]]['error']} Press Recommend action on it to try again, or untick it."}
+    waiting = [tid for tid, r in recs.items() if not r.get("action")]
+    if waiting:
+        for tid in waiting:
+            mr_recommend_start(state, folder, {"thread": tid})
+        return 202, {"waiting": waiting}
+    if any(k.startswith(folder.name.lower() + "|") for k in state.mr_runs):
+        return 202, {"waiting": [k.split("|", 1)[1] for k in state.mr_runs if k.startswith(folder.name.lower() + "|")]}
+    if any(s["status"] in LIVE_SESSION and s["name"].split(" : ")[-1].startswith("MR changes") for s in sessions_of(state, folder)):
+        return 409, {"error": "The changes are being made already: see its tab."}
+
+    def how(d):
+        for tid in chosen:
+            d["threads"][tid]["result"] = None
+    mrstate.change(mr_file(folder, "state"), how)
+    mr_write_changes(folder, mr, mr_state(folder), chosen)
+    return start_session(state, folder, {"row": "mrchange"})
+
+
+def mr_after_commit(state, folder, sha):
+    """After a commit: the comments whose change was made get "Fixed in <sha>" added to their reply draft."""
+    path = mr_file(folder, "state")
+    if not path.is_file():
+        return
+
+    def how(data):
+        n = 0
+        for t in data["threads"].values():
+            if t.get("selected") and (t.get("result") or {}).get("status") == "applied" and not (t.get("draft") or {}).get("commit"):
+                d = t["draft"]
+                d["commit"] = sha
+                d["text"] = (d.get("text", "").rstrip() + f" (Fixed in {sha}.)").strip()
+                n += 1
+        return n
+    try:
+        if mrstate.change(path, how):
+            state.emit("mr", name=folder.name)
+    except (OSError, reviewdoc.DocError):
+        pass
 
 
 # ---------------------------------------------------------------- starting a session
@@ -4792,6 +5274,8 @@ def start_session(state, folder, body):
             row = lite_row(folder, " ".join(str(body.get("hint") or "").split())[:2000])
         elif body.get("row") == "quick":
             row = quick_row(folder, " ".join(str(body.get("hint") or "").split())[:2000])
+        elif body.get("row") == "mrchange":
+            row = mr_change_row(folder)
         else:
             row = rows[int(body.get("row", 0))]
     except (ValueError, IndexError, TypeError):
@@ -4801,13 +5285,15 @@ def start_session(state, folder, body):
         return 400, {"error": "nothing left to run"}
     review_repo, why = "", ""
     skill = row.get("skill")
-    review = skill in (REVIEW_SKILL, SKILL_REVIEW, SKILL_APPLY)  # these only read, or edit the reviewed branch as it is
+    review = skill in (REVIEW_SKILL, SKILL_REVIEW, SKILL_APPLY, SKILL_MRCHANGE)  # these only read, or edit the reviewed branch as it is
     if skill == REVIEW_SKILL:  # the toolbox's "[branch]" is filled from the Start panel (never sent as it is)
         cmd, review_repo, why = review_request(body)
     elif skill == SKILL_REVIEW:
         cmd, review_repo, why = review_session(folder, body)
     elif skill == SKILL_APPLY:
         cmd, review_repo, why = apply_session(folder)
+    elif skill == SKILL_MRCHANGE:
+        cmd, review_repo, why = mr_change_session(folder)
     if why:
         return 400, {"error": why}
     values = begun or body.get("values") or {}
@@ -11356,6 +11842,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/merge/skill":
             wanted = q.get("name", [""])[0]
             return self.send(200, merge_skill_view(feature_dir(wanted) if wanted else None))
+        if path in ("/api/mr", "/api/mr/diff"):
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            if path == "/api/mr/diff":
+                code, answer = mr_diff(folder, q.get("path", [""])[0])
+                return self.send(code, answer)
+            return self.send(200, mr_view(st, folder, q.get("force", [""])[0] == "1"))
         if path == "/api/commit/diff":
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -11697,6 +12191,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/merge/skill":
             code, answer = merge_skill_set(b.get("skill", ""))
+            return self.send(code, answer)
+        if path == "/api/mr/host":
+            code, answer = mr_host_set(b.get("host", ""))
+            return self.send(code, answer)
+        if path in ("/api/mr/recommend", "/api/mr/cancel", "/api/mr/draft", "/api/mr/select", "/api/mr/change"):
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            b = b if isinstance(b, dict) else {}
+            code, answer = {"/api/mr/recommend": lambda: mr_recommend_start(st, folder, b), "/api/mr/cancel": lambda: mr_cancel(st, folder, b),
+                            "/api/mr/draft": lambda: mr_draft_set(folder, b), "/api/mr/select": lambda: mr_select(st, folder, b),
+                            "/api/mr/change": lambda: mr_change(st, folder, b)}[path]()
             return self.send(code, answer)
         if path == "/api/gate":
             folder = feature_dir(str(b.get("name", "")))

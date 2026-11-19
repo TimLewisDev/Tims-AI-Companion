@@ -1,0 +1,45 @@
+/* The Merge request page (mr.js). */
+.mr-page { padding: 16px 20px 70px; display: flex; flex-direction: column; gap: 10px; max-width: 1300px; }
+.mr-page h2 { margin: 0; font-size: 19px; }
+.mr-id { font-weight: 400; margin-left: 6px; }
+.mr-head { display: flex; flex-direction: column; gap: 6px; }
+.mr-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mr-links { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.mr-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.mr-tabs button { border: none; background: none; padding: 6px 12px; color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent; font: inherit; }
+.mr-tabs button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.mr-bar-top { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.mr-group h4 { margin: 10px 0 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
+.mr-thread { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.mr-thread.resolved { opacity: .7; }
+.mr-thread-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mr-where { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+.mr-where:hover { text-decoration: underline; }
+.mr-note { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; }
+.mr-note-head { display: flex; gap: 8px; align-items: baseline; }
+.mr-note .md { margin: 2px 0 0; }
+.mr-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mr-tick { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.mr-rec { background: var(--accent-soft); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.mr-rec-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mr-rec .md { margin: 0; }
+.mr-change { border-top: 1px dashed var(--line); padding-top: 6px; }
+.mr-change code { font-size: 12px; }
+.mr-error { white-space: pre-wrap; margin: 0; }
+.mr-reply { display: flex; flex-direction: column; gap: 4px; }
+.mr-draft { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; }
+.mr-bar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-top: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.mr-diff { display: grid; grid-template-columns: minmax(240px, 3fr) minmax(0, 9fr); gap: 12px; align-items: start; }
+.mr-files { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; max-height: 70vh; overflow: auto; }
+.mr-file { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; text-align: left; border: none; border-top: 1px solid var(--line); background: none; padding: 5px 8px; cursor: pointer; font: inherit; color: inherit; }
+.mr-file:first-child { border-top: none; }
+.mr-file:hover, .mr-file.open { background: var(--accent-soft); }
+.mr-fname { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+.mr-fdir { flex: 1 1 100%; overflow-wrap: anywhere; }
+.mr-fcount { margin-left: auto; display: flex; gap: 6px; font-size: 11.5px; }
+.mr-fcount .add { color: var(--ok, #2a8a46); }
+.mr-fcount .del { color: var(--bad, #c0392b); }
+.mr-diff-pane { min-width: 0; }
+.mr-onfile { margin-top: 10px; }
+.mr-onfile-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+@media (max-width: 1000px) { .mr-diff { grid-template-columns: minmax(0, 1fr); } }

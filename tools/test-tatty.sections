@@ -23,6 +23,7 @@ mergestep	-	57
 reviewrepo	worktrees,mergestep	31
 commit	features,project	24
 unitgate	features,project	20
+mr	features,project	30
 reviewstep	-	115
 live	-	91
 tabs	features,project	55

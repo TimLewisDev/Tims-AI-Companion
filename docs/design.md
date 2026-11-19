@@ -811,7 +811,9 @@ folders and Claude Code's own install records; see
     straight away.
   - **Seeing the request.** The record keeps `merge: {state, url, number, host,
     checked, note}`, `state` being empty, `opened` or `merged` and never going
-    back. `merge_check` asks the host's own tool, `glab mr list --source-branch`
+    back. (The Merge request page, `app/mrhost.py` + `web/mr.js`, reads the whole request, its
+    comment threads and its diff the same way, and drafts replies; it never writes to the host.)
+    `merge_check` asks the host's own tool, `glab mr list --source-branch`
     or `gh pr list --head` (no tokens, no model; at most every 30 s unless the
     button is pressed), when the page opens at the Merge step and on **Check
     now**; **I opened the request** and **Mark merged** say it by hand

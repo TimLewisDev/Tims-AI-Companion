@@ -558,6 +558,16 @@ are therefore Tatty's own, outside the workflow's records:
   git writes a step at a time, after asking, as the person's own Claude session.
 - Tatty finds the request with `glab` or `gh` when they are installed and signed
   in, read-only; otherwise the person says it by hand.
+- The feature's **Merge request** page (rail item, `#feature/<name>/merge-request`) reads the request
+  the same way and only reads: `glab api projects/<path>/merge_requests/<n>`, `.../discussions` and
+  `.../changes` (GitLab), `gh pr view`, `gh api graphql` (review threads and comments) and `gh pr diff`
+  (GitHub), all as argv with no shell. Nothing is posted, replied to or resolved from Tatty: a reply is
+  a draft in Tatty's own state (`<project home>/mr/<feature>.state.json`) for the person to copy. A host
+  with no such command (Bitbucket, a self-hosted server named oddly: Settings has a Host choice) shows the
+  link and the branch's own `git diff` only. "Recommend action" runs a headless `claude -p` that may
+  read the repository (Read, Glob, Grep); "Make N changes" starts a session on this plugin's own skill
+  `/tatty:mr-change`, which edits the working tree and never commits (the Commit page does), and records
+  each outcome through `scripts/mrstate.sh`. The toolbox is not involved.
 
 ## What Tatty keeps of its own
 
