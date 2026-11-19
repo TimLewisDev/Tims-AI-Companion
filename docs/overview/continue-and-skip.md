@@ -124,3 +124,16 @@ follows the same pattern as `TT_DECIDE`.
 - **"Continue in a new session".** It uses `session-handoff.sh`, which knows nothing about Tatty. Check
   whether the new session joins Tatty (`TATTY_SESSION`), or have Tatty start the new session itself.
 - **Lite and quick routes.** On these routes Skip covers less: Explore can't be left out on the lite route.
+
+## Built (Tatty 0.46.0, toolbox core 0.10.0 / engineering 0.8.0)
+
+Option 2, with these differences from the sketch above:
+
+- The wait is a record the toolbox keeps (`<feature>/.tt/break`, `breaks.sh wait|show|answer|take|clear`),
+  not only a ledger event; `workflow.waiting` is just the signal that tells Tatty to read it again.
+- The answer is recorded by `breaks.sh answer`, and a skip is carried out by the owning script, so the
+  model never edits a table to skip: `stages.sh skip-challenge` for an adversary challenge, `stages.sh set
+  <stage> off` for a stage. The session reads the answer with `breaks.sh take`.
+- What can be skipped goes down to the adversary challenge of each planning stage (the "Continue or Skip the
+  challenge?" after Requirements). Requirements, Technical Design, Sign-off and Build still can't be.
+- `tt-execute` isn't changed: the unit gate (Commit work / Continue) already is its break.

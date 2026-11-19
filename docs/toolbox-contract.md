@@ -119,8 +119,22 @@ no session open, the feature's next Start resumes and applies them. The toolbox 
 Tatty: `TT_DECIDE` is its own setting, and a session without it asks in the chat as before. A toolbox
 without `decide.sh` is not an error; the page just offers no Decide page.
 
+| Command | What it gives or does | Tatty's use |
+|---|---|---|
+| `tt-common/scripts/breaks.sh show --tsv <feature folder>` | one line `waiting kind step label skippable why answer`, or nothing when the workflow isn't stopped at a break (`kind` `challenge`, `stage` or `skill`; `skippable` `1` or `0`, with the reason in `why`) | a feature's page: the gate (Continue / Skip / Stop) as its first action |
+| `breaks.sh answer <feature folder> continue\|skip\|stop` | records the answer; a skip is carried out at once by the owning script (`stages.sh skip-challenge`, or `stages.sh set <stage> off`); exit 1 (refused, its reason on stderr) is a 409 | the gate's buttons (`POST /api/gate`) |
+| `breaks.sh clear <feature folder>` | removes the wait | Tatty, after an answer with no session open to read it |
+
+Sessions Tatty starts also carry `TT_BREAK=elsewhere`, read by the toolbox through `breaks.sh mode`: where a
+skill would stop and ask "continue, or stop here?" (after a planning stage, before an adversary challenge,
+before the next skill) it records the wait, says so and ends its turn. The record is the toolbox's,
+`<feature>/.tt/break`, and a `workflow.waiting` row in the ledger tells Tatty to read it again. Tatty puts
+"Continue: I've answered the break in Tatty (<choice>) …" in the running session's inbox, and the session reads
+the answer with `breaks.sh take`; with no session open, Continue and Skip start one on the next step. A
+toolbox without `breaks.sh` is not an error: Tatty then leaves `TT_BREAK` unset and the page shows no gate.
+
 The page can't name any other command. The server runs only these (and the
-design plugin's `stories.sh`, below, `decide.sh` above, and the model scripts in "Models and LLM
+design plugin's `stories.sh`, below, `decide.sh` and `breaks.sh` above, and the model scripts in "Models and LLM
 connections", below), by argv, with no shell.
 
 ## Files Tatty reads

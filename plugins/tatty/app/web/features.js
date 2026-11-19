@@ -69,7 +69,7 @@ function phaseWord(f) {
   if (f.phase !== "complete") return PHASES[f.phase] || f.phase || "—";
   const state = (f.merge || {}).state;
   const rv = (f.review || {}).phase;
-  return state === "merged" ? "Merged" : state === "opened" ? "In review" : { review: "Ready to review", decide: "Deciding", apply: "Applying review", commit: "To commit" }[rv] || "Ready to merge";
+  return state === "merged" ? ((f.merge || {}).skipped ? "Done" : "Merged") : state === "opened" ? "In review" : { review: "Ready to review", decide: "Deciding", apply: "Applying review", commit: "To commit" }[rv] || "Ready to merge";
 }
 const EVENTS = {
   "explore.focus_confirmed": "Exploration focus confirmed", "explore.documented": "Familiarisation written",
@@ -995,7 +995,7 @@ function reviewChips(f) {
   const order = ["review", "decide", "apply", "commit", "merge"];
   const merged = m.state === "merged";
   const cur = m.state === "opened" ? 4 : Math.max(0, order.indexOf(r.phase));
-  const labels = ["Review", "Decide", "Apply", "Commit", merged ? "Merged" : m.state === "opened" ? "Request open" : "Merge"];
+  const labels = ["Review", "Decide", "Apply", "Commit", merged ? (m.skipped ? "Merge skipped" : "Merged") : m.state === "opened" ? "Request open" : "Merge"];
   return el("div", { class: "substeps" }, labels.map((word, n) => {
     const cls = "chip " + (merged || n < cur ? "done" : n === cur ? "now" : "todo");
     if (n === 4 && m.url) return el("a", { class: cls, href: m.url, target: "_blank", rel: "noopener", title: m.url }, word);
@@ -1049,7 +1049,7 @@ function journeyModel(f) {
   const going = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s).filter(s => LIVE.has(s.status));
   const busy = going.some(s => MOVING.has(sessionStatus(s, sessionEvents.get(s.tag) || [])[2]));
   const a = f.action || {};
-  const mode = done ? "complete" : a.kind === "decide" || a.kind === "unitgate" ? "decide" : busy ? "running" : going.length ? "waiting" : "gate";
+  const mode = done ? "complete" : a.kind === "decide" || a.kind === "unitgate" ? "decide" : a.kind === "gate" ? "gate" : busy ? "running" : going.length ? "waiting" : "gate";
   if (mode === "gate" && st[cur] === "now") st[cur] = "next";
   if (mode === "complete") cur = st.length - 1;
   return { nodes, st, cur, mode, units: (f.units && f.units.done) || 0, dec: (f.decide && f.decide.open) || 0, what: a.what || "",
@@ -1745,12 +1745,30 @@ function mergeCard(f) {
     look();
     mergePoll = setInterval(() => { if (card && card.isConnected) look(); else clearInterval(mergePoll); }, 30000);
   }
+  // the request itself: Go to MR once there is one, else Create merge request, which starts the merge session
+  // (it opens the request with the skill chosen for this project in Settings, or the one Claude finds)
+  const mergeRow = (f.rows || []).findIndex(r => r.phase === "merge");
+  const mrSlot = el("div", { id: "merge-start-slot" });
+  let mrButton = "", mrSkill = "";
+  if (m.url) mrButton = el("div", { class: "start-actions" }, el("a", { class: "go-btn", id: "merge-go", href: m.url, target: "_blank", rel: "noopener" }, "Go to MR"));
+  else if (m.state !== "merged" && f.phase === "complete") {
+    const create = el("button", { type: "button", class: "primary", id: "merge-create" }, "Create merge request");
+    if (mergeRow < 0) { create.disabled = true; create.title = "Finish the review (or skip it) first: the request is made at the merge step."; }
+    else create.addEventListener("click", () => { create.disabled = true; mrSlot.replaceChildren(startPanel(f, f.rows[mergeRow], mergeRow, () => { mrSlot.replaceChildren(); create.disabled = false; })); });
+    mrButton = el("div", { class: "start-actions" }, create);
+    mrSkill = el("div", { class: "small dim", id: "merge-skill-note" },
+      m.skill ? ["Opened with your skill ", el("code", {}, m.skill), ". "] : "Opened with whichever merge request skill Claude finds, else glab or gh. ",
+      el("a", { href: "#settings" }, "Choose the skill in Settings"), ".");
+  }
   card = el("section", { class: "card merge-card" + (atMerge && m.state !== "opened" ? " current" : "") }, el("h4", {}, "Branch and merge"),
     m.branch ? el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
       m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : "") : el("div", { class: "small dim" }, "No branch is recorded for this feature yet."),
     chooser,
     m.url ? el("div", { class: "small" }, "Request: ", el("a", { href: m.url, target: "_blank", rel: "noopener" }, m.url)) : "",
     m.note ? el("div", { class: "small dim" }, m.note) : "",
+    mrButton,
+    mrSkill,
+    mrSlot,
     atMerge ? el("div", { class: "start-actions" },
       el("button", { type: "button", id: "merge-check", onclick: () => act("check", { force: true }) }, "Check now"),
       el("button", { type: "button", id: "merge-opened", onclick: () => {
@@ -1761,12 +1779,45 @@ function mergeCard(f) {
   return card;
 }
 
+// Skip for the stage the next step belongs to: leaves it out of the feature's stages (stages.sh, through
+// /api/stages) when the toolbox says it can be, else the button is there but off, with the reason. The
+// planning stages are skipped one at a time as the plan reaches them (at each break, or here, between sessions).
+const SKILL_STAGE = { "tt-familiarise": "explore", "tt-familiarisation-doc": "explore", "tt-task-breakdown": "breakdown",
+  "tt-execute": "build", "tt-execute-lite": "build", "tt-branch-review": "review", "tatty:review": "review" };
+const PLAN_KEY = { Familiarisation: "explore", Requirements: "requirements", "Scope & Constraints": "scope", Approach: "approach",
+  "Technical Design": "design", "Whole plan": "whole-plan", "Sign-off": "signoff" };
+const SKIPPABLE = new Set(["explore", "scope", "approach", "whole-plan", "review"]);
+function stageSkipButton(f, row) {
+  let key = SKILL_STAGE[row.skill] || "", pending = "";
+  if (row.skill === "tt-adversarial-plan") {
+    const next = (f.stages || []).find(s => !/^(closed|skipped)/i.test(s.status || ""));
+    if (next) { key = PLAN_KEY[next.stage] || ""; pending = /challenge pending/i.test(next.status || "") ? next.stage : ""; }
+  }
+  const st = ((f.profile || {}).stages || []).find(s => s.key === key);
+  let why = "";
+  if (!f.profile) return "";
+  if (pending) why = `${pending} is waiting for its challenge: that is skipped at the break, where Skip is offered.`;
+  else if (!key || !st) why = "This step can't be skipped.";
+  else if (!st.on) why = "It is already left out.";
+  else if (st.locked) why = st.why || "It can't be left out now.";
+  else if (!SKIPPABLE.has(key)) why = "This stage can't be left out.";
+  const b = el("button", { type: "button", id: "step-skip", class: "action-skip", title: why }, st ? `Skip ${st.label}` : "Skip");
+  b.disabled = !!why;
+  b.addEventListener("click", async () => {
+    if (!confirm(`Skip ${st.label}? It is left out of this feature's stages.`)) return;
+    b.disabled = true;
+    try { await api("/api/stages", { name: f.name, stage: key, on: false }); featureCache.delete(f.name); route(); }
+    catch (e) { alert(e.message || e); b.disabled = false; }
+  });
+  return b;
+}
+
 // The one thing a feature's page offers first (the server's primary_action), as large buttons:
 //   start     Start Workflow and Start Workflow Lite, for a feature with nothing written yet
 //   decide    Decisions Needed        commit    Commit        continue  Continue (the state's next command)
 //   session   nothing here: the running session's card below has the button (Open session)
 // covered is the index of the row it stands for, so that row is not offered again under More options.
-function actionBar(f) {
+function actionBar(f, openPane) {
   const a = f.action || { kind: "none" };
   const rows = f.rows || [];
   const node = el("div", { class: "action-bar" });
@@ -1791,11 +1842,32 @@ function actionBar(f) {
     // (in the look the app wears: "Gild through to Approach"; Minimal's is plain "Continue")
     let label = "Continue";
     try { if (window.TattyLooks) label = TattyLooks.continueLabel(journeyModel(f)); } catch (e) { /* the plain word */ }
-    const merging = rows[a.row].phase === "merge"; // the merge step's own button: named for what it does, and it pulses until the request is open
-    if (merging) label = "Branch & merge";
-    opener("step-continue", label, close => startPanel(f, rows[a.row], a.row, close));
-    if (["review", "apply"].includes(rows[a.row].phase)) node.append(el("button", { type: "button", id: "step-skip-review", class: "action-skip", onclick: () => skipStep(f, "review") }, "Skip review"));
-    if (merging && (f.merge || {}).state !== "opened") buttons[buttons.length - 1].classList.add("merge-pulse");
+    const row = rows[a.row];
+    const merging = row.phase === "merge";
+    if (merging && openPane) {
+      // the merge step: the main button opens the Branch & merge panel, where the request is made (or gone to)
+      const b = el("button", { type: "button", id: "step-merge-open", class: "primary action-main" }, "Open Branch & merge");
+      b.addEventListener("click", () => openPane("merge"));
+      node.append(b);
+      node.append(el("button", { type: "button", id: "step-skip-merge", class: "action-skip", title: "No request will be made: the feature is finished without one", onclick: () => skipStep(f, "merge") }, "Skip merge"));
+    } else {
+      if (merging) label = "Branch & merge";
+      opener("step-continue", label, close => startPanel(f, row, a.row, close));
+      if (merging && (f.merge || {}).state !== "opened") buttons[buttons.length - 1].classList.add("merge-pulse");
+      if (merging) node.append(el("button", { type: "button", id: "step-skip-merge", class: "action-skip", onclick: () => skipStep(f, "merge") }, "Skip merge"));
+    }
+    if (["review", "apply"].includes(row.phase)) node.append(el("button", { type: "button", id: "step-skip-review", class: "action-skip", onclick: () => skipStep(f, "review") }, "Skip review"));
+    else if (!merging) node.append(stageSkipButton(f, row));
+  } else if (a.kind === "gate") {  // the workflow stopped at a break (the toolbox's breaks.sh): Continue, Skip or Stop here
+    said = `Next: ${a.label}.`;
+    const words = (window.TattyLooks && TattyLooks.voc && TattyLooks.voc()) || {};
+    const go = el("button", { type: "button", id: "gate-continue", class: "primary action-main gate-pulse" }, "Continue");
+    const skip = el("button", { type: "button", id: "gate-skip", class: "action-skip", title: a.skippable ? "" : a.why }, words.skip || "Skip");
+    const stop = el("button", { type: "button", id: "gate-stop", class: "action-skip" }, words.stop || "Stop here");
+    skip.disabled = !a.skippable;
+    for (const [b, choice] of [[go, "continue"], [skip, "skip"], [stop, "stop"]]) b.addEventListener("click", () => gateAnswer(f, choice, [go, skip, stop]));
+    node.append(go, skip, stop);
+    if (!a.skippable && a.why) node.append(el("span", { class: "dim small gate-why", id: "gate-why" }, a.why));
   } else if (a.kind === "unitgate") {
     covered = a.row == null ? -1 : a.row; // (its buttons are the "Where it stands" card's: unitgate.js)
   } else if (a.kind === "decide" || a.kind === "commit") {
@@ -1827,7 +1899,7 @@ function overview(f) {
   let m;
   try { m = journeyModel(f); } catch (e) { return overviewCards(f); }
   if (!m.nodes.length) return overviewCards(f);
-  const act = actionBar(f);
+  const act = actionBar(f, k => { if (panes.some(p => p[0] === k)) openPane(k); });
   const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
   const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind }, el("p", {}, r.kind === "warn" ? "⚠ " : "", r.text), stepActions(f, r, i));
   const more = rest.filter(x => x.r.kind !== "warn").map(stand1);

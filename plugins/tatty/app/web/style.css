@@ -826,12 +826,14 @@ body.companion:not(.expanded) #toasts { display: none; }
 /* The merge step's button, and its pill in the dock, pulse until the request is open. An outline ring (not a
    box-shadow, which some themes use for their own glow on the big button) and a light sweep across it. Like the
    other pulses, not gated on prefers-reduced-motion. */
-.merge-pulse { outline: 2px solid transparent; outline-offset: 2px; animation: merge-ring 1.8s ease-out infinite; }
-button.action-main.merge-pulse { position: relative; overflow: hidden; }
-button.action-main.merge-pulse::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 45%;
+.merge-pulse, .gate-pulse { outline: 2px solid transparent; outline-offset: 2px; animation: merge-ring 1.8s ease-out infinite; }
+button.action-main.merge-pulse, button.action-main.gate-pulse { position: relative; overflow: hidden; }
+button.action-main.merge-pulse::after, button.action-main.gate-pulse::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 45%;
   background: linear-gradient(100deg, transparent, rgba(255,255,255,.5), transparent);
   transform: translateX(-130%) skewX(-20deg); animation: go-wipe 2.5s ease-in-out infinite; pointer-events: none; }
 @keyframes merge-ring { 0% { outline-color: color-mix(in srgb, var(--accent) 85%, transparent); outline-offset: 2px; }
   70%, 100% { outline-color: transparent; outline-offset: 10px; } }
 .action-bar .action-skip { margin-left: 6px; }
+.action-bar .gate-why { margin-left: 8px; align-self: center; }
+.action-bar button:disabled.action-skip { opacity: .55; cursor: not-allowed; }
 .merge-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }

@@ -773,6 +773,7 @@ function feedEvent(ev) {
   // (The stream replays every event when the page connects: only what happens
   // from now on throws confetti, or each reload would be a party for old news.)
   else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); if (ev.ts * 1000 >= pageOpened - 5000) confetti(ev.tier); }
+  else if (ev.type === "gate") { if (ev.ts * 1000 >= pageOpened - 5000) gateSeen(ev); }
   else if (ev.type === "status") setMod(!!ev.mod);
   scrollFeed();
 }

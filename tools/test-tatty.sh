@@ -1301,6 +1301,17 @@ mkdir -p "$FX/features/Lefty/.tt"; printf 'review\toff\n' >"$FX/features/Lefty/.
 get "/api/feature?name=Lefty" >"$T/j"
 has "a workflow with Review left out goes straight to the merge step" "$T/j" '"skill": "tatty:merge"'
 hasnt "with no review row" "$T/j" '"skill": "tatty:review"'
+post /api/merge/skill '{"skill":"open-it"}' >/dev/null
+get "/api/feature?name=Lefty" >"$T/j"
+[ "$(pick "$T/j" "d['merge']['skill']")" = "open-it" ] && ok "the page is told which skill opens the request" || bad "the page is told which skill opens the request"
+post /api/merge/skill '{"skill":""}' >/dev/null
+post /api/skip '{"name":"Lefty","step":"merge"}' >"$T/j"
+has "Skip merge is recorded" "$T/j" '"step": "merge"'
+get "/api/feature?name=Lefty" >"$T/j"
+[ "$(pick "$T/j" "(d['merge']['state'], d['merge']['skipped'])")" = "('merged', True)" ] && ok "a skipped merge finishes the feature, marked as skipped" || bad "a skipped merge finishes the feature, marked as skipped" "$(pick "$T/j" "d['merge']")"
+hasnt "and there is no merge step left" "$T/j" '"skill": "tatty:merge"'
+get /api/events >"$T/ev"
+hasnt "and no merge is celebrated for it" "$T/ev" '"qualifier": "Lefty"'
 # the skill that opens the request is the person's choice for the project
 mkdir -p "$GR/.claude/skills/open-it"
 printf -- '---\nname: open-it\ndescription: Open a merge request the way this team does\n---\n\n# open-it\n' >"$GR/.claude/skills/open-it/SKILL.md"
@@ -4069,6 +4080,55 @@ if [ -f "$STAGES_SH" ]; then
 	[ "$(scode '{"name":"Stage Draft","stage":"scope","on":false}')" = 409 ] && ok "a stage in progress can't be left out" || bad "a stage in progress can't be left out"
 else
 	echo "skip  choosing stages: the toolbox checkout has no stages.sh"
+fi
+
+# the break gate: the workflow stopped and recorded the wait; Continue, Skip or Stop in Tatty
+BREAKS_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/breaks.sh"
+if [ -f "$BREAKS_SH" ]; then
+	gpost() { curl -s -o "$T/gj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/gate"; }
+	gate_feature() {  # a feature with a draft plan whose Requirements challenge is pending, in a project
+		mkdir -p "$FX/features/$1"
+		printf -- '- **Status:** Draft (not signed off) · **Stage:** Requirements\r\n\r\n**Stages**\r\n\r\n| Stage | Status | Output | Challenges |\r\n|---|---|---|---|\r\n| Familiarisation | Skipped | n/a | |\r\n| Requirements | Challenge pending | R | |\r\n| Scope & Constraints | Not started | S | |\r\n| Approach | Not started | A | |\r\n| Technical Design | Not started | T | |\r\n| Whole plan | Not started | w | |\r\n' >"$FX/features/$1/$1 - Comprehensive Tech Plan.md"
+		post /api/project "{\"name\":\"$1\",\"path\":\"$HERE\"}" >/dev/null
+	}
+	gate_feature "Gate One"; GD="$FX/features/Gate One"
+	get "/api/feature?name=Gate%20One" >"$T/j"
+	[ "$(pick "$T/j" "d['gate']")" = None ] && ok "no break recorded: no gate" || bad "no break recorded: no gate" "$(pick "$T/j" "d['gate']")"
+	bash "$BREAKS_SH" wait "$GD" --kind challenge --step requirements --label "the Requirements challenge" --prefix GateOne --skill tt-adversarial-plan >/dev/null
+	get "/api/feature?name=Gate%20One" >"$T/j"
+	[ "$(pick "$T/j" "d['action']['kind']")" = gate ] && ok "a recorded break is the page's first action" || bad "a recorded break is the page's first action" "$(pick "$T/j" "d['action']")"
+	pick "$T/j" "(d['gate']['kind'], d['gate']['step'], d['gate']['skippable'], d['action']['label'], d['action']['skippable'])" >"$T/f"
+	has "with what comes next, and that it can be skipped" "$T/f" "('challenge', 'requirements', True, 'the Requirements challenge', True)"
+	sleep 3; get /api/events >"$T/ev"
+	has "and the page is told (a gate event)" "$T/ev" '"type": "gate"'
+	[ "$(gpost '{"name":"Gate One","choice":"maybe"}')" = 400 ] && ok "an answer is continue, skip or stop" || bad "an answer is continue, skip or stop"
+	[ "$(gpost '{"name":"No Such","choice":"continue"}')" = 404 ] && ok "a break of no such feature" || bad "a break of no such feature"
+	[ "$(gpost '{"name":"Gate One","choice":"skip"}')" = 200 ] && ok "Skip is carried out" || bad "Skip is carried out" "$(cat "$T/gj")"
+	has "the challenge was skipped, by the toolbox's script" "$GD/Gate One - Comprehensive Tech Plan.md" "| Requirements | Closed (challenge skipped: skipped by the engineer) | R | |"
+	has "and, with no session open, the next one is started" "$T/gj" '"ok": true'
+	has "which records its breaks for Tatty" "$T/gj" "TT_BREAK=elsewhere"
+	[ ! -e "$GD/.tt/break" ] && ok "and the wait is cleared" || bad "and the wait is cleared"
+	get "/api/feature?name=Gate%20One" >"$T/j"
+	[ "$(pick "$T/j" "d['gate']")" = None ] && ok "so the gate is gone" || bad "so the gate is gone"
+	# a step that can't be skipped
+	gate_feature "Gate Two"; GD="$FX/features/Gate Two"
+	bash "$BREAKS_SH" wait "$GD" --kind stage --step design --label "Technical Design" --prefix GateTwo >/dev/null
+	get "/api/feature?name=Gate%20Two" >"$T/j"
+	pick "$T/j" "(d['action']['kind'], d['action']['skippable'], d['action']['why'])" >"$T/f"
+	has "Skip is not offered where the toolbox says no" "$T/f" "('gate', False, 'Always included"
+	[ "$(gpost '{"name":"Gate Two","choice":"skip"}')" = 409 ] && ok "and is refused if asked" || bad "and is refused if asked" "$(cat "$T/gj")"
+	has "with the toolbox's reason" "$T/gj" "Always included"
+	[ -e "$GD/.tt/break" ] && ok "the wait stays" || bad "the wait stays"
+	[ "$(gpost '{"name":"Gate Two","choice":"continue"}')" = 200 ] && ok "Continue is always fine" || bad "Continue is always fine" "$(cat "$T/gj")"
+	# Stop clears it and starts nothing
+	gate_feature "Gate Three"; GD="$FX/features/Gate Three"
+	bash "$BREAKS_SH" wait "$GD" --kind stage --step approach --label Approach --prefix GateThree >/dev/null
+	[ "$(gpost '{"name":"Gate Three","choice":"stop"}')" = 200 ] && ok "Stop is an answer" || bad "Stop is an answer" "$(cat "$T/gj")"
+	has "that starts no session" "$T/gj" '"started": null'
+	[ ! -e "$GD/.tt/break" ] && ok "and clears the wait" || bad "and clears the wait"
+	[ "$(gpost '{"name":"Gate Three","choice":"continue"}')" = 409 ] && ok "an answer with nothing waiting is refused" || bad "an answer with nothing waiting is refused"
+else
+	echo "skip  the break gate: the toolbox checkout has no breaks.sh"
 fi
 
 fi

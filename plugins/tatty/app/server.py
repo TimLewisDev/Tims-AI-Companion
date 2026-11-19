@@ -2234,6 +2234,10 @@ def watch_ledger(state):
                           f"{row.get('folder')}|{row.get('event')}|{row.get('qualifier')}")
                 if key in seen:
                     continue
+                if row.get("event") == "workflow.waiting":  # a break: the page offers Continue / Skip / Stop
+                    seen.add(key)
+                    state.emit("gate", feature=folder_feature(str(row.get("folder") or "")), qualifier=str(row.get("qualifier") or ""))
+                    continue
                 ev = announce(state, row)
                 if not ev:
                     continue
@@ -2590,6 +2594,77 @@ def decide_after(state, folder, docs):
     return {"open": left, "apply": sum(i["state"] == "apply" for i in items), "nudged": nudged}
 
 
+# ---------------------------------------------------------------- breaks the workflow waits at
+# Sessions Tatty starts carry TT_BREAK=elsewhere (see launch), so where a toolbox skill would stop and ask
+# "continue, or stop here?" (or "run the adversary challenge?") it records the wait (breaks.sh wait), says so
+# and ends its turn. The feature's page shows it as Continue / Skip / Stop; the answer is recorded by
+# breaks.sh answer (which also carries out a skip, by the script that owns it) and the running session is told
+# to read it. Tatty only reads and answers: the record is the toolbox's, in <feature>/.tt/break.
+BREAK_COLS = ("waiting", "kind", "step", "label", "skippable", "why", "answer")
+GATE_NUDGE = "Continue: I've answered the break in Tatty ({choice}). Read it with breaks.sh take."
+
+
+def break_view(state, folder):
+    """{kind, step, label, skippable, why, answer} for the break the feature is stopped at, or None
+    (no break, or a toolbox that has no breaks.sh)."""
+    script = toolbox_script("tt-common/scripts/breaks.sh")
+    if not script:
+        return None
+
+    def run():
+        try:
+            p = quiet_run(state, [state.bash, str(script), "show", "--tsv", folder.as_posix()], cwd=str(folder))
+        except (OSError, subprocess.TimeoutExpired):
+            return False, None
+        line = next((ln for ln in p.stdout.splitlines() if ln.startswith("waiting\t")), "") if not p.returncode else ""
+        if not line:
+            return not p.returncode, None
+        c = dict(zip(BREAK_COLS, line.rstrip("\r").split("\t")))
+        return True, {"kind": c.get("kind", ""), "step": c.get("step", ""), "label": c.get("label", ""),
+                      "skippable": c.get("skippable") == "1", "why": c.get("why", ""), "answer": c.get("answer", "")}
+
+    return cached_run(("break_view", folder.as_posix(), ()), folder_stamp(folder, script), run)
+
+
+def gate_answer(state, folder, choice):
+    """Answer the break the feature is stopped at: continue, skip or stop. (http code, answer)
+    The running session is told to read it; with none open, Continue and Skip start one on the next step."""
+    script = toolbox_script("tt-common/scripts/breaks.sh")
+    if not script:
+        return 409, {"error": "The installed toolbox is too old to record breaks. Update its core plugin."}
+    if choice not in ("continue", "skip", "stop"):
+        return 400, {"error": "continue, skip or stop"}
+    try:
+        p = quiet_run(state, [state.bash, str(script), "answer", folder.as_posix(), choice], cwd=str(folder))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 500, {"error": str(e)}
+    if p.returncode:
+        said = (p.stderr or p.stdout).strip().splitlines()
+        return (409 if p.returncode == 1 else 400), {"error": (said[-1] if said else "breaks.sh refused it").removeprefix("breaks.sh: ")}
+    state.emit("gate", feature=folder.name, answer=choice)
+    live = next((s for s in sessions_of(state, folder) if s["status"] == "running"), None)
+    if live:
+        text = GATE_NUDGE.format(choice=choice)
+        with state.cond:
+            state.inbox[live["tag"]].append(text)
+            state.cond.notify_all()
+        state.emit("say", text=text, tag=live["tag"])
+        return 200, {"ok": True, "choice": choice, "nudged": {"tag": live["tag"], "name": live.get("name", "")}}
+    started = None
+    if choice != "stop":  # no session is open to read it: start one on the step that comes next
+        rows = workflow_rows(state, folder)
+        nxt = next((i for i, r in enumerate(rows) if r.get("kind") == "primary" and not r.get("link") and command(r)), None)
+        if nxt is not None:
+            code, started = start_session(state, folder, {"row": nxt})
+            if code != 200:
+                return code, started
+    try:
+        quiet_run(state, [state.bash, str(script), "clear", folder.as_posix()], cwd=str(folder))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return 200, {"ok": True, "choice": choice, "started": started}
+
+
 def decide_set(state, folder, body):
     """Record one choice: (code, {said, open, apply, nudged})."""
     code, answer = decide_record(state, folder, body)
@@ -2720,7 +2795,7 @@ def feature_summary(state, folder, detail=False):
            "route": route, "stage": primary.get("stage", ""),
            "text": primary.get("text", ""), "next": command(primary), "updated": max(stamps),
            "docs": len(docs), "units": {"done": sum(u["status"] == "Done" for u in units), "total": len(units)},
-           "tasks": tasks, "merge": merge_view(folder.name), "review": review_view(folder), "decide": decide_view(state, folder), "validate": decide_view(state, folder, "validate"),
+           "tasks": tasks, "merge": {**merge_view(folder.name), "skill": merge_skill_get()}, "review": review_view(folder), "decide": decide_view(state, folder), "validate": decide_view(state, folder, "validate"),
            "live": next(({"name": x["name"], "status": x["status"], "tag": x["tag"]} for x in sessions_of(state, folder)
                          if x["status"] in ("starting", "running", "lost")), None)}
     if detail:
@@ -2732,13 +2807,14 @@ def feature_summary(state, folder, detail=False):
         lite_first = base_route == "new" and bool(profile) and profile["route"] == "lite"
         sessions = sessions_of(state, folder)
         # A new feature whose chosen stages leave out Plan is a small change: lite first.
-        action = primary_action(folder, rows, out["decide"], sessions, lite_first, out["validate"], unit_gate(folder, units))
+        gate_break = break_view(state, folder)
+        action = primary_action(folder, rows, out["decide"], sessions, lite_first, out["validate"], unit_gate(folder, units), gate_break)
         if lite_first and action["kind"] == "start":
             action["note"] = "The stages chosen for this feature leave out Plan, so it starts as a small change on the lite route."
         out.update({"rows": rows, "toolbox": toolbox_core() is not None, "docList": docs, "notes": notes, "events": events, "unitList": units,
                     "stages": stages_of(read_doc(folder, plan) if plan else "", events, left_out), "profile": profile,
                     "project": project, "projectFrom": project_from, "sessions": sessions,
-                    "liteFirst": lite_first, "action": action, "unitGate": unit_gate(folder, units)})
+                    "liteFirst": lite_first, "action": action, "unitGate": unit_gate(folder, units), "gate": gate_break})
         found = task_for_feature(folder.name)
         out["task"] = {"board": found[0].name, "id": found[1]} if found else None
         out["ticket"] = next(iter(jira_for_feature(folder.name)), "")  # the Jira ticket it was started from
@@ -3988,7 +4064,7 @@ def review_done(folder):
 # Steps the person chose to leave out, which are Tatty's own (the toolbox's stages.sh doesn't know them):
 # <project home>/skips.json: feature (lower case) -> {commit: <when>, review: <when>}. A skipped step is
 # passed over by review_rows, so the feature goes on to the merge step.
-SKIP_STEPS = ("commit", "review")
+SKIP_STEPS = ("commit", "review", "merge")
 
 
 def skips_of(folder):
@@ -4008,7 +4084,14 @@ def review_left_out(folder):
 def feature_skip(state, folder, step):
     """Leave out the commit or the review step and go on to the merge step. (http code, answer)"""
     if step not in SKIP_STEPS:
-        return 400, {"error": "Only the commit and review steps can be skipped here."}
+        return 400, {"error": "Only the commit, review and merge steps can be skipped here."}
+    if step == "merge":  # no request will be made: the feature is done, without a celebration for a merge that didn't happen
+        with BRANCH_LOCK:
+            rec = branch_record(folder.name) or {"repo": "", "branch": "", "base": "", "created": int(time.time())}
+            rec["merge"] = {**(rec.get("merge") or {}), "state": "merged", "skipped": True, "note": "The merge step was skipped."}
+            save_branch(folder.name, rec)
+        state.emit("skip", name=folder.name, step=step)
+        return 200, {"ok": True, "step": step}
     with BRANCH_LOCK:
         rows = read_json(project_home() / "skips.json", {})
         rec = rows.get(folder.name.lower())
@@ -4224,7 +4307,7 @@ def merge_view(feature):
     return {"branch": rec.get("branch", ""), "base": rec.get("base", ""), "repo": rec.get("repo", ""),
             "worktree": rec.get("worktree", "") if rec.get("worktree") and os.path.isdir(rec["worktree"]) else "",
             "state": m.get("state", ""), "url": m.get("url", ""), "number": m.get("number", 0),
-            "host": m.get("host", ""), "checked": m.get("checked", 0), "note": m.get("note", "")}
+            "host": m.get("host", ""), "checked": m.get("checked", 0), "note": m.get("note", ""), "skipped": bool(m.get("skipped"))}
 
 
 def merge_set(state, folder, new, url="", number=0):
@@ -4528,7 +4611,7 @@ def quick_row(folder, hint="", text="Start a small change on the quick route."):
 LIVE_SESSION = ("starting", "running", "lost")
 
 
-def primary_action(folder, rows, decide, sessions, lite_first, validate=None, gate=None):
+def primary_action(folder, rows, decide, sessions, lite_first, validate=None, gate=None, brk=None):
     """The one thing a feature's page offers first, from where the feature stands:
       start    -- nothing is written yet: Start Workflow and Start Workflow Lite (Lite only
                   when the chosen stages leave out Plan)
@@ -4537,6 +4620,7 @@ def primary_action(folder, rows, decide, sessions, lite_first, validate=None, ga
       commit   -- Commit: the review's changes are made
       session  -- Open session: a Claude session for it is going
       continue -- Continue: the state script's own next command (`row` is its index)
+      gate     -- the workflow stopped at a break (Continue, Skip or Stop), when the toolbox records them
       none     -- nothing left to do
     The rest of the rows stay in the page's More options."""
     href = "#feature/" + urllib.parse.quote(folder.name, safe="")
@@ -4554,6 +4638,9 @@ def primary_action(folder, rows, decide, sessions, lite_first, validate=None, ga
         return {"kind": "decide", "label": "Decisions Needed", "href": link["link"]}
     if link.get("phase") == "commit":
         return {"kind": "commit", "label": "Commit", "href": link["link"]}
+    if brk and not brk["answer"]:
+        return {"kind": "gate", "label": brk["label"], "what": brk["kind"], "step": brk["step"],
+                "skippable": brk["skippable"], "why": brk["why"]}
     if gate:
         row = next((i for i, r in enumerate(rows) if r.get("kind") == "primary" and not r.get("link") and command(r)), None)
         return {"kind": "unitgate", "label": f"{gate['unit']} validated", "unit": gate["unit"], "next": gate["next"], "row": row}
@@ -4646,6 +4733,8 @@ def launch(state, project, name, prompt, tag, workdir="", flags=()):
     # TT_DECIDE=elsewhere: the toolbox's skills record their pre-written questions (challenges) and end the
     # turn, for the person to answer on the feature's Decide page instead of in the terminal (see decide_set).
     exports = {"TATTY_SESSION": tag, "TT_DECIDE": "elsewhere", **family_exports(state)}
+    if toolbox_script("tt-common/scripts/breaks.sh"):  # (the breaks are then answered in Tatty: break_view, gate_answer)
+        exports["TT_BREAK"] = "elsewhere"
     # The project this window is for: the session's mod finds this window by it, and the toolbox's
     # scripts there keep this project's root however many other projects are opened meanwhile.
     mine = instance_project()
@@ -11608,6 +11697,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/merge/skill":
             code, answer = merge_skill_set(b.get("skill", ""))
+            return self.send(code, answer)
+        if path == "/api/gate":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = gate_answer(st, folder, str(b.get("choice", "")))
             return self.send(code, answer)
         if path == "/api/skip":
             folder = feature_dir(str(b.get("name", "")))

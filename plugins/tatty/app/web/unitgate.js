@@ -50,3 +50,33 @@ function unitGateCard(f) {
       `. Commit it now if you like, then carry on with ${g.next}.`),
     el("div", { class: "start-actions" }, commit, next), note);
 }
+
+// ---- the break the workflow waits at (the server's "breaks the workflow waits at")
+// Where a toolbox skill would stop and ask "continue, or stop here?" it records the wait and ends its turn;
+// the Overview's gate shows Continue / Skip / Stop and this sends the answer. The running session is told to
+// read it; with none open, Continue and Skip start one on the next step.
+async function gateAnswer(f, choice, buttons) {
+  for (const b of buttons) b.disabled = true;
+  tell("allow-foreground");
+  try {
+    const r = await api("/api/gate", { name: f.name, choice });
+    featureCache.delete(f.name);
+    const s = r.started;
+    if (s && s.ok) {
+      sessionInfo.set(s.tag, { tag: s.tag, feature: f.name, name: s.name, command: s.command, project: s.project, started: Date.now() / 1000, status: "starting" });
+      location.hash = "#workflows/" + encodeURIComponent(s.tag);
+      return;
+    }
+    route();
+  } catch (e) {
+    alert(e.message || e);
+    for (const b of buttons) b.disabled = b.id === "gate-skip" && b.title !== "" ? true : false;
+  }
+}
+
+// A break was recorded (or answered) for a feature: draw its page again if it is the one open.
+function gateSeen(ev) {
+  if (!ev.feature) return;
+  featureCache.delete(ev.feature);
+  if (pageEls.feature.classList.contains("on") && featureView && featureView.name === ev.feature) refreshFeature(ev.feature);
+}
