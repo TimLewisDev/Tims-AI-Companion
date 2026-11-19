@@ -18,8 +18,13 @@ document.addEventListener("tt-event", e => {
   const ev = e.detail;
   if (!mrView || !ev || ev.type !== "mr" || ev.name !== mrView.name || !mrView.main.isConnected) return;
   const view = mrView;
+  if (ev.busy && !ev.done) {  // an agent is working: say what it is doing where it is, and touch nothing else
+    if (ev.thread && ev.step) { const w = view.main.querySelector(`.mr-thread[data-id="${CSS.escape(ev.thread)}"] .mr-step`); if (w) w.textContent = ev.step; }
+    return;
+  }
+  if (ev.thread) view.local.delete(ev.thread);
   clearTimeout(mrSoon);
-  mrSoon = setTimeout(() => { if (view === mrView && view.main.isConnected) view.reload(ev.thread || ""); }, 250);
+  mrSoon = setTimeout(() => { if (view === mrView && view.main.isConnected) view.light(); }, 120);
 });
 
 const MR_STATE_CHIP = { opened: "now", merged: "done", closed: "todo" };
@@ -91,6 +96,56 @@ function mrPop(node, build) {
   return node;
 }
 const mrTip = (node, text) => mrPop(node, () => el("div", { class: "mr-tip" }, text));
+
+// ---- text a model wrote, laid out: `backticked` names and names that look like code (a path, Foo.Bar, FooBar,
+// fooBar, foo(), foo_bar, FOO_BAR) become code pills, **bold** stays bold. Built as nodes, never as markup.
+const MR_IDENT = new RegExp([
+  "(\\b(?:[\\w.-]+/)+[\\w.-]+\\.[A-Za-z]{1,6}\\b)",               // a path with a folder: src/a/b.cs
+  "(\\b[A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)+(?:\\(\\))?)",          // Foo.Bar, Foo.Bar()
+  "(\\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\\b)",                   // FooBar
+  "(\\b[a-z]+(?:[A-Z][a-z0-9]*)+\\b)",                           // fooBar
+  "(\\b[A-Za-z_]\\w*\\(\\))",                                    // foo()
+  "(\\b[a-z0-9]+(?:_[a-z0-9]+)+\\b)",                            // foo_bar
+  "(\\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\\b)"].join("|"), "g");      // FOO_BAR
+const MR_PLAIN = /^(e\.g|i\.e|etc|vs|a\.m|p\.m)\.?$/i;
+function mrIdents(text) {
+  const out = [];
+  let at = 0, m;
+  MR_IDENT.lastIndex = 0;
+  while ((m = MR_IDENT.exec(text))) {
+    const tok = m[0];
+    const dotted = m[2] && !m[1];
+    const plain = MR_PLAIN.test(tok) || (dotted && !/[A-Z(]/.test(tok) && !tok.split(".").some(x => x.length >= 4));
+    if (plain) continue;
+    if (m.index > at) out.push(text.slice(at, m.index));
+    out.push(el("code", { class: "mr-code ident" }, tok));
+    at = m.index + tok.length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+function mrInline(text) {
+  const out = [];
+  for (const part of String(text || "").split(/(`[^`\n]+`)/)) {
+    if (part.length > 2 && part[0] === "`" && part.endsWith("`")) { out.push(el("code", { class: "mr-code" }, part.slice(1, -1))); continue; }
+    for (const seg of part.split(/(\*\*[^*\n]+\*\*)/)) {
+      if (seg.length > 4 && seg.startsWith("**") && seg.endsWith("**")) out.push(el("strong", {}, ...mrIdents(seg.slice(2, -2))));
+      else out.push(...mrIdents(seg));
+    }
+  }
+  return out;
+}
+// Plain paragraphs and "- " bullets (a recommendation made before it came as points and steps).
+function mrParas(text) {
+  const lines = String(text || "").split("\n").map(l => l.trim()).filter(Boolean);
+  if (lines.length > 1 && lines.every(l => /^([-*]|\d+\.)\s+/.test(l))) return el("ul", { class: "mr-points" }, lines.map(l => el("li", {}, ...mrInline(l.replace(/^([-*]|\d+\.)\s+/, "")))));
+  return el("div", { class: "mr-paras" }, lines.map(l => el("p", {}, ...mrInline(l))));
+}
+function mrFilePill(path) {
+  const i = path.lastIndexOf("/");
+  return mrPop(el("span", { class: "mr-fp" }, el("i", { "aria-hidden": "true" }, "▤"), i >= 0 ? el("span", { class: "mr-fp-dir" }, path.slice(0, i + 1)) : "", el("strong", {}, path.slice(i + 1))),
+    () => el("code", {}, path));
+}
 
 // ---- parts both the feature's page and the Merge requests page draw
 
@@ -190,7 +245,6 @@ const mrOverviewTab = mr => {
       talk.size ? el("div", { class: "card" }, el("h4", {}, "In the conversation"), el("div", { class: "mr-chips" }, [...talk.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => mrWho(n, el("span", { class: "chip route" }, String(c)))))) : "",
       mr.files.length ? el("div", { class: "card" }, el("h4", {}, "Where the change is"), mrFolders(mr)) : ""));
 };
-
 // A comment thread's head (where it is, resolved, outdated, how many comments) and its notes: shared by both pages.
 // where(t) is called when the place is pressed.
 const mrThreadHead = (t, where) => {
@@ -210,13 +264,16 @@ const mrNotes = t => t.notes.map(n => el("div", { class: "mr-note" },
 async function mrPage(f, main) {
   const enc = encodeURIComponent;
   const view = mrView = { name: f.name, main, data: null, tab: "overview", all: false, file: "", pending: false, said: "", prevOpen: null, ticked: 0,
-    counted: false, over: localStorage.getItem(MR_OVER_KEY) !== "closed", more: false, cheer: false };
+    counted: false, over: localStorage.getItem(MR_OVER_KEY) !== "closed", more: false, cheer: false,
+    local: new Set(), entered: new Set(), stale: new Set(), queue: Promise.resolve() };
   const root = el("div", { class: "mr-page" });
   const skeleton = () => el("div", { class: "mr-skel-wrap" }, [0, 1, 2].map(i => el("div", { class: "card mr-skel" }, el("span", {}), el("span", {}), el("span", {}))));
   main.replaceChildren(root);
   root.replaceChildren(skeleton());
 
-  const busyNow = () => new Set(view.data ? view.data.busy : []);
+  const busyNow = () => new Set([...(view.data ? view.data.busy : []), ...view.local]);
+  // what Tatty keeps about one comment (a thread nobody has touched has none yet)
+  const tstate = tid => { const m = view.data.state; return m[tid] || (m[tid] = { recommendation: null, selected: false, draft: { text: "", edited: false, commit: "" }, result: null }); };
 
   const overviewPanel = mr => {
     const rv = mr.reviewers || [];
@@ -232,53 +289,96 @@ async function mrPage(f, main) {
   };
 
   // ---- one comment thread
-  const threadCard = (t, i) => {
-    const st = (view.data.state || {})[t.id] || {};
+  const threadCard = (t, i, enter) => {
+    const st = tstate(t.id);
     const rec = st.recommendation || {};
     const draft = st.draft || { text: "", edited: false, commit: "" };
     const working = busyNow().has(t.id);
     const stale = rec.action && rec.seen != null && rec.seen < t.notes.length;
     const head = mrThreadHead(t, () => { view.tab = "diff"; view.file = t.path; draw(); });
     const notes = mrNotes(t);
-    const recommend = el("button", { type: "button", class: rec.action ? "" : "primary", id: "mr-recommend", disabled: working }, working ? "Working…" : rec.action ? "Look again" : "Recommend action");
-    recommend.addEventListener("click", async () => {
-      recommend.disabled = true;
-      try { await api("/api/mr/recommend", { name: f.name, thread: t.id }); } catch (e) { alert(e.message || e); }
-      view.reload(t.id);
+    // Recommend action: the button turns to a spinner at once; the agent's steps appear as one line that changes in place
+    const recommend = el("button", { type: "button", class: (rec.action ? "" : "primary") + (working ? " busy" : ""), id: "mr-recommend", disabled: working },
+      working ? [el("span", { class: "mr-spin", "aria-hidden": "true" }), " Working…"] : rec.action ? "Look again" : "Recommend action");
+    recommend.addEventListener("click", () => {
+      view.local.add(t.id);
+      paintThread(t.id);  // working, now: no waiting on the server to say so
+      view.queue = view.queue.then(async () => {
+        try { await api("/api/mr/recommend", { name: f.name, thread: t.id }); }
+        catch (e) { view.local.delete(t.id); alert(e.message || e); }
+        await view.light();
+        view.local.delete(t.id);
+        if (!busyNow().has(t.id)) paintThread(t.id);
+      });
     });
     const stop = working ? el("button", { type: "button", onclick: () => api("/api/mr/cancel", { name: f.name, thread: t.id }) }, "Stop") : "";
     const staleChip = stale ? mrTip(el("span", { class: "chip todo" }, "new replies since"), "There are comments on this thread since the recommendation was made: look again.") : "";
     const meta = rec.action ? MR_ACTION[rec.action] : null;
+    const sec = (label, node) => node ? el("div", { class: "mr-sec" }, el("div", { class: "mr-sec-label" }, label), node) : "";
+    const points = (rec.points && rec.points.length) ? el("ul", { class: "mr-points" }, rec.points.map(x => el("li", {}, ...mrInline(x)))) : rec.reasoning ? mrParas(rec.reasoning) : null;
+    const ch = rec.change || {};
+    const steps = (ch.steps && ch.steps.length) ? el("ol", { class: "mr-steps" }, ch.steps.map(x => el("li", {}, ...mrInline(x)))) : ch.description ? mrParas(ch.description) : null;
+    const files = (ch.files && ch.files.length) ? el("div", { class: "mr-fp-list" }, ch.files.map(mrFilePill)) : null;
     const recCard = meta ? el("div", { class: "mr-rec " + rec.action },
-      el("div", { class: "mr-rec-head" }, mrTip(el("span", { class: "mr-action " + rec.action }, el("i", {}, meta.icon), " " + meta.word), meta.tip), el("strong", {}, rec.summary || ""), staleChip),
-      rec.reasoning ? mdNode(rec.reasoning) : "",
-      rec.change && rec.change.description ? el("div", { class: "mr-change" }, el("div", { class: "dim small" }, "The change"), mdNode(rec.change.description),
-        rec.change.files && rec.change.files.length ? el("div", { class: "small" }, rec.change.files.map(p => el("code", {}, p)).flatMap((c, k) => k ? [" ", c] : [c])) : "") : "") : "";
+      el("div", { class: "mr-rec-head" }, mrTip(el("span", { class: "mr-action " + rec.action }, el("i", {}, meta.icon), " " + meta.word), meta.tip), el("strong", { class: "mr-summary" }, ...mrInline(rec.summary || "")), staleChip),
+      sec("Why", points), sec(rec.action === "act" ? "The change" : "What to do", steps), sec("Files", files)) : "";
     const failed = rec.error ? el("p", { class: "st missing mr-error" }, rec.error) : "";
+    // Make this change: the switch moves and the page answers at once (the card's ring, the bar's count, the reply drafted
+    // from the recommendation); the server is told behind it, and only a wait for the agent shows a spinner
     const tick = el("input", { type: "checkbox", id: "mr-tick", "aria-label": "Make this change" });
     tick.checked = !!st.selected;
-    tick.addEventListener("change", async () => {
-      tick.disabled = true;
-      try { const r = await api("/api/mr/select", { name: f.name, thread: t.id, on: tick.checked }); if (r.waiting) view.said = "Looking into the comment first…"; }
-      catch (e) { alert(e.message || e); tick.checked = !tick.checked; }
-      view.reload(t.id);
-    });
-    const result = st.result && st.result.status ? mrTip(el("span", { class: "chip " + (st.result.status === "applied" ? "done" : st.result.status === "blocked" ? "bad" : "todo") }, st.result.status), st.result.text || st.result.status) : "";
+    const spin = el("span", { class: "mr-spin mr-tick-spin", "aria-hidden": "true", hidden: true });
     const reply = el("textarea", { class: "mr-draft", rows: 3, "aria-label": "Draft reply", spellcheck: "true", placeholder: "A reply to this comment, for you to post on the host" });
     reply.value = draft.text || "";
+    const card = el("div", { class: ["card", "mr-thread", enter ? "enter" : "", t.resolved ? "resolved" : "", t.outdated ? "outdated" : "", working ? "working" : "", st.selected ? "chosen" : "",
+      !t.resolved && t.resolvable !== false && (!rec.action || stale) ? "needs" : "", rec.action === "act" && !st.selected && !t.resolved ? "ready" : ""].filter(Boolean).join(" "), "data-id": t.id });
+    tick.addEventListener("change", () => {
+      const on = tick.checked, s = tstate(t.id), r = s.recommendation || {};
+      s.selected = on;
+      card.classList.toggle("chosen", on);
+      card.classList.toggle("ready", !on && r.action === "act" && !t.resolved);
+      if (on && r.draftReply && !s.draft.text && !s.draft.edited) { s.draft.text = r.draftReply; reply.value = r.draftReply; }
+      updateBar();
+      const waits = on && !r.action;  // nobody has looked into it yet: the agent has to
+      if (waits) { view.local.add(t.id); paintThread(t.id); } else spin.hidden = false;
+      view.queue = view.queue.then(async () => {
+        try { await api("/api/mr/select", { name: f.name, thread: t.id, on }); }
+        catch (e) { s.selected = !on; view.local.delete(t.id); alert(e.message || e); }
+        spin.hidden = true;
+        await view.light();
+        if (waits && !busyNow().has(t.id)) { view.local.delete(t.id); paintThread(t.id); }
+        updateBar();
+      });
+    });
+    const result = st.result && st.result.status ? mrTip(el("span", { class: "chip " + (st.result.status === "applied" ? "done" : st.result.status === "blocked" ? "bad" : "todo") }, st.result.status), st.result.text || st.result.status) : "";
     let saving = 0;
-    reply.addEventListener("input", () => { clearTimeout(saving); saving = setTimeout(() => api("/api/mr/draft", { name: f.name, thread: t.id, text: reply.value }).catch(() => {}), 500); });
+    reply.addEventListener("input", () => {
+      const s = tstate(t.id); s.draft.text = reply.value; s.draft.edited = true;  // (kept here too, so a repaint doesn't lose it)
+      clearTimeout(saving); saving = setTimeout(() => api("/api/mr/draft", { name: f.name, thread: t.id, text: reply.value }).catch(() => {}), 500);
+    });
+    reply.addEventListener("blur", () => { if (view.stale.delete(t.id)) paintThread(t.id); });
     const copy = el("button", { type: "button", onclick: async () => { try { await navigator.clipboard.writeText(reply.value); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy reply"; }, 1500); } catch { reply.select(); } } }, "Copy reply");
-    const cls = ["card", "mr-thread", t.resolved ? "resolved" : "", t.outdated ? "outdated" : "", working ? "working" : "", st.selected ? "chosen" : "",
-      !t.resolved && t.resolvable !== false && (!rec.action || stale) ? "needs" : "", rec.action === "act" && !st.selected && !t.resolved ? "ready" : ""].filter(Boolean).join(" ");
-    const card = el("div", { class: cls, "data-id": t.id }, head, ...notes,
-      el("div", { class: "mr-actions" }, recommend, stop, el("label", { class: "mr-switch" }, tick, el("span", { class: "mr-knob", "aria-hidden": "true" }), el("span", {}, "Make this change")), result,
-        working && view.data.step && view.data.step[t.id] ? el("span", { class: "dim small mr-step" }, view.data.step[t.id]) : ""),
+    card.append(head, ...notes,
+      el("div", { class: "mr-actions" }, recommend, stop, el("label", { class: "mr-switch" }, tick, el("span", { class: "mr-knob", "aria-hidden": "true" }), el("span", {}, "Make this change"), spin), result,
+        working ? el("span", { class: "dim small mr-step" }, (view.data.step && view.data.step[t.id]) || "Starting…") : ""),
       failed, recCard,
       el("div", { class: "mr-reply" }, el("div", { class: "dim small" }, "Reply: a draft. Tatty never sends it", draft.commit ? mrTip(el("span", { class: "chip done" }, `committed as ${draft.commit}`), "The change was committed here: the draft says so.") : ""), reply, el("div", { class: "start-actions" }, copy)));
     card.style.setProperty("--i", String(Math.min(i, 12)));
     return card;
   };
+
+  // Redraw one card in place (never the page): where an agent finishes, a tick lands, a draft is committed.
+  function paintThread(tid) {
+    const old = root.querySelector(`.mr-thread[data-id="${CSS.escape(tid)}"]`);
+    const t = view.data && view.data.mr && view.data.mr.threads.find(x => x.id === tid);
+    if (!old || !t) return;
+    if (old.contains(document.activeElement) && document.activeElement.classList.contains("mr-draft")) { view.stale.add(tid); return; }  // not under someone typing
+    old.replaceWith(threadCard(t, 0, false));
+  }
+  function updateBar() {
+    const old = root.querySelector(".mr-bar");
+    if (old) old.replaceWith(changeBar());
+  }
 
   // ---- the tabs
   const discussion = () => {
@@ -294,7 +394,7 @@ async function mrPage(f, main) {
     let n = 0;
     return el("div", {}, view.cheer ? el("div", { class: "mr-cheer", id: "mr-cheer" }, el("span", {}, "✓"), " Every comment is resolved. Nicely done.") : "",
       el("div", { class: "mr-bar-top" }, el("strong", {}, `${open} open comment${open === 1 ? "" : "s"}`), resolved ? toggle : ""),
-      keys.length ? keys.map(k => el("section", { class: "mr-group" }, el("h4", {}, k || "General comments"), groups.get(k).map(t => threadCard(t, n++))))
+      keys.length ? keys.map(k => el("section", { class: "mr-group" }, el("h4", {}, k || "General comments"), groups.get(k).map(t => { const enter = !view.entered.has(t.id); view.entered.add(t.id); return threadCard(t, n++, enter); })))
         : el("p", { class: "dim pad" }, mr.threads.length ? "Every comment is resolved." : "No comments yet."));
   };
 
@@ -332,7 +432,7 @@ async function mrPage(f, main) {
 
   // ---- the page
   const changeBar = () => {
-    const ticked = Object.entries(view.data.state || {}).filter(([, s]) => s.selected && !(s.result && s.result.status === "applied")).length;
+    const ticked = Object.values(view.data.state || {}).filter(s => s.selected && !(s.result && s.result.status === "applied")).length;
     const go = el("button", { type: "button", class: "primary", id: "mr-change", disabled: !ticked || view.pending }, ticked ? `Make ${ticked} change${ticked === 1 ? "" : "s"}` : "Make changes");
     go.addEventListener("click", () => startChange());
     const bar = el("div", { class: "mr-bar" + (ticked ? " lit" : "") }, go, el("span", { class: "dim small", id: "mr-said" }, view.said || (ticked ? "Starts a session that edits the code for the ticked comments. You commit it from the Commit page." : "Tick Make this change on the comments to act on.")));
@@ -393,7 +493,7 @@ async function mrPage(f, main) {
     view.counted = true;
   }
 
-  // The thread asked for is redrawn on its own when only it changed, and never while a reply is being typed.
+  // A full read of the request (and the host, when its copy is old): on opening and on Refresh.
   view.reload = async (thread, force) => {
     let d;
     try { d = await api("/api/mr?name=" + enc(f.name) + (force ? "&force=1" : "")); }
@@ -413,5 +513,40 @@ async function mrPage(f, main) {
       if (pill) { const r = pill.getBoundingClientRect(); TattyWallet.burst({ x: r.left + r.width / 2, y: r.top + r.height / 2 }, 22, { reach: 100 }); }
     }
   };
+  // What changes while the page is open (a recommendation, a tick, a draft, who is working) comes from Tatty's own files,
+  // quickly, and only the cards that differ are drawn again.
+  view.light = async () => {
+    if (!view.data || !view.data.mr) return view.reload("", false);
+    let d;
+    try { d = await api("/api/mr/state?name=" + enc(f.name)); } catch (e) { return; }
+    if (view !== mrView || !main.isConnected) return;
+    const before = view.data.state, was = new Set(view.data.busy);
+    const ids = new Set([...Object.keys(before), ...Object.keys(d.state)]);
+    const changed = [...ids].filter(id => JSON.stringify(before[id]) !== JSON.stringify(d.state[id]) || was.has(id) !== d.busy.includes(id));
+    view.data.state = d.state; view.data.busy = d.busy; view.data.step = d.step;
+    for (const id of changed) paintThread(id);
+    updateBar();
+    if (view.pending && !d.busy.length) { view.pending = false; startChange(); }
+  };
   await view.reload("", false);
+}
+
+// The Overview's button to this page: a request exists, so this is where to look after it. It is not tied to the
+// step the workflow is on (a session may be running, a break waiting), and says in a line what needs attention.
+function mrGateButton(f) {
+  const m = f.merge || {};
+  if (f.phase !== "complete" || !m.url || m.skipped) return "";
+  const n = m.mr || {};
+  const bits = [];
+  if (n.open) bits.push(["warn", `${n.open} open comment${n.open === 1 ? "" : "s"}`]);
+  if (n.failed) bits.push(["bad", `${n.failed} check${n.failed === 1 ? "" : "s"} failing`]);
+  if (n.changes) bits.push(["bad", "changes requested"]);
+  if (n.merge === "conflicts") bits.push(["bad", "conflicts"]);
+  else if (n.merge === "ok" && !bits.length) bits.push(["ok", "ready to merge"]);
+  const attention = bits.some(b => b[0] !== "ok") && m.state !== "merged";
+  const label = m.state === "merged" ? "View merge request" : "Open merge request";
+  const id = m.number ? ` ${m.host === "github" ? "#" : "!"}${m.number}` : "";
+  return el("div", { class: "action mr-gate", id: "mr-gate" },
+    el("a", { class: "go-btn action-main" + (attention ? " gate-pulse" : ""), id: "gate-mr", href: featureMrHref(f.name) }, label + id),
+    bits.length ? el("div", { class: "mr-gate-sum" }, bits.map(([k, text]) => el("span", { class: "mr-gate-chip " + k }, text))) : "");
 }

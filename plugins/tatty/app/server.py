@@ -44,6 +44,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import traceback
@@ -81,7 +82,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "intake.js": "text/javascript", "intake.css": "text/css",
-          "review.js": "text/javascript", "commit.js": "text/javascript", "mr.js": "text/javascript", "mr.css": "text/css", "mrs.js": "text/javascript", "mrs.css": "text/css", "unitgate.js": "text/javascript", "commit.css": "text/css",
+          "review.js": "text/javascript", "commit.js": "text/javascript", "mr.js": "text/javascript", "mr.css": "text/css", "mrs.js": "text/javascript", "mrs.css": "text/css", "pool.js": "text/javascript", "pool.css": "text/css", "unitgate.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
@@ -4558,10 +4559,11 @@ MR_TIMEOUT = float(os.environ.get("TATTY_MR_TIMEOUT", "600"))
 SKILL_MRCHANGE = "tatty:mr-change"
 MR_ACTIONS = ("act", "rebut", "ask")
 MR_SCHEMA = {"type": "object", "properties": {
-    "action": {"type": "string", "enum": list(MR_ACTIONS)}, "summary": {"type": "string"}, "reasoning": {"type": "string"},
-    "change": {"type": "object", "properties": {"description": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}}},
-               "required": ["description", "files"]},
-    "draftReply": {"type": "string"}}, "required": ["action", "summary", "reasoning", "change", "draftReply"]}
+    "action": {"type": "string", "enum": list(MR_ACTIONS)}, "summary": {"type": "string"},
+    "points": {"type": "array", "items": {"type": "string"}},
+    "change": {"type": "object", "properties": {"steps": {"type": "array", "items": {"type": "string"}}, "files": {"type": "array", "items": {"type": "string"}}},
+               "required": ["steps", "files"]},
+    "draftReply": {"type": "string"}}, "required": ["action", "summary", "points", "change", "draftReply"]}
 MR_SYSTEM = (
     "You help an engineer decide what to do about one review comment on their merge request. You can read the repository "
     "(Read, Glob, Grep) but not change it. First check what the comment claims against the code: open the file and the "
@@ -4569,8 +4571,12 @@ MR_SYSTEM = (
     "act: the comment is right and a change is needed. rebut: the code is right or the comment is mistaken (say why, with "
     "evidence from the code). ask: you can't tell without the reviewer or the engineer (say what to ask). "
     "Write the reply the engineer could post under the comment, in their voice: short, polite, specific, citing what you "
-    "read. For act, say what will be changed, not that it is done. Describe the change in a few sentences and list the "
-    "files it touches. Never name a file or line you did not read. Answer with the JSON asked for and nothing else.")
+    "read. For act, say what will be changed, not that it is done. "
+    "Lay the answer out for a person to scan. summary: one plain sentence, the verdict. points: two to five short points, each "
+    "one finding (what you saw and where), at most two sentences, with every class, method, field, type, file and command name "
+    "in `backticks`. change.steps: the edits to make, one short imperative step each (empty for rebut and ask), names in "
+    "`backticks`. change.files: the repository paths they touch. Never name a file or line you did not read. "
+    "Answer with the JSON asked for and nothing else.")
 
 
 def mr_key(folder):
@@ -4681,13 +4687,25 @@ def mr_state(folder):
     return mrstate.load(mr_file(folder, "state"))
 
 
+def mr_runs_of(state, folder):
+    """{thread id: what its agent is doing now} for the feature's running recommendations."""
+    with state.cond:
+        return {k.split("|", 1)[1]: r.get("step", "") for k, r in state.mr_runs.items() if k.split("|", 1)[0] == folder.name.lower()}
+
+
+def mr_state_view(state, folder):
+    """GET /api/mr/state: only what the page changes while it is open (recommendations, ticks, drafts, who is working),
+    from Tatty's own files: it never asks the host, so it is quick enough to follow every tick."""
+    runs = mr_runs_of(state, folder)
+    return {"state": mr_state(folder)["threads"], "busy": list(runs), "step": runs}
+
+
 def mr_view(state, folder, force=False):
     """What GET /api/mr answers: {mr, why, state, busy, branch, onSource, repo}."""
     rec, repo = commit_repo(folder)
     mr, why = mr_load(state, folder, force)
     here = current_branch(repo) if repo else ""
-    with state.cond:
-        runs = {k.split("|", 1)[1]: r.get("step", "") for k, r in state.mr_runs.items() if k.split("|", 1)[0] == folder.name.lower()}
+    runs = mr_runs_of(state, folder)
     busy = list(runs)
     return {"mr": mr, "why": why, "state": mr_state(folder)["threads"], "busy": busy, "step": runs, "branch": here,
             "onSource": bool(mr and mr.get("source") and here == mr["source"]) if mr and mr.get("source") else None,
@@ -4695,12 +4713,17 @@ def mr_view(state, folder, force=False):
 
 
 def mr_counts(folder):
-    """{open, total} threads of the request as last read, for the rail; None when it hasn't been read."""
+    """The request as last read, in numbers, for the rail and the Overview's merge request button: open and total
+    threads, failed checks, reviewers asking for changes, and whether it can be merged. None when it hasn't been read."""
     mr = mr_cached(folder)
     if not isinstance(mr, dict):
         return None
     threads = [t for t in mr.get("threads") or [] if t.get("resolvable", True)]
-    return {"open": sum(1 for t in threads if not t.get("resolved")), "total": len(threads)}
+    checks = mr.get("checks") or []
+    failed = sum(1 for c in checks if c.get("status") == "failed") or (1 if (mr.get("pipeline") or {}).get("status") == "failed" else 0)
+    return {"open": sum(1 for t in threads if not t.get("resolved")), "total": len(threads), "failed": failed,
+            "changes": sum(1 for r in mr.get("reviewers") or [] if r.get("state") == "changes"),
+            "merge": (mr.get("mergeable") or {}).get("status", "")}
 
 
 def mr_diff(folder, path):
@@ -4753,8 +4776,13 @@ def mr_clean_recommendation(got, seen):
     got = got if isinstance(got, dict) else {}
     change = got.get("change") if isinstance(got.get("change"), dict) else {}
     files = [str(f)[:300] for f in (change.get("files") or []) if isinstance(f, (str, int))][:12]
+    points = [str(x).strip()[:700] for x in (got.get("points") or []) if isinstance(x, (str, int)) and str(x).strip()][:8]
+    steps = [str(x).strip()[:500] for x in (change.get("steps") or []) if isinstance(x, (str, int)) and str(x).strip()][:10]
+    # (the older plain-text fields are still kept for the changes file the session reads, and for recommendations made before)
+    reasoning = str(got.get("reasoning") or "")[:3000] or "\n".join(f"- {x}" for x in points)
+    description = str(change.get("description") or "")[:1500] or "\n".join(f"{i}. {x}" for i, x in enumerate(steps, 1))
     return {"action": got.get("action") if got.get("action") in MR_ACTIONS else "ask", "summary": str(got.get("summary") or "")[:300],
-            "reasoning": str(got.get("reasoning") or "")[:3000], "change": {"description": str(change.get("description") or "")[:1500], "files": files},
+            "points": points, "reasoning": reasoning, "change": {"steps": steps, "description": description, "files": files},
             "draftReply": str(got.get("draftReply") or "")[:3000], "seen": seen, "ts": int(time.time())}
 
 
@@ -4939,9 +4967,12 @@ def mr_write_changes(folder, mr, data, chosen):
         out += [f"## Comment `{tid}`: {where}", ""]
         for n in thread.get("notes") or []:
             out += [f"**{n.get('author') or 'someone'}:**", "", str(n.get("body", "")), ""]
-        out += [f"Recommended: **{rec.get('action', '')}**. {rec.get('summary', '')}", "", f"Why: {rec.get('reasoning', '')}", "",
-                f"The change: {(rec.get('change') or {}).get('description', '')}",
-                "Files: " + (", ".join((rec.get("change") or {}).get("files") or []) or "(not named)"), ""]
+        change = rec.get("change") or {}
+        out += [f"Recommended: **{rec.get('action', '')}**. {rec.get('summary', '')}", "", "Why:"]
+        out += [f"- {x}" for x in rec.get("points") or []] or [rec.get("reasoning", "")]
+        out += ["", "The change:"]
+        out += [f"{i}. {x}" for i, x in enumerate(change.get("steps") or [], 1)] or [change.get("description", "")]
+        out += ["", "Files: " + (", ".join(change.get("files") or []) or "(not named)"), ""]
     p = lp(mr_changes_file(folder))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(out), encoding="utf-8")
@@ -9797,6 +9828,153 @@ def forget_feature_records(name):
     set_feature_title(name, "")
 
 
+# ---------------------------------------------------------------- the worktrees page
+# The Worktrees page (web/pool.js, engineering mode): the current project's worktree pool (worktreepool.py): its
+# slots, which feature holds each, the disk they take and what one more would, and the buttons to create the pool,
+# add a slot, free one a feature no longer needs and delete a free one. Only the current project's repo is shown.
+# What takes minutes (making slots, deleting them, measuring) says so in POOL_BUSY, which the page shows and polls.
+
+POOL_LOCK = threading.Lock()
+POOL_BUSY = {}  # main repo -> what is being done to its pool now
+POOL_MEASURING = set()
+
+
+def pool_project_repo():
+    """The repository of the project on show (the Hub's active one), or ""."""
+    try:
+        active = hub_active(hub_load()) or {}
+    except OSError:
+        active = {}
+    for c in (active.get("repo"), active.get("root")):
+        c = str(c or "")
+        if c and os.path.isdir(c):
+            r = repo_of(c)
+            if r:
+                return r
+    return ""
+
+
+def pool_top():
+    """The main checkout of the project's repo (a worktree names it too), or None."""
+    repo = pool_project_repo()
+    if not repo:
+        return None
+    try:
+        return worktreepool.repo_top(repo)
+    except worktreepool.PoolError:
+        return None
+
+
+def pool_view():
+    """GET /api/pool: the pool, its slots with the feature on each, the disk, the sizes. (http code, answer)"""
+    top = pool_top()
+    if not top:
+        return 200, {"repo": "", "note": "This project isn't in a git repository, so it has no worktrees."}
+    pool = worktreepool.Pool(top)
+    try:
+        du = shutil.disk_usage(top.parent)
+        disk = {"total": du.total, "used": du.used, "free": du.free, "path": top.parent.as_posix()}
+    except OSError:
+        disk = {}
+    sizes = pool.read_sizes() if pool.dir.is_dir() else {}
+    out = {"repo": top.as_posix(), "dir": pool.dir.as_posix(), "exists": pool.exists(), "busy": POOL_BUSY.get(str(top), ""),
+           "measuring": str(top) in POOL_MEASURING, "disk": disk, "sizes": sizes, "seed": pool.seed_config()}
+    per = list((sizes.get("slots") or {}).values())
+    if per:
+        out["estimate"] = {"bytes": max(per), "from": "a slot"}
+    elif sizes.get("main"):
+        out["estimate"] = {"bytes": sizes["main"], "from": "the checkout"}
+    if not pool.exists():
+        return 200, out
+    out["config"] = pool.config()
+    try:
+        ref = pool.base_ref()
+    except worktreepool.PoolError as e:
+        ref, out["warning"] = "", str(e)
+    out["base"] = ref
+    claims = pool.state()["claims"]
+    held = {}
+    for key, rec in branch_records().items():
+        if isinstance(rec, dict) and rec.get("worktree"):
+            held[Path(rec["worktree"]).as_posix().lower()] = (key, rec)
+    rows = []
+    for name in pool.slot_names():
+        row = pool.slot_info(name, ref, check_clean=False)  # a status of a big tree is slow: a release or delete checks it
+        hit = held.get(row["path"].lower())
+        claim = claims.get(name, {})
+        feat = str(claim.get("owner") or "") or (hit[0] if hit else "")  # the owner keeps the name's own case; a record's key is lower-cased
+        folder = feature_dir(feat) if feat else None
+        row.update(feature=folder.name if folder else feat, featureExists=bool(folder),
+                   featureBranch=hit[1].get("branch", "") if hit else claim.get("branch", ""),
+                   base=hit[1].get("base", "") if hit else claim.get("base", ""),
+                   merge=((hit[1].get("merge") or {}).get("state", "") if hit else ""),
+                   size=(sizes.get("slots") or {}).get(name))
+        rows.append(row)
+    out["slots"] = rows
+    out["free"] = sum(r["state"] == "free" for r in rows)
+    return 200, out
+
+
+def pool_run(label, fn):
+    """Run one pool change, one at a time per repo, with `label` shown on the page meanwhile. (http code, answer)"""
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    key = str(top)
+    with POOL_LOCK:
+        if POOL_BUSY.get(key):
+            return 409, {"error": f"Wait: {POOL_BUSY[key]}"}
+        POOL_BUSY[key] = label
+    try:
+        return 200, {"ok": True, **fn(worktreepool.Pool(top))}
+    except worktreepool.PoolError as e:
+        return 409, {"error": str(e)}
+    finally:
+        with POOL_LOCK:
+            POOL_BUSY.pop(key, None)
+
+
+def pool_release_slot(state, pool, slot):
+    """Give a slot back and cut the link from the feature that held it, so a later Start of that feature doesn't
+    switch the slot (maybe another feature's by then) back to its branch. Refused while a session runs in it."""
+    path = pool.slot_path(slot).as_posix()
+    with BRANCH_LOCK:
+        mine = [(k, r) for k, r in branch_records().items() if isinstance(r, dict) and r.get("worktree") and same_folder(r["worktree"], path)]
+        keys = {k for k, _ in mine}
+        with state.cond:
+            live = [s for s in state.sessions.values() if s.get("feature") and not s.get("closed")
+                    and s["feature"].lower() in keys and state.session_view(s)["status"] in ("starting", "running")]
+        if live:
+            raise worktreepool.PoolError(f"{live[0]['feature']} has a session running in {slot}: stop it first.")
+        got = pool.release(slot)
+        for k, r in mine:
+            save_branch(k, {x: v for x, v in r.items() if x not in ("worktree", "pooled")})
+    return {**got, "features": sorted(keys)}
+
+
+def pool_measure_start():
+    """Measure the sizes in a thread of its own. (http code, answer)"""
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    key = str(top)
+    with POOL_LOCK:
+        if key in POOL_MEASURING:
+            return 200, {"ok": True, "measuring": True}
+        POOL_MEASURING.add(key)
+
+    def work():
+        try:
+            worktreepool.Pool(top).measure()
+        except (OSError, worktreepool.PoolError):
+            pass
+        finally:
+            with POOL_LOCK:
+                POOL_MEASURING.discard(key)
+    threading.Thread(target=work, daemon=True).start()
+    return 200, {"ok": True, "measuring": True}
+
+
 def remove_feature_worktree(name):
     """Take away the worktree Tatty made for a feature, when nothing in it is uncommitted or untracked
     (never forced); its branch is left. Returns a sentence for the person, "" when there was none to remove."""
@@ -12751,10 +12929,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/merge/skill":
             wanted = q.get("name", [""])[0]
             return self.send(200, merge_skill_view(feature_dir(wanted) if wanted else None))
-        if path in ("/api/mr", "/api/mr/diff"):
+        if path in ("/api/mr", "/api/mr/diff", "/api/mr/state"):
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
                 return self.send(404, {"error": "no such feature"})
+            if path == "/api/mr/state":
+                return self.send(200, mr_state_view(st, folder))
             if path == "/api/mr/diff":
                 code, answer = mr_diff(folder, q.get("path", [""])[0])
                 return self.send(code, answer)
@@ -12798,6 +12978,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/diagram":
             code, answer = diagram_view(st, q)
+            return self.send(code, answer)
+        if path == "/api/pool":
+            code, answer = pool_view()
             return self.send(code, answer)
         if path == "/api/review":
             folder = feature_dir(q.get("name", [""])[0])
@@ -13256,16 +13439,33 @@ class Handler(BaseHTTPRequestHandler):
             code, answer = set_branch(folder, project, b.get("branch"), feature_project(folder, docs_of(folder))[0])
             return self.send(code, answer)
         if path == "/api/pool/add":  # the person said yes to one more slot (the pool never grows by itself)
-            repo = repo_of(str(b.get("repo") or ""))
-            pool = pool_of(repo) if repo else None
-            if not pool:
-                return self.send(404, {"error": "That repo has no worktree pool."})
-            try:
-                with BRANCH_LOCK:
-                    pool.add(1)
-            except worktreepool.PoolError as e:
-                return self.send(409, {"error": str(e)})
-            return self.send(200, {"ok": True, "pool": pool_summary(repo)})
+            code, answer = pool_run("Adding a slot: it copies the project's cache, so this takes a while.", lambda p: p.add(1))
+            return self.send(code, answer)
+        if path == "/api/pool/create":
+            size = b.get("size")
+            if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+                return self.send(400, {"error": "size: a whole number of 1 or more"})
+            code, answer = pool_run(f"Making the pool of {size}: each slot is a checkout and a copy of the project's cache, so this takes a while.", lambda p: p.init(size))
+            return self.send(code, answer)
+        if path in ("/api/pool/release", "/api/pool/remove"):
+            slot = str(b.get("slot") or "")
+            if not worktreepool.SLOT.match(slot):
+                return self.send(400, {"error": "slot: a slot name such as slot-1"})
+            if path == "/api/pool/release":
+                code, answer = pool_run(f"Freeing {slot}.", lambda p: pool_release_slot(st, p, slot))
+            else:
+                code, answer = pool_run(f"Deleting {slot}: a slot is a whole checkout, so this takes a while.", lambda p: p.remove(slot))
+            return self.send(code, answer)
+        if path == "/api/pool/refresh":
+            code, answer = pool_run("Bringing the free slots up to date.", lambda p: p.refresh())
+            return self.send(code, answer)
+        if path == "/api/pool/config":
+            pairs = [f"{k}={b[k]}" for k in ("size", "max") if isinstance(b.get(k), int) and not isinstance(b.get(k), bool)]
+            code, answer = pool_run("Saving the pool's settings.", lambda p: {"config": p.set_config(pairs)})
+            return self.send(code, answer)
+        if path == "/api/pool/measure":
+            code, answer = pool_measure_start()
+            return self.send(code, answer)
         if path == "/api/merge":
             folder = feature_dir(str(b.get("name", "")))
             if not folder:

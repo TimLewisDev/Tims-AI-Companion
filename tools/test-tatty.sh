@@ -1611,6 +1611,7 @@ get "/api/mr/diff?name=Mr%20Demo&path=src/widget.txt" >"$T/j"
 [ "$(code -H "X-TT-Token: $K" "$U/api/mr?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
 get "/api/feature?name=Mr%20Demo" >"$T/j"
 [ "$(pick "$T/j" "(d['merge']['mr']['open'], d['merge']['mr']['total'])")" = "(2, 3)" ] && ok "the rail is told how many comments are open" || bad "the rail's count" "$(pick "$T/j" "d['merge']")"
+[ "$(pick "$T/j" "(d['merge']['mr']['failed'], d['merge']['mr']['changes'], d['merge']['mr']['merge'])")" = "(1, 0, 'blocked')" ] && ok "and the Overview's button how many checks fail, who asked for changes, and if it can merge" || bad "the button's numbers" "$(pick "$T/j" "d['merge']['mr']")"
 # the agent that looks into a comment
 cat >"$T/claude-mr.sh" <<'EOS'
 #!/usr/bin/env bash
@@ -1622,7 +1623,7 @@ case "$prompt" in
 *"Looks good overall"*) act=rebut; reply="Thanks, nothing to change." ;;
 *) act=act; reply="Good catch: I will guard it." ;;
 esac
-printf '{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"action":"%s","summary":"The null guard is missing.","reasoning":"widget.txt line 2 uses it unguarded.","change":{"description":"Return early when it is null.","files":["src/widget.txt"]},"draftReply":"%s"},"total_cost_usd":0.02}\n' "$act" "$reply"
+printf '{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"action":"%s","summary":"The null guard is missing.","points":["Line 2 of `widget.txt` calls `Widget.Get()` with no null check.","Nothing else guards it."],"change":{"steps":["Return early in `Widget.Get()` when it is null."],"files":["src/widget.txt"]},"draftReply":"%s"},"total_cost_usd":0.02}\n' "$act" "$reply"
 EOS
 mrpost() { curl -s -o "$T/mj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/mr/$1"; }
 mrwait() { local i; for i in $(seq 1 60); do get "/api/mr?name=Mr%20Demo" >"$T/mw"; [ "$(pick "$T/mw" "len(d['busy'])")" = 0 ] && return 0; sleep 0.3; done; return 1; }
@@ -1633,6 +1634,13 @@ mrwait() { local i; for i in $(seq 1 60); do get "/api/mr?name=Mr%20Demo" >"$T/m
 mrwait && ok "and it finishes" || bad "and it finishes"
 pick "$T/mw" "(d['state']['d1']['recommendation']['action'], d['state']['d1']['recommendation']['summary'], d['state']['d1']['recommendation']['change']['files'], d['state']['d1']['draft']['text'])" >"$T/f"
 has "its recommendation is kept" "$T/f" "('act', 'The null guard is missing.', ['src/widget.txt'], '')"
+[ "$(pick "$T/mw" "(len(d['state']['d1']['recommendation']['points']), 'Widget.Get()' in d['state']['d1']['recommendation']['points'][0], d['state']['d1']['recommendation']['change']['steps'])")" = "(2, True, ['Return early in \`Widget.Get()\` when it is null.'])" ] && ok "the answer comes as points and steps, to be laid out" || bad "points and steps" "$(pick "$T/mw" "d['state']['d1']['recommendation']")"
+[ "$(pick "$T/mw" "(d['state']['d1']['recommendation']['reasoning'].startswith('- '), d['state']['d1']['recommendation']['change']['description'].startswith('1. '))")" = "(True, True)" ] && ok "and the plain text the session reads is made from them" || bad "plain text from points and steps"
+N2=$(wc -l <"$T/glab.log")
+get "/api/mr/state?name=Mr%20Demo" >"$T/j2"
+[ "$(pick "$T/j2" "sorted(d)")" = "['busy', 'state', 'step']" ] && ok "the light read gives only what changes while the page is open" || bad "the light read" "$(head -c 200 "$T/j2")"
+[ "$(wc -l <"$T/glab.log")" = "$N2" ] && ok "and never asks the host" || bad "the light read asks the host"
+[ "$(code -H "X-TT-Token: $K" "$U/api/mr/state?name=Nope")" = 404 ] && ok "(no such feature)" || bad "the light read of no such feature"
 has "the agent was given the comment" "$T/mr.prompt" "Please guard against null here."
 has "and the diff around it" "$T/mr.prompt" "+B"
 has "it may only read" "$T/mr.args" "Read,Glob,Grep"
@@ -1675,7 +1683,7 @@ has "with the facts after it" "$T/mj" "Changes: "
 has "naming the state file and the script" "$T/mj" "mrstate.sh"
 has "named for the stage" "$T/mj" '"name": "Mr Demo : MR changes"'
 has "the comment is in the changes file" "$MD/.tt/MR Changes.md" "Please guard against null here."
-has "with what was recommended" "$MD/.tt/MR Changes.md" "Return early when it is null."
+has "with what was recommended, as steps" "$MD/.tt/MR Changes.md" "1. Return early in"
 STATE=$(grep -o 'State: [^\\"]*state.json' "$T/mj" | head -1 | sed 's/^State: //')
 [ -f "$STATE" ] && ok "the state file is where it said" || bad "the state file is where it said" "$STATE"
 MRS="$root/plugins/tatty/scripts/mrstate.sh"
@@ -1866,7 +1874,7 @@ d=$(dirname "$0"); prompt=$(cat); printf '%s\n' "$@" >"$d/mrs.args"; printf '%s'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/src/widget.txt"}}]}}'
 printf '{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":0.12,"structured_output":{"summary":"Adds a widget and a doc.","risk":"medium","findings":[{"path":"src/widget.txt","line":2,"side":"new","severity":"major","title":"Capital B","body":"B replaces b without a reason."},{"path":"src/widget.txt","line":40,"side":"new","severity":"nit","title":"Far away","body":"Not in the diff."}],"questions":["Why the new line d?"]}}\n'
 EOS
-mrswait() { local i; for i in $(seq 1 80); do get "/api/mrs/one?key=$K7" >"$T/mw"; [ "$(pick "$T/mw" "len(d['busy'])")" = 0 ] && return 0; sleep 0.3; done; return 1; }
+mrswait() { local i; for i in $(seq 1 300); do get "/api/mrs/one?key=$K7" >"$T/mw"; [ "$(pick "$T/mw" "len(d['busy'])")" = 0 ] && return 0; sleep 0.3; done; return 1; }
 W1=$(wc -l <"$T/glab.writes")
 [ "$(mrsp review "{\"key\":\"$K7\",\"depth\":\"quick\"}")" = 202 ] && ok "Review this starts the agent" || bad "Review this" "$(cat "$T/mj")"
 mrswait && ok "and it finishes" || bad "and it finishes"

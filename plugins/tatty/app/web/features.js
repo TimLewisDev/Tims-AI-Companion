@@ -7,11 +7,11 @@
 const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
-  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"),
+  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"), worktrees: $("#page-worktrees"),
   qa: $("#page-qa"), qabug: $("#page-qabug"), qaplan: $("#page-qaplan"), mrs: $("#page-mrs") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", mrs: "engineering", jira: "production", tasks: "production", taskboard: "production",
+const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", worktrees: "engineering", mrs: "engineering", jira: "production", tasks: "production", taskboard: "production",
   designs: "design", design: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
 // name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
 // decisions are painted from it (paintDecisions).
@@ -155,6 +155,7 @@ function parseRoute() {
   }
   if (parts[0] === "diagram") return { page: "diagram" };
   if (parts[0] === "mrs") return { page: "mrs", key: parts[1] || "", tab: parts[2] || "" };
+  if (parts[0] === "worktrees") return { page: "worktrees" };
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
   if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
@@ -245,6 +246,11 @@ async function route() {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderProjectDiagram === "function") renderProjectDiagram(pageEls.diagram);
     else pageEls.diagram.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "worktrees") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderWorktrees === "function") await renderWorktrees(pageEls.worktrees);
+    else pageEls.worktrees.replaceChildren(el("p", { class: "pad st missing" }, "The worktrees page didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
   }
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "shop") {
@@ -1874,7 +1880,7 @@ function actionBar(f, openPane) {
     const merging = row.phase === "merge";
     if (merging && openPane) {
       // the merge step: the main button opens the Branch & merge panel, where the request is made (or gone to)
-      const b = el("button", { type: "button", id: "step-merge-open", class: "primary action-main" }, "Open Branch & merge");
+      const b = el("button", { type: "button", id: "step-merge-open", class: (f.merge || {}).url ? "action-skip" : "primary action-main" }, "Open Branch & merge");
       b.addEventListener("click", () => openPane("merge"));
       node.append(b);
       node.append(el("button", { type: "button", id: "step-skip-merge", class: "action-skip", title: "No request will be made: the feature is finished without one", onclick: () => skipStep(f, "merge") }, "Skip merge"));
@@ -1956,6 +1962,7 @@ function overview(f) {
     f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
     unitGateCard(f), commitCard(f), // unitgate.js, commit.js
     act.node,
+    typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js: the way to the Merge request page, whatever else is going on
     ...rest.filter(x => x.r.kind === "warn").map(stand1),
     f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "",
     lines.length ? el("div", { class: "sv-lines" }, lines) : "",
@@ -2059,6 +2066,7 @@ function overviewCards(f) {
       e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : "";
   const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
   const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), unitGateCard(f), commitCard(f), // unitgate.js, commit.js
+    typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js
     stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
   // Each session Start opened that is still going has a tab on the Features page: one line

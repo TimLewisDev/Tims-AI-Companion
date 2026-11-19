@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --mrs | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --mrs | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -1975,8 +1975,22 @@ def check_mr(p):
             window.api = async (path, body) => {
               if (path.startsWith('/api/mr?')) return window.__data;
               if (path.startsWith('/api/mr/diff?')) return { path: 'src/widget.txt', binary: false, cut: false, threads: ['d1'], hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [' a', '-b', '+B', ' c', '+d'] }] };
-              if (path === '/api/mr/recommend') { window.__sent.push(['recommend', body]); window.__data.state.d1 = { recommendation: { action: 'act', summary: 'The null guard is missing.', reasoning: 'Line 2 uses it unguarded.', change: { description: 'Return early when it is null.', files: ['src/widget.txt'] }, draftReply: 'Good catch: I will guard it.', seen: 2 }, selected: false, draft: { text: '', edited: false, commit: '' }, result: null }; return { ok: true }; }
-              if (path === '/api/mr/select') { window.__sent.push(['select', body]); const st = window.__data.state.d1; st.selected = body.on; if (body.on) st.draft.text = st.recommendation.draftReply; return { ok: true, waiting: false }; }
+              if (path.startsWith('/api/mr/state?')) { window.__lights = (window.__lights || 0) + 1; return { state: window.__data.state, busy: window.__busy || [], step: {} }; }
+              if (path === '/api/mr/recommend') {
+                window.__sent.push(['recommend', body]); window.__busy = ['d1'];
+                setTimeout(() => {
+                  window.__data.state.d1 = { recommendation: { action: 'act', summary: 'The null guard is missing.', points: ['Line 2 of `widget.txt` calls `Widget.Get()` with no null check.', 'Nothing else guards it: see WidgetFactory.Build and src/core/guard.cs (e.g. here).', 'getValue is the same.'],
+                    reasoning: '', change: { steps: ['Return early in `Widget.Get()` when it is null.', 'Add a test for `null` in tests/widget_test.cs.'], description: '', files: ['src/widget.txt', 'tests/widget_test.cs'] }, draftReply: 'Good catch: I will guard it.', seen: 2 }, selected: false, draft: { text: '', edited: false, commit: '' }, result: null };
+                  window.__busy = [];
+                  document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'mr', name: 'Demo', thread: 'd1', done: true } }));
+                }, 500);
+                return { ok: true };
+              }
+              if (path === '/api/mr/select') {
+                window.__sent.push(['select', body]); await new Promise(r => setTimeout(r, 600));
+                const st = window.__data.state[body.thread] || (window.__data.state[body.thread] = { recommendation: null, selected: false, draft: { text: '', edited: false, commit: '' }, result: null });
+                st.selected = body.on; if (body.on && st.recommendation && !st.draft.text) st.draft.text = st.recommendation.draftReply; return { ok: true, waiting: false };
+              }
               if (path === '/api/mr/draft') { window.__sent.push(['draft', body]); return { ok: true }; }
               if (path === '/api/mr/change') { window.__sent.push(['change', body]); return { ok: true, tag: 's-test', name: 'Demo : MR changes', command: '/tatty:mr-change', project: 'C:/work/repo' }; }
               return window.__real.api(path, body);
@@ -2029,18 +2043,44 @@ def check_mr(p):
     p.js("document.querySelector('#mr-all').click(); 1")
     res["withResolved"] = p.js("[...document.querySelectorAll('#mr-host .mr-thread')].map(c => c.dataset.id)")
     p.js("document.querySelector('#mr-all').click(); 1")
-    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').click(); 1")
+    # Recommend action: the button is a spinner at once, the agent's steps change one line in place, and only that card is drawn again
+    p.js("window.__hero = document.querySelector('#mr-host .mr-hero'); window.__other = document.querySelector('#mr-host .mr-thread[data-id=d2]'); window.__lights = 0; 1")
+    res["recommendNow"] = p.js("""(() => { const t0 = performance.now(); document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').click();
+        const nb = document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend'); const c = document.querySelector('#mr-host .mr-thread[data-id=d1]');
+        return { fast: performance.now() - t0 < 100, text: nb.textContent.trim(), spinner: !!nb.querySelector('.mr-spin'), disabled: nb.disabled, working: c.classList.contains('working'), step: (c.querySelector('.mr-step') || {}).textContent }; })()""")
+    p.js("""(() => { for (const s of ['Reading widget.txt', 'Searching the code', 'Reading guard.cs']) document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'mr', name: 'Demo', thread: 'd1', busy: true, step: s } })); })()""")
+    res["stepInPlace"] = p.js("""({ step: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-step').textContent, samePage: document.querySelector('#mr-host .mr-hero') === window.__hero,
+                                   sameOther: document.querySelector('#mr-host .mr-thread[data-id=d2]') === window.__other, lights: window.__lights })""")
     wait(p, "!!document.querySelector('#mr-host .mr-rec')")
-    res["recommended"] = p.js("""({ sent: window.__sent[0], rec: document.querySelector('#mr-host .mr-rec').innerText.replace(/\\s+/g, ' ').trim(), cls: document.querySelector('#mr-host .mr-thread[data-id=d1]').className,
+    res["recommended"] = p.js("""({ sent: window.__sent[0], cls: document.querySelector('#mr-host .mr-thread[data-id=d1]').className, samePage: document.querySelector('#mr-host .mr-hero') === window.__hero,
+                                   sameOther: document.querySelector('#mr-host .mr-thread[data-id=d2]') === window.__other, noEntrance: !document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('enter'),
                                    draft: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, btn: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').textContent })""")
+    res["formatted"] = p.js("""({ labels: [...document.querySelectorAll('#mr-host .mr-rec .mr-sec-label')].map(x => x.textContent), summary: document.querySelector('#mr-host .mr-summary').textContent,
+                                 points: [...document.querySelectorAll('#mr-host .mr-points li')].map(li => li.textContent),
+                                 code: [...document.querySelectorAll('#mr-host .mr-rec code')].map(c => (c.classList.contains('ident') ? 'ident:' : 'tick:') + c.textContent),
+                                 steps: [...document.querySelectorAll('#mr-host .mr-steps li')].map(li => li.textContent), files: [...document.querySelectorAll('#mr-host .mr-fp')].map(x => x.innerText) })""")
     p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-action').dispatchEvent(new PointerEvent('pointerenter')); 1")
     wait(p, "!!document.querySelector('.mr-pop')")
     res["actionCard"] = p.js("document.querySelector('.mr-pop').innerText.replace(/\\s+/g, ' ').trim()")
     p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
-    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-tick').click(); 1")
-    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value !== ''")
+    # the switch: the page answers in the same moment, and the server is told behind it
+    res["tickNow"] = p.js("""(() => { const c = document.querySelector('#mr-host .mr-thread[data-id=d1]'); const t0 = performance.now(); c.querySelector('#mr-tick').click();
+        return { fast: performance.now() - t0 < 100, chosen: c.classList.contains('chosen'), bar: document.querySelector('#mr-change').textContent, barOff: document.querySelector('#mr-change').disabled, lit: !!document.querySelector('.mr-bar.lit'),
+                 draft: c.querySelector('.mr-draft').value, spinning: !c.querySelector('.mr-tick-spin').hidden, sentYet: window.__sent.length }; })()""")
+    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-tick-spin').hidden")
     res["ticked"] = p.js("""({ sent: window.__sent[1], draft: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, bar: document.querySelector('#mr-change').textContent,
-                              barOff: document.querySelector('#mr-change').disabled, lit: !!document.querySelector('.mr-bar.lit'), chosen: document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('chosen') })""")
+                              chosen: document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('chosen'), samePage: document.querySelector('#mr-host .mr-hero') === window.__hero })""")
+    res["untickNow"] = p.js("""(() => { const c = document.querySelector('#mr-host .mr-thread[data-id=d1]'); c.querySelector('#mr-tick').click();
+        return { chosen: c.classList.contains('chosen'), bar: document.querySelector('#mr-change').textContent, barOff: document.querySelector('#mr-change').disabled, spinning: !c.querySelector('.mr-tick-spin').hidden }; })()""")
+    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-tick-spin').hidden")
+    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-tick').click(); 1")
+    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-tick-spin').hidden")
+    # a comment nobody has looked into: the switch still moves at once, and the wait for the agent is a spinner
+    res["tickWaits"] = p.js("""(() => { const c = document.querySelector('#mr-host .mr-thread[data-id=d2]'); c.querySelector('#mr-tick').click(); const n = document.querySelector('#mr-host .mr-thread[data-id=d2]');
+        return { chosen: n.classList.contains('chosen') || c.classList.contains('chosen'), working: n.classList.contains('working'), spinner: !!n.querySelector('#mr-recommend .mr-spin'), bar: document.querySelector('#mr-change').textContent }; })()""")
+    wait(p, "!document.querySelector('#mr-host .mr-thread[data-id=d2]').classList.contains('working')")
+    p.js("document.querySelector('#mr-host .mr-thread[data-id=d2] #mr-tick').click(); 1")
+    wait(p, "document.querySelector('#mr-change').textContent === 'Make 1 change'")
     p.js("""(() => { const t = document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft'); t.value = 'Fixed, thanks.'; t.dispatchEvent(new Event('input')); })()""")
     time.sleep(0.9)
     res["draftSaved"] = p.js("window.__sent.filter(x => x[0] === 'draft').map(x => x[1].text)")
@@ -2064,10 +2104,76 @@ def check_mr(p):
     p.js("localStorage.setItem('tt-juice', 'off'); document.querySelector('#mr-host .mr-tabs button[data-tab=overview]').click(); 1")
     res["still"] = p.js("""({ still: document.querySelector('#mr-host .mr-page').classList.contains('still'), anim: getComputedStyle(document.querySelector('#mr-host .mr-sig.checks')).animationName })""")
     p.js("localStorage.removeItem('tt-juice'); 1")
+    p.js("window.__f.merge.mr = { open: 1, total: 2, failed: 1, changes: 0, merge: 'blocked' }; 1")
+    res["gateButton"] = p.js("""(() => { const g = mrGateButton(window.__f); const a = g.querySelector('a'); return { text: a.textContent, href: a.getAttribute('href'), pulse: a.classList.contains('gate-pulse'),
+                                  chips: [...g.querySelectorAll('.mr-gate-chip')].map(c => c.className.replace('mr-gate-chip ', '') + ':' + c.textContent) }; })()""")
+    res["gateButtonOther"] = p.js("""(() => { const f = { ...window.__f, merge: { ...window.__f.merge, state: 'merged', mr: { open: 0, total: 2, failed: 0, changes: 0, merge: 'ok' } } };
+                                  const g = mrGateButton(f); const a = g.querySelector('a'); const none = mrGateButton({ ...window.__f, merge: { ...window.__f.merge, url: '' } }) === '';
+                                  return { text: a.textContent, pulse: a.classList.contains('gate-pulse'), chips: [...g.querySelectorAll('.mr-gate-chip')].map(c => c.textContent), noRequest: none }; })()""")
     res["nav"] = p.js("""(() => { const n = featureNav(window.__f, null, false, { mr: true }); const a = [...n.querySelectorAll('.fnav-item')].find(x => x.querySelector('span').textContent === 'Merge request');
                           return a ? { on: a.classList.contains('on'), sub: a.querySelector('.dim').textContent, ic: a.dataset.ic, badge: a.dataset.badge, href: a.getAttribute('href') } : null; })()""")
     res["navHidden"] = p.js("""(() => { const f = { ...window.__f, phase: 'building', merge: { branch: 'feature/x', state: '' } }; const n = featureNav(f, null, false, {}); return [...n.querySelectorAll('.fnav-item')].some(x => x.querySelector('span').textContent === 'Merge request'); })()""")
     p.js("window.api = window.__real.api; document.querySelector('#mr-host').remove(); localStorage.removeItem('tt-mr-overview'); 1")
+    return res
+
+
+def check_pool(p):
+    """The Worktrees page (pool.js), drawn with the page's api() stood in for: no repo, no pool yet (the Create
+    card), a pool with a feature on one slot, an orphan on another and one free, and a busy pool. Nothing is made."""
+    res = {}
+    p.js("""window.__real = { api: window.api, hash: location.hash, confirm: window.confirm }; window.__sent = []; window.__asked = [];
+            const GB = 1073741824;
+            const base = { repo: 'C:/work/repo', dir: 'C:/work/repo.pool', busy: '', measuring: false, disk: { total: 1000 * GB, used: 900 * GB, free: 100 * GB, path: 'C:/work' }, sizes: {}, seed: { size: 3, max: 6, warm: ['Library'] } };
+            window.__views = {
+              none: { repo: '', note: 'This project is not in a git repository, so it has no worktrees.' },
+              empty: { ...base, exists: false },
+              pool: { ...base, exists: true, config: { size: 3, max: 4 }, base: 'origin/main', free: 1, sizes: { at: Date.now() / 1000, main: 30 * GB, slots: { 'slot-1': 25 * GB } }, estimate: { bytes: 25 * GB, from: 'a slot' },
+                slots: [{ slot: 'slot-1', path: 'C:/work/repo.pool/slot-1', state: 'claimed', branch: 'feature/x', feature: 'Widget', featureExists: true, featureBranch: 'feature/x', base: 'main', merge: 'opened', behind: 2, size: 25 * GB },
+                        { slot: 'slot-2', path: 'C:/work/repo.pool/slot-2', state: 'claimed', branch: 'bug/y', feature: 'Gone', featureExists: false, featureBranch: 'bug/y', base: 'main', merge: '', behind: 0, size: null },
+                        { slot: 'slot-3', path: 'C:/work/repo.pool/slot-3', state: 'free', branch: 'pool/slot-3', feature: '', featureExists: false, featureBranch: '', base: '', merge: '', behind: 0, size: 25 * GB }] } };
+            window.__view = 'none';
+            window.confirm = t => { window.__asked.push(t); return true; };
+            window.api = async (path, body) => {
+              if (path === '/api/pool') return JSON.parse(JSON.stringify(window.__views[window.__view]));
+              if (path.startsWith('/api/pool/')) { window.__sent.push([path, body]); return { ok: true, made: [{ slot: 'slot-1' }], slot: body && body.slot, branchKept: 'feature/x', slots: [] }; }
+              return window.__real.api(path, body);
+            };
+            document.querySelector('#pool-host') && document.querySelector('#pool-host').remove();
+            const ph = document.createElement('div'); ph.id = 'pool-host'; document.body.append(ph); window.__draw = () => window.renderWorktrees(ph); window.__draw(); 1""")
+    wait(p, "!!document.querySelector('#pool-host .pool-head')")
+    res["none"] = p.js("document.querySelector('#pool-host').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("window.__view = 'empty'; window.__draw(); 1")
+    wait(p, "!!document.querySelector('#pool-host .pool-card')")
+    res["empty"] = p.js("""({ text: document.querySelector('#pool-host').innerText.replace(/\\s+/g, ' ').trim(), meter: document.querySelector('#pool-host .pool-meter-used').style.width,
+                             size: document.querySelector('#pool-host input[aria-label="slots to make"]').value })""")
+    p.js("[...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Create the pool').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["created"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.__sent = []; window.__asked = []; window.__view = 'pool'; window.__draw(); 1")
+    wait(p, "!!document.querySelector('#pool-host .pool-table')")
+    res["pool"] = p.js("""({ rows: [...document.querySelectorAll('#pool-host .pool-table tbody tr')].map(r => [...r.children].map(c => c.innerText.replace(/\\s+/g, ' ').trim()).slice(0, 5).join(' | ')),
+                             link: document.querySelector('#pool-host .pool-table a').getAttribute('href'), orphan: !!document.querySelector('#pool-host .chip.bad'),
+                             disk: [...document.querySelectorAll('#pool-host .pool-card')][0].innerText.replace(/\\s+/g, ' ').trim(),
+                             head: [...document.querySelectorAll('#pool-host .pool-card h3')].map(h => h.textContent.replace(/\\s+/g, ' ').trim()) })""")
+    p.js("[...document.querySelectorAll('#pool-host .pool-table tbody tr')][0].querySelector('button').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["freed"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.__sent = []; window.__asked = []; [...document.querySelectorAll('#pool-host .pool-table tbody tr')][2].querySelector('button').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["deleted"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.__sent = []; [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["added"] = p.js("({ sent: window.__sent[0], asked: window.__asked[window.__asked.length - 1] })")
+    p.js("window.__views.pool.busy = 'Adding a slot.'; window.__draw(); 1")
+    wait(p, "!!document.querySelector('#pool-host .pool-busy')")
+    res["busy"] = p.js("({ text: document.querySelector('#pool-host .pool-busy').innerText, addOff: [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').disabled })")
+    p.js("document.querySelector('#pool-host').remove(); window.__view = 'pool'; window.__views.pool.busy = ''; location.hash = '#worktrees'; 1")
+    wait(p, "!!document.querySelector('#page-worktrees .pool-table')")
+    res["route"] = p.js("""({ on: document.querySelector('#page-worktrees').classList.contains('on'), mode: document.body.dataset.mode || '',
+                             nav: (document.querySelector('.pnav a[data-page=worktrees]') || {}).className || 'missing',
+                             navOn: document.querySelector('.pnav a[data-page=worktrees]').classList.contains('on') })""")
+    res["tile"] = p.js("MODE_PAGES.engineering.map(t => t.label + ' ' + t.href + ' ' + (ICONS[t.icon] ? 'icon' : 'no icon'))")
+    p.js("window.api = window.__real.api; window.confirm = window.__real.confirm; 1")
     return res
 
 
@@ -2986,10 +3092,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--pool", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--mrs": check_mrs, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--mrs": check_mrs, "--pool": check_pool, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")
