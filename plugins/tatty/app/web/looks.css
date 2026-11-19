@@ -236,6 +236,7 @@
 .sv-gate .sv-gate-h { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .65; color: inherit; }
 .sv-gate .action { margin: 0; }
 .sv-gate .sv-steps { margin: 6px 0 2px; }
+.sv-gate .sv-divider { border: 0; border-top: 1px solid var(--line); margin: 12px 0 4px; }
 .sv-lines { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 2px; }
 .sv-sess { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 .sv-sess .go-btn { margin-left: auto; }

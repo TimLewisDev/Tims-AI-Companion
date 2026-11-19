@@ -1959,16 +1959,17 @@ function overview(f) {
   });
   const gate = el("section", { class: "card sv-gate" },
     el("h4", { class: "sv-gate-h" }, "Where it stands"),
+    f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "", // the stage tags sit right under the label
     f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
     unitGateCard(f), commitCard(f), // unitgate.js, commit.js
     act.node,
     typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js: the way to the Merge request page, whatever else is going on
     ...rest.filter(x => x.r.kind === "warn").map(stand1),
-    f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "",
-    lines.length ? el("div", { class: "sv-lines" }, lines) : "",
     more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
     !act.node && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
-    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
+    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "",
+    lines.length ? el("hr", { class: "sv-divider" }) : "", // the call to action ends here; the open sessions follow
+    lines.length ? el("div", { class: "sv-lines" }, lines) : "");
   // the drawers: today's cards, one click away
   const last = !going.length && sessions[0];
   const shown = going[0] || last;
