@@ -1280,6 +1280,45 @@ has "never back from merged" "$T/j" '"state": "merged"'
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"opened","url":"javascript:1"}' "$U/api/merge")" = 400 ] && ok "a request's link is http(s)" || bad "a request's link is http(s)"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"nope"}' "$U/api/merge")" = 400 ] && ok "an unknown action refused" || bad "an unknown action refused"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","action":"check"}' "$U/api/merge")" = 404 ] && ok "no such feature" || bad "no such feature"
+# leaving the review out: straight to the merge step (two features that finished their build and have no review yet)
+for n in Skippy Lefty; do
+	mkdir -p "$FX/features/$n"
+	for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+		sed "s/Demo/$n/g; s/^- State: .*/- State: Complete/" "$FX/features/Demo/Demo - $f.md" >"$FX/features/$n/$n - $f.md"
+	done
+	post /api/project "{\"name\":\"$n\",\"path\":\"$GRW\"}" >/dev/null
+done
+get "/api/feature?name=Skippy" >"$T/j"
+has "a finished build with no review offers the review" "$T/j" '"skill": "tatty:review"'
+[ "$(pick "$T/j" "d['review']['phase']")" = review ] && ok "the review step is where it stands" || bad "the review step is where it stands"
+post /api/skip '{"name":"Skippy","step":"review"}' >"$T/j"
+has "Skip review is recorded" "$T/j" '"step": "review"'
+get "/api/feature?name=Skippy" >"$T/j"
+has "skipped, the feature goes on to the merge step" "$T/j" '"skill": "tatty:merge"'
+hasnt "and the review row is gone" "$T/j" '"skill": "tatty:review"'
+[ "$(pick "$T/j" "d['review']['phase'] + ' ' + str(d['review'].get('skipped'))")" = "merge ['review']" ] && ok "the tracker's review phase says merge, skipped" || bad "the tracker's review phase says merge, skipped" "$(pick "$T/j" "d['review']")"
+mkdir -p "$FX/features/Lefty/.tt"; printf 'review\toff\n' >"$FX/features/Lefty/.tt/workflow-stages.tsv"
+get "/api/feature?name=Lefty" >"$T/j"
+has "a workflow with Review left out goes straight to the merge step" "$T/j" '"skill": "tatty:merge"'
+hasnt "with no review row" "$T/j" '"skill": "tatty:review"'
+# the skill that opens the request is the person's choice for the project
+mkdir -p "$GR/.claude/skills/open-it"
+printf -- '---\nname: open-it\ndescription: Open a merge request the way this team does\n---\n\n# open-it\n' >"$GR/.claude/skills/open-it/SKILL.md"
+get "/api/merge/skill?name=Skippy" >"$T/j"
+[ "$(pick "$T/j" "repr(d['skill'])")" = "''" ] && ok "no skill is chosen at first (Auto)" || bad "no skill is chosen at first"
+has "the project's own skills are listed" "$T/j" '"name": "open-it"'
+has "with what they say they do" "$T/j" 'the way this team does'
+get "/api/feature?name=Skippy" >"$T/j"
+hasnt "Auto names no skill to the merge session" "$T/j" "Request skill:"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"skill":"a b; rm -rf"}' "$U/api/merge/skill")" = 400 ] && ok "a skill's name has no spaces or shell characters" || bad "a skill's name is checked"
+post /api/merge/skill '{"skill":"open-it"}' >"$T/j"
+has "a chosen skill is kept" "$T/j" '"skill": "open-it"'
+get "/api/feature?name=Skippy" >"$T/j"
+has "and named to the merge session" "$T/j" "Request skill: open-it"
+post /api/merge/skill '{"skill":""}' >/dev/null
+get "/api/feature?name=Skippy" >"$T/j"
+hasnt "back to Auto: not named" "$T/j" "Request skill:"
+grep -q "Request skill" "$root/plugins/tatty/skills/merge/SKILL.md" && ok "the merge skill knows the chosen skill" || bad "the merge skill knows the chosen skill"
 [ -f "$root/plugins/tatty/skills/merge/SKILL.md" ] && ok "the merge skill is in the plugin" || bad "the merge skill is in the plugin"
 head -n 2 "$root/plugins/tatty/skills/merge/SKILL.md" | tail -n 1 | grep -q '^name: merge' && ok "named merge" || bad "named merge"
 
@@ -1379,6 +1418,74 @@ git -C "$CR" status --porcelain >"$T/st"
 [ "$(cat "$T/st" | tr -d '\r' | tr '\n' ' ')" = "?? .env " ] && ok "all but the file that looks like a secret" || bad "all but the file that looks like a secret" "$(cat "$T/st")"
 get "/api/commit?name=Commit%20Demo" >"$T/j"
 [ "$(pick "$T/j" "[f['path'] for f in d['files']]")" = "['.env']" ] && ok "the page then lists only that" || bad "the page then lists only that"
+
+# --- the file view: what one changed file looks like, which work units changed it, what no unit explains
+FV="$T/fileviewrepo"
+mkdir -p "$FV" && git -C "$FV" init -q -b main && git -C "$FV" config user.email t@example.com && git -C "$FV" config user.name Tester
+mkdir -p "$FV/src"; printf 'one\ntwo\nthree\n' >"$FV/src/a.txt"; printf 'keep\n' >"$FV/src/b.txt"; printf 'old\n' >"$FV/gone.txt"
+git -C "$FV" add -A; git -C "$FV" commit -q -m "feat: base [KEY-1]"
+git -C "$FV" switch -q -c feature/File-View
+FVW=$(cd "$FV" && { pwd -W 2>/dev/null || pwd; })
+FD="$FX/features/File View"
+mkdir -p "$FD/.tt/File View - Task Status/results"
+printf '# Status\n- State: In Progress\n\n# Work Unit Board\n| ID | Outcome | Tasks | Validated by | Status | Notes |\n|---|---|---|---|---|---|\n| WU1 | Edit a | T01 | Agent | Done | |\n| WU2 | Edit b | T02 | Agent | In Progress | |\n\n# Task Board\n| ID | Task | Executor | Work unit | Depends on | Status | Notes |\n|---|---|---|---|---|---|---|\n| T01 | Edit a | Agent | WU1 | — | Done | |\n| T02 | Edit b | Agent | WU2 | T01 | In Progress | |\n' >"$FD/File View - Task Status.md"
+printf '# Result: T01 — Edit a\n\n## Files Modified\n- change `src/a.txt`: x\n\n## Summary\nok\n' >"$FD/.tt/File View - Task Status/results/T01.md"
+printf '# Result: T02 — Edit b\n\n## Files Modified\n- change `src/b.txt`: y\n- change `src/a.txt`: z\n\n## Summary\nok\n' >"$FD/.tt/File View - Task Status/results/T02.md"
+$PY -c "import json,os,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)) if os.path.exists(p) else {}; d['file view']={'repo':sys.argv[2],'branch':'feature/File-View','base':'main','created':1,'merge':{}}; json.dump(d,open(p,'w'))" "$TATTY_HOME" "$FVW"
+printf 'one\nTWO\nthree\nfour\n' >"$FV/src/a.txt"; printf 'keep\nmore\n' >"$FV/src/b.txt"; printf 'new file\n' >"$FV/notes.txt"; rm -f "$FV/gone.txt"; printf '\000\001\002' >"$FV/bin.dat"
+fvpost() { curl -s -o "$T/fv" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/commit"; }
+get "/api/commit?name=File%20View&detail=1" >"$T/j"
+[ "$(pick "$T/j" "d['files'][0].get('print', '') != ''")" = True ] && ok "the detailed list carries a fingerprint of each file" || bad "the detailed list carries a fingerprint of each file" "$(head -c 400 "$T/j")"
+[ "$(pick "$T/j" "next(f['units'] for f in d['files'] if f['path'] == 'src/a.txt')")" = "['WU1', 'WU2']" ] && ok "a file two units' results name lists both" || bad "a file two units' results name lists both" "$(head -c 600 "$T/j")"
+[ "$(pick "$T/j" "next(f['units'] for f in d['files'] if f['path'] == 'src/b.txt')")" = "['WU2']" ] && ok "a file one unit's results name lists that unit" || bad "a file one unit's results name lists that unit"
+[ "$(pick "$T/j" "sorted(f['path'] for f in d['files'] if f['external'])")" = "['bin.dat', 'gone.txt', 'notes.txt']" ] && ok "files no unit or recorded edit explains are external" || bad "files no unit or recorded edit explains are external" "$(head -c 800 "$T/j")"
+get "/api/commit?name=File%20View" >"$T/j"
+[ "$(pick "$T/j" "'units' in d['files'][0]")" = False ] && ok "the quick list (the card's) leaves the explaining out" || bad "the quick list leaves the explaining out"
+get "/api/commit/diff?name=File%20View&path=src/a.txt" >"$T/j"
+[ "$(pick "$T/j" "d['state'] + ' ' + str(len(d['hunks']))")" = "modified 1" ] && ok "a changed file's diff is one hunk" || bad "a changed file's diff is one hunk" "$(head -c 500 "$T/j")"
+[ "$(pick "$T/j" "[l for l in d['hunks'][0]['lines'] if l[0] in '+-']")" = "['-two', '+TWO', '+four']" ] && ok "with its removed and added lines" || bad "with its removed and added lines" "$(head -c 500 "$T/j")"
+[ "$(pick "$T/j" "d['units']")" = "['WU1', 'WU2']" ] && ok "and the units that changed it" || bad "and the units that changed it"
+[ "$(pick "$T/j" "d['external']")" = False ] && ok "it isn't external" || bad "it isn't external"
+get "/api/commit/diff?name=File%20View&path=notes.txt" >"$T/j"
+[ "$(pick "$T/j" "d['state'] + ' ' + str(d['external']) + ' ' + str([l for l in d['hunks'][0]['lines']])")" = "new True ['+new file']" ] && ok "a new file is all additions, and external" || bad "a new file is all additions, and external" "$(head -c 500 "$T/j")"
+get "/api/commit/diff?name=File%20View&path=gone.txt" >"$T/j"
+[ "$(pick "$T/j" "d['state'] + ' ' + str([l for l in d['hunks'][0]['lines']])")" = "deleted ['-old']" ] && ok "a deleted file is all removals" || bad "a deleted file is all removals" "$(head -c 500 "$T/j")"
+get "/api/commit/diff?name=File%20View&path=bin.dat" >"$T/j"
+[ "$(pick "$T/j" "str(d['binary']) + ' ' + str(len(d['hunks']))")" = "True 0" ] && ok "a binary file says so" || bad "a binary file says so" "$(head -c 500 "$T/j")"
+[ "$(code -H "X-TT-Token: $K" "$U/api/commit/diff?name=File%20View&path=../etc/passwd")" = 400 ] && ok "a path outside the repo is refused" || bad "a path outside the repo is refused"
+[ "$(code -H "X-TT-Token: $K" "$U/api/commit/diff?name=File%20View&path=src/b.txt%2Fnot")" != 200 ] && ok "a path that isn't changed is refused" || bad "a path that isn't changed is refused"
+[ "$(code -H "X-TT-Token: $K" "$U/api/commit/diff?name=Nope&path=x")" = 404 ] && ok "the diff of no such feature" || bad "the diff of no such feature"
+# the guard against a file rewritten after you looked
+get "/api/commit?name=File%20View&detail=1" >"$T/j"
+PRINT=$(pick "$T/j" "next(f['print'] for f in d['files'] if f['path'] == 'src/b.txt')")
+printf 'keep\nmore\nand more\n' >"$FV/src/b.txt"
+[ "$(fvpost "{\"name\":\"File View\",\"files\":[\"src/b.txt\"],\"message\":\"m\",\"prints\":{\"src/b.txt\":\"$PRINT\"}}")" = 409 ] && ok "a file rewritten since you looked is refused" || bad "a file rewritten since you looked is refused" "$(cat "$T/fv")"
+has "and says which" "$T/fv" "src/b.txt"
+get "/api/commit?name=File%20View&detail=1" >"$T/j"
+PRINT=$(pick "$T/j" "next(f['print'] for f in d['files'] if f['path'] == 'src/b.txt')")
+[ "$(fvpost "{\"name\":\"File View\",\"files\":[\"src/b.txt\"],\"message\":\"feat: b\",\"prints\":{\"src/b.txt\":\"$PRINT\"}}")" = 200 ] && ok "with the fresh fingerprint it commits" || bad "with the fresh fingerprint it commits" "$(cat "$T/fv")"
+# git held by another process
+touch "$FV/.git/index.lock"
+[ "$(fvpost '{"name":"File View","files":["notes.txt"],"message":"m"}')" = 409 ] && ok "another git holding the index is a 409, not a crash" || bad "another git holding the index is a 409" "$(cat "$T/fv")"
+has "that says to wait" "$T/fv" "Another git"
+rm -f "$FV/.git/index.lock"
+# a detached HEAD
+git -C "$FV" switch -q --detach HEAD
+$PY -c "import json,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)); d['file view']['branch']=''; json.dump(d,open(p,'w'))" "$TATTY_HOME"
+printf x >"$FV/loose.txt"
+[ "$(fvpost '{"name":"File View","files":["loose.txt"],"message":"m"}')" = 409 ] && ok "a detached HEAD is refused even with no branch recorded" || bad "a detached HEAD is refused" "$(cat "$T/fv")"
+git -C "$FV" switch -q feature/File-View; rm -f "$FV/loose.txt"
+# skipping the commit step
+code400=$(curl -s -o /dev/null -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"File View","step":"nope"}' "$U/api/skip")
+[ "$code400" = 400 ] && ok "only the commit and review steps can be skipped" || bad "only the commit and review steps can be skipped" "$code400"
+code404=$(curl -s -o /dev/null -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","step":"commit"}' "$U/api/skip")
+[ "$code404" = 404 ] && ok "skipping for no such feature" || bad "skipping for no such feature" "$code404"
+get "/api/commit?name=File%20View" >"$T/j"
+[ "$(pick "$T/j" "d['skipped']")" = False ] && ok "the commit step isn't skipped at first" || bad "the commit step isn't skipped at first"
+post /api/skip '{"name":"File View","step":"commit"}' >"$T/j"
+has "Skip commit is recorded" "$T/j" '"step": "commit"'
+get "/api/commit?name=File%20View" >"$T/j"
+[ "$(pick "$T/j" "d['skipped']")" = True ] && ok "and the card then has nothing to say" || bad "and the card then has nothing to say"
 
 fi
 if section unitgate; then

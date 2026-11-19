@@ -3361,12 +3361,20 @@ def git_run(repo, args, stdin=None, timeout=120):
 
 def status_files(repo):
     """The repo's uncommitted files, from git (one entry per file, renames as a delete and a new file):
-    ([{path, state, staged, secret, bytes}], conflicts, truncated). state: new, modified, deleted."""
+    ([{path, state, staged, secret, bytes}], conflicts, truncated, error). state: new, modified, deleted.
+    error is git's own words when it couldn't say (never taken for a clean repo). When more than
+    COMMIT_CAP files changed, untracked folders are listed as folders and the tracked changes come first."""
     code, out, err = git_run(repo, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames"], timeout=180)
     if code != 0:
-        return [], [], False
-    files, conflicts = [], []
+        return [], [], False, (err.strip() or "git status failed")[-400:]
     entries = [e for e in out.split("\0") if len(e) > 3]
+    if len(entries) > COMMIT_CAP:
+        code, out, err = git_run(repo, ["status", "--porcelain=v1", "-z", "-unormal", "--no-renames"], timeout=180)
+        if code != 0:
+            return [], [], False, (err.strip() or "git status failed")[-400:]
+        entries = [e for e in out.split("\0") if len(e) > 3]
+    entries.sort(key=lambda e: e[:2] == "??")
+    files, conflicts = [], []
     for e in entries[:COMMIT_CAP]:
         xy, path = e[:2], e[3:]
         if "U" in xy or xy in ("AA", "DD"):
@@ -3374,14 +3382,34 @@ def status_files(repo):
             continue
         state = "new" if xy == "??" or "A" in xy else "deleted" if "D" in xy else "modified"
         size = 0
-        if state != "deleted":
+        if state != "deleted" and not path.endswith("/"):
             try:
-                size = (Path(repo) / path).stat().st_size
+                size = lp(Path(repo) / path).stat().st_size
             except OSError:
                 pass
         files.append({"path": path, "state": state, "staged": xy[0] not in " ?", "bytes": size,
                       "secret": bool(SECRET_NAME.search(path)), "large": size > LARGE_FILE})
-    return sorted(files, key=lambda f: f["path"].lower()), conflicts, len(entries) > COMMIT_CAP
+    return sorted(files, key=lambda f: f["path"].lower()), conflicts, len(entries) > COMMIT_CAP, ""
+
+
+def file_prints(repo, files):
+    """{path: fingerprint}: what git would call each present file's content now (one git process for all),
+    so a commit can tell that a file was rewritten since the person looked at it. Big files and folders
+    are fingerprinted by size alone."""
+    prints, todo = {}, []
+    for f in files:
+        if f["state"] == "deleted":
+            prints[f["path"]] = "deleted"
+        elif f["large"] or f["path"].endswith("/") or "\n" in f["path"]:
+            prints[f["path"]] = f"size:{f['bytes']}"
+        else:
+            todo.append(f["path"])
+    if todo:
+        code, out, _ = git_run(repo, ["hash-object", "--stdin-paths"], stdin=("\n".join(todo) + "\n").encode("utf-8"), timeout=180)
+        got = out.split("\n") if code == 0 else []
+        for p, h in zip(todo, got):
+            prints[p] = h.strip()
+    return prints
 
 
 def workflow_results(folder):
@@ -3440,23 +3468,73 @@ def suggest_commit_message(folder, repo, branch, titles, applied=None):
     return message
 
 
-def commit_info(folder):
-    """What the Commit page shows for a feature: its repo and branch, and the uncommitted files, each
-    marked as the workflow's own or not. {repo: ""} when the feature has no repository to look in."""
+def commit_repo(folder):
+    """(branch record, repo) a feature commits in: its worktree when it has one, else its project's repo; repo "" if none."""
     rec = branch_record(folder.name)
     project = feature_project(folder, docs_of(folder))[0] or ""
-    recorded = work_repo(rec) if os.path.isdir(work_repo(rec)) else ""  # its worktree, when it has one
-    repo = repo_of(recorded or project)
+    recorded = work_repo(rec) if os.path.isdir(work_repo(rec)) else ""
+    return rec, repo_of(recorded or project)
+
+
+def commit_units(folder, repo, rec):
+    """{work unit: set(paths)} for the feature's commit view: the files each unit's task results name, and
+    the files of the branch's own commits whose subject names a unit (the diagram's attribution)."""
+    head = rec.get("branch") or current_branch(repo) or "HEAD"
+    bases = diagram_bases(repo, head, str(rec.get("base") or ""))
+    return diagram_unit_files(folder, repo, bases[0] if bases else "", diagram_head(repo, "HEAD"), bases)
+
+
+def commit_edits(folder, repo):
+    """{path: [{task, agent, ts}]}: the file edits the build's hook recorded for the feature (Edit and Write
+    tool calls only: nothing a formatter, a build or a shell command did)."""
+    out = {}
+    for c in read_diffs(folder)["changes"]:
+        rel = diagram_rel(repo, c.get("file"))
+        if rel:
+            out.setdefault(rel, []).append({"task": c.get("task", ""), "agent": c.get("agent", ""), "ts": c.get("ts", 0)})
+    return out
+
+
+def unit_order(u):
+    m = re.search(r"\d+", u)
+    return (int(m.group(0)) if m else 1 << 30, u)
+
+
+def explain_files(folder, repo, rec, files):
+    """Marks each file with the work units that changed it ("units"), the recorded edits ("edits": how many)
+    and "external" when neither a unit nor a recorded edit accounts for it (a formatter, a build, a shell
+    command, someone else). Returns the {unit: paths} map it used."""
+    units = {u: p for u, p in commit_units(folder, repo, rec).items() if p}
+    edits = commit_edits(folder, repo)
+    for f in files:
+        f["units"] = sorted((u for u, p in units.items() if in_workflow(f["path"], p, repo)), key=unit_order)
+        f["edits"] = len(edits.get(f["path"], []))
+        f["external"] = not f["units"] and not f["edits"]
+    return units
+
+
+def commit_info(folder, detail=False):
+    """What the Commit page shows for a feature: its repo and branch, and the uncommitted files, each
+    marked as the workflow's own or not. {repo: ""} when the feature has no repository to look in.
+    detail adds what the page needs to explain and guard each file: the work units that changed it, whether
+    it is external, and a fingerprint of its content (sent back with a commit)."""
+    rec, repo = commit_repo(folder)
     if not repo:
         return {"repo": "", "note": "No repository is known for this feature yet: choose its project on the feature's page."}
-    files, conflicts, truncated = status_files(repo)
+    files, conflicts, truncated, error = status_files(repo)
     mentioned, titles = workflow_results(folder)
     for f in files:
         f["workflow"] = in_workflow(f["path"], mentioned, repo)
+    if detail and files:
+        explain_files(folder, repo, rec, files)
+        prints = file_prints(repo, files)
+        for f in files:
+            f["print"] = prints.get(f["path"], "")
     branch, here = rec.get("branch", ""), current_branch(repo)
     doc, _ = review_load(folder)  # the changes a review's suggestions led to get their own message
     applied = [i["summary"] for i in doc.items if i["result"].startswith("Applied")] if doc and doc.status == "Applied" else None
-    return {"repo": repo, "branch": branch, "current": here, "files": files, "conflicts": conflicts,
+    return {"repo": repo, "branch": branch, "current": here, "files": files, "conflicts": conflicts, "error": error,
+            "skipped": bool(skips_of(folder).get("commit")) and applied is None,  # (a review's own changes are still to commit)
             "truncated": truncated, "mentioned": len(mentioned), "afterReview": applied is not None,
             "message": suggest_commit_message(folder, repo, branch or here, titles, applied)}
 
@@ -3464,40 +3542,53 @@ def commit_info(folder):
 def feature_commit(state, folder, body):
     """Stage and commit the files chosen (or all but the secret-looking), with the message given:
     only those files are committed, whatever else is staged. (http code, answer)"""
-    info = commit_info(folder)
+    prints = body.get("prints") if isinstance(body.get("prints"), dict) else {}
+    info = commit_info(folder, detail=bool(prints))
     if not info["repo"]:
         return 400, {"error": info["note"]}
+    if info.get("error"):
+        return 409, {"error": "git couldn't read the repo's changes: " + info["error"]}
     if info["conflicts"]:
         return 409, {"error": "The repo has files in conflict (" + ", ".join(info["conflicts"][:3]) + "): resolve them first."}
     if info["branch"] and info["current"] != info["branch"]:
         return 409, {"error": f"The repo is on {info['current'] or 'a detached HEAD'}, not the feature's branch {info['branch']}: switch it first, so the commit lands on the right branch."}
+    if not info["current"]:
+        return 409, {"error": "The repo is on a detached HEAD: switch it to a branch first, so the commit isn't lost."}
     message = str(body.get("message") or "").replace("\r\n", "\n").strip()
     if not message:
         return 400, {"error": "Write a commit message."}
     known = {f["path"]: f for f in info["files"]}
     if body.get("all"):
+        if info["truncated"]:
+            return 409, {"error": "More files changed than are listed: choose the files to commit."}
         chosen = [p for p, f in known.items() if not f["secret"]]
     else:
         chosen = [p for p in body.get("files") or [] if isinstance(p, str)]
         if any(p not in known for p in chosen):
             return 409, {"error": "The files changed since you looked: reload the page."}
+    stale = [p for p in chosen if p in prints and known[p].get("print") != prints[p]]
+    if stale:
+        return 409, {"error": "These files changed since you looked (something is still writing to them?): reload the page to see what you are committing.\n" + "\n".join(stale[:6])}
     if not chosen:
         return 400, {"error": "Nothing is chosen to commit."}
     repo = info["repo"]
     spec = ("\0".join(chosen) + "\0").encode("utf-8")
     fd, tmp = tempfile.mkstemp(prefix="tatty-commit-", suffix=".txt", dir=str(home()) if home().is_dir() else None)
+    busy = {"error": "Another git is working in this repo (it holds the index lock): wait for it to finish, then try again."}
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(message + "\n")
         with COMMIT_LOCK:
             code, _, err = git_run(repo, ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=spec)
             if code != 0:
-                return 500, {"error": f"git add failed: {err.strip()[-600:]}"}
+                return (409, busy) if "index.lock" in err else (500, {"error": f"git add failed: {err.strip()[-600:]}"})
             code, out, err = git_run(repo, ["commit", "-F", tmp, "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=spec, timeout=600)
             if code != 0:
                 fresh = ("\0".join(p for p in chosen if not known[p]["staged"]) + "\0").encode("utf-8")
                 if fresh != b"\0":  # put the index back as it was: what we staged for this, nothing else
                     git_run(repo, ["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"], stdin=fresh)
+                if "index.lock" in err:
+                    return 409, busy
                 said = "\n".join([ln for ln in (err + "\n" + out).splitlines() if ln.strip()][-14:])
                 return 422, {"error": "git refused the commit (a hook, or your git identity?):\n" + said}
             _, sha, _ = git_run(repo, ["rev-parse", "--short", "HEAD"])
@@ -3511,6 +3602,72 @@ def feature_commit(state, folder, body):
     if reviewed:  # the changes the review led to are committed: the review is done
         review_done(folder)
     return 200, {"ok": True, "commit": sha.strip(), "subject": message.split("\n", 1)[0], "files": len(chosen), "repo": repo, "reviewDone": reviewed}
+
+
+HUNK_HEAD = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def parse_unified(text):
+    """The hunks of a unified diff, in the shape the Code Diff page draws ({oldStart, oldLines, newStart,
+    newLines, lines: [" x", "-x", "+x"]}), and whether git said the file is binary."""
+    hunks, cur = [], None
+    for raw in text.split("\n"):
+        line = raw.rstrip("\r")
+        m = HUNK_HEAD.match(line)
+        if m:
+            cur = {"oldStart": int(m.group(1)), "oldLines": int(m.group(2) or 1) if m.group(2) != "0" else 0,
+                   "newStart": int(m.group(3)), "newLines": int(m.group(4) or 1) if m.group(4) != "0" else 0, "lines": []}
+            hunks.append(cur)
+        elif cur is not None and line[:1] in (" ", "-", "+"):
+            cur["lines"].append(line)
+        elif cur is None and line.startswith("Binary files "):
+            return [], True
+    return hunks, False
+
+
+def commit_diff(folder, path):
+    """What one changed file looks like against the last commit, and who changed it (http code, answer):
+    {path, state, binary, folder, hunks, cut, units, edits, external}. Only a file git reports as changed."""
+    rec, repo = commit_repo(folder)
+    if not repo:
+        return 400, {"error": "No repository is known for this feature yet."}
+    p = str(path or "").replace("\\", "/")
+    if not p or p.startswith("/") or re.match(r"^[A-Za-z]:", p) or ".." in p.split("/"):
+        return 400, {"error": "A path inside the repository, please."}
+    code, out, err = git_run(repo, ["status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", p], timeout=60)
+    entry = next((e for e in out.split("\0") if len(e) > 3), "") if code == 0 else ""
+    if code != 0:
+        return 409, {"error": "git couldn't look at that file: " + (err.strip() or "git status failed")[-300:]}
+    if not entry:
+        return 409, {"error": "That file isn't changed any more: reload the page."}
+    xy = entry[:2]
+    state = "new" if xy == "??" or "A" in xy else "deleted" if "D" in xy else "modified"
+    one = {"path": p, "state": state, "large": False, "bytes": 0}
+    try:
+        one["bytes"] = lp(Path(repo) / p).stat().st_size if state != "deleted" else 0
+    except OSError:
+        pass
+    one["large"] = one["bytes"] > LARGE_FILE
+    answer = {"path": p, "state": state, "binary": False, "large": one["large"], "hunks": [], "cut": False,
+              "folder": p.endswith("/"), "bytes": one["bytes"]}
+    if not (one["large"] or answer["folder"]):  # (a folder of new files, or a huge file, is not drawn)
+
+        base = ["diff", "--no-color", "--no-ext-diff", "--no-renames", "-U3"]
+        if xy == "??":
+            code, out, err = git_run(repo, [*base, "--no-index", "--", "/dev/null", p], timeout=60)
+        else:
+            code, out, err = git_run(repo, [*base, "HEAD", "--", p], timeout=60)
+        if code not in (0, 1):
+            return 409, {"error": "git couldn't make the diff: " + (err.strip() or "git diff failed")[-300:]}
+        hunks, binary = parse_unified(out)
+        total = sum(len(h["lines"]) for h in hunks)
+        answer.update(binary=binary, hunks=clean_hunks(hunks), cut=total > DIFF_LINES)
+    units = {u: s for u, s in commit_units(folder, repo, rec).items() if s}
+    edits = commit_edits(folder, repo).get(p, [])
+    answer["units"] = sorted((u for u, s in units.items() if in_workflow(p, s, repo)), key=unit_order)
+    answer["edits"] = sorted(edits, key=lambda e: e["ts"])[-12:]
+    answer["external"] = not answer["units"] and not edits
+    return 200, answer
 
 
 # ---------------------------------------------------------------- the break after a validated work unit
@@ -3562,10 +3719,13 @@ def unit_commit(state, folder):
     gate = unit_gate(folder, unit_units(folder))
     if not gate:
         return 409, {"error": "No work unit is waiting to be committed."}
-    info = commit_info(folder)
+    info = commit_info(folder, detail=True)
     if not info["repo"]:
         return 400, {"error": info["note"]}
-    chosen = [f["path"] for f in info["files"] if f["workflow"] and not f["secret"]]
+    # (only this unit's files when the task board says which unit each task belongs to: an earlier unit
+    # that was never committed isn't swept into this one's commit)
+    mapped = any(u for f in info["files"] for u in f.get("units", []))
+    chosen = [f["path"] for f in info["files"] if f["workflow"] and not f["secret"] and (gate["unit"] in f.get("units", []) or not mapped)]
     if not chosen:
         return 409, {"error": f"Nothing {gate['unit']} changed is uncommitted: no changed file is named in the workflow's task results."}
     titles = []
@@ -3577,7 +3737,8 @@ def unit_commit(state, folder):
     message = suggest_commit_message(folder, info["repo"], info.get("branch") or info.get("current") or "", titles)
     first, _, rest = message.partition("\n")
     first = f"{first[:80].rstrip()} ({gate['unit']})" if gate["unit"] not in first else first
-    code, answer = feature_commit(state, folder, {"files": chosen, "message": first + ("\n" + rest if rest else "")})
+    code, answer = feature_commit(state, folder, {"files": chosen, "message": first + ("\n" + rest if rest else ""),
+                                                  "prints": {f["path"]: f["print"] for f in info["files"] if f["path"] in chosen}})
     if code != 200:
         return code, answer
     unit_gate_save(folder, unit=gate["unit"], committed=answer["commit"])
@@ -3693,9 +3854,11 @@ def review_view(folder):
     doc, bad = review_load(folder)
     if bad:
         return {"phase": "broken", "problem": bad}
-    if not doc:
-        return {"phase": "review"}
-    return {"phase": doc.phase(), "status": doc.status, "doc": review_doc_path(folder).name, **doc.counts()}
+    view = {"phase": "review"} if not doc else {"phase": doc.phase(), "status": doc.status, "doc": review_doc_path(folder).name, **doc.counts()}
+    if skips_of(folder).get("review") or review_left_out(folder):  # (the same rule as review_rows)
+        view["phase"] = "merge"
+        view["skipped"] = ["review"]
+    return view
 
 
 def review_context(folder, repo, branch, against="", doc=None):
@@ -3748,6 +3911,8 @@ def review_rows(folder):
         return [merge_row(folder)]
     href = "#feature/" + urllib.parse.quote(folder.name)
     base = {"prefix": "", "kind": "primary", "verb": "", "arg": "", "hint": "", "stage": "Review"}
+    if skips_of(folder).get("review") or review_left_out(folder):  # left out: straight to the request
+        return [merge_row(folder)]
     doc, bad = review_load(folder)
     if bad:
         return [{**base, "kind": "warn", "phase": "review-broken", "skill": "-", "text": f"The Review Suggestions document isn't in its layout, so Tatty can't go on with the review: {bad}"}]
@@ -3818,6 +3983,44 @@ def review_done(folder):
     except reviewdoc.DocError as e:
         return 409, {"error": str(e)}
     return 200, {"ok": True}
+
+
+# Steps the person chose to leave out, which are Tatty's own (the toolbox's stages.sh doesn't know them):
+# <project home>/skips.json: feature (lower case) -> {commit: <when>, review: <when>}. A skipped step is
+# passed over by review_rows, so the feature goes on to the merge step.
+SKIP_STEPS = ("commit", "review")
+
+
+def skips_of(folder):
+    rec = read_json(project_home() / "skips.json", {}).get(folder.name.lower())
+    return rec if isinstance(rec, dict) else {}
+
+
+def review_left_out(folder):
+    """Whether the feature's stage profile leaves the Review stage out (stages.sh keeps "<stage>\\toff" lines)."""
+    try:
+        text = lp(folder / ".tt" / "workflow-stages.tsv").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(ln.replace("\r", "").split("\t")[:2] == ["review", "off"] for ln in text.split("\n"))
+
+
+def feature_skip(state, folder, step):
+    """Leave out the commit or the review step and go on to the merge step. (http code, answer)"""
+    if step not in SKIP_STEPS:
+        return 400, {"error": "Only the commit and review steps can be skipped here."}
+    with BRANCH_LOCK:
+        rows = read_json(project_home() / "skips.json", {})
+        rec = rows.get(folder.name.lower())
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        rec[step] = int(time.time())
+        rows[folder.name.lower()] = rec
+        write_json(project_home() / "skips.json", rows)
+    doc, _ = review_load(folder)
+    if step == "commit" and doc and doc.status == "Applied":  # the review's changes are as committed as they will be
+        review_done(folder)
+    state.emit("skip", name=folder.name, step=step)
+    return 200, {"ok": True, "step": step}
 
 
 def worktree_info(repo, rec, path, note):
@@ -4115,12 +4318,105 @@ def merge_row(folder):
     The facts the skill needs go after it as plain lines (no angle brackets: those are
     what a person fills in)."""
     v = merge_view(folder.name)
+    chosen = merge_skill_get()  # the skill the person chose for this project to open requests with ("" = Claude finds one)
     ctx = "\n".join(["Context from Tatty:", f"Feature: {folder.name}", f"Folder: {folder.as_posix()}",
                      f"Repository: {v['worktree'] or v['repo']}", f"Branch: {v['branch']}", f"Base: {v['base']}",
-                     f"Host: {v['host'] or (merge_host(v['repo']) if v['repo'] else '')}", f"Request: {v['url']}"])
+                     f"Host: {v['host'] or (merge_host(v['repo']) if v['repo'] else '')}", f"Request: {v['url']}",
+                     *([f"Request skill: {chosen}"] if chosen else [])])
     return {"prefix": "", "kind": "primary", "phase": "merge", "skill": "tatty:merge", "verb": "", "arg": "",
             "text": "Get the work into a pull / merge request: review, commit, push and open it.",
             "hint": "\n" + ctx, "stage": "Merge"}
+
+
+# The skill that opens a feature's merge request is the person's choice per project (Settings > Merge request),
+# or none: then the /tatty:merge session looks through the skills it can see for one. Tatty names no skill: the
+# pick list is what the repo, the user and the installed plugins have (the same SKILL.md files Claude lists).
+SKILL_NAME = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+
+
+def merge_skill_get():
+    v = read_json(project_home() / "project-settings.json", {}).get("mergeSkill", "")
+    return v if isinstance(v, str) and SKILL_NAME.match(v) else ""
+
+
+def merge_skill_set(name):
+    """(http code, answer): keep the skill chosen for this project, "" for Auto."""
+    name = str(name or "").strip().lstrip("/")
+    if name and not SKILL_NAME.match(name):
+        return 400, {"error": "A skill's name has letters, digits and - _ . : only."}
+    with BRANCH_LOCK:
+        rows = read_json(project_home() / "project-settings.json", {})
+        rows["mergeSkill"] = name
+        write_json(project_home() / "project-settings.json", rows)
+    return 200, {"skill": name}
+
+
+def skill_front(path):
+    """(name, description) from a SKILL.md's front matter; "" for what isn't there."""
+    try:
+        text = lp(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    lines = text.replace("\r", "").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return "", ""
+    name, desc = "", ""
+    for i, ln in enumerate(lines[1:60], 1):
+        if ln.strip() == "---":
+            break
+        m = re.match(r"^(name|description):\s*(.*)$", ln)
+        if not m:
+            continue
+        v = m.group(2).strip().strip("\"'")
+        if v in (">", "|", ">-", "|-", ""):  # a folded value: its first line
+            v = (lines[i + 1].strip() if i + 1 < len(lines) else "")
+        if m.group(1) == "name":
+            name = v
+        else:
+            desc = v
+    return name, desc
+
+
+def skill_list(repos):
+    """[{name, description, from}]: the skills the project's repos, the user's config and the installed plugins have."""
+    found, seen = [], set()
+
+    def scan(base, source, prefix=""):
+        try:
+            kids = sorted(os.listdir(lp(base)))
+        except OSError:
+            return
+        for k in kids:
+            md = Path(base) / k / "SKILL.md"
+            if not os.path.isfile(lp(md)):
+                continue
+            nm, desc = skill_front(md)
+            nm = prefix + (nm or k)
+            if nm not in seen:
+                seen.add(nm)
+                found.append({"name": nm, "description": desc[:240], "from": source})
+
+    for repo in repos:
+        if repo:
+            scan(Path(repo) / ".claude" / "skills", "this project")
+            scan(Path(repo) / ".agents" / "skills", "this project")
+    scan(config_dir() / "skills", "you")
+    try:
+        recorded = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for pid, installs in recorded.get("plugins", {}).items():
+            plug = pid.partition("@")[0]
+            if installs and installs[0].get("installPath"):
+                scan(Path(installs[0]["installPath"]) / "skills", f"plugin {plug}", plug + ":")
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return sorted(found, key=lambda x: (x["from"] != "this project", x["from"] != "you", x["name"].lower()))
+
+
+def merge_skill_view(folder=None):
+    repos = [diagram_project_repo()]
+    if folder:
+        repos.append(commit_repo(folder)[1])
+    return {"skill": merge_skill_get(), "skills": skill_list(list(dict.fromkeys(r for r in repos if r)))}
 
 
 # ---------------------------------------------------------------- starting a session
@@ -10967,7 +11263,16 @@ class Handler(BaseHTTPRequestHandler):
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
                 return self.send(404, {"error": "no such feature"})
-            return self.send(200, commit_info(folder))
+            return self.send(200, commit_info(folder, detail=q.get("detail", [""])[0] == "1"))
+        if path == "/api/merge/skill":
+            wanted = q.get("name", [""])[0]
+            return self.send(200, merge_skill_view(feature_dir(wanted) if wanted else None))
+        if path == "/api/commit/diff":
+            folder = feature_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = commit_diff(folder, q.get("path", [""])[0])
+            return self.send(code, answer)
         if path in ("/api/decide", "/api/decide/item"):
             folder = feature_dir(q.get("name", [""])[0])
             if not folder:
@@ -11300,6 +11605,15 @@ class Handler(BaseHTTPRequestHandler):
                 code, answer = 409, {"error": str(e)}
             except OSError as e:
                 code, answer = 500, {"error": f"couldn't cancel: {e}"}
+            return self.send(code, answer)
+        if path == "/api/merge/skill":
+            code, answer = merge_skill_set(b.get("skill", ""))
+            return self.send(code, answer)
+        if path == "/api/skip":
+            folder = feature_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such feature"})
+            code, answer = feature_skip(st, folder, str(b.get("step", "")))
             return self.send(code, answer)
         if path in ("/api/review/decide", "/api/review/apply", "/api/review/done"):
             folder = feature_dir(str(b.get("name", "")))

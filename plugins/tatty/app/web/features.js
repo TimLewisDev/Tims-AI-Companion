@@ -952,26 +952,39 @@ async function featureBoard(f, main) {
       el("div", { class: "dim small" }, x.prefix || "Working note"), el("strong", {}, x.doc), el("div", { class: "dim small" }, `updated ${ago(x.updated)}`)) })));
 }
 
-// The steps of the feature's route, and which one it is on.
+// Whether the feature has reached the merge step: the build is complete, the review is finished (or left
+// out, or its commit skipped) and the request isn't merged yet.
+function atMergeStep(f) {
+  return f.phase === "complete" && !phaseDone(f) && ((f.review || {}).phase === "merge" || (f.merge || {}).state === "opened");
+}
+
+// The steps of the feature's route, and which one it is on. Merge follows Review: it is the one
+// that is on once the review is finished (or left out) and the request isn't merged yet.
 function pipeline(f) {
   const p = f.phase;
   const done = phaseDone(f); // the build is done at "complete"; the work is done once it is merged
+  const merging = atMergeStep(f);
+  const route = (steps, at) => {
+    const review = steps.indexOf("Review");
+    const all = [...steps.slice(0, review + 1), "Merge", ...steps.slice(review + 1)];
+    return { steps: all, at: merging ? review + 1 : at, done };
+  };
   if (f.route === "lite") {
     const at = { "lite-focus": 0, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
-    return { steps: ["Explore", "Lite Brief", "Build", "Review", "Done"], at, done };
+    return route(["Explore", "Lite Brief", "Build", "Review", "Done"], at);
   }
   if (f.route === "quick") { // the small change with the understanding done by Tatty; Review is offered at the end, not run
     const at = { exploring: 0, "lite-focus": 1, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
-    return { steps: ["Understand", "Brief", "Build", "Review", "Done"], at, done };
+    return route(["Understand", "Brief", "Build", "Review", "Done"], at);
   }
   if (f.route === "bug") {
     const kinds = new Set(f.docList.map(d => d.doc));
     const at = p === "debugging" ? 0 : p === "debug-done" ? 1 : p === "complete" ? 3 : kinds.has("Lite Brief") ? 2 : p === "debugged" ? 2 : 1;
-    return { steps: ["Debug", "Write-up", "Fix", "Review", "Done"], at, done };
+    return route(["Debug", "Write-up", "Fix", "Review", "Done"], at);
   }
   const at = { empty: 0, exploring: 0, explored: 1, planning: 1, "signed-off": 2, "breakdown-draft": 2, "breakdown-orphan": 2,
     "breakdown-written": 3, building: 3, complete: 4 }[p] ?? 0;
-  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Review", "Done"], at, done };
+  return route(["Explore", "Plan", "Breakdown", "Build", "Review", "Done"], at);
 }
 
 // The Review step's phases, as chips under it: the review, deciding on its suggestions, making the changes,
@@ -1708,6 +1721,7 @@ function stepActions(f, row, index, openNow) {
 // The feature's branch (Tatty makes one when a workflow starts) and, once the build is done, its pull / merge
 // request: the Review step's merge phase (in Where it stands) walks through opening it; these buttons tell Tatty
 // what happened when it can't see for itself (it looks with glab / gh when asked, and once when the page opens).
+let mergePoll = 0; // the timer that looks for the request while the merge step is current (one at a time)
 function mergeCard(f) {
   const m = f.merge || {};
   if (!m.branch && (f.phase !== "complete" || !f.project)) return "";
@@ -1722,12 +1736,16 @@ function mergeCard(f) {
     try { await api("/api/merge", { name: f.name, action, ...extra }); featureCache.delete(f.name); route(); }
     catch (e) { alert(e.message || e); }
   };
-  if (atMerge) {  // one quiet look at the host; the page is drawn again only if it found something new
-    api("/api/merge", { name: f.name, action: "check" }).then(r => {
-      if (r.state !== m.state) { featureCache.delete(f.name); route(); }
-    }).catch(() => {});
+  let card = null;
+  const look = () => api("/api/merge", { name: f.name, action: "check" }).then(r => {
+    if (r.state !== m.state) { featureCache.delete(f.name); route(); }
+  }).catch(() => {});
+  clearInterval(mergePoll);
+  if (atMerge) {  // a quiet look at the host now and then (the server asks it no more often than every 30 s); the page is drawn again only if it found something new
+    look();
+    mergePoll = setInterval(() => { if (card && card.isConnected) look(); else clearInterval(mergePoll); }, 30000);
   }
-  return el("section", { class: "card merge-card" }, el("h4", {}, "Branch and merge"),
+  card = el("section", { class: "card merge-card" + (atMerge && m.state !== "opened" ? " current" : "") }, el("h4", {}, "Branch and merge"),
     m.branch ? el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
       m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : "") : el("div", { class: "small dim" }, "No branch is recorded for this feature yet."),
     chooser,
@@ -1740,6 +1758,7 @@ function mergeCard(f) {
         if (url !== null) act("opened", { url: url.trim() });
       } }, "I opened the request"),
       el("button", { type: "button", id: "merge-merged", onclick: () => act("merged") }, "Mark merged")) : "");
+  return card;
 }
 
 // The one thing a feature's page offers first (the server's primary_action), as large buttons:
@@ -1772,7 +1791,11 @@ function actionBar(f) {
     // (in the look the app wears: "Gild through to Approach"; Minimal's is plain "Continue")
     let label = "Continue";
     try { if (window.TattyLooks) label = TattyLooks.continueLabel(journeyModel(f)); } catch (e) { /* the plain word */ }
+    const merging = rows[a.row].phase === "merge"; // the merge step's own button: named for what it does, and it pulses until the request is open
+    if (merging) label = "Branch & merge";
     opener("step-continue", label, close => startPanel(f, rows[a.row], a.row, close));
+    if (["review", "apply"].includes(rows[a.row].phase)) node.append(el("button", { type: "button", id: "step-skip-review", class: "action-skip", onclick: () => skipStep(f, "review") }, "Skip review"));
+    if (merging && (f.merge || {}).state !== "opened") buttons[buttons.length - 1].classList.add("merge-pulse");
   } else if (a.kind === "unitgate") {
     covered = a.row == null ? -1 : a.row; // (its buttons are the "Where it stands" card's: unitgate.js)
   } else if (a.kind === "decide" || a.kind === "commit") {
@@ -1781,6 +1804,8 @@ function actionBar(f) {
     said = a.what === "validate" ? `${a.count} ${a.count === 1 ? "check waits" : "checks wait"} for your result.`
       : open ? `${open} ${open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).` : rows[covered].text;
     link(open || a.what === "validate" ? "decide-waiting" : "step-" + a.kind, a.label + (a.count ? ` (${a.count})` : ""), a.href);
+    if (a.kind === "commit") node.append(el("button", { type: "button", id: "step-skip-commit", class: "action-skip", onclick: () => skipStep(f, "commit") }, "Skip commit"));
+    else if (!open && a.what !== "validate" && rows[covered] && rows[covered].phase === "decide") node.append(el("button", { type: "button", id: "step-skip-review", class: "action-skip", onclick: () => skipStep(f, "review") }, "Skip review"));
     if (open || a.what === "validate") covered = -1; // (the review's own row, if any, is offered under More options)
   }
   if (!node.childElementCount) return { node: "", covered };
@@ -1866,7 +1891,8 @@ function overview(f) {
   const body = el("div", { class: "sv-drawer-body" }, panes.map(([k, , node]) => el("div", { class: "sv-pane", "data-k": k, hidden: true }, node)));
   const drawer = el("aside", { class: "sv-drawer", hidden: true, "aria-label": "Details" },
     el("div", { class: "sv-drawer-head" }, title, el("button", { type: "button", title: "Close (Esc)", onclick: () => openPane(null) }, "×")), body);
-  const pills = panes.map(([k, label]) => el("button", { type: "button", "data-k": k, onclick: () => openPane(stageDrawer === k ? null : k) }, label));
+  const pills = panes.map(([k, label]) => el("button", { type: "button", "data-k": k, class: k === "merge" && atMergeStep(f) && (f.merge || {}).state !== "opened" ? "merge-pulse" : "",
+    onclick: () => openPane(stageDrawer === k ? null : k) }, label));
   function openPane(k) {
     stageDrawer = k;
     drawer.hidden = !k;

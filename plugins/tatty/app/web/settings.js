@@ -71,6 +71,7 @@ function drawSettings() {
     stepSettings(),
     chatSettings(s),
     branchSettings(s),
+    mergeSkillSettings(),
     jiraSettings(s),
     debugSettings()));
 }
@@ -256,6 +257,38 @@ function branchSettings(s) {
     el("p", { class: "dim small" }, "A workflow started from Tatty works on a new branch of its own, made when it first starts, so two workflows don't trample each other. Tatty switches branches, and commits only when you press Commit on a feature's page: pushing and opening the request are yours (the Review step's merge phase helps)."),
     el("label", { class: "field-row" }, el("strong", {}, "Branch prefix"), input,
       el("span", { class: "dim small" }, "Letters, digits, - and _, each part ending in /: feature/ gives feature/ABC-12-fix-the-thing.")));
+}
+
+// Merge request (see "the skill that opens a feature's merge request" in the server): which of your skills
+// the merge step uses to open the request, for this project. Blank (Auto) leaves it to the session, which
+// looks through the skills it can see. Tatty names none itself: the list is what this project, you and your
+// plugins have. Saved when the box is left.
+function mergeSkillSettings() {
+  const input = el("input", { id: "set-mergeSkill", list: "set-mergeSkill-list", placeholder: "Auto", "aria-label": "Merge request skill", autocomplete: "off" });
+  const list = el("datalist", { id: "set-mergeSkill-list" });
+  const about = el("div", { class: "dim small", id: "set-mergeSkill-about" });
+  let skills = [];
+  const describe = () => {
+    const hit = skills.find(x => x.name === input.value.trim());
+    about.textContent = hit ? `${hit.from}${hit.description ? ": " + hit.description : ""}` : input.value.trim() ? "Not one of the skills found: it is used as typed." : "";
+  };
+  api("/api/merge/skill").then(r => {
+    skills = r.skills || [];
+    input.value = r.skill || "";
+    list.replaceChildren(...skills.map(x => el("option", { value: x.name }, `${x.from}${x.description ? ": " + x.description.slice(0, 80) : ""}`)));
+    describe();
+  }).catch(() => { about.textContent = "Couldn't list the skills."; });
+  input.addEventListener("input", describe);
+  input.addEventListener("change", async () => {
+    try { const r = await api("/api/merge/skill", { skill: input.value.trim() }); input.value = r.skill; describe(); }
+    catch (e) { alert(String(e.message || e)); }
+  });
+  return el("section", { id: "merge-skill-settings" },
+    el("h3", {}, "Merge request"),
+    el("p", { class: "dim small" }, "When a feature reaches its merge step, Tatty starts a session that commits, pushes and opens the request. It can use one of your own skills to open the request (a project's merge request skill, for instance), so the title and description follow your team's template. This is for the current project."),
+    el("label", { class: "field-row" }, el("strong", {}, "Skill"), input, list,
+      el("span", { class: "dim small" }, "Leave blank for Auto: the session looks through the skills it can see for one that opens merge requests, and otherwise uses glab or gh.")),
+    about);
 }
 
 // The Jira board's reading (jira.js): which tickets, through which MCP server

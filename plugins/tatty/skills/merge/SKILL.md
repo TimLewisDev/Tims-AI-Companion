@@ -32,6 +32,8 @@ After the command, Tatty writes lines under `Context from Tatty:`:
   from (it may be empty).
 - `Host`: `gitlab`, `github`, or empty when unknown.
 - `Request`: the link to an existing request from the branch, if there is one.
+- `Request skill`: only when the person chose one for this project: the name
+  of the skill they want used to write and open the request.
 
 If there is no context, say this is started from a feature's Review step in
 Tatty, then work from the current directory and ask what branch they mean.
@@ -69,12 +71,23 @@ Tatty, then work from the current directory and ask what branch they mean.
    changes are committed from Tatty's Commit page, so by now there is usually nothing left.)
 4. **Push.** Propose `git push -u origin <Branch>`. On a yes, run it and show the
    result. If the push is rejected, explain why and offer options; do not force.
-5. **Open the request.** By `Host`: GitLab with `glab mr create`, GitHub with
-   `gh pr create`, or the project's connected tool / skill; when the command is
-   missing or not signed in, give the person the title and description and the
-   web link to open it. Propose the title (the project's format) and a
-   description built from the feature's documents: why, what changed, how to
-   test. Show it and ask before creating it.
+5. **Open the request.**
+   - If `Request skill` is given, use that skill (the Skill tool) to write the
+     title and description and to open the request, following its own steps
+     and its asking points. Do not substitute your own title or description.
+     If the skill can't be found or fails, say so and fall back to the next
+     bullet.
+   - Otherwise look through the skills listed to you for one that writes or
+     opens merge / pull requests (judge by their descriptions). If one fits,
+     offer it and use it on a yes.
+   - Failing both, by `Host`: GitLab with `glab mr create`, GitHub with
+     `gh pr create`, or the project's connected tool; when the command is
+     missing or not signed in, give the person the title and description and
+     the web link to open it. Propose the title (the project's format) and a
+     description built from the feature's documents: why, what changed, how to
+     test. Show it and ask before creating it.
+   Whichever way, the request is created only after the person has seen what
+   it will say and said yes.
 6. **Tell Tatty.** Show the request's link. Tell the person to press **Check now**
    on the feature's page in Tatty (Tatty looks for the request itself with
    `glab` / `gh`), or **I opened the request** with the link if that doesn't

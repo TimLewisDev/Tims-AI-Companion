@@ -280,7 +280,7 @@
       { k: "explore", l: "Explore" }, { k: "req", l: "Requirements", plan: true }, { k: "scope", l: "Scope", plan: true },
       { k: "approach", l: "Approach", plan: true }, { k: "tech", l: "Tech design", plan: true }, { k: "whole", l: "Whole plan", plan: true },
       { k: "signoff", l: "Sign-off", plan: true }, { k: "breakdown", l: "Breakdown" }, { k: "build", l: "Build", units: 6 },
-      { k: "review", l: "Review" }, { k: "done", l: "Done" }];
+      { k: "review", l: "Review" }, { k: "merge", l: "Merge" }, { k: "done", l: "Done" }];
     const st = nodes.map((n, i) => i < 3 ? "done" : i === 3 ? "next" : "todo");
     const m = { nodes, st, cur: 3, mode: "gate", units: 0, dec: 0, base: "develop" };
     if (state === "running") { st[3] = "now"; m.mode = "running"; }

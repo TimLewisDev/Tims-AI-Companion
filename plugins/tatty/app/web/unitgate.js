@@ -10,7 +10,9 @@ function unitGateCard(f) {
   const note = el("p", { class: "small", id: "unit-gate-note", role: "status" },
     g.committed ? el("span", {}, "Committed as ", el("code", {}, g.committed), ". Nothing was pushed.") : "");
   const commit = el("button", { type: "button", id: "unit-commit" }, g.committed ? "Commit more work" : "Commit work");
-  const next = el("button", { type: "button", class: "primary", id: "unit-continue" }, `Continue to ${g.next}`);
+  const nextWord = () => (committed ? `Continue to ${g.next}` : `Continue to ${g.next} without committing`);
+  let committed = !!g.committed;
+  const next = el("button", { type: "button", class: "primary", id: "unit-continue" }, nextWord());
   const say = (cls, ...nodes) => note.replaceChildren(el("span", { class: cls }, ...nodes));
   commit.addEventListener("click", async () => {
     commit.disabled = next.disabled = true;
@@ -19,6 +21,8 @@ function unitGateCard(f) {
       const r = await api("/api/unit-commit", { name: f.name });
       featureCache.delete(f.name);
       commit.textContent = "Commit more work";
+      committed = true;
+      next.textContent = nextWord();
       say("", "Committed ", el("code", {}, r.commit), ` ${r.subject}. ${r.files} file${r.files === 1 ? "" : "s"}; nothing was pushed.` +
         (r.others ? ` ${r.others} other changed file${r.others === 1 ? " was" : "s were"} left uncommitted.` : ""));
     } catch (e) { say("st missing commit-error", String(e.message || e)); }

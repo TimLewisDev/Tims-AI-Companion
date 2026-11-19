@@ -15,3 +15,21 @@
 .commit-card p { margin: 0; flex: 1 1 320px; }
 .commit-section .linkish { background: none; border: none; color: var(--accent); padding: 0 4px; cursor: pointer; font-size: 12px; }
 .commit-section .linkish:hover { text-decoration: underline; }
+/* The file list beside the diff of the file clicked, and who changed it */
+.commit-page { max-width: 1500px; }
+.commit-layout { display: grid; grid-template-columns: minmax(340px, 5fr) minmax(0, 7fr); gap: 12px; align-items: start; }
+.commit-files { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.commit-diff { position: sticky; top: 8px; max-height: calc(100vh - 24px); overflow: auto; min-width: 0; }
+.commit-diff .cd-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.commit-diff .cd-who { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; font-size: 12.5px; }
+.commit-diff .ext-note { display: flex; gap: 6px; align-items: baseline; }
+.commit-filter { display: flex; }
+.crow { flex-wrap: wrap; cursor: default; }
+.crow[hidden] { display: none; }
+.crow.open { background: var(--accent-soft); }
+.crow .cbox { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.crow button.cpath { background: none; border: none; padding: 0; text-align: left; color: inherit; cursor: pointer; }
+.crow button.cpath:hover { text-decoration: underline; }
+.unit-chip { font-size: 11px; }
+@media (max-width: 1000px) { .commit-layout { grid-template-columns: minmax(0, 1fr); } .commit-diff { position: static; max-height: none; } }
+.commit-diff .cd-who .unit-chip { margin-left: 4px; }

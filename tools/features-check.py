@@ -1676,17 +1676,24 @@ def check_commit(p):
     suggested message, the counts on the buttons, what each button sends, and the wrong-branch hold.
     Nothing is committed."""
     res = {}
-    p.js("""window.__real = { api: window.api, confirm: window.confirm }; window.__sent = []; window.__asked = [];
+    p.js("""window.__real = { api: window.api, confirm: window.confirm }; window.__sent = []; window.__asked = []; window.__skips = [];
             window.__info = { repo: 'C:/work/repo', branch: 'feature/x', current: 'feature/x', conflicts: [], truncated: false, mentioned: 2,
               message: 'feat: do the thing [ABC-1]\\n\\n- Add the widget',
               files: [
-                { path: 'docs/a.md', state: 'new', staged: false, bytes: 1, secret: false, large: false, workflow: true },
-                { path: 'src/widget.py', state: 'modified', staged: false, bytes: 1, secret: false, large: false, workflow: true },
+                { path: 'docs/a.md', state: 'new', staged: false, bytes: 1, secret: false, large: false, workflow: true, units: ['WU1'], external: false },
+                { path: 'src/widget.py', state: 'modified', staged: false, bytes: 1, secret: false, large: false, workflow: true, units: ['WU1', 'WU2'], external: false },
                 { path: '.env', state: 'new', staged: false, bytes: 1, secret: true, large: false, workflow: false },
                 { path: 'old.txt', state: 'deleted', staged: true, bytes: 0, secret: false, large: false, workflow: false },
-                { path: 'other.txt', state: 'new', staged: false, bytes: 1, secret: false, large: false, workflow: false }] };
+                { path: 'other.txt', state: 'new', staged: false, bytes: 1, secret: false, large: false, workflow: false, units: [], external: true }] };
             window.api = async (path, body) => {
               if (path.startsWith('/api/commit?')) return window.__info;
+              if (path.startsWith('/api/commit/diff?')) {
+                const ext = path.includes('other.txt');
+                return { path: decodeURIComponent(path.split('path=')[1]), state: 'modified', binary: false, large: false, folder: false, cut: false,
+                  hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: ['-old line', '+new line', '+another'] }],
+                  units: ext ? [] : ['WU1', 'WU2'], edits: ext ? [] : [{ task: 'T03', agent: 'coder', ts: 1 }], external: ext };
+              }
+              if (path === '/api/skip') { window.__skips.push(body); return { ok: true }; }
               if (path === '/api/commit') { window.__sent.push(body); return { ok: true, commit: 'abc1234', subject: 'feat: do the thing', files: 3, repo: 'C:/work/repo' }; }
               return window.__real.api(path, body);
             };
@@ -1709,6 +1716,24 @@ def check_commit(p):
                             staged: document.querySelector('.crow[data-path="old.txt"]').innerText.replace(/\\s+/g, ' ').trim(),
                             message: document.querySelector('#commit-message').value,
                             selected: document.querySelector('#commit-selected').textContent, all: document.querySelector('#commit-all').textContent })""")
+    res["units"] = p.js("""[...document.querySelectorAll('.crow')].map(r => r.dataset.path + ':' + [...r.querySelectorAll('.unit-chip')].map(c => c.textContent).join('+') + (r.classList.contains('ext') ? ':external' : ''))""")
+    p.js("document.querySelector('.crow[data-path=\"src/widget.py\"] .cpath').click(); 1")
+    wait(p, "!!document.querySelector('#commit-diff table.diff')")
+    res["diffPane"] = p.js("""({ head: document.querySelector('#commit-diff .cd-head').innerText.replace(/\\s+/g, ' ').trim(),
+                                who: document.querySelector('#commit-diff .cd-who').innerText.replace(/\\s+/g, ' ').trim(),
+                                added: [...document.querySelectorAll('#commit-diff td.code.add')].map(td => td.textContent),
+                                removed: [...document.querySelectorAll('#commit-diff td.code.del')].map(td => td.textContent),
+                                open: [...document.querySelectorAll('.crow.open')].map(r => r.dataset.path),
+                                ticked: [...document.querySelectorAll('.crow input')].filter(i => i.checked).length })""")
+    p.js("document.querySelector('.crow[data-path=\"other.txt\"] .cpath').click(); 1")
+    wait(p, "document.querySelector('#commit-diff .ext-note')")
+    res["externalPane"] = p.js("document.querySelector('#commit-diff .cd-who').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("(() => { const s = document.querySelector('#commit-filter'); s.value = 'ext'; s.dispatchEvent(new Event('change')); })()")
+    res["filterExternal"] = p.js("[...document.querySelectorAll('.crow')].filter(r => !r.hidden).map(r => r.dataset.path)")
+    p.js("(() => { const s = document.querySelector('#commit-filter'); s.value = 'u:WU2'; s.dispatchEvent(new Event('change')); })()")
+    res["filterUnit"] = p.js("[...document.querySelectorAll('.crow')].filter(r => !r.hidden).map(r => r.dataset.path)")
+    p.js("(() => { const s = document.querySelector('#commit-filter'); s.value = ''; s.dispatchEvent(new Event('change')); })()")
+    res["filterOptions"] = p.js("[...document.querySelectorAll('#commit-filter option')].map(o => o.textContent)")
     p.js("(() => { const i = document.querySelector('.crow[data-path=\"docs/a.md\"] input'); i.checked = false; i.dispatchEvent(new Event('change', { bubbles: true })); })()")
     res["afterUntick"] = p.js("document.querySelector('#commit-selected').textContent")
     p.js("document.querySelector('#commit-selected').click(); 1")
@@ -1722,6 +1747,12 @@ def check_commit(p):
     p.js("window.__info.current = 'main'; document.querySelector('#commit-more') && document.querySelector('#commit-more').click(); commitPage(window.__f, document.querySelector('#commit-main')); 1")
     wait(p, "!!document.querySelector('#commit-wrong-branch')")
     res["wrongBranch"] = p.js("({ warn: document.querySelector('#commit-wrong-branch').innerText, selected: document.querySelector('#commit-selected').disabled, all: document.querySelector('#commit-all').disabled })")
+    p.js("window.__info.current = 'feature/x'; commitPage(window.__f, document.querySelector('#commit-main')); 1")
+    wait(p, "!!document.querySelector('#commit-skip')")
+    p.js("document.querySelector('#commit-skip').click(); 1")
+    wait(p, "window.__skips.length > 0")
+    res["skipSent"] = p.js("({ body: window.__skips[0], asked: window.__asked.slice(-1)[0] })")
+    p.js("location.hash = '#home'; 1")
     p.js("window.__info.files = []; window.__info.current = 'feature/x'; commitPage(window.__f, document.querySelector('#commit-main')); 1")
     wait(p, "!!document.querySelector('#commit-clean')")
     res["clean"] = p.js("document.querySelector('#commit-clean').innerText.replace(/\\s+/g, ' ').trim()")
