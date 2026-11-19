@@ -1875,7 +1875,7 @@ function actionBar(f, openPane) {
     const merging = row.phase === "merge";
     if (merging && openPane) {
       // the merge step: the main button opens the Branch & merge panel, where the request is made (or gone to)
-      const b = el("button", { type: "button", id: "step-merge-open", class: "primary action-main" }, "Open Branch & merge");
+      const b = el("button", { type: "button", id: "step-merge-open", class: (f.merge || {}).url ? "action-skip" : "primary action-main" }, "Open Branch & merge");
       b.addEventListener("click", () => openPane("merge"));
       node.append(b);
       node.append(el("button", { type: "button", id: "step-skip-merge", class: "action-skip", title: "No request will be made: the feature is finished without one", onclick: () => skipStep(f, "merge") }, "Skip merge"));
@@ -1957,6 +1957,7 @@ function overview(f) {
     f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
     unitGateCard(f), commitCard(f), // unitgate.js, commit.js
     act.node,
+    typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js: the way to the Merge request page, whatever else is going on
     ...rest.filter(x => x.r.kind === "warn").map(stand1),
     f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "",
     lines.length ? el("div", { class: "sv-lines" }, lines) : "",
@@ -2060,6 +2061,7 @@ function overviewCards(f) {
       e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : "";
   const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
   const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), unitGateCard(f), commitCard(f), // unitgate.js, commit.js
+    typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js
     stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
   // Each session Start opened that is still going has a tab on the Features page: one line

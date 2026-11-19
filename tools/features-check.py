@@ -1784,8 +1784,22 @@ def check_mr(p):
             window.api = async (path, body) => {
               if (path.startsWith('/api/mr?')) return window.__data;
               if (path.startsWith('/api/mr/diff?')) return { path: 'src/widget.txt', binary: false, cut: false, threads: ['d1'], hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [' a', '-b', '+B', ' c', '+d'] }] };
-              if (path === '/api/mr/recommend') { window.__sent.push(['recommend', body]); window.__data.state.d1 = { recommendation: { action: 'act', summary: 'The null guard is missing.', reasoning: 'Line 2 uses it unguarded.', change: { description: 'Return early when it is null.', files: ['src/widget.txt'] }, draftReply: 'Good catch: I will guard it.', seen: 2 }, selected: false, draft: { text: '', edited: false, commit: '' }, result: null }; return { ok: true }; }
-              if (path === '/api/mr/select') { window.__sent.push(['select', body]); const st = window.__data.state.d1; st.selected = body.on; if (body.on) st.draft.text = st.recommendation.draftReply; return { ok: true, waiting: false }; }
+              if (path.startsWith('/api/mr/state?')) { window.__lights = (window.__lights || 0) + 1; return { state: window.__data.state, busy: window.__busy || [], step: {} }; }
+              if (path === '/api/mr/recommend') {
+                window.__sent.push(['recommend', body]); window.__busy = ['d1'];
+                setTimeout(() => {
+                  window.__data.state.d1 = { recommendation: { action: 'act', summary: 'The null guard is missing.', points: ['Line 2 of `widget.txt` calls `Widget.Get()` with no null check.', 'Nothing else guards it: see WidgetFactory.Build and src/core/guard.cs (e.g. here).', 'getValue is the same.'],
+                    reasoning: '', change: { steps: ['Return early in `Widget.Get()` when it is null.', 'Add a test for `null` in tests/widget_test.cs.'], description: '', files: ['src/widget.txt', 'tests/widget_test.cs'] }, draftReply: 'Good catch: I will guard it.', seen: 2 }, selected: false, draft: { text: '', edited: false, commit: '' }, result: null };
+                  window.__busy = [];
+                  document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'mr', name: 'Demo', thread: 'd1', done: true } }));
+                }, 500);
+                return { ok: true };
+              }
+              if (path === '/api/mr/select') {
+                window.__sent.push(['select', body]); await new Promise(r => setTimeout(r, 600));
+                const st = window.__data.state[body.thread] || (window.__data.state[body.thread] = { recommendation: null, selected: false, draft: { text: '', edited: false, commit: '' }, result: null });
+                st.selected = body.on; if (body.on && st.recommendation && !st.draft.text) st.draft.text = st.recommendation.draftReply; return { ok: true, waiting: false };
+              }
               if (path === '/api/mr/draft') { window.__sent.push(['draft', body]); return { ok: true }; }
               if (path === '/api/mr/change') { window.__sent.push(['change', body]); return { ok: true, tag: 's-test', name: 'Demo : MR changes', command: '/tatty:mr-change', project: 'C:/work/repo' }; }
               return window.__real.api(path, body);
@@ -1838,18 +1852,44 @@ def check_mr(p):
     p.js("document.querySelector('#mr-all').click(); 1")
     res["withResolved"] = p.js("[...document.querySelectorAll('#mr-host .mr-thread')].map(c => c.dataset.id)")
     p.js("document.querySelector('#mr-all').click(); 1")
-    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').click(); 1")
+    # Recommend action: the button is a spinner at once, the agent's steps change one line in place, and only that card is drawn again
+    p.js("window.__hero = document.querySelector('#mr-host .mr-hero'); window.__other = document.querySelector('#mr-host .mr-thread[data-id=d2]'); window.__lights = 0; 1")
+    res["recommendNow"] = p.js("""(() => { const t0 = performance.now(); document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').click();
+        const nb = document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend'); const c = document.querySelector('#mr-host .mr-thread[data-id=d1]');
+        return { fast: performance.now() - t0 < 100, text: nb.textContent.trim(), spinner: !!nb.querySelector('.mr-spin'), disabled: nb.disabled, working: c.classList.contains('working'), step: (c.querySelector('.mr-step') || {}).textContent }; })()""")
+    p.js("""(() => { for (const s of ['Reading widget.txt', 'Searching the code', 'Reading guard.cs']) document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'mr', name: 'Demo', thread: 'd1', busy: true, step: s } })); })()""")
+    res["stepInPlace"] = p.js("""({ step: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-step').textContent, samePage: document.querySelector('#mr-host .mr-hero') === window.__hero,
+                                   sameOther: document.querySelector('#mr-host .mr-thread[data-id=d2]') === window.__other, lights: window.__lights })""")
     wait(p, "!!document.querySelector('#mr-host .mr-rec')")
-    res["recommended"] = p.js("""({ sent: window.__sent[0], rec: document.querySelector('#mr-host .mr-rec').innerText.replace(/\\s+/g, ' ').trim(), cls: document.querySelector('#mr-host .mr-thread[data-id=d1]').className,
+    res["recommended"] = p.js("""({ sent: window.__sent[0], cls: document.querySelector('#mr-host .mr-thread[data-id=d1]').className, samePage: document.querySelector('#mr-host .mr-hero') === window.__hero,
+                                   sameOther: document.querySelector('#mr-host .mr-thread[data-id=d2]') === window.__other, noEntrance: !document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('enter'),
                                    draft: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, btn: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').textContent })""")
+    res["formatted"] = p.js("""({ labels: [...document.querySelectorAll('#mr-host .mr-rec .mr-sec-label')].map(x => x.textContent), summary: document.querySelector('#mr-host .mr-summary').textContent,
+                                 points: [...document.querySelectorAll('#mr-host .mr-points li')].map(li => li.textContent),
+                                 code: [...document.querySelectorAll('#mr-host .mr-rec code')].map(c => (c.classList.contains('ident') ? 'ident:' : 'tick:') + c.textContent),
+                                 steps: [...document.querySelectorAll('#mr-host .mr-steps li')].map(li => li.textContent), files: [...document.querySelectorAll('#mr-host .mr-fp')].map(x => x.innerText) })""")
     p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-action').dispatchEvent(new PointerEvent('pointerenter')); 1")
     wait(p, "!!document.querySelector('.mr-pop')")
     res["actionCard"] = p.js("document.querySelector('.mr-pop').innerText.replace(/\\s+/g, ' ').trim()")
     p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
-    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-tick').click(); 1")
-    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value !== ''")
+    # the switch: the page answers in the same moment, and the server is told behind it
+    res["tickNow"] = p.js("""(() => { const c = document.querySelector('#mr-host .mr-thread[data-id=d1]'); const t0 = performance.now(); c.querySelector('#mr-tick').click();
+        return { fast: performance.now() - t0 < 100, chosen: c.classList.contains('chosen'), bar: document.querySelector('#mr-change').textContent, barOff: document.querySelector('#mr-change').disabled, lit: !!document.querySelector('.mr-bar.lit'),
+                 draft: c.querySelector('.mr-draft').value, spinning: !c.querySelector('.mr-tick-spin').hidden, sentYet: window.__sent.length }; })()""")
+    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-tick-spin').hidden")
     res["ticked"] = p.js("""({ sent: window.__sent[1], draft: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, bar: document.querySelector('#mr-change').textContent,
-                              barOff: document.querySelector('#mr-change').disabled, lit: !!document.querySelector('.mr-bar.lit'), chosen: document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('chosen') })""")
+                              chosen: document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('chosen'), samePage: document.querySelector('#mr-host .mr-hero') === window.__hero })""")
+    res["untickNow"] = p.js("""(() => { const c = document.querySelector('#mr-host .mr-thread[data-id=d1]'); c.querySelector('#mr-tick').click();
+        return { chosen: c.classList.contains('chosen'), bar: document.querySelector('#mr-change').textContent, barOff: document.querySelector('#mr-change').disabled, spinning: !c.querySelector('.mr-tick-spin').hidden }; })()""")
+    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-tick-spin').hidden")
+    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-tick').click(); 1")
+    wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-tick-spin').hidden")
+    # a comment nobody has looked into: the switch still moves at once, and the wait for the agent is a spinner
+    res["tickWaits"] = p.js("""(() => { const c = document.querySelector('#mr-host .mr-thread[data-id=d2]'); c.querySelector('#mr-tick').click(); const n = document.querySelector('#mr-host .mr-thread[data-id=d2]');
+        return { chosen: n.classList.contains('chosen') || c.classList.contains('chosen'), working: n.classList.contains('working'), spinner: !!n.querySelector('#mr-recommend .mr-spin'), bar: document.querySelector('#mr-change').textContent }; })()""")
+    wait(p, "!document.querySelector('#mr-host .mr-thread[data-id=d2]').classList.contains('working')")
+    p.js("document.querySelector('#mr-host .mr-thread[data-id=d2] #mr-tick').click(); 1")
+    wait(p, "document.querySelector('#mr-change').textContent === 'Make 1 change'")
     p.js("""(() => { const t = document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft'); t.value = 'Fixed, thanks.'; t.dispatchEvent(new Event('input')); })()""")
     time.sleep(0.9)
     res["draftSaved"] = p.js("window.__sent.filter(x => x[0] === 'draft').map(x => x[1].text)")
@@ -1873,6 +1913,12 @@ def check_mr(p):
     p.js("localStorage.setItem('tt-juice', 'off'); document.querySelector('#mr-host .mr-tabs button[data-tab=overview]').click(); 1")
     res["still"] = p.js("""({ still: document.querySelector('#mr-host .mr-page').classList.contains('still'), anim: getComputedStyle(document.querySelector('#mr-host .mr-sig.checks')).animationName })""")
     p.js("localStorage.removeItem('tt-juice'); 1")
+    p.js("window.__f.merge.mr = { open: 1, total: 2, failed: 1, changes: 0, merge: 'blocked' }; 1")
+    res["gateButton"] = p.js("""(() => { const g = mrGateButton(window.__f); const a = g.querySelector('a'); return { text: a.textContent, href: a.getAttribute('href'), pulse: a.classList.contains('gate-pulse'),
+                                  chips: [...g.querySelectorAll('.mr-gate-chip')].map(c => c.className.replace('mr-gate-chip ', '') + ':' + c.textContent) }; })()""")
+    res["gateButtonOther"] = p.js("""(() => { const f = { ...window.__f, merge: { ...window.__f.merge, state: 'merged', mr: { open: 0, total: 2, failed: 0, changes: 0, merge: 'ok' } } };
+                                  const g = mrGateButton(f); const a = g.querySelector('a'); const none = mrGateButton({ ...window.__f, merge: { ...window.__f.merge, url: '' } }) === '';
+                                  return { text: a.textContent, pulse: a.classList.contains('gate-pulse'), chips: [...g.querySelectorAll('.mr-gate-chip')].map(c => c.textContent), noRequest: none }; })()""")
     res["nav"] = p.js("""(() => { const n = featureNav(window.__f, null, false, { mr: true }); const a = [...n.querySelectorAll('.fnav-item')].find(x => x.querySelector('span').textContent === 'Merge request');
                           return a ? { on: a.classList.contains('on'), sub: a.querySelector('.dim').textContent, ic: a.dataset.ic, badge: a.dataset.badge, href: a.getAttribute('href') } : null; })()""")
     res["navHidden"] = p.js("""(() => { const f = { ...window.__f, phase: 'building', merge: { branch: 'feature/x', state: '' } }; const n = featureNav(f, null, false, {}); return [...n.querySelectorAll('.fnav-item')].some(x => x.querySelector('span').textContent === 'Merge request'); })()""")
