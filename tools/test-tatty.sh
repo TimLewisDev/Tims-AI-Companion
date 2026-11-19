@@ -194,6 +194,7 @@ has "a fresh window greets" "$T/ev" '"title": "Tatty"'
 [ "$(code "$U/static/chat.js")" = 200 ] && ok "chat.js served" || bad "chat.js served"
 [ "$(code "$U/static/chat.css")" = 200 ] && ok "chat.css served" || bad "chat.css served"
 [ "$(code "$U/static/theme.css")" = 200 ] && ok "theme.css served" || bad "theme.css served"
+[ "$(code "$U/static/face.js")" = 200 ] && ok "face.js served" || bad "face.js served"
 [ "$(code -H "X-TT-Token: $K" "$U/api/view/rm")" = 404 ] && ok "unknown view refused" || bad "unknown view refused"
 get /api/status >"$T/st"
 [ "$(pick "$T/st" "','.join(d['modes'])")" = "engineering,design" ] &&

@@ -30,10 +30,13 @@
 <link rel="stylesheet" href="/static/looks.css">
 </head>
 <body>
+<div id="chrome">
+<!-- Tatty's face: the avatar chosen in the shop, in a circle as tall as the bars beside it
+     (face.js draws it). It is the way back to the modes. -->
+<a id="tatty-face" href="#modes" title="Tatty: all the modes you have installed" aria-label="Tatty: all the modes you have installed"></a>
 <!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
      (drag to move, double-click to maximise). -->
 <div id="companion-bar" title="">
-  <span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong>
   <!-- The mode: a radio over the discipline plugins installed (modes.js), which
        sets the app's accent colour. The title bar's is the one normally shown;
        the header has the same radio for a browser tab, which has no title bar. -->
@@ -45,15 +48,8 @@
   <button type="button" id="collapse" title="Back to the bubble">Compact</button>
   <button type="button" id="hide" title="Tuck Tatty away until something happens">×</button>
 </div>
-<!-- Tatty's compact bubble only: what is calling for the person (the question, or
-     what finished). Opening it goes to the page it is about. -->
-<div id="alert" hidden></div>
-<!-- Tatty's compact bubble only: the radio between the chat and the questions waiting. -->
-<div id="compact-tabs"></div>
-<!-- A question raised over the full panel or a browser page, with a Go straight to it. -->
-<div id="toasts" role="region" aria-label="Needs you" aria-live="polite"></div>
 <header>
-  <a class="brand" href="#modes" title="All the modes you have installed"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong> <span id="project-chip" class="chip now" hidden></span> <span class="dim">your TT toolbox companion</span></a>
+  <span id="project-chip" class="chip now" hidden></span>
   <div class="mode-switch" data-slot="header"></div>
   <nav class="pnav">
     <a href="#hub" data-page="hub" title="Switch to another project">Projects</a>
@@ -77,6 +73,14 @@
     <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>
   </div>
 </header>
+</div>
+<!-- Tatty's compact bubble only: what is calling for the person (the question, or
+     what finished). Opening it goes to the page it is about. -->
+<div id="alert" hidden></div>
+<!-- Tatty's compact bubble only: the radio between the chat and the questions waiting. -->
+<div id="compact-tabs"></div>
+<!-- A question raised over the full panel or a browser page, with a Go straight to it. -->
+<div id="toasts" role="region" aria-label="Needs you" aria-live="polite"></div>
 
 <main>
   <!-- Modes: the discipline plugins installed, to pick one (modes.js). -->
@@ -182,6 +186,7 @@
 <script src="/static/wallet.js"></script>
 <script src="/static/theme.js"></script>
 <script src="/static/looks.js"></script>
+<script src="/static/face.js"></script>
 <script src="/static/shop.js"></script>
 <script src="/static/taskboard.js"></script>
 <script src="/static/jira.js"></script>

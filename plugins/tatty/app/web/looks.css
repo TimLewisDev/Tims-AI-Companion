@@ -12,7 +12,7 @@
 
 /* ---------------------------------------------------------------- 1. the whole app */
 :root[data-look] body { background-color: var(--bg); background-image: var(--look-bg); }
-:root[data-look] header, :root[data-look] #companion-bar { border-bottom-color: color-mix(in srgb, var(--look-sig) 45%, var(--line)); }
+:root[data-look] #chrome, :root[data-look] #companion-bar { border-bottom-color: color-mix(in srgb, var(--look-sig) 45%, var(--line)); }
 :root[data-look] h2, :root[data-look] h3 { font-family: var(--look-font, inherit); }
 :root[data-look] .card { box-shadow: 0 1px 0 color-mix(in srgb, var(--look-sig) 10%, transparent); }
 
@@ -182,7 +182,7 @@
 :root[data-look] :is(.cmd code, .copyable code, .md code, .md pre, .start-result pre):not(.jy *) { background: var(--sk-code); color: var(--sk-code-ink); border: 1px solid var(--sk-code-edge); }
 :root[data-look] .md pre code { border: 0; background: none; }
 /* the bars at the top, and the live section */
-:root[data-look] :is(header, #companion-bar) { background: var(--sk-bar); }
+:root[data-look] :is(#chrome, header, #companion-bar) { background: var(--sk-bar); }
 /* the mode switch keeps the mode's own colour (the one lit is the mode on) */
 :root[data-look] .mode-seg.on { color: var(--mode-acc); background: color-mix(in srgb, var(--mode-acc) 16%, var(--panel)); }
 :root[data-look] .fsec-live { border-radius: var(--sk-radius); background-image: var(--sk-orn); background-repeat: no-repeat; background-position: var(--sk-orn-pos); background-size: var(--sk-orn-size); }

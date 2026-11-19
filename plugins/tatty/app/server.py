@@ -85,7 +85,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "review.js": "text/javascript", "commit.js": "text/javascript", "mr.js": "text/javascript", "mr.css": "text/css", "mrs.js": "text/javascript", "mrs.css": "text/css", "pool.js": "text/javascript", "pool.css": "text/css", "unitgate.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
-          "avatar.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
+          "avatar.js": "text/javascript", "face.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",
           "wallet.js": "text/javascript", "shop.js": "text/javascript", "shop.css": "text/css",
           "looks.js": "text/javascript", "looks.css": "text/css", "look-chart.js": "text/javascript", "look-map.js": "text/javascript",
           "look-kin.js": "text/javascript", "look-chrono.js": "text/javascript", "look-aur.js": "text/javascript", "look-drive.js": "text/javascript",
