@@ -1,0 +1,82 @@
+/* Tatty's task boards (tasks.js): what only the Tasks page has: the bar and its
+   tabs, the backlog and Completed lists, and the task form in the panel. The
+   board, its cards and the panel's frame are taskboard.css's. Everything uses
+   theme.css's tokens. */
+
+/* ---------------------------------------------------------------- the page */
+.tasks-bar { align-items: center; flex-wrap: wrap; }
+.tasks-bar input[type="search"] { width: 180px; }
+.ttabs { display: flex; gap: 2px; }
+.ttab { padding: 3px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; border: 1px solid transparent; }
+.ttab:hover { border-color: var(--line); }
+.ttab.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tproblems { margin: 0 16px 6px; padding: 6px 10px; }
+.tproblems ul { margin: 6px 0 0; padding-left: 18px; }
+.tproblems li { margin: 2px 0; }
+.task-board-card .chip { margin-right: 4px; }
+
+/* ---------------------------------------------------------------- the type icon */
+.ttype { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--type-task); }
+.ttype svg { width: 16px; height: 16px; }
+.ttype-bug { color: var(--type-bug); }
+.ttype-story { color: var(--type-story); }
+.ttype-epic { color: var(--type-epic); }
+.ttype-id { display: inline-flex; align-items: center; gap: 4px; }
+.ttype-pick { display: flex; align-items: center; gap: 8px; }
+
+/* ---------------------------------------------------------------- the lists */
+.tlist-page, .tdone-page { padding: 4px 20px 24px; max-width: 980px; }
+.tlist-page > .tquick-row { margin: 4px 0 10px; }
+.tquick-row { display: flex; align-items: center; gap: 6px; }
+.tquick-row .tquick { flex: 1 1 auto; min-width: 0; width: auto; }
+.tquick-row .tquick-type { flex: 0 0 auto; font-size: 12px; }
+.tlist { overflow: visible; }
+.trow { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.trow .tcard-top { flex: 0 0 auto; }
+.trow .tsum { flex: 1 1 260px; }
+.trow-acts { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.trow-acts button { padding: 1px 8px; font-size: 12px; }
+.tmore { padding: 10px 2px; }
+
+/* ---------------------------------------------------------------- completed */
+.tdone-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 28px; margin: 8px 0 4px; }
+.tbig strong { font-size: 40px; line-height: 1; color: var(--ok); }
+.tbig span { font-size: 15px; }
+.tstats { display: flex; gap: 10px; flex-wrap: wrap; }
+.tstat { display: flex; flex-direction: column; align-items: center; min-width: 78px; padding: 6px 10px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; }
+.tstat strong { font-size: 20px; }
+.tcheer { margin: 10px 0; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent); font-size: 14px; }
+.tweeks { display: flex; align-items: flex-end; gap: 6px; height: 96px; margin: 6px 0 14px; padding: 0 2px; }
+.tweek { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px; flex: 1; min-width: 0; height: 100%; }
+.tbar { display: block; width: 100%; max-width: 34px; border-radius: 4px 4px 0 0; background: var(--ok); }
+.tbar.zero { background: var(--line); }
+.tbar-n { color: var(--dim); min-height: 1.2em; }
+.tiny { font-size: 10px; white-space: nowrap; }
+.tgroup { margin: 14px 0 6px; font-size: 13px; color: var(--dim); }
+
+/* ---------------------------------------------------------------- the task form */
+.trow2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tdesc-head { display: flex; align-items: center; justify-content: space-between; }
+.tdesc-tabs { display: flex; gap: 2px; }
+.tdesc-tabs button { padding: 1px 10px; font-size: 12px; }
+.tdesc-tabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.tpreview { min-height: 120px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: text; }
+.tpreview[hidden], .tfield textarea[hidden] { display: none; }
+.traw { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 12.5px; }
+.tsection { border-top: 1px solid var(--line); padding-top: 4px; }
+.tbanner { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--warn); background: var(--accent-soft); font-size: 13px; }
+.tbanner[hidden] { display: none; }
+.tbanner button { margin-left: 4px; }
+.tactions { flex-wrap: wrap; }
+button.tdanger:hover { border-color: var(--bad); color: var(--bad); }
+
+/* write it for me: the button, what to write, what it may read, and how it went */
+.twrite { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.twrite-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.tseg { display: flex; }
+.tseg button { padding: 1px 9px; font-size: 12px; border-radius: 0; margin-left: -1px; }
+.tseg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.tseg button:last-child { border-radius: 0 6px 6px 0; }
+.tseg button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); position: relative; }
+.tseg button:disabled { opacity: 0.55; cursor: not-allowed; }

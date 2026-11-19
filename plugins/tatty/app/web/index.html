@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tatty</title>
+<script src="/static/theme-init.js"></script>
+<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/whiteboard.css">
+<link rel="stylesheet" href="/static/diagram.css">
+<link rel="stylesheet" href="/static/stories.css">
+<link rel="stylesheet" href="/static/taskboard.css">
+<link rel="stylesheet" href="/static/tasks.css">
+<link rel="stylesheet" href="/static/qa.css">
+<link rel="stylesheet" href="/static/split.css">
+<link rel="stylesheet" href="/static/chat.css">
+<link rel="stylesheet" href="/static/intake.css">
+<link rel="stylesheet" href="/static/diff.css">
+<link rel="stylesheet" href="/static/archive.css">
+<link rel="stylesheet" href="/static/commit.css">
+<link rel="stylesheet" href="/static/review-page.css">
+<link rel="stylesheet" href="/static/hub.css">
+<link rel="stylesheet" href="/static/compact-chat.css">
+<link rel="stylesheet" href="/static/avatar.css">
+<link rel="stylesheet" href="/static/shop.css">
+<link rel="stylesheet" href="/static/looks.css">
+</head>
+<body>
+<!-- Tatty's companion only: the bubble's bar; in the full panel, its title bar
+     (drag to move, double-click to maximise). -->
+<div id="companion-bar" title="">
+  <span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong>
+  <!-- The mode: a radio over the discipline plugins installed (modes.js), which
+       sets the app's accent colour. The title bar's is the one normally shown;
+       the header has the same radio for a browser tab, which has no title bar. -->
+  <div class="mode-switch" data-slot="bar"></div>
+  <span class="spacer"></span>
+  <button type="button" id="expand" title="Your features, their status and documents">Full panel</button>
+  <button type="button" id="min" title="Down into the taskbar">Minimise</button>
+  <button type="button" id="max" title="Fill the screen">Maximise</button>
+  <button type="button" id="collapse" title="Back to the bubble">Compact</button>
+  <button type="button" id="hide" title="Tuck Tatty away until something happens">×</button>
+</div>
+<!-- Tatty's compact bubble only: what is calling for the person (the question, or
+     what finished). Opening it goes to the page it is about. -->
+<div id="alert" hidden></div>
+<!-- Tatty's compact bubble only: the radio between the chat and the questions waiting. -->
+<div id="compact-tabs"></div>
+<!-- A question raised over the full panel or a browser page, with a Go straight to it. -->
+<div id="toasts" role="region" aria-label="Needs you" aria-live="polite"></div>
+<header>
+  <a class="brand" href="#modes" title="All the modes you have installed"><span class="bot" aria-hidden="true">[◉_◉]</span> <strong>Tatty</strong> <span id="project-chip" class="chip now" hidden></span> <span class="dim">your TT toolbox companion</span></a>
+  <div class="mode-switch" data-slot="header"></div>
+  <nav class="pnav">
+    <a href="#hub" data-page="hub" title="Switch to another project">Projects</a>
+    <a href="#mode" data-page="mode">Home</a>
+    <a href="#home" data-page="home" data-mode="engineering">Features</a>
+    <a href="#jira" data-page="jira" data-mode="production">Jira</a>
+    <a href="#tasks" data-page="tasks" data-mode="production">Tasks</a>
+    <a href="#qa" data-page="qa" data-mode="qa">QA</a>
+    <a href="#designs" data-page="designs" data-mode="design">User Stories</a>
+    <a href="#whiteboards" data-page="whiteboards" data-mode="design">Whiteboards</a>
+    <a href="#toolbox" data-page="toolbox">Toolbox</a>
+  </nav>
+  <div class="where dim" id="cwd"></div>
+  <div class="badges">
+    <!-- Lit while a page is being read behind what is on screen (features.js's busy). -->
+    <span class="throbber" id="busy" role="status" aria-label="Loading" title="Reading the latest…" hidden></span>
+    <span class="badge" id="conn" title="Connection to the window server">connecting…</span>
+    <a href="#settings" id="settings-link" class="gear" title="Settings" aria-label="Settings">⚙<span class="dot" hidden></span></a>
+    <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>
+  </div>
+</header>
+
+<main>
+  <!-- Modes: the discipline plugins installed, to pick one (modes.js). -->
+  <section class="page" id="page-modes"></section>
+  <!-- The Hub: the projects to pick from, shown first on every launch (hub.js). -->
+  <section class="page" id="page-hub"></section>
+  <!-- One mode's home page. -->
+  <section class="page" id="page-mode"></section>
+  <!-- Features: Tatty's root folder; one card per feature (features.js). -->
+  <section class="page" id="page-home"></section>
+  <!-- One feature: its documents on the left, where it stands on the right. -->
+  <section class="page" id="page-feature"></section>
+  <!-- Jira: the production mode's board of your open-sprint tickets (jira.js). -->
+  <section class="page" id="page-jira"></section>
+  <!-- Tasks: the production mode's own task boards, and one board (tasks.js). -->
+  <section class="page" id="page-tasks"></section>
+  <section class="page" id="page-taskboard"></section>
+  <!-- QA: the QA mode's home, one bug, and a feature's test plan (qa.js). -->
+  <section class="page" id="page-qa"></section>
+  <section class="page" id="page-qabug"></section>
+  <section class="page" id="page-qaplan"></section>
+  <!-- User Stories: the design mode's boards, and one board of sticky notes (stories.js). -->
+  <section class="page" id="page-designs"></section>
+  <section class="page" id="page-design"></section>
+  <!-- Whiteboards: blank boards to plan on, and one board (whiteboards.js, on whiteboard.js). -->
+  <section class="page" id="page-whiteboards"></section>
+  <section class="page" id="page-whiteboard"></section>
+  <!-- The Project diagram: how the code fits together (diagram.js, on whiteboard.js). -->
+  <section class="page" id="page-diagram"></section>
+  <!-- Settings: Tatty's own options and its updates (settings.js). -->
+  <section class="page" id="page-settings"></section>
+  <!-- The shop: avatars and accessories for Tatty coins (shop.js; the purse beside the gear is wallet.js's). -->
+  <section class="page" id="page-shop"></section>
+  <!-- Toolbox: status of any folder, connections and the toolbox's docs. -->
+  <section class="page" id="page-toolbox">
+  <nav class="rail">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="status" class="on">Status</button>
+      <button role="tab" data-tab="connections">Connections</button>
+      <button role="tab" data-tab="docs">Docs</button>
+    </div>
+
+    <section class="pane on" id="tab-status">
+      <form class="row" id="dir-form">
+        <input id="dir" placeholder="folder with tt documents (blank: the session's folder)" aria-label="Folder">
+        <button type="submit">Look</button>
+      </form>
+      <div id="status-body" class="body"></div>
+    </section>
+
+    <section class="pane" id="tab-connections">
+      <div class="row"><button id="conn-refresh">Check again</button><span class="dim small">runs each check; can take a few seconds</span></div>
+      <div id="connections-body" class="body"></div>
+    </section>
+
+    <section class="pane" id="tab-docs">
+      <div class="row"><button id="docs-start">Where to start</button><button id="docs-topics">Topics</button></div>
+      <form class="row" id="about-form">
+        <input id="about" placeholder="a skill or topic, e.g. tt-workflow, work units" aria-label="Skill or topic">
+        <button type="submit">Read</button>
+      </form>
+      <div id="docs-body" class="body md"></div>
+    </section>
+  </nav>
+  </section>
+
+  <!-- the compact bubble's chat about the project (chat.js), shown in place of the feed -->
+  <section id="compact-chat" aria-label="Chat about the project"></section>
+
+  <!-- the compact bubble: questions and milestones; in the full panel, only while a question waits -->
+  <section class="feed-col" aria-label="Questions and milestones">
+    <div id="feed" aria-live="polite"></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+<script src="/static/modes.js"></script>
+<script src="/static/views.js"></script>
+<script src="/static/usage.js"></script>
+<script src="/static/models.js"></script>
+<script src="/static/features.js"></script>
+<script src="/static/split.js"></script>
+<script src="/static/archive.js"></script>
+<script src="/static/stages.js"></script>
+<script src="/static/review.js"></script>
+<script src="/static/commit.js"></script>
+<script src="/static/unitgate.js"></script>
+<script src="/static/review-page.js"></script>
+<script src="/static/decide-page.js"></script>
+<script src="/static/validate-page.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/intake.js"></script>
+<script src="/static/settings.js"></script>
+<script src="/static/avatar.js"></script>
+<script src="/static/sfx.js"></script>
+<script src="/static/wallet.js"></script>
+<script src="/static/theme.js"></script>
+<script src="/static/looks.js"></script>
+<script src="/static/shop.js"></script>
+<script src="/static/taskboard.js"></script>
+<script src="/static/jira.js"></script>
+<script src="/static/whiteboard.js"></script>
+<script src="/static/stories.js"></script>
+<script src="/static/whiteboards.js"></script>
+<script src="/static/diagram-layout.js"></script>
+<script src="/static/diagram.js"></script>
+<script src="/static/tasktype.js"></script>
+<script src="/static/tasks.js"></script>
+<script src="/static/qa.js"></script>
+<script src="/static/diff.js"></script>
+<script src="/static/ids.js"></script>
+<script src="/static/hub.js"></script>
+</body>
+</html>

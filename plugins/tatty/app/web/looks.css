@@ -1,0 +1,541 @@
+/* Tatty's looks (looks.js): the themes sold in the shop.
+
+   1. The whole app. A look worn puts data-look="<id>" on <html> (theme-init.js before the first
+      paint, looks.js after), and its block here sets theme.css's layer-2 neutrals (--bg, --panel, --ink,
+      --dim, --line) and a backdrop behind the page, for light and for dark. data-shade on <html> says
+      which of the two is showing (theme-init.js / theme.js: the person's choice, or Windows'). The
+      modes' accents are never touched: a look is the room, the mode is still the colour of the work.
+      Minimal (no data-look) is theme.css as it always was.
+   2. The journey card on a feature's Overview (.jy), in every look.
+   3. Each look's scene: drawn from docs/overview/themes.html and themes-round3.html, re-scoped from
+      the boards' .t-<look> to .jy.t-<look>. */
+
+/* ---------------------------------------------------------------- 1. the whole app */
+:root[data-look] body { background-color: var(--bg); background-image: var(--look-bg); }
+:root[data-look] header, :root[data-look] #companion-bar { border-bottom-color: color-mix(in srgb, var(--look-sig) 45%, var(--line)); }
+:root[data-look] h2, :root[data-look] h3 { font-family: var(--look-font, inherit); }
+:root[data-look] .card { box-shadow: 0 1px 0 color-mix(in srgb, var(--look-sig) 10%, transparent); }
+
+/* Star Chart: lavender dawn / deep space with a few stars */
+:root[data-look="chart"] { --bg: #eef0fa; --panel: #fbfbff; --ink: #18213d; --dim: #5e6787; --line: #d9ddef; --look-sig: #8a6bff;
+  --look-bg: radial-gradient(ellipse 60% 40% at 15% 0%, rgba(138,107,255,.12), transparent 70%), radial-gradient(ellipse 50% 35% at 90% 10%, rgba(255,95,180,.08), transparent 70%), linear-gradient(180deg, #f6f3ff, #e6ebfb); }
+:root[data-look="chart"][data-shade="dark"] { --bg: #0a0f22; --panel: #111933; --ink: #dfe7ff; --dim: #8f9bc4; --line: #243055; --look-sig: #a8b8ff;
+  --look-bg: radial-gradient(1px 1px at 12% 18%, #fff 50%, transparent), radial-gradient(1px 1px at 68% 8%, #fff 50%, transparent), radial-gradient(1.5px 1.5px at 84% 34%, #fff 50%, transparent),
+    radial-gradient(1px 1px at 36% 42%, rgba(255,255,255,.7) 50%, transparent), radial-gradient(1px 1px at 52% 76%, rgba(255,255,255,.6) 50%, transparent), radial-gradient(1px 1px at 22% 88%, rgba(255,255,255,.7) 50%, transparent),
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(138,107,255,.16), transparent 70%), radial-gradient(ellipse at 50% 130%, #1d2d5c 0%, #0a0f24 55%, #04060d 100%); }
+
+/* Expedition Map: parchment / night chart, with faint contour rings */
+:root[data-look="map"] { --bg: #f3e9d2; --panel: #fbf5e6; --ink: #4a3520; --dim: #7d6447; --line: #e2d2ae; --look-sig: #8a3b12; --look-font: Georgia, "Times New Roman", serif;
+  --look-bg: repeating-radial-gradient(ellipse 120% 70% at 85% 110%, transparent 0 38px, rgba(74,53,32,.05) 38px 39px), radial-gradient(ellipse at 50% 40%, #f8eed6 35%, #e6d1a4 100%); }
+:root[data-look="map"][data-shade="dark"] { --bg: #141b21; --panel: #1b242c; --ink: #ecdcb9; --dim: #a89a7c; --line: #2c3842; --look-sig: #ffcf8a;
+  --look-bg: repeating-radial-gradient(ellipse 120% 70% at 85% 110%, transparent 0 38px, rgba(236,220,185,.04) 38px 39px), radial-gradient(ellipse at 50% 40%, #26323c 30%, #10161b 100%); }
+
+/* Kintsugi: porcelain / dark stoneware, with gold */
+:root[data-look="kin"] { --bg: #efece5; --panel: #faf9f6; --ink: #2c2924; --dim: #77716a; --line: #dedad1; --look-sig: #b07f26; --look-font: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --look-bg: radial-gradient(ellipse 70% 50% at 25% -10%, rgba(255,255,255,.9), transparent 70%), radial-gradient(ellipse at 28% -10%, #fdfcf9 0%, #f0ede6 45%, #dcd8ce 100%); }
+:root[data-look="kin"][data-shade="dark"] { --bg: #121114; --panel: #1b1a1e; --ink: #e8e2d4; --dim: #9c958a; --line: #2c2a30; --look-sig: #e0b75a;
+  --look-bg: radial-gradient(ellipse 70% 50% at 25% -10%, rgba(224,183,90,.06), transparent 70%), radial-gradient(ellipse at 28% -10%, #2a282e 0%, #161518 50%, #0c0b0d 100%); }
+
+/* Chronograph: brushed silver / black dial */
+:root[data-look="chrono"] { --bg: #e9eae8; --panel: #f6f6f5; --ink: #1d1f22; --dim: #6b7078; --line: #d3d5d3; --look-sig: #8b9097; --look-font: Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif;
+  --look-bg: repeating-conic-gradient(from 0deg at 50% 140%, rgba(0,0,0,.012) 0deg .12deg, transparent .12deg .3deg), radial-gradient(ellipse at 50% 120%, #fbfbfa 0%, #e6e7e5 50%, #d0d2cf 100%); }
+:root[data-look="chrono"][data-shade="dark"] { --bg: #0f1114; --panel: #17191d; --ink: #e3e6e9; --dim: #8b9097; --line: #2a2d33; --look-sig: #8ff0c6;
+  --look-bg: repeating-conic-gradient(from 0deg at 50% 140%, rgba(255,255,255,.012) 0deg .12deg, transparent .12deg .3deg), radial-gradient(ellipse at 50% 130%, #23272d 0%, #121418 50%, #08090b 100%); }
+
+/* Aurora: icy dusk / polar night, the lights along the top */
+:root[data-look="aur"] { --bg: #eef3f8; --panel: #fbfdff; --ink: #1b2638; --dim: #5f6e85; --line: #d8e1ec; --look-sig: #2fbf93; --look-font: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --look-bg: radial-gradient(ellipse 70% 22% at 30% 0%, rgba(84,240,189,.16), transparent 75%), radial-gradient(ellipse 60% 20% at 75% 0%, rgba(143,108,255,.12), transparent 75%), linear-gradient(180deg, #e4ecf5, #f2f5f9 40%); }
+:root[data-look="aur"][data-shade="dark"] { --bg: #050b16; --panel: #0c1626; --ink: #e1ebf4; --dim: #8ea2b8; --line: #1b2a3d; --look-sig: #54f0bd;
+  --look-bg: radial-gradient(ellipse 70% 25% at 30% 0%, rgba(84,240,189,.18), transparent 75%), radial-gradient(ellipse 60% 22% at 75% 0%, rgba(143,108,255,.16), transparent 75%), linear-gradient(180deg, #02040a, #071224 50%, #0b1c2c); }
+
+/* Night Drive: dusk / night city, an amber glow from the street */
+:root[data-look="drive"] { --bg: #ecebf2; --panel: #fbfaff; --ink: #23243a; --dim: #67688a; --line: #dcdbe8; --look-sig: #e39a2e; --look-font: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --look-bg: radial-gradient(ellipse 80% 30% at 50% 100%, rgba(242,177,76,.14), transparent 75%), linear-gradient(180deg, #e2e1ee, #efeef5 50%, #f3ece6); }
+:root[data-look="drive"][data-shade="dark"] { --bg: #07090f; --panel: #10131d; --ink: #e9e6df; --dim: #9a97a6; --line: #22263a; --look-sig: #f2b14c;
+  --look-bg: radial-gradient(ellipse 80% 30% at 50% 100%, rgba(242,177,76,.12), transparent 75%), linear-gradient(180deg, #03050b, #0a1022 45%, #151629); }
+
+/* ---------------------------------------------------------------- 1b. the skins: every page in the theme
+   The palette above is the room; this is the furniture. Each theme sets tokens, and one set of rules
+   below lays them on the parts every page is made of (cards of every kind, headings and card labels,
+   buttons, chips, code and commands, the bars), so a page needs nothing of its own to be themed.
+   The accent is the theme's, mixed a fifth of the way to the mode's (so Engineering, Design and
+   Production still read apart); the mode switch keeps the modes' own colours. The stage (2b) and the
+   scenes (3) draw themselves, so the card rules leave everything inside a journey card alone. */
+:root[data-look] body { --mode-acc: var(--accent-engineering);
+  --accent: color-mix(in srgb, var(--look-acc) 80%, var(--mode-acc)); --accent-soft: color-mix(in srgb, var(--accent) 14%, var(--panel)); --on-accent: var(--look-on); }
+:root[data-look] body { accent-color: var(--accent); } /* (ticks, radios, ranges) */
+/* Tatty himself stays in the mode's colour, as the tray app's Tatty is (avatar.css; the bake reads it) */
+:root[data-look] :is(.tatty, .tatty-defs) { --accent: var(--mode-acc); }
+:root[data-look] body[data-mode="design"] { --mode-acc: var(--accent-design); }
+:root[data-look] body[data-mode="production"] { --mode-acc: var(--accent-production); }
+:root[data-look] body[data-mode="qa"] { --mode-acc: var(--accent-qa); }
+
+/* the tokens, light then dark, theme by theme */
+:root[data-look="kin"] { --look-acc: #94681a; --look-on: #fffaf0; --sk-radius: 6px; --sk-edge: color-mix(in srgb, #b07f26 32%, var(--line)); --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #fdfcf9, #f5f2ea);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 140 60'%3E%3Cpath d='M140 55 L118 48 L109 52 L92 41 L83 44 L70 31 L61 33 L52 22' fill='none' stroke='%23c3913a' stroke-width='1.3' stroke-linejoin='round' stroke-linecap='round' opacity='.75'/%3E%3Cpath d='M92 41 L96 30 L90 23' fill='none' stroke='%23c3913a' stroke-width='1' stroke-linecap='round' opacity='.6'/%3E%3C/svg%3E");
+  --sk-orn-pos: right bottom; --sk-orn-size: 140px 60px;
+  --sk-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 1px 3px rgba(80,60,20,.08); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .01em;
+  --sk-label: #94681a; --sk-label-track: .16em; --sk-btn-r: 6px; --sk-chip-r: 4px;
+  --sk-primary: linear-gradient(180deg, #f3d98b, #c3913a); --sk-primary-ink: #2a1d05; --sk-primary-edge: #b07f26; --sk-primary-glow: 0 1px 6px rgba(168,122,36,.28);
+  --sk-code: #f3efe6; --sk-code-ink: #4a3b22; --sk-code-edge: rgba(176,127,38,.25); --sk-bar: linear-gradient(180deg, #fbfaf6, #f3f0e8); }
+:root[data-look="kin"][data-shade="dark"] { --look-acc: #e0b75a; --look-on: #1b1508; --sk-edge: rgba(224,183,90,.22); --sk-card: linear-gradient(180deg, #211f24, #18171b);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 140 60'%3E%3Cpath d='M140 55 L118 48 L109 52 L92 41 L83 44 L70 31 L61 33 L52 22' fill='none' stroke='%23e0b75a' stroke-width='1.3' stroke-linejoin='round' stroke-linecap='round' opacity='.7'/%3E%3Cpath d='M92 41 L96 30 L90 23' fill='none' stroke='%23e0b75a' stroke-width='1' stroke-linecap='round' opacity='.55'/%3E%3C/svg%3E");
+  --sk-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 2px 10px rgba(0,0,0,.3); --sk-label: #e0b75a;
+  --sk-code: #111013; --sk-code-ink: #ead9b0; --sk-code-edge: rgba(224,183,90,.18); --sk-bar: linear-gradient(180deg, #1c1b1f, #141316); }
+
+:root[data-look="chart"] { --look-acc: #6b4fd8; --look-on: #fff; --sk-radius: 14px; --sk-edge: rgba(107,79,216,.2); --sk-edge-style: solid;
+  --sk-card: linear-gradient(160deg, rgba(255,255,255,.92), rgba(240,238,252,.92));
+  --sk-orn: radial-gradient(1px 1px at 18% 22%, rgba(107,79,216,.45) 60%, transparent), radial-gradient(1px 1px at 72% 14%, rgba(107,79,216,.35) 60%, transparent), radial-gradient(1.4px 1.4px at 88% 62%, rgba(255,95,180,.4) 60%, transparent), radial-gradient(1px 1px at 46% 80%, rgba(107,79,216,.3) 60%, transparent);
+  --sk-orn-pos: 0 0; --sk-orn-size: 220px 140px; --sk-orn-rep: repeat;
+  --sk-shadow: 0 4px 16px rgba(60,50,140,.08); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .02em;
+  --sk-label: #6b4fd8; --sk-label-track: .3em; --sk-btn-r: 999px; --sk-chip-r: 999px;
+  /* (the big button: the accent, resolved where it is used) */
+  --sk-code: #eef0fa; --sk-code-ink: #2a3366; --sk-code-edge: rgba(107,79,216,.18); --sk-bar: linear-gradient(180deg, #f8f6ff, #eef0fa); }
+:root[data-look="chart"][data-shade="dark"] { --look-acc: #a8b4ff; --look-on: #0a0f22; --sk-edge: rgba(168,180,255,.2);
+  --sk-card: linear-gradient(160deg, rgba(32,42,88,.7), rgba(12,18,40,.92));
+  --sk-orn: radial-gradient(1px 1px at 18% 22%, #fff 60%, transparent), radial-gradient(1px 1px at 72% 14%, rgba(255,255,255,.7) 60%, transparent), radial-gradient(1.4px 1.4px at 88% 62%, rgba(255,210,122,.8) 60%, transparent), radial-gradient(1px 1px at 46% 80%, rgba(255,255,255,.55) 60%, transparent), radial-gradient(1px 1px at 8% 70%, rgba(255,255,255,.5) 60%, transparent);
+  --sk-shadow: 0 0 0 1px rgba(168,180,255,.04), 0 10px 28px rgba(0,0,12,.4); --sk-label: #a8b4ff;
+  --sk-code: rgba(4,6,13,.65); --sk-code-ink: #d6ddff; --sk-code-edge: rgba(168,180,255,.18); --sk-bar: linear-gradient(180deg, #0c1229, #090d1e); }
+
+:root[data-look="map"] { --look-acc: #8a3b12; --look-on: #fbf5e6; --sk-radius: 3px; --sk-edge: rgba(74,53,32,.42); --sk-edge-style: dashed;
+  --sk-card: radial-gradient(ellipse at 40% 30%, #fdf8eb, #f3e8cc);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 80'%3E%3Cg fill='none' stroke='%234a3520' stroke-width='.8' opacity='.16'%3E%3Cellipse cx='120' cy='80' rx='24' ry='14'/%3E%3Cellipse cx='120' cy='80' rx='44' ry='26'/%3E%3Cellipse cx='120' cy='80' rx='66' ry='40'/%3E%3Cellipse cx='120' cy='80' rx='90' ry='54'/%3E%3C/g%3E%3C/svg%3E");
+  --sk-orn-pos: right bottom; --sk-orn-size: 120px 80px;
+  --sk-shadow: 2px 3px 0 rgba(74,53,32,.08); --sk-head: Georgia, "Times New Roman", serif; --sk-head-w: 400; --sk-head-track: 0;
+  --sk-label: #8a3b12; --sk-label-track: .12em; --sk-btn-r: 3px; --sk-chip-r: 2px;
+  --sk-primary: #4a3520; --sk-primary-ink: #fbf5e6; --sk-primary-edge: #4a3520; --sk-primary-glow: 2px 2px 0 rgba(74,53,32,.25);
+  --sk-code: #f1e6c8; --sk-code-ink: #4a3520; --sk-code-edge: rgba(74,53,32,.3); --sk-bar: linear-gradient(180deg, #fbf5e6, #f1e5c6); }
+:root[data-look="map"][data-shade="dark"] { --look-acc: #ffcf8a; --look-on: #141b21; --sk-edge: rgba(236,220,185,.3);
+  --sk-card: radial-gradient(ellipse at 40% 30%, #222d36, #182027);
+  --sk-orn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 80'%3E%3Cg fill='none' stroke='%23ecdcb9' stroke-width='.8' opacity='.12'%3E%3Cellipse cx='120' cy='80' rx='24' ry='14'/%3E%3Cellipse cx='120' cy='80' rx='44' ry='26'/%3E%3Cellipse cx='120' cy='80' rx='66' ry='40'/%3E%3Cellipse cx='120' cy='80' rx='90' ry='54'/%3E%3C/g%3E%3C/svg%3E");
+  --sk-shadow: 2px 3px 0 rgba(0,0,0,.25); --sk-label: #ffcf8a; --sk-primary: #ecdcb9; --sk-primary-ink: #141b21; --sk-primary-edge: #ecdcb9; --sk-primary-glow: 2px 2px 0 rgba(0,0,0,.35);
+  --sk-code: #121a20; --sk-code-ink: #ecdcb9; --sk-code-edge: rgba(236,220,185,.22); --sk-bar: linear-gradient(180deg, #1b242c, #141b21); }
+
+:root[data-look="chrono"] { --look-acc: #2d6f5e; --look-on: #fff; --sk-radius: 4px; --sk-edge: #c4c7cb; --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #fbfbfb, #ededeb);
+  --sk-orn: repeating-linear-gradient(90deg, rgba(0,0,0,.2) 0 1px, transparent 1px 9px);
+  --sk-orn-pos: left top; --sk-orn-size: 100% 4px;
+  --sk-shadow: inset 0 0 0 1px rgba(255,255,255,.7), 0 1px 2px rgba(0,0,0,.08); --sk-head: Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif; --sk-head-w: 400; --sk-head-track: .04em;
+  --sk-label: #5d636c; --sk-label-track: .22em; --sk-btn-r: 4px; --sk-chip-r: 3px;
+  --sk-primary: #1d1f22; --sk-primary-ink: #fff; --sk-primary-edge: #1d1f22; --sk-primary-glow: none;
+  --sk-code: #e2e3e1; --sk-code-ink: #1d1f22; --sk-code-edge: #c4c7cb; --sk-bar: linear-gradient(180deg, #f6f6f5, #e8e9e7); }
+:root[data-look="chrono"][data-shade="dark"] { --look-acc: #8ff0c6; --look-on: #04140e; --sk-edge: #2f333a;
+  --sk-card: linear-gradient(180deg, #1d2025, #141619);
+  --sk-orn: repeating-linear-gradient(90deg, rgba(255,255,255,.14) 0 1px, transparent 1px 9px);
+  --sk-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 2px 8px rgba(0,0,0,.35); --sk-label: #8b9097;
+  --sk-primary: initial; --sk-primary-ink: initial; --sk-primary-edge: initial;
+  --sk-code: #0a0b0d; --sk-code-ink: #9ff3cf; --sk-code-edge: #2a2d33; --sk-bar: linear-gradient(180deg, #17191d, #101215); }
+
+:root[data-look="aur"] { --look-acc: #1f8f72; --look-on: #fff; --sk-radius: 12px; --sk-edge: rgba(31,143,114,.2); --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #ffffff, #f4f8fb);
+  --sk-orn: linear-gradient(90deg, rgba(84,240,189,.7), rgba(143,108,255,.55) 55%, transparent);
+  --sk-orn-pos: left top; --sk-orn-size: 100% 2px;
+  --sk-shadow: 0 6px 20px rgba(30,60,90,.07); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .01em;
+  --sk-label: #1f8f72; --sk-label-track: .14em; --sk-btn-r: 10px; --sk-chip-r: 999px;
+  /* (the big button: the accent, resolved where it is used) */
+  --sk-code: #eaf2f6; --sk-code-ink: #1b2638; --sk-code-edge: rgba(31,143,114,.18); --sk-bar: linear-gradient(180deg, #f6f9fc, #e9f0f6); }
+:root[data-look="aur"][data-shade="dark"] { --look-acc: #54f0bd; --look-on: #032419; --sk-edge: rgba(190,230,255,.13);
+  --sk-card: linear-gradient(180deg, rgba(14,28,48,.94), rgba(8,16,30,.96));
+  --sk-shadow: 0 10px 30px rgba(0,0,0,.35); --sk-label: #54f0bd;
+  --sk-code: #040a14; --sk-code-ink: #c8f5e6; --sk-code-edge: rgba(84,240,189,.16); --sk-bar: linear-gradient(180deg, #071224, #050b16); }
+
+:root[data-look="drive"] { --look-acc: #c77a12; --look-on: #fff; --sk-radius: 8px; --sk-edge: rgba(35,36,58,.14); --sk-edge-style: solid;
+  --sk-card: linear-gradient(180deg, #ffffff, #f6f5fb);
+  --sk-orn: linear-gradient(90deg, transparent, rgba(227,154,46,.7), transparent);
+  --sk-orn-pos: left bottom; --sk-orn-size: 100% 2px;
+  --sk-shadow: 0 4px 14px rgba(35,36,58,.07); --sk-head: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --sk-head-w: 300; --sk-head-track: .02em;
+  --sk-label: #b06a0c; --sk-label-track: .16em; --sk-btn-r: 8px; --sk-chip-r: 4px;
+  /* (the big button: the accent, resolved where it is used) */
+  --sk-code: #efedf5; --sk-code-ink: #23243a; --sk-code-edge: rgba(35,36,58,.12); --sk-bar: linear-gradient(180deg, #f6f5fb, #ebeaf3); }
+:root[data-look="drive"][data-shade="dark"] { --look-acc: #f2b14c; --look-on: #231703; --sk-edge: rgba(255,255,255,.07);
+  --sk-card: linear-gradient(180deg, #131624, #0d0f18);
+  --sk-shadow: 0 6px 18px rgba(0,0,0,.45); --sk-label: #f2b14c;
+  --sk-code: #07080c; --sk-code-ink: #ffd9a0; --sk-code-edge: rgba(242,177,76,.18); --sk-bar: linear-gradient(180deg, #0c0f1a, #080a12); }
+
+/* the rules: cards of every kind (outside a journey card) */
+:root[data-look] :is(.card, .hcard, .tcard, .tcol:not(.tnewcol), .settings-page section, .shop-wearing, .shop-earn, .qa-step, .qa-area, .qa-item, .chat-msg.claude, .chat-context, .cq-row, .start-panel, .linkmenu, .m-menu, .toast, .wbdoc, .wbbubble, .zoomctl, .wbtools, .wbpop, .gpanel, .dggroup):not(.jy, .jy *) {
+  --line: var(--sk-edge); /* (the border reads --line, so a state's own border colour still wins) */
+  border-radius: var(--sk-radius); border-style: var(--sk-edge-style); box-shadow: var(--sk-shadow); }
+:root[data-look] :is(.card, .hcard, .tcard, .tcol:not(.tnewcol), .settings-page section, .shop-wearing, .shop-earn, .qa-step, .qa-area, .qa-item, .chat-msg.claude, .chat-context, .start-panel):not(.jy, .jy *, .you) {
+  background-color: var(--panel); background-image: var(--sk-orn), var(--sk-card);
+  background-repeat: var(--sk-orn-rep, no-repeat), no-repeat; background-position: var(--sk-orn-pos), 0 0; background-size: var(--sk-orn-size), 100% 100%; }
+/* (the whiteboard's cards take the shape and the edge only: no images to raster as it pans and zooms) */
+/* (the states that had a shadow of their own) */
+:root[data-look] .hcard:hover { border-style: solid; box-shadow: 0 3px 12px rgba(0,0,0,.14); }
+:root[data-look] .hcard-live { box-shadow: 0 0 0 1px var(--ok); }
+:root[data-look] :is(.tcard:hover, .tcard:focus-visible) { box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+/* headings and the small labels on cards */
+:root[data-look] :is(h1, h2, h3, .home-head h2, .fsec-head h3, .settings-page h2, .settings-page h3) { font-family: var(--sk-head); font-weight: var(--sk-head-w); letter-spacing: var(--sk-head-track); }
+:root[data-look] :is(.hcard-name, .tcard-title) { font-family: var(--sk-head); }
+:root[data-look] :is(.card h4, .tcol-head h3, .fnav-head, .settings-page section > h3):not(.jy *) { font-family: var(--sk-head); color: var(--sk-label); text-transform: uppercase; letter-spacing: var(--sk-label-track); font-size: 11px; font-weight: 600; }
+/* buttons and chips */
+:root[data-look] :is(button, .go-btn, input, select, textarea):not(.tabs button, .shop-tab, .mode-seg button, .seg button, .jy *) { border-radius: var(--sk-btn-r); }
+:root[data-look] :is(button.primary, .go-btn, button.action-main.primary):not(.jy *) { background: var(--sk-primary, var(--accent)); color: var(--sk-primary-ink, var(--on-accent)); border-color: var(--sk-primary-edge, var(--accent));
+  box-shadow: var(--sk-primary-glow, 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent)); }
+:root[data-look="chrono"] :is(button.primary, .go-btn, button.action-main.primary):not(.jy *) { text-transform: uppercase; letter-spacing: .08em; font-family: var(--sk-head); }
+:root[data-look="map"] :is(button.primary, .go-btn, button.action-main.primary):not(.jy *) { font-family: var(--sk-head); }
+:root[data-look] .chip { border-radius: var(--sk-chip-r); }
+:root[data-look="map"] .chip { border-style: dashed; }
+:root[data-look="chrono"] :is(.chip, .fsec-count) { font-family: var(--sk-head); font-variant-numeric: tabular-nums; }
+/* code, commands and pre blocks */
+:root[data-look] :is(.cmd code, .copyable code, .md code, .md pre, .start-result pre):not(.jy *) { background: var(--sk-code); color: var(--sk-code-ink); border: 1px solid var(--sk-code-edge); }
+:root[data-look] .md pre code { border: 0; background: none; }
+/* the bars at the top, and the live section */
+:root[data-look] :is(header, #companion-bar) { background: var(--sk-bar); }
+/* the mode switch keeps the mode's own colour (the one lit is the mode on) */
+:root[data-look] .mode-seg.on { color: var(--mode-acc); background: color-mix(in srgb, var(--mode-acc) 16%, var(--panel)); }
+:root[data-look] .fsec-live { border-radius: var(--sk-radius); background-image: var(--sk-orn); background-repeat: no-repeat; background-position: var(--sk-orn-pos); background-size: var(--sk-orn-size); }
+:root[data-look] :is(.fnav, .frail) { background: var(--sk-bar); }
+
+/* ---------------------------------------------------------------- 2. the journey card */
+.jy { position: relative; overflow: hidden; isolation: isolate; padding: 14px 18px 6px; border-radius: 12px; margin: 8px 0 10px; }
+.jy.card { border: 1px solid var(--line); }
+.jy-hero { position: relative; z-index: 2; min-height: 64px; }
+.jy .h-kick { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; opacity: .85; }
+.jy .h-big { font-size: 24px; font-weight: 600; line-height: 1.15; margin: 2px 0 2px; }
+.jy .h-sub { font-size: 12.5px; opacity: .78; }
+.jy-scene { position: relative; z-index: 1; }
+.jy-scene svg { display: block; width: 100%; height: auto; aspect-ratio: 1000 / 260; overflow: visible; }
+.jy .fx { position: absolute; inset: 0; pointer-events: none; z-index: 8; overflow: hidden; }
+.jy .fx i { position: absolute; width: 7px; height: 7px; border-radius: 50%; }
+.jy svg .pop { transform-box: fill-box; transform-origin: center; }
+.jy svg .pop-b { transform-box: fill-box; transform-origin: 50% 100%; }
+.jy svg .rip { transform-box: fill-box; transform-origin: center; }
+.jy.mini { padding: 3px 3px 0; border-radius: 9px; margin: 0; }
+.jy.mini .jy-scene svg { aspect-ratio: 1000 / 240; }
+.jy.mini svg text { display: none; }
+.jy.mini .fx { display: none; }
+.jy-under { margin: -4px 0 10px; }
+
+/* ---------------------------------------------------------------- 2b. the Overview as a stage (features.js overview)
+   The journey card fills the page's main area: the top line, the hero, the scene in the free height
+   and, over its ground, the gate and the dock. A drawer opens over it from the right. */
+.fmain:has(> .overview.sv) { padding: 0; overflow: hidden; position: relative; }
+.overview.sv { position: absolute; inset: 0; max-width: none; display: block; }
+.overview.sv > .jy { position: absolute; inset: 0; margin: 0; border: 0; border-radius: 0; display: flex; flex-direction: column;
+  padding: 12px clamp(16px, 3vw, 56px) 12px; overflow: auto; }
+.overview.sv > .jy .jy-scene { margin: auto 0; padding: 6px 0; flex: none; }
+.overview.sv > .jy .jy-scene svg { max-width: 1800px; margin: 0 auto; }
+.overview.sv > .jy > :not(.jy-scene):not(.fx) { position: relative; z-index: 3; flex: none; }
+.overview.sv .jy-hero { margin-top: 12px; min-height: 0; }
+.overview.sv .jy .h-kick { font-size: 12.5px; }
+.overview.sv .jy .h-big { font-size: clamp(28px, 2.8vw, 46px); margin: 4px 0; }
+.overview.sv .jy .h-sub { font-size: 15px; }
+.overview.sv .chr-win .cw-n { font-size: 34px; }
+/* the top line: the old head, smaller, in the scene's colours */
+.sv-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sv-top h2 { margin: 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.sv-top .ov-title { font-weight: 400; opacity: .8; margin-left: 8px; }
+.sv-top .sv-when { color: inherit; opacity: .6; }
+.sv-top .ov-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+/* the gate */
+.sv-gate-wrap { width: 100%; max-width: 1120px; margin: 0 auto 10px; }
+.overview.sv .sv-gate { padding: 12px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+  backdrop-filter: blur(6px); box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.sv-gate .sv-gate-h { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .65; color: inherit; }
+.sv-gate .action { margin: 0; }
+.sv-gate .sv-steps { margin: 6px 0 2px; }
+.sv-lines { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 2px; }
+.sv-sess { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.sv-sess .go-btn { margin-left: auto; }
+.sv-gate .more-options { margin-top: 8px; }
+.sv-gate .project-line { margin-top: 8px; }
+/* the dock */
+.sv-dock { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 0 auto; }
+.sv-dock button { font-size: 12px; padding: 4px 12px; border-radius: 999px; background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--ink); border: 1px solid var(--line); backdrop-filter: blur(4px); }
+.sv-dock button.open, .sv-dock button:hover { border-color: var(--accent); color: var(--accent); }
+/* the drawer: the app's own colours, over the stage */
+.sv-drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(520px, 92%); z-index: 20; background: var(--panel); color: var(--ink);
+  border-left: 1px solid var(--line); box-shadow: -12px 0 32px rgba(0,0,0,.28); display: flex; flex-direction: column; }
+.sv-drawer[hidden] { display: none; }
+.sv-drawer-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.sv-drawer-head h3 { margin: 0; font-size: 15px; flex: 1; }
+.sv-drawer-body { overflow: auto; padding: 12px 14px 20px; }
+.sv-pane[hidden] { display: none; }
+.sv-folder { margin-bottom: 8px; }
+/* Inside a stage the neutrals follow the scene, so the gate's cards, chips and buttons read on it:
+   glass in the scene's colours (Minimal keeps the page's own). */
+.overview.sv > .jy.t-star { --panel: rgba(255,255,255,.62); --bg: rgba(255,255,255,.45); --ink: #18213d; --dim: #5e6787; --line: rgba(40,60,120,.22); }
+[data-shade="dark"] .overview.sv > .jy.t-star { --panel: rgba(12,18,40,.62); --bg: rgba(8,12,30,.5); --ink: #dfe7ff; --dim: #8f9bc4; --line: rgba(150,180,255,.24); }
+.overview.sv > .jy.t-map { --panel: rgba(251,245,230,.72); --bg: rgba(246,235,208,.6); --dim: #7d6447; --line: rgba(74,53,32,.25); }
+[data-shade="dark"] .overview.sv > .jy.t-map { --panel: rgba(27,36,44,.72); --bg: rgba(16,22,27,.6); --dim: #a89a7c; --line: rgba(236,220,185,.2); }
+.overview.sv > .jy.t-kin { --panel: rgba(250,249,246,.72); --bg: rgba(239,236,229,.6); --ink: #2c2924; --dim: #77716a; --line: rgba(176,127,38,.3); }
+[data-shade="dark"] .overview.sv > .jy.t-kin { --panel: rgba(27,26,30,.72); --bg: rgba(18,17,20,.6); --ink: #e8e2d4; --dim: #9c958a; --line: rgba(224,183,90,.28); }
+.overview.sv > .jy.t-chr { --panel: rgba(246,246,245,.72); --bg: rgba(233,234,232,.6); --ink: #1d1f22; --dim: #6b7078; --line: rgba(139,144,151,.4); }
+[data-shade="dark"] .overview.sv > .jy.t-chr { --panel: rgba(23,25,29,.75); --bg: rgba(15,17,20,.6); --ink: #e3e6e9; --dim: #8b9097; --line: rgba(93,99,108,.6); }
+.overview.sv > .jy.t-aur { --panel: rgba(6,14,28,.6); --bg: rgba(4,10,22,.45); --ink: #e8f0f8; --dim: #9fb3c8; --line: rgba(190,230,255,.22); --on-accent: #032419; }
+.overview.sv > .jy.t-drv { --panel: rgba(12,14,22,.66); --bg: rgba(8,9,14,.5); --ink: #ede9e2; --dim: #a29fae; --line: rgba(255,207,122,.24); --on-accent: #231703; }
+/* the one big button takes the theme's own colour (Minimal keeps the mode's accent) */
+.overview.sv > .jy.t-star .sv-gate .action-main.primary, .overview.sv > .jy.t-star .sv-gate a.go-btn.action-main { background: var(--acc); border-color: var(--acc); color: #071026; box-shadow: 0 0 22px color-mix(in srgb, var(--acc) 55%, transparent); }
+.overview.sv > .jy.t-map .sv-gate .action-main.primary, .overview.sv > .jy.t-map .sv-gate a.go-btn.action-main { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.overview.sv > .jy.t-kin .sv-gate .action-main.primary, .overview.sv > .jy.t-kin .sv-gate a.go-btn.action-main { background: linear-gradient(180deg, #f3d98b, #c3913a); border-color: #b07f26; color: #2a1d05; }
+.overview.sv > .jy.t-chr .sv-gate .action-main.primary, .overview.sv > .jy.t-chr .sv-gate a.go-btn.action-main { background: var(--c-go); border-color: var(--c-go); color: var(--c-go-ink); letter-spacing: .06em; }
+.overview.sv > .jy.t-aur .sv-gate .action-main.primary, .overview.sv > .jy.t-aur .sv-gate a.go-btn.action-main { background: color-mix(in srgb, var(--accent) 25%, #8ff5d3); border-color: transparent; color: #032419; box-shadow: 0 0 22px color-mix(in srgb, #8ff5d3 35%, transparent); }
+.overview.sv > .jy.t-drv .sv-gate .action-main.primary, .overview.sv > .jy.t-drv .sv-gate a.go-btn.action-main { background: #f2b14c; border-color: #f2b14c; color: #231703; box-shadow: 0 0 20px rgba(242,177,76,.35); }
+
+/* ---------------------------------------------------------------- 3. the scenes */
+/* The shop's Themes tab (shop.js): the big preview above the shelf */
+.shop-look-preview { margin: 0 0 14px; }
+.shop-look-preview .jy { margin: 0; box-shadow: 0 8px 26px rgba(0,0,0,.12); }
+.shop-look-tag { display: inline-block; margin: 0 0 6px; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; background: var(--accent); color: var(--on-accent); }
+.shop-card .sc-thumb.look { height: auto; padding: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: none; }
+.shop-grid.looks { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+/* ------------------------------------------------------------------ A: Star Chart */
+.jy.t-star { --star: #7f8fbf; --orbit: rgba(40,60,120,.32); --p-todo: #eef2fc; --acc: var(--accent); --hull: #18213d;
+  background: linear-gradient(180deg, #f6f3ff 0%, #dfe7fb 60%, #cad7f3 100%); color: #18213d; font-family: "Segoe UI", system-ui, sans-serif;
+  --fx1: var(--accent); --fx2: #ffb34d; --fx3: #18213d; }
+[data-shade="dark"] .jy.t-star { --star: #fff; --orbit: rgba(150,180,255,.28); --p-todo: #121a36; --acc: color-mix(in srgb, var(--accent) 55%, #a8d8ff); --hull: #fff;
+  background: radial-gradient(ellipse at 50% 130%, #1d2d5c 0%, #0a0f24 55%, #04060d 100%); color: #dfe7ff; --fx1: #fff; --fx2: #ffd27a; --fx3: var(--acc); }
+.jy.t-star .h-big { font-weight: 300; font-size: 31px; letter-spacing: .01em; }
+.jy.t-star .h-kick { color: var(--acc); }
+.jy.t-star .star { fill: var(--star); }
+.jy.t-star .orbit { fill: none; stroke: var(--orbit); stroke-dasharray: 2 7; }
+.jy.t-star .course { fill: none; stroke: var(--orbit); stroke-width: 1.5; stroke-dasharray: 3 7; }
+.jy.t-star .course-done { fill: none; stroke: var(--acc); stroke-width: 2.2; stroke-linecap: round; }
+.jy.t-star .course-glow { fill: none; stroke: var(--acc); stroke-width: 9; opacity: .18; stroke-linecap: round; }
+.jy.t-star .pl .halo, .jy.t-star .pl .ring, .jy.t-star .pl .band { fill: none; }
+.jy.t-star .pl .body { fill: var(--p-todo); stroke: var(--orbit); stroke-width: 1.5; }
+.jy.t-star .pl.done .body { fill: var(--acc); stroke: none; }
+.jy.t-star .pl.done .band { stroke: var(--acc); opacity: .55; stroke-width: 1.4; }
+.jy.t-star .pl.now .body { fill: var(--hull); stroke: var(--acc); stroke-width: 2; }
+.jy.t-star .pl.now .halo { fill: var(--acc); opacity: .22; }
+.jy.t-star .pl.next .body { fill: none; stroke: var(--acc); stroke-width: 2; }
+.jy.t-star .pl.next .ring { stroke: var(--acc); stroke-dasharray: 3 4; stroke-width: 1.5; }
+.jy.t-star .pl.skip { opacity: .42; }
+.jy.t-star .pl.out { opacity: .4; }
+.jy.t-star .slash { stroke: #ff7a7a; stroke-width: 2; stroke-linecap: round; }
+.jy.t-star .ghost { fill: none; stroke: currentColor; stroke-dasharray: 1 3; }
+.jy.t-star .lbl { font-size: 9.5px; letter-spacing: .14em; text-anchor: middle; fill: currentColor; opacity: .85; }
+.jy.t-star .lbl2 { font-size: 9px; text-anchor: middle; fill: currentColor; opacity: .55; }
+.jy.t-star .grp { font-size: 10px; letter-spacing: .6em; text-anchor: middle; fill: var(--acc); opacity: .75; }
+.jy.t-star .hull { fill: var(--hull); stroke: var(--acc); stroke-width: 1.2; }
+.jy.t-star .flame { stroke: #ffae55; stroke-width: 3.5; stroke-linecap: round; }
+.jy.t-star .fx i { width: 3px; height: 3px; border-radius: 0; box-shadow: 0 0 6px 1px currentColor; }
+
+/* ------------------------------------------------------------------ B: Expedition Map */
+.jy.t-map { --ink: #4a3520; --paper: #f6ebd0; --acc: color-mix(in srgb, var(--accent) 75%, #8a3b12);
+  background: radial-gradient(ellipse at 50% 45%, #f8eed6 35%, #e6d1a4 100%); color: #4a3520; font-family: "Segoe UI", system-ui, sans-serif;
+  --fx1: var(--acc); --fx2: #c9a227; --fx3: #4a3520; }
+[data-shade="dark"] .jy.t-map { --ink: #ecdcb9; --paper: #1b242c; --acc: color-mix(in srgb, var(--accent) 60%, #ffcf8a);
+  background: radial-gradient(ellipse at 50% 45%, #26323c 30%, #10161b 100%); color: #ecdcb9; --fx1: var(--acc); --fx2: #ffe08a; --fx3: #ecdcb9; }
+.jy.t-map .h-big { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-weight: 400; font-size: 32px; }
+.jy.t-map .h-kick { font-family: "Ink Free", "Segoe Print", cursive; letter-spacing: .02em; text-transform: none; font-size: 15px; }
+.jy.t-map .contour { fill: none; stroke: var(--ink); opacity: .13; stroke-width: 1.2; }
+.jy.t-map .trail { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-dasharray: 1 7; stroke-linecap: round; opacity: .5; }
+.jy.t-map .trail-done { fill: none; stroke: var(--ink); stroke-width: 3.2; stroke-linecap: round; }
+.jy.t-map .detour { fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; }
+.jy.t-map .wp-dot { fill: var(--ink); }
+.jy.t-map .pole { stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; }
+.jy.t-map .flag { fill: var(--acc); }
+.jy.t-map .nextring { fill: none; stroke: var(--acc); stroke-width: 2.2; stroke-dasharray: 3 3; }
+.jy.t-map .xm { fill: var(--ink); opacity: .55; font-size: 17px; text-anchor: middle; font-weight: 700; }
+.jy.t-map .lbl { font-family: "Ink Free", "Segoe Print", cursive; font-size: 13px; fill: var(--ink); text-anchor: middle; }
+.jy.t-map .lbl.struck { text-decoration: line-through; opacity: .5; }
+.jy.t-map .lbl.faint { opacity: .4; font-size: 11px; }
+.jy.t-map .lbl.todo { opacity: .6; }
+.jy.t-map .ridge { font-family: Georgia, serif; font-style: italic; font-size: 12px; fill: var(--ink); opacity: .55; text-anchor: middle; letter-spacing: .3em; }
+.jy.t-map .hiker { fill: var(--acc); stroke: var(--paper); stroke-width: 3; }
+.jy.t-map .shadow { fill: #000; opacity: .16; }
+.jy.t-map .tent { fill: var(--acc); stroke: var(--ink); stroke-width: 1.4; stroke-linejoin: round; }
+.jy.t-map .tent.todo { fill: none; opacity: .5; stroke-dasharray: 2 3; }
+.jy.t-map .rose { fill: none; stroke: var(--ink); opacity: .45; }
+.jy.t-map .rose-t { fill: var(--ink); opacity: .6; font-family: Georgia, serif; font-size: 11px; text-anchor: middle; }
+.jy.t-map .fx i { width: 6px; height: 9px; border-radius: 1px; }
+
+
+/* ------------------------------------------------------------------ the free defaults: native to the page */
+.jy.t-min { background: var(--panel); color: var(--ink); border: 1px solid var(--line); font-family: system-ui, "Segoe UI", sans-serif; --fx1: var(--accent); --fx2: var(--dim); --fx3: var(--ink); }
+.jy.t-min .h-big { font-weight: 600; font-size: 26px; }
+.jy.t-min .h-kick { color: var(--accent); letter-spacing: .1em; font-size: 11px; opacity: 1; }
+.jy.t-min .lbl { font-size: 11.5px; text-anchor: middle; fill: var(--ink); }
+.jy.t-min .lbl.todo { opacity: .55; }
+.jy.t-min .lbl.struck { text-decoration: line-through; opacity: .5; }
+.jy.t-min .lbl.faint { opacity: .4; font-size: 10.5px; }
+.jy.t-min .lbl2 { font-size: 10px; text-anchor: middle; fill: var(--dim); }
+.jy.t-min .grp { font-size: 10px; letter-spacing: .2em; text-anchor: middle; fill: var(--dim); font-weight: 600; }
+
+/* M1 Hairline */
+.jy.t-min .hl-line { stroke: var(--line); stroke-width: 2; stroke-linecap: round; }
+.jy.t-min .hl-done { stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; }
+.jy.t-min .hl-bracket { fill: none; stroke: var(--dim); stroke-width: 1; opacity: .7; }
+.jy.t-min .dotf { fill: var(--panel); stroke: var(--line); stroke-width: 2; }
+.jy.t-min .done .dotf, .jy.t-min .now .dotf { fill: var(--accent); stroke: var(--accent); }
+.jy.t-min .next .dotf { fill: var(--panel); stroke: var(--accent); }
+.jy.t-min .skip .dotf { stroke: var(--dim); stroke-dasharray: 2 2; }
+.jy.t-min .out .dotf { stroke-dasharray: 1 3; opacity: .6; }
+.jy.t-min .halo { fill: var(--accent); opacity: .2; }
+.jy.t-min .nring { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.jy.t-min .ripple { fill: none; stroke: var(--accent); stroke-width: 1.5; transform-box: fill-box; transform-origin: center; }
+
+/* ------------------------------------------------------------------ A and B: the additions */
+.jy.t-star .nb-a { stop-color: #8a6bff; } .jy.t-star .nb-b { stop-color: #ff5fb4; } .jy.t-star .nb-c { stop-color: #4fc3ff; }
+[data-shade="light"] .jy.t-star .nebula { opacity: .35; }
+.jy.t-star .shoot { stroke: var(--hull); stroke-width: 1.6; stroke-linecap: round; fill: none; }
+.jy.t-map .tree { fill: var(--ink); opacity: .24; stroke: none; }
+.jy.t-map .tree.t2 { opacity: .36; }
+
+/* ------------------------------------------------------------------ E: Kintsugi */
+.jy.t-kin { --k-gold: #b07f26; --k-crack: #8a847a; --k-edge: rgba(255,255,255,.9); --k-bg: #eeebe4;
+  background: radial-gradient(ellipse at 28% -10%, #fdfcf9 0%, #f0ede6 45%, #dcd8ce 100%); color: #2c2924;
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --fx1: #f3d98b; --fx2: #c9973a; --fx3: #8a6420; }
+[data-shade="dark"] .jy.t-kin { --k-gold: #e0b75a; --k-crack: #000; --k-edge: rgba(255,255,255,.1); --k-bg: #151417;
+  background: radial-gradient(ellipse at 28% -10%, #35333a 0%, #1a191d 50%, #0c0b0d 100%); color: #e8e2d4; --fx1: #ffe7a3; --fx2: #e0b75a; --fx3: #fff6dc; }
+.jy.t-kin .h-big { font-weight: 300; font-size: 31px; letter-spacing: .01em; }
+.jy.t-kin .h-kick { color: var(--k-gold); }
+.jy.t-kin .k-g1 { stop-color: #a8781f; } .jy.t-kin .k-g2 { stop-color: #f0d283; }
+[data-shade="dark"] .jy.t-kin .k-g1 { stop-color: #c4922f; } [data-shade="dark"] .jy.t-kin .k-g2 { stop-color: #ffe9a8; }
+.jy.t-kin .k-glaze { stop-color: #fff; }
+.jy.t-kin .k-glaze0 { stop-color: #fff; stop-opacity: .45; }
+[data-shade="dark"] .jy.t-kin .k-glaze0 { stop-opacity: .05; }
+.sc-worn[hidden] { display: none; }
+.jy.t-kin .k-speck { fill: currentColor; }
+.jy.t-kin .k-crack { fill: none; stroke: var(--k-crack); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.jy.t-kin .k-crack.thin { stroke-width: 1; }
+.jy.t-kin .k-edge { fill: none; stroke: var(--k-edge); stroke-width: 1; stroke-linejoin: round; }
+.jy.t-kin .k-glow { fill: none; stroke-width: 9; stroke-linecap: round; stroke-linejoin: round; opacity: .16; }
+.jy.t-kin .k-gold { fill: none; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
+.jy.t-kin .k-br { stroke-width: 1.7; stroke-dasharray: 1; }
+.jy.t-kin .k-sheen { fill: none; stroke: #fffbe8; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.jy.t-kin .k-node { fill: var(--k-bg); stroke: var(--k-crack); stroke-width: 1.3; }
+.jy.t-kin .done .k-node, .jy.t-kin .now .k-node { fill: var(--k-gold); stroke: none; }
+.jy.t-kin .next .k-node { stroke: var(--k-gold); stroke-width: 1.5; }
+.jy.t-kin .skip .k-node { stroke-dasharray: 2 2; }
+.jy.t-kin .k-hi { fill: #fff8de; opacity: .75; }
+.jy.t-kin .k-ring { fill: none; stroke: var(--k-gold); stroke-width: 1; stroke-dasharray: 2 3; }
+.jy.t-kin .k-arc { fill: none; stroke: var(--k-gold); stroke-width: 1.3; stroke-dasharray: 9 28; stroke-linecap: round; }
+.jy.t-kin .k-pool { fill: var(--k-gold); }
+.jy.t-kin .k-staple { fill: none; stroke: var(--k-gold); stroke-width: 1.8; stroke-linecap: round; stroke-dasharray: 1; }
+.jy.t-kin .k-chip { fill: var(--k-bg); stroke: var(--k-crack); stroke-width: 1; stroke-dasharray: 1.5 2; }
+.jy.t-kin .k-bead { fill: #fffbe8; }
+.jy.t-kin .k-rip { fill: none; stroke: var(--k-gold); stroke-width: 1.2; }
+.jy.t-kin .lbl { font-size: 9.5px; letter-spacing: .16em; text-anchor: middle; fill: currentColor; opacity: .72; stroke: var(--k-bg); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
+.jy.t-kin .lbl.gilt { fill: var(--k-gold); opacity: 1; }
+.jy.t-kin .lbl.todo { opacity: .5; } .jy.t-kin .lbl.struck { text-decoration: line-through; opacity: .45; } .jy.t-kin .lbl.faint { opacity: .35; }
+.jy.t-kin .lbl2 { font-size: 9px; text-anchor: middle; fill: currentColor; opacity: .5; }
+.jy.t-kin .grp { font-size: 9.5px; letter-spacing: .6em; text-anchor: middle; fill: var(--k-gold); opacity: .8; }
+.jy.t-kin .fx i { width: 3px; height: 3px; border-radius: 1px; box-shadow: 0 0 5px 1px currentColor; }
+
+/* ------------------------------------------------------------------ F: Chronograph */
+.jy.t-chr { --c-ix: #23262b; --c-steel: #8b9097; --c-lume: color-mix(in srgb, var(--accent) 50%, #1d8a63); --c-hand: var(--accent); --c-go: #1d1f22; --c-go-ink: #fff;
+  background: repeating-conic-gradient(from 0deg at 50% 260%, rgba(0,0,0,.012) 0deg .12deg, transparent .12deg .3deg), radial-gradient(ellipse at 50% 120%, #fbfbfa 0%, #e6e7e5 50%, #c8cac7 100%);
+  color: #1d1f22; font-family: Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif; --fx1: var(--c-lume); --fx2: #fff; --fx3: var(--c-steel); }
+[data-shade="dark"] .jy.t-chr { --c-ix: #e4e7ea; --c-steel: #5d636c; --c-lume: color-mix(in srgb, var(--accent) 35%, #8ff0c6); --c-hand: color-mix(in srgb, var(--accent) 65%, #fff); --c-go: var(--c-lume); --c-go-ink: #04140e;
+  background: repeating-conic-gradient(from 0deg at 50% 260%, rgba(255,255,255,.012) 0deg .12deg, transparent .12deg .3deg), radial-gradient(ellipse at 50% 130%, #2c3037 0%, #131519 50%, #08090b 100%); color: #e3e6e9; }
+.jy.t-chr .h-big { font-weight: 300; font-size: 30px; letter-spacing: .02em; }
+.jy.t-chr .h-kick { color: var(--c-hand); letter-spacing: .22em; }
+.jy.t-chr .c-ring { fill: none; stroke: var(--c-steel); stroke-width: 1; opacity: .7; }
+.jy.t-chr .c-track { fill: none; stroke: var(--c-steel); stroke-width: 2; opacity: .25; }
+.jy.t-chr .c-prog { fill: none; stroke: var(--c-hand); stroke-width: 2.2; stroke-linecap: round; }
+.jy.t-chr .c-tick { stroke: var(--c-steel); stroke-width: 1; }
+.jy.t-chr .c-tick.maj { stroke: currentColor; stroke-width: 1.8; opacity: .75; }
+.jy.t-chr .c-plan { fill: none; stroke: var(--c-steel); stroke-width: 1; opacity: .6; }
+.jy.t-chr .c-ix { fill: none; stroke: var(--c-steel); stroke-width: 1.2; }
+.jy.t-chr .done .c-ix, .jy.t-chr .now .c-ix { fill: var(--c-ix); stroke: var(--c-ix); }
+.jy.t-chr .c-lume { fill: none; }
+.jy.t-chr .done .c-lume, .jy.t-chr .now .c-lume { fill: var(--c-lume); }
+.jy.t-chr .next .c-ix { stroke: var(--c-lume); stroke-width: 1.6; }
+.jy.t-chr .skip .c-ix { stroke-dasharray: 2 2; opacity: .6; }
+.jy.t-chr .c-skip { stroke: var(--c-steel); stroke-width: 1.4; }
+.jy.t-chr .c-pip { fill: var(--c-steel); opacity: .5; }
+.jy.t-chr .c-hand { fill: var(--c-hand); }
+.jy.t-chr .c-hand-lume { fill: var(--c-lume); }
+.jy.t-chr .c-sub { fill: color-mix(in srgb, currentColor 4%, transparent); stroke: var(--c-steel); stroke-width: 1; }
+.jy.t-chr .c-shand { fill: currentColor; } .jy.t-chr .c-shand.acc { fill: var(--c-hand); }
+.jy.t-chr .c-pin { fill: currentColor; }
+.jy.t-chr .c-rip { fill: none; stroke: var(--c-lume); stroke-width: 1.2; }
+.jy.t-chr .lbl { font-size: 9px; letter-spacing: .2em; text-anchor: middle; fill: currentColor; opacity: .6; }
+.jy.t-chr .lbl.on { opacity: .95; } .jy.t-chr .lbl.todo { opacity: .45; } .jy.t-chr .lbl.struck { text-decoration: line-through; opacity: .4; } .jy.t-chr .lbl.faint { opacity: .28; }
+.jy.t-chr .num { font-size: 10px; text-anchor: middle; fill: currentColor; opacity: .55; font-variant-numeric: tabular-nums; }
+.jy.t-chr .lbl2 { font-size: 7.5px; letter-spacing: .25em; text-anchor: middle; fill: currentColor; opacity: .55; }
+.jy.t-chr .grp { font-size: 8.5px; letter-spacing: .6em; text-anchor: middle; fill: currentColor; opacity: .5; }
+.jy.t-chr .brand { font-size: 12px; letter-spacing: .5em; text-anchor: middle; fill: currentColor; opacity: .8; font-weight: 600; }
+.jy.t-chr .brand2 { font-size: 6.5px; letter-spacing: .35em; text-anchor: middle; fill: var(--c-hand); }
+.chr-hero { display: flex; gap: 18px; align-items: flex-start; }
+.chr-hero > div:first-child { flex: 1; }
+.chr-win { display: inline-flex; align-items: baseline; gap: 7px; border: 1px solid color-mix(in srgb, currentColor 28%, transparent); border-radius: 6px; padding: 6px 12px;
+  background: color-mix(in srgb, currentColor 5%, transparent); box-shadow: inset 0 1px 3px rgba(0,0,0,.18); }
+.chr-win small { font-size: 9px; letter-spacing: .3em; opacity: .65; }
+.chr-win .cw-n { display: inline-block; overflow: hidden; font-size: 28px; line-height: 1.15; }
+.chr-win b { display: inline-block; font-weight: 500; font-variant-numeric: tabular-nums; }
+.chr-win i { font-style: normal; font-size: 13px; opacity: .6; }
+
+/* ------------------------------------------------------------------ G: Aurora */
+.jy.t-aur { --a-far: #3c4a6c; --a-near: #161d2e; --a-warm: #ffc677; --a-snow: #e8eef8;
+  background: linear-gradient(180deg, #1f2b4a 0%, #3e5079 38%, #7686ac 66%, #a9b3cc 100%); color: #eef3fa;
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --fx1: #bff7e4; --fx2: #fff; --fx3: #c9b8ff; }
+[data-shade="dark"] .jy.t-aur { --a-far: #0e1a2b; --a-near: #04080f; background: linear-gradient(180deg, #02040a 0%, #050c1a 35%, #0a1a2c 66%, #0f2536 100%); color: #e1ebf4; }
+.jy.t-aur .h-big { font-weight: 300; font-size: 31px; }
+.jy.t-aur .h-kick { color: color-mix(in srgb, var(--accent) 30%, #8ff5d3); }
+.jy.t-aur .a-star { fill: #fff; }
+.jy.t-aur .au-a { stop-color: color-mix(in srgb, var(--accent) 28%, #54f0bd); }
+.jy.t-aur .au-b { stop-color: color-mix(in srgb, var(--accent) 40%, #8f6cff); }
+.jy.t-aur .a-rays { opacity: .14; }
+[data-shade="light"] .jy.t-aur .a-tone { opacity: .72; }
+.jy.t-aur .a-far { fill: var(--a-far); }
+.jy.t-aur .a-far-edge { fill: none; stroke: var(--a-snow); stroke-opacity: .14; stroke-width: 1; stroke-linejoin: round; }
+.jy.t-aur .a-near { fill: var(--a-near); }
+.jy.t-aur .a-crest { fill: none; stroke: var(--a-snow); stroke-opacity: .42; stroke-width: 1.2; }
+.jy.t-aur .a-done { fill: none; stroke: var(--a-warm); stroke-opacity: .85; stroke-width: 1.8; stroke-linecap: round; }
+.jy.t-aur .a-tent { fill: var(--a-near); stroke: var(--a-snow); stroke-opacity: .55; stroke-width: 1.1; stroke-linejoin: round; }
+.jy.t-aur .done .a-tent, .jy.t-aur .now .a-tent { fill: var(--a-warm); stroke: color-mix(in srgb, var(--a-warm) 55%, #000); stroke-opacity: 1; }
+.jy.t-aur .a-door { fill: #7a4a14; opacity: 0; }
+.jy.t-aur .done .a-door, .jy.t-aur .now .a-door { opacity: .55; }
+.jy.t-aur .a-pole { stroke: var(--a-snow); stroke-opacity: .6; stroke-width: 1.2; }
+.jy.t-aur .a-flag { fill: none; stroke: var(--a-snow); stroke-opacity: .55; stroke-width: 1; }
+.jy.t-aur .done .a-flag, .jy.t-aur .now .a-flag { fill: var(--a-warm); stroke: none; }
+.jy.t-aur .skip .a-tent, .jy.t-aur .skip .a-flag { stroke-dasharray: 2 2; opacity: .6; }
+.jy.t-aur .a-w0 { stop-color: var(--a-warm); }
+.jy.t-aur .a-beacon { fill: #fff; }
+.jy.t-aur .a-pip { fill: var(--a-snow); opacity: .4; }
+.jy.t-aur .a-lamp { fill: #fff4dc; } .jy.t-aur .a-lamp-glow { fill: var(--a-warm); opacity: .35; }
+.jy.t-aur .a-rip { fill: none; stroke: var(--a-warm); stroke-width: 1.2; }
+.jy.t-aur .a-shoot { stroke: #fff; stroke-width: 1.4; stroke-linecap: round; }
+.jy.t-aur .lbl { font-size: 9.5px; letter-spacing: .16em; text-anchor: middle; fill: var(--a-snow); opacity: .7; }
+.jy.t-aur .lbl.on { fill: var(--a-warm); opacity: .95; }
+.jy.t-aur .lbl.todo { opacity: .45; } .jy.t-aur .lbl.struck { text-decoration: line-through; opacity: .45; } .jy.t-aur .lbl.faint { opacity: .3; }
+.jy.t-aur .lbl2 { font-size: 9px; text-anchor: middle; fill: var(--a-snow); opacity: .5; }
+.jy.t-aur .grp { font-size: 9.5px; letter-spacing: .6em; text-anchor: middle; fill: var(--a-snow); opacity: .55; }
+.jy.t-aur .fx i { width: 3px; height: 3px; box-shadow: 0 0 6px 1px currentColor; }
+
+/* ------------------------------------------------------------------ H: Night Drive */
+.jy.t-drv { --d-lit: #ffcf7a; --d-far: #34365a; --d-near: #1f2036; --d-ground: #17171f; --d-road: #2a2b33; --d-post: #464b5a;
+  background: linear-gradient(180deg, #232b52 0%, #444a7c 32%, #85799f 55%, #d3a487 68%, #17171f 80%); color: #f5f1ea;
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; --fx1: var(--d-lit); --fx2: #fff3dc; --fx3: #ff7a5c; }
+[data-shade="dark"] .jy.t-drv { --d-far: #10152a; --d-near: #080b16; --d-ground: #07080c; --d-road: #15171d; --d-post: #2c313d;
+  background: linear-gradient(180deg, #03050b 0%, #0a1022 40%, #1b1931 60%, #2a2035 68%, #07080c 80%); color: #e9e6df; }
+.jy.t-drv .h-big { font-weight: 300; font-size: 31px; }
+.jy.t-drv .h-kick { color: var(--d-lit); }
+.jy.t-drv .d-far { fill: var(--d-far); } .jy.t-drv .d-near { fill: var(--d-near); }
+.jy.t-drv .d-mast { stroke-width: 1.2; } .jy.t-drv .d-mast.d-far { stroke: var(--d-far); } .jy.t-drv .d-mast.d-near { stroke: var(--d-near); }
+.jy.t-drv .d-win { fill: var(--d-lit); fill-opacity: .55; }
+.jy.t-drv .d-ground { fill: var(--d-ground); }
+.jy.t-drv .d-kerb { fill: none; stroke: rgba(255,255,255,.1); stroke-width: 25; }
+.jy.t-drv .d-road { fill: none; stroke: var(--d-road); stroke-width: 22; }
+.jy.t-drv .d-lane { fill: none; stroke: #e9e3d1; stroke-opacity: .35; stroke-width: 1.3; stroke-dasharray: 12 14; }
+.jy.t-drv .d-post { fill: none; stroke: var(--d-post); stroke-width: 2; stroke-linecap: round; }
+.jy.t-drv .d-head { fill: #4a4f5c; }
+.jy.t-drv .dl.done .d-head, .jy.t-drv .dl.now .d-head { fill: var(--d-lit); }
+.jy.t-drv .dl.next .d-head { fill: color-mix(in srgb, var(--d-lit) 45%, #4a4f5c); }
+.jy.t-drv .d-c0 { stop-color: var(--d-lit); }
+.jy.t-drv .d-pool { fill: var(--d-lit); fill-opacity: .3; }
+.jy.t-drv .d-fly { fill: none; stroke: #e9e3d1; stroke-opacity: .7; stroke-width: 2; stroke-dasharray: 1; stroke-linecap: round; }
+.jy.t-drv .d-trail { fill: none; stroke-width: 1.6; stroke-linecap: round; }
+.jy.t-drv .d-trail.w { stroke: color-mix(in srgb, var(--accent) 30%, #fff3dc); }
+.jy.t-drv .d-trail.r { stroke: #ff5d55; stroke-opacity: .85; }
+.jy.t-drv .d-trail-glow { fill: none; stroke: #ff7a5c; stroke-width: 10; stroke-opacity: .1; stroke-linecap: round; }
+.jy.t-drv .d-car { fill: #11131a; stroke: color-mix(in srgb, var(--accent) 45%, #8a91a8); stroke-width: .8; }
+.jy.t-drv .d-glass { fill: #2b3346; }
+.jy.t-drv .d-wheel { fill: #07080b; stroke: #3d4250; stroke-width: 1.2; }
+.jy.t-drv .d-hl { fill: #fff6d8; } .jy.t-drv .d-tl { fill: #ff4a40; }
+.jy.t-drv .d-b0 { stop-color: #fff3cf; }
+.jy.t-drv .lbl { font-size: 9.5px; letter-spacing: .16em; text-anchor: middle; fill: currentColor; opacity: .7; }
+.jy.t-drv .lbl.on { fill: var(--d-lit); opacity: .95; }
+.jy.t-drv .lbl.todo { opacity: .45; } .jy.t-drv .lbl.struck { text-decoration: line-through; opacity: .45; } .jy.t-drv .lbl.faint { opacity: .3; }
+.jy.t-drv .lbl2 { font-size: 9px; text-anchor: middle; fill: currentColor; opacity: .5; }
+.jy.t-drv .grp { font-size: 9px; letter-spacing: .5em; text-anchor: middle; fill: currentColor; opacity: .5; }
+.jy.t-drv .d-brk { fill: none; stroke: currentColor; stroke-opacity: .3; }
+.jy.t-drv .fx i { width: 3px; height: 3px; box-shadow: 0 0 6px 1px currentColor; }
+

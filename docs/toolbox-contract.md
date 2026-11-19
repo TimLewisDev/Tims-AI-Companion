@@ -1,0 +1,607 @@
+# What Tatty takes from the TT toolbox
+
+Tatty is a companion to the [TT toolbox](https://github.com/TimLewisDev/Tims-AI-Toolbox):
+a user interface over its workflow, never part of it. The dependency runs one
+way:
+
+- **Tatty reads the toolbox.** It reads the toolbox's documents and records and
+  runs a few of its scripts, read-only. It writes a document only on a
+  person's action: a feature's document when it is saved in Edit mode (see
+  below), a ticket's document into a new feature folder made for it on Start
+  workflow (see "Jira"), a task's document into a new feature folder made for
+  it on Start workflow (see "Tasks"), and a User Stories document, through the toolbox's own
+  `stories.sh`, when a person changes a story on the board (see "User
+  Stories"). It can also ask Claude Code to install one of the toolbox's
+  discipline plugins, on a person's click (see below); that is Claude Code's
+  doing, and changes nothing of the toolbox's.
+- **The toolbox never knows about Tatty.** Nothing in the toolbox calls Tatty,
+  checks for it or waits for it. Every skill works the same with or without
+  Tatty installed.
+
+Everything Tatty relies on is listed here. These are the toolbox's public
+interfaces: its scripts' command lines and its files on disk. A change to one of
+them is a change Tatty has to follow, and the tests in `tools/test-tatty.sh` run
+against a real toolbox to catch it.
+
+## Depending on the toolbox
+
+As a plugin, Tatty declares a dependency on the toolbox's `core` plugin, from
+the toolbox's own marketplace. It is
+`{ "name": "core", "marketplace": "tims-ai-toolbox" }`, in this repo's
+`.claude-plugin/marketplace.json` (with `allowCrossMarketplaceDependenciesOn`)
+and in `plugins/tatty/.claude-plugin/plugin.json`.
+- Installing Tatty installs `core` when it's missing.
+- Without the toolbox's marketplace, the install is refused.
+- The dependency goes one way only: the toolbox names nothing of Tatty's.
+
+## Finding the toolbox
+
+Tatty looks in this order (`toolbox_core()` in `plugins/tatty/app/server.py`):
+
+1. `TATTY_TOOLBOX`, if set. It names a toolbox checkout (`plugins/core/skills/…`
+   under it), or a core plugin folder (`skills/…`), or a core skills folder.
+   Use it for development and tests.
+2. The toolbox's own pointer folder,
+   `${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tt-plugins}/core/skills`.
+   Each toolbox plugin's SessionStart hook (`hooks/register.sh`) keeps it
+   pointing at that plugin's install.
+
+When neither has `tt-common/scripts/workflow-state.sh`, Tatty still runs: its
+pages say "Tatty can't find the TT toolbox", and nothing else breaks.
+
+## Which disciplines are installed (Tatty's modes)
+
+The toolbox's discipline plugins -- `engineering`, `design`, `qa`, `production` --
+are Tatty's **modes**: its landing page offers the ones installed, its title bar
+switches between them, and the mode is the only thing that sets the app's accent
+colour. `core` is the base every discipline installs, so it is not one of them.
+
+Tatty reads the same pointer folders the toolbox keeps for itself
+(`installed_modes()` in `plugins/tatty/app/server.py`): a discipline is
+installed when `${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tt-plugins}/<plugin>`
+is there, or `<TATTY_TOOLBOX>/plugins/<plugin>` in a checkout. Existence only:
+nothing inside is read for this. A plugin's pointer appears when a session has
+loaded it, so Claude Code's own records
+(`${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/installed_plugins.json`, the
+toolbox's marketplace only) are read as well, and one just added counts at once.
+`TATTY_MODES` names the modes instead, for development and the tests.
+
+With no discipline plugin installed Tatty still shows everything it can drive
+from `core` alone: its landing page offers the disciplines to add, and no page
+is hidden.
+
+### Adding a discipline
+
+**Add** on the modes page installs that plugin, which is the one thing Tatty
+does beyond reading. It is still not a change to the toolbox: Claude Code does
+the installing, through the command a person would run themselves --
+`claude plugin install <plugin>@<marketplace>`, the marketplace `core` was
+installed from (`install_mode` and `toolbox_market()`). Only the names
+above, only on a click, never with `-y`, and the toolbox's own files are
+untouched. The plugin's skills and hooks reach Claude Code in sessions started
+afterwards, as they would after any install.
+
+## Scripts Tatty runs (read-only)
+
+All of these are under the core plugin's `skills/` folder.
+
+| Script | For | Used in Tatty |
+|---|---|---|
+| `tt-common/scripts/workflow-state.sh --tsv <folder>` | where each feature in a folder stands, and its next command (columns `prefix kind phase skill verb arg text hint stage`) | Features, a feature's page, the Toolbox page's Status tab, the greeting |
+| `tt-common/scripts/tatty.sh banner` | the greeting's robot and quip | a fresh window's first card |
+| `tt-guide/scripts/guide.sh about [topic]`, `guide.sh start` | the toolbox's own docs | the Toolbox page's Docs tab |
+| `tt-connections/scripts/connections.sh status <folder>` | the project's connections | the Toolbox page's Connections tab |
+| `tt-common/scripts/ids.sh index <feature folder>` | every planning ID the feature's documents define, one row each: `ID file line form gloss` (form `heading`, `item` or `row`), from the document that owns its prefix | ID links and their hover cards (below) |
+
+### Choosing a feature's stages
+
+| Script | For | Used in Tatty |
+|---|---|---|
+| `tt-common/scripts/stages.sh show --tsv <feature folder>` | the stages the feature's workflow includes, one row each: `key label level on locked why` (`level` `top` or `plan`; `locked` 1 when the stage has begun or must stay, with `why`) | a feature's page: the Stages button, the tracker, the Start panel's line |
+| `stages.sh set <feature folder> <stage> on\|off` | a person's tick in the Stages menu | the toolbox keeps the choice in `<feature>/.tt/workflow-stages.tsv` and updates a draft plan's Stages table; exit 1 (refused, its reason on stderr) is a 409 |
+
+The toolbox owns the choice and its workflow follows it: Tatty stores nothing of its own. A
+toolbox without `stages.sh` is not an error; the page just offers no Stages button.
+
+### Deciding a workflow's questions
+
+| Script | For | Used in Tatty |
+|---|---|---|
+| `tt-common/scripts/decide.sh pending --tsv <feature folder>` | the items the folder's script-owned documents are waiting on, one row each: `doc kind id state group severity title` (`kind` `challenge` from the Challenges doc, `proposal` from the Tech Proposals doc, `question` from a question list in `.tt/<Prefix> - Questions/`; `state` `open`, or `apply` once decided and waiting for the session). Tatty passes `doc` back relative to the feature's folder: a document's name, or the list's `.tt/…` path (nothing else is accepted) | a feature's page: the "questions wait" line, the Decisions rail item and the Decide page |
+| `decide.sh show <doc> <id>` | one item's fields (`<field><TAB><value>`) and its options (`option key title detail recommended needs-note`) | the Decide page, one item at a time |
+| `decide.sh set <doc> <id> <option> [--note <text>]` | a person's choice on the Decide page | the document's own writer records it (`challenges.sh`, `proposals.sh` or `questions.sh`); exit 1 (refused, its reason on stderr) is a 409 |
+
+Sessions Tatty starts carry `TT_DECIDE=elsewhere` (beside `TATTY_SESSION`). The toolbox reads it
+through `decide.sh mode`: its skills then write the questions down and end the turn instead of asking
+them in the terminal. When the folder's last open item is decided, Tatty puts "Continue: I've decided
+the challenges in Tatty …" in the inbox of the feature's running session, which applies them; with
+no session open, the feature's next Start resumes and applies them. The toolbox knows nothing of
+Tatty: `TT_DECIDE` is its own setting, and a session without it asks in the chat as before. A toolbox
+without `decide.sh` is not an error; the page just offers no Decide page.
+
+The page can't name any other command. The server runs only these (and the
+design plugin's `stories.sh`, below, `decide.sh` above, and the model scripts in "Models and LLM
+connections", below), by argv, with no shell.
+
+## Files Tatty reads
+
+| File | For |
+|---|---|
+| `<feature>/<Prefix> - <Doc>.md` and `<feature>/.tt/**/*.md` | a feature's documents and working notes: their order, the Stages table of a draft Comprehensive Tech Plan, the Work Unit and Task Boards of a Task Status, `Repo` paths |
+| a feature's Comprehensive Tech Plan (else Tech Plan, else Lite Brief), Task Status and `.tt/**/results/*.md` | its diagrams: the plan's `## Implementation Plan` (`### §n.` steps, their `**Files:**` lists and code), `## Affected Files` and `## Chosen Approach` for the Plan diagram; the Task Board's `Work unit` column and each result's `## Files Modified` (`change \`path\``) for a Review diagram's work units. Read only; if a heading or column is missing the diagram has no steps or units, nothing fails |
+| `${TT_EVENTS_HOME:-~/.claude/tt-events}/events.jsonl` | a feature's timeline and its project, and **followed as it is written** for the milestones Tatty celebrates (`folder`, `event`, `ts`, `key`, `prefix`, `qualifier`, `route`, `project`, …; see the toolbox's `tt-common/events.md`, which names a companion app as a reader) |
+| `${TT_WORKFLOW_HOME:-~/.claude/tt-workflow}/links.tsv`, `lite-links.tsv` | which project a feature folder is linked to, and the other way: which feature a session's project (its git root) is linked to |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json` | open sessions' names, so a new one isn't given the same name; a session's `cwd`, by its `sessionId` |
+| `${TT_CONFIG_DIR:-~/.claude/tt-config}/` and `${TT_LLMS_HOME:-~/.claude/tt-llms}/` | the model choices and the LLM connections: read, and changed, only through `model-config.sh` and `llms.sh` (below), never as files |
+
+### Planning IDs: links and hover cards
+
+Wherever Tatty shows a feature's words (a question from a session, its options,
+a reply, a document in View), an ID the feature defines (`R12`, `CH5`, `P3`,
+`CD2`, `§4`, `T07`, ...) is a link to its item: it opens the owning document at
+that item, and hovering it shows the item as a card. An ID the feature doesn't
+define stays plain text, and so does everything without the toolbox's
+`ids.sh index`.
+
+- **Which feature.** A session Start opened is its feature's. Any other joined
+  session sends its Claude session id with each post; Tatty finds the session's
+  `cwd` in `sessions/*.json`, its git root, and the feature folder under Tatty's
+  root that `links.tsv` or `lite-links.tsv` links that project to.
+- **Where an ID is.** `ids.sh index` follows the toolbox's Anchors rule
+  (`tt-common/planning-protocol.md`): each ID is defined once, in the document
+  that owns its prefix, as a heading that starts with it, a bullet that opens
+  with it in bold (and ends with its block id, ` ^r12`), or a table row whose
+  first cell it is. A card is that heading's section, that bullet, or that row
+  under its table's header.
+- Tatty finds an item in a rendered document the same three ways, so a
+  document written before block ids still opens at the bullet.
+
+The toolbox's skills keep writing IDs as they do in chat (`R12 (what it says)`);
+nothing in a question is written for Tatty.
+
+### The ledger as it is written: milestones
+
+Tatty follows the ledger file while it is open (`watch_ledger` in
+`plugins/tatty/app/server.py`) and makes a fuss of the rows in `MILESTONES`: the
+explore, plan, breakdown, lite, build and debug events of
+`tt-common/events.md`'s catalogue, each with a tier (a plan signed off and a
+build complete are the big ones). This is still only reading:
+
+- the file is read forwards from wherever the last look ended, and never
+  written, locked or rotated;
+- a row Tatty doesn't recognise is ignored, as that document asks of every
+  reader, so the toolbox can add events without Tatty knowing;
+- rows are de-duplicated on the ledger's own `key`, and a window starts from the
+  end of the file as it stands, so nothing is celebrated twice and nothing
+  historical is celebrated at all;
+- the toolbox still knows nothing of any of this: it records what it always
+  recorded, whether or not Tatty is installed.
+
+Of a row, Tatty also reads `skill` (named in the window's alert) and `folder`,
+which it matches to a feature under its root to know which page a click should
+open. A row without them still celebrates; it just opens no page.
+
+### Documents: View and Edit
+
+A document opens in **View**, which lays it out by its kind (the part of the file
+name after ` - `): `Challenges` as cards, `Task Breakdown` as a list of
+collapsible tickets grouped by work unit, every other kind as plain markdown.
+The Task Breakdown's tickets show their status from the same feature's Task
+Status (its Task Board and Work Unit Board, which Tatty already reads); with no
+Task Status they show none.
+Tatty identifies the kind by file name only, and adds nothing to the toolbox's
+templates for it. A view reads what the template writes (for Challenges,
+`tt-adversarial-plan`'s `templates/challenges.md` and `briefs/challenge.md`:
+`### CH<n> — title` blocks with `Severity`, `Target`, `Outcome` and `Resolution`
+bullets; for the Task Breakdown, `tt-task-breakdown`'s templates: `## WU<n> — name`
+units, `### T<nn> — title` cards and the Task Map table) and falls back to plain
+markdown when it can't.
+
+In **Edit** a person changes the document's markdown and saves it
+(`POST /api/doc/save`). This is the only place Tatty writes a toolbox document:
+
+- only a `.md` file directly in a feature folder or under its `.tt/`, the same
+  files it reads;
+- only if the file hasn't changed since the page read it (its modified time is
+  checked), because the toolbox's skills edit these files in place too; a
+  changed file is refused and the person picks: overwrite, or load the disk
+  version;
+- written whole and atomically, keeping the file's own line ends.
+
+Tatty never edits a document on its own, except the Review Suggestions document, which is Tatty's own (written by `suggestions.sh`, never by hand).
+
+## User Stories (the design mode)
+
+The design mode's board works on the design plugin's `tt-user-stories` skill.
+Tatty finds the plugin like core: under a `TATTY_TOOLBOX` checkout
+(`plugins/design`, or beside the plugin folder it names), through the pointer
+folder `${TT_PLUGINS_HOME:-~/.claude/tt-plugins}/design`, else at the
+`installPath` Claude Code recorded for `design@<marketplace>`. Without it the
+board says so and offers the modes page.
+
+A board is a folder `<root>/design/<name>/` that Tatty makes: it holds a copy of
+the design document the person picked (so the skill reads only inside the
+folder) and `<name> - User Stories.md`, which is the skill's document:
+
+| Command | When | Used in Tatty |
+|---|---|---|
+| `tt-user-stories/scripts/stories.sh init <design doc> <stories doc>` | a new board | starts the document |
+| `stories.sh list <doc> --tsv` | every time the board is read | the stories, groups and retired rows, and each story's hash; `problem:` lines on stderr mean a hand edit broke the layout |
+| `stories.sh edit <doc> <id> <spec> --if <hash>`, `accept`, `reject <reason>`, `group add\|describe\|rename\|remove` | a person's click: Save, ✓, 🗑, the group panel | the change; exit 3 (the story changed since it was read) is a 409 and the board reloads |
+| `stories.sh add <doc> <spec> [--proposed]` | a new story's Save on the board (`--proposed` for Write it for me) | the new story's ID, on stdout |
+
+The spec Tatty writes for an edit is the script's own format (`stories.sh
+--help`), from the fields the person filled in. Tatty never writes the
+document's markdown itself.
+
+**Write it for me** (a new story said in a line) is `stories.sh add --proposed`
+of a placeholder, then the `alter` run below on it, with the line in its note.
+
+**Export to Tasks** only reads the document (`stories.sh list --tsv`): the
+tasks it makes are Tatty's own files on a Tasks board (see "Tasks"), and which
+task each story became is kept in `<home>/boards/`, not in the document. It
+runs no skill.
+
+To **write** stories, Tatty runs the skill headless, on a person's click
+(**Write stories**, **Look for more**, a new board, or **Ask for changes** on a
+Proposed card):
+
+```
+claude -p --output-format stream-json --verbose
+  --tools Bash,Read,Glob,Grep,Skill
+  --allowedTools Read Glob Grep Skill "Bash(bash *stories.sh*)"
+  --permission-mode dontAsk --setting-sources user --no-session-persistence
+  --strict-mcp-config --max-budget-usd <TATTY_STORIES_BUDGET, default 5>
+  [--plugin-dir <design> --plugin-dir <core>]   (only for a checkout)
+```
+
+with the prompt on stdin: `/design:tt-user-stories draft "<design doc>"
+"<stories doc>"`, or `/design:tt-user-stories alter "<stories doc>" <id>
+"<note file>"`. It runs in the board's folder, with the alteration note in a
+folder of Tatty's own (`<home>/runs/`, given with `--add-dir`, removed after).
+The run can read, and write only through `stories.sh` (the skill passes its
+specs on stdin): it has no Write or Edit tool, and anything else asked for is
+refused, never prompted. `TATTY_SESSION` is taken out of its environment, so the
+Tatty mod stays out of it; on Windows `CLAUDE_CODE_GIT_BASH_PATH` is set to the
+Git Bash the server uses, so the run has a Bash tool (without it a child claude
+may get PowerShell, where `bash stories.sh` can't run). One run at a time; Stop
+kills it. The page sees each tool call as a step, then which stories are new or
+rewritten and what the run cost.
+
+## Commands Tatty starts
+
+(Besides the User Stories runs above.)
+
+**Start session** opens a new Claude session that runs one of the feature's
+next commands. That is the command `workflow-state.sh` names, which names the
+document it works from, so it needs no folder argument; for a new feature,
+**Start Workflow** and **Start Workflow Lite** (below). Those are the toolbox's own
+skills, run as a person would run them. Tatty's launcher (`launch()` in `server.py`) only opens the terminal: it
+names the session, sets `TATTY_SESSION`, and starts `claude` in the project. A
+Start may also choose the model and effort the session runs on, which the
+launcher forces with `claude --model <m> --effort <e>` before `-n`: a running
+session can't be switched, so only a launch can set them. With no choice made,
+the toolbox's `session` setting (below) applies, and when that is left to the
+session no flag is added. The same two fields are accepted by Start workflow on
+a Jira ticket and on a task (full and lite). The choice is kept per feature
+(`session-models.json`) so the feature's chats answer on the same model.
+
+A feature page offers one thing first (see `primary_action` in `server.py`), and
+Tatty does not run `/tt-workflow` or `/tt-workflow-lite` or their scripts for a
+feature that has begun: the state comes from `workflow-state.sh --tsv`, and
+**Continue** runs the command it names, on the full pipeline and the lite route
+alike. A feature with nothing written offers **Start Workflow** and **Start
+Workflow Lite**, and the person says what it is:
+
+- **Start Workflow** starts the state script's first step (`/tt-adversarial-plan
+  <idea, spec or ticket>`) with the placeholder filled the way `tt-workflow` hands a
+  new folder to planning: `<idea>. Folder: <folder>. Prefix: <name>`.
+- **Start Workflow Lite** also asks bug or feature, and starts what
+  `tt-workflow-lite` starts for a new task: for a feature `/tt-familiarise lite <idea>.
+  Mode: lite. Folder: <folder>. Prefix: <name>.`, for a bug `/tt-debug <idea>.
+  Folder: <folder>. Prefix: <name>.` These two lines copy `tt-workflow-lite`'s
+  step 2, so a change to them there is a change here (the tests pin the text).
+
+Neither links the folder (`links.tsv`, `lite-links.tsv`) as the toolbox's workflow
+skills do; Tatty keeps the project it was told in its own `projects.tsv`, which
+wins over a link. Before a Start Tatty runs `tt-event.sh reconcile <folder>` with
+the feature's project as the working directory (`tt-workflow` ran it on every read
+of the state; the ledger names the project as the git root it runs in, so the
+directory matters), except for a review, which only reads.
+
+### Starting a task by typing (the Engineering home's box)
+
+The box on the Engineering mode home (`#mode`) starts a task from a few words,
+and is Tatty's own: it adds nothing to the toolbox but a route the toolbox
+already has.
+
+- **The conversation** is a chat of kind `intake` (see "Chats"): read-only, no
+  feature yet, working in the open project's repo. Its first message goes after
+  `/tatty:intake` (Tatty's skill) and a `<facts>` block (the repository, the
+  next feature ID). When the skill understands, its reply ends with one fenced
+  `tatty-task` JSON block (`title`, `summary`, `acceptance[]`, `kind`, `level`,
+  `why`, `unknowns[]`); the server checks and clamps it, keeps it as the chat's
+  `task` and takes it out of the text, and the page shows it as a card.
+- **The card** is the person's to change; nothing is made until **Create and
+  start** (`POST /api/intake/start`). That does what **Start workflow** on a task
+  does, without a board: makes the next-ID feature with the title, writes its
+  Ticket document (`# <ID>: <title>`, the summary, the acceptance criteria and
+  the person's own messages), makes the branch (the name on the card; an own
+  worktree if ticked) and opens the session. A Start that fails after the feature
+  was made takes it back, so the card can try again.
+- **The level** picks the route, on a snapping Low / Medium / High slider:
+  Low is the **quick route**, `/tt-workflow-quick "<folder>" the task <ID> in
+  "<ticket document>". Folder: <folder>. Prefix: <ID>`; Medium is
+  `/tt-workflow-lite "<folder>"` with the same words after it; High is the
+  full pipeline's first step with its placeholder filled (as a task's **Start
+  workflow**). A bug starts `/tt-debug` as **Start Workflow Lite** does, whatever
+  the level. Low needs the toolbox's `skills/tt-workflow-quick`: Tatty checks the
+  file is there and refuses the stop when it is not.
+- **Labelling.** A quick task's documents are the lite route's (a Focus Log
+  marked `**Pace:** quick`, a Lite Brief, a Task Status), so the state script says
+  `lite-*`; Tatty records which features it started quick in `routes.json` and
+  shows them as **Quick**. Continue needs nothing from Tatty: `workflow-state.sh`
+  names `/tt-workflow-quick "<folder>"` as the next step of a quick Focus Log.
+
+**Start workflow** on a Jira ticket (below) starts the toolbox's own first step
+for a new folder, the command `workflow-state.sh` names for it
+(`/tt-adversarial-plan <idea, spec or ticket>`), with its placeholder filled the
+way `tt-workflow` hands a new folder to planning: `the Jira ticket <KEY> in
+"<ticket document>". Folder: <folder>. Prefix: <name>`.
+
+**Start workflow** on a task (see "Tasks") does the same, with the task as the
+ticket: `the task <ID> in "<ticket document>". Folder: <folder>. Prefix:
+<name>`. **Start lite** on a task starts `/tt-workflow-lite "<folder>"` with the
+same words after it, instead; the lite route keeps its own link
+(`lite-links.tsv`), so the full pipeline's link for that project is left alone.
+When the task is given a work folder apart from the project, Tatty adds a
+"Working folder" section to the ticket and the same text to the command, saying
+where code, git and `verify-refs.sh --repo` belong; the toolbox itself is
+unchanged.
+
+## Jira
+
+The production mode's **Jira** page shows the person's tickets in the open
+sprints as a board, and starts a workflow from one. This is Tatty's own: the
+toolbox has no part in it. What it does, and the limits it keeps:
+
+- **Through Claude Code, never directly.** Tatty can't call an MCP server, so it
+  runs `claude -p` headless (`jira_claude` in `server.py`) over the Atlassian MCP
+  server the person signed in to with `/mcp` (`jiraServer` in Settings,
+  `atlassian` by default). The sign-in stays Claude Code's; Tatty never sees,
+  stores or refreshes a token.
+- **Only the tools the job needs.** Each run allows named tools of that one
+  server and no built-in tools (`--tools ""`): the board
+  `getAccessibleAtlassianResources` and `searchJiraIssuesUsingJql`, a ticket
+  `getJiraIssue` and `getTransitionsForJiraIssue`, the move
+  `transitionJiraIssue` alone. The run loads only that server
+  (`--strict-mcp-config`, its entry copied from Claude Code's
+  `~/.claude.json`), with a short system prompt and no slash commands, on a
+  small model (`jiraModel`, `haiku`). That keeps each turn's context to about
+  16k tokens, most of them cached: a board refresh comes to about 60k over its
+  turns, about $0.04. Without that entry the run loads the person's servers as
+  any session would.
+- **Only on a click.** Each run spends tokens, so nothing is fetched on a timer:
+  **Refresh** reads the board (the JQL in Settings, `jiraJql`), **Load ticket**
+  reads one ticket and its transitions, and the page otherwise shows what was
+  kept. The answer is checked against a schema and cleaned again by the server
+  (a ticket without a proper key is dropped; a picture becomes a note, since
+  its link opens only in a signed-in browser).
+- **Changes in Jira.** Transitions, never other fields, each by the
+  transition whose target (or name) is the status, found in the ticket's
+  transitions (looked up again in Jira if the kept list lacks it), never a fixed
+  id: **In Progress** on **Start workflow**, only after the session has opened
+  (a ticket already under way is left alone; if no terminal could be opened the
+  page offers **Move to In Progress** by hand); **In Review** once the feature's
+  pull / merge request is seen open (see "Branches and merging" in the design
+  notes); and any status the person picks in the ticket panel's **Move to** row
+  or drops the ticket's card on. A ticket already in the status is left alone.
+  (The QA mode adds one more write: creating an issue from a saved bug. See "QA".)
+- **One document written.** Start workflow, or Start lite, makes
+  `<root>/features/<KEY>` (refused if it exists and isn't empty)
+  and writes `<name> - Ticket.md` in it: the ticket's fields, its description,
+  sub-tasks and links, and, when the work is done in another folder than the
+  one the session runs in, a `## Working folder` section. The workflow plans
+  from it; Tatty never touches it again.
+- **Columns are Tatty's.** The person's order for the columns and which are
+  hidden are kept in Tatty's home (`jira/layout.json`); nothing about them is
+  written to Jira.
+
+## QA
+
+The QA mode's pages (`qa.js`; see "QA (the QA mode)" in the design notes) run
+the toolbox's `qa` plugin. Tatty only runs its scripts and reads their output:
+
+- **`tt-qa-bug/scripts/bug.sh`**: `new`, `edit`, `set` (with `--if <hash>` so a
+  bug that moved since it was read is refused), `show --tsv`, `list --tsv`,
+  `validate`, `check`. The only writer of `BUG-NN - <title>.md`. Tatty hands it a
+  spec on stdin and reads `list --tsv` / `show --tsv` back.
+- **`tt-qa-test-plan/scripts/test.sh`**: `init`, `area add`, `item add`, `edit`,
+  `remove`, `status`, `check`, `list --tsv`, `summary --tsv`, `verify`. The only
+  writer of a feature's Test Plan and its `- Results.tsv` (one row per verdict, the
+  last for an item wins). A model's draft of a plan is written by Tatty calling
+  `area add` and `item add`, never by the model.
+- **The skills** (`/tt-qa-bug`, `/tt-qa-test-plan`, `/tt-qa-test-run`) are what
+  **Talk it through in Claude** and the other "in a Claude session" buttons start,
+  through `launch` as any session; they write through the same scripts.
+
+What Tatty keeps: `<root>/qa/Bugs/` and `<root>/qa/Plans/<feature>/`. The files
+are the toolbox's; Tatty keeps nothing about them of its own.
+
+**Jira.** A saved bug can be created in Jira (**Create in Jira**): a headless
+run, like the Jira board's, with `createJiraIssue` (and the two read tools to
+find the site and the project's issue types) allowed and nothing else, the
+project key typed by the person. This is the one write beyond a transition; it
+creates one issue from one saved bug and then sets the bug's `Jira` line to
+the new key (`bug.sh set`). It never edits or deletes an issue.
+
+## Tasks
+
+The production mode's **Tasks** page keeps task boards for a project that uses
+no tracker of its own. Like the Jira board it is Tatty's own, and the toolbox
+has no part in it:
+
+- **Boards live in Tatty's root,** `<root>/tasks/<board>/`: a `board.json` and
+  an `items` folder of markdown files, one per task. Unlike `features/`, this is
+  Tatty's own content, written whenever a person changes a task. It is never the
+  toolbox's: no skill reads or writes it.
+- **The files are a person's too.** They can be edited by hand (in Obsidian,
+  say) and Tatty keeps up. A change Tatty makes rewrites only the field or the
+  section it is changing.
+- **"Write it for me" needs nothing of the toolbox.** The panel can have a
+  headless `claude -p` write a task's Description from its title and a rough
+  line (`--tools ""`, or `Read,Glob,Grep` with `--add-dir <folder>` when the
+  person lets it read the project; `--setting-sources user`, no session kept).
+  The answer goes to the page, not to the file. Env: `TATTY_TASKS_MODEL` (default
+  haiku for the no-tools run), `TATTY_TASKS_BUDGET` (default 1),
+  `TATTY_TASKS_BUDGET_PROJECT` (default 2) and `TATTY_TASKS_TIMEOUT`.
+- **One document written for the toolbox.** **Start workflow** makes
+  `<root>/features/<ID>` (refused if it exists and isn't empty) and
+  writes `<name> - Ticket.md` in it: the task's fields, its description and its
+  other sections. The workflow plans from it; Tatty never touches it again,
+  except that **Cancel workflow** moves a feature folder holding nothing but
+  this ticket to `<root>/features/.deleted` (a folder with any other file is
+  left alone). A person's **Archive** moves a feature folder to
+  `<root>/archive`, and **Delete** removes it (the real folder, when it is a link
+  into a vault) after "I understand" is typed. The task's own file names the feature (`- **Feature:**`) until
+  then. Cancel also ends the sessions Tatty started for the feature, through
+  the process id in Claude's own `sessions/<pid>.json` registry.
+
+## Chats
+
+A chat (see design.md, "Chats") is a headless Claude conversation Tatty runs on
+a person's message, never on its own:
+
+- **Only reading.** `--tools Read,Glob,Grep,Skill`, the same allowed, and
+  `--permission-mode dontAsk`: no Write, Edit or Bash. So a chat can't change the
+  project or a document, and can't get in the way of a workflow running in it.
+  Skills run through Skill only as far as reading goes; one that needs its
+  scripts says it can't run them.
+- **Not one of Tatty's sessions.** `TATTY_SESSION` and `TATTY_JOIN` are stripped,
+  so the mod stays out, and its events carry no tag: nothing of it reaches a
+  workflow's panel or inbox.
+- **The conversation is Claude Code's own**, kept in its projects folder like any
+  other (`--session-id`, then `--resume`). Tatty keeps only its own record of it
+  (`chats/`, below).
+- **The side-chat skill is Tatty's** (`/tatty:side-chat`, in this plugin), not the
+  toolbox's: the toolbox is unchanged, and the skill does nothing useful outside
+  Tatty, which writes the context it reads.
+- **The intake skill is Tatty's too** (`/tatty:intake`): the box on the Engineering
+  home is a chat of kind `intake`, with no tab and no feature, whose skill
+  understands a typed task and ends a summary with a `tatty-task` block (see
+  "Starting a task by typing" above).
+
+## Models and LLM connections
+
+Settings shows three things, all kept by the toolbox and changed only through its
+scripts, on a person's click, by argv:
+
+| Script | For |
+|---|---|
+| `tt-connections/scripts/llms.sh status --tsv`, `models --tsv`, `connect <tool>`, `disconnect <tool>`, `refresh [tool]` | the LLM tools (claude, copilot, codex) that are connected, and the models they offer. Only claude's can run a workflow today; the others are listed greyed out. Tatty never signs a tool in. |
+| `tt-common/scripts/model-config.sh list --tsv`, `modes`, `get session` | the model and effort of each step that starts a subagent, the modes that hold them, and the `session` setting |
+| `tt-common/scripts/model-config.sh set <role> <model> <effort>`, `use`, `save`, `reset`, `delete` | changing them: the Step models table, the Workflow session setting and the mode controls |
+| `tt-common/scripts/model-config.sh family list --tsv`, `family set <family> <id\|->`, `family env`; `tt-connections/scripts/llms.sh versions --tsv` | the version each family name (sonnet, opus, haiku, fable) means: the Model versions table under the Step models, and the `ANTHROPIC_DEFAULT_<FAMILY>_MODEL=<id>` lines Tatty exports when it starts a session (and a headless `claude -p`) |
+
+The Start panels offer the connected, runnable models, starting from the
+`session` setting. A toolbox without `llms.sh` is treated as offering Claude's
+four aliases (sonnet, opus, haiku, fable) and nothing else; one without
+`model-config.sh list --tsv` shows no step table.
+
+`llms.sh models --tsv` may carry a sixth column, the scope: `any` for an alias,
+`session` for a specific version (Sonnet 5.5, Sonnet 4.5, ...), which `claude
+--model` takes but the Agent tool behind a step does not. Tatty lists a version
+under its alias in the Start panels and the Workflow session setting, and leaves
+it out of the Step models table (`model-config.sh` refuses it for any role but
+`session` as well). A row with five columns is `any`, so an older toolbox shows
+the aliases only.
+
+A step is run with its family name, which the Agent tool can't give a version,
+and the name means whatever `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` says in the
+environment of the session that spawns the subagent. A session Tatty starts
+doesn't inherit one from a Claude session (the terminal it opens is not a child
+of one), so Claude Code falls back to an older model (Sonnet 4.5 on Bedrock).
+Tatty therefore asks `model-config.sh family env` at each start and exports what
+it prints in the session's launcher script, and in the environment of its
+headless runs. The toolbox decides the values: a version chosen in the Model
+versions table, else the newest it lists, leaving alone a variable the person's
+own environment or `settings.json` already sets. A toolbox without `family`
+shows no table and exports nothing.
+
+## Branches and merging
+
+Neither the toolbox's skills nor its scripts create a branch, commit, push or
+open a request (they are told not to), and its last phase is `complete`. Both
+are therefore Tatty's own, outside the workflow's records:
+
+- Before a session starts, Tatty runs `git switch -c` (the first Start of a
+  feature with no documents) or `git switch` (a later one) in the feature's
+  repository. It reads the branch back through the toolbox's usual means (the
+  session's repository), so nothing in the toolbox changes. It never stages,
+  commits or pushes.
+- After `complete`, Tatty shows a Merge step and, on Start, opens a session that
+  runs its own skill `/tatty:merge` (in this plugin). That session does the
+  git writes a step at a time, after asking, as the person's own Claude session.
+- Tatty finds the request with `glab` or `gh` when they are installed and signed
+  in, read-only; otherwise the person says it by hand.
+
+## What Tatty keeps of its own
+
+- `${TATTY_HOME:-${CLAUDE_CONFIG_DIR:-~/.claude}/tatty}/`:
+  - `root`: Tatty's root folder, whose `features` folder Tatty lists;
+  - `projects.tsv`: the projects chosen per feature (moved along by Archive and
+    Restore, dropped by Delete);
+  - `archived.json`: when each archived feature was archived;
+  - `branches.json`: per feature, the git branch Tatty made for its workflow
+    (repository, branch, the branch it was made from) and the state of its
+    pull / merge request (see below);
+  - `settings.json`: what the Settings page sets;
+  - `diagrams/` (in the project's home): the generated diagrams (`project.json`,
+    `review-<hash>.json`, `plan-<hash>.json`), each repository's parsed C# files
+    by git blob (`index-<hash>.json`), the hover summaries (`summaries.json`),
+    the Project diagram's repository and folders left out (`settings.json`), and
+    where boxes were dragged (`boards/`);
+  - `session-models.json`: the model and effort each feature's workflow was
+    started on, for its chats;
+  - `sessions-cache.json`: the sessions going (and their feed) when an update
+    left the server to restart, written for the restart and used once by the new
+    server, which deletes it (and ignores one older than ten minutes);
+  - `jira/`: the Jira board as last fetched (`board.json`), the tickets loaded
+    (`issues/<KEY>.json`), which feature was started from which ticket
+    (`started.tsv`) and by which route (`begun.json`), and the person's column
+    order, hidden columns and card places (`layout.json`);
+  - `boards/<key>.json`: a User Stories board's or a feature's whiteboard:
+    where each card sits, the view, the text fields, comments and lines on it,
+    each group's colour, and which task each exported story became (never in
+    the stories document);
+  - `whiteboards/<name>.json`: a blank whiteboard (`.deleted/` holds the
+    deleted ones);
+  - `tasks-index/<key>.json`: each task board's index (each task file's size,
+    time and summary), so a big board opens without reading every file;
+  - `chats/<id>.json`: each chat: its kind, folder, feature, the Claude
+    conversation's id, what a side chat is about, the messages and the cost
+    (an intake chat also its understood `task`, and `started`: the feature it became);
+  - `routes.json` (in the project's own folder): the features Tatty started on the
+    quick route, by name;
+  - `server.json` and `server.log`.
+- `%LOCALAPPDATA%\Tatty\`, on Windows:
+  - the launcher's build, and `boot.json`: which Tatty the launcher runs (the one
+    Claude Code has installed, unless a checkout was pinned on purpose);
+  - the tray app's build;
+  - its WebView2 data;
+  - the full panel's last size and position.
+- `<root>/tasks/`: the task boards (see "Tasks").
+- The feature's repository: on a person's click on the Commit page, `git add` and
+  `git commit` of the files chosen (never a push, never `--no-verify`, no trailer added); Tatty
+  reads the workflow's task results (`.tt/**/results/*.md`, "Files Modified") to say which
+  changed files are the workflow's own.
+- `<root>/archive/<name>/`: the features a person archived, as they were (a
+  link stays a link). Tatty lists them and Restore moves one back; it doesn't
+  read their documents.
+
+None of these are the toolbox's. The toolbox's settings and records (the event
+ledger, the workflow links) are never written, except that Settings changes the
+model choices and LLM connections through the toolbox's own scripts (above), and
+its documents only on a person's Save in Edit mode, the ticket's on Start workflow (from a Jira ticket
+or a task), or a User Stories
+document through `stories.sh` on a person's click.

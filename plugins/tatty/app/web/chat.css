@@ -1,0 +1,52 @@
+/* Chats (chat.js): a chat's view, in a tab of the workflow strip or in the
+   documents pane; the "+" that opens one; and each code block's bar of actions
+   (app.js's codeActions). Everything uses theme.css's tokens. */
+
+.wf-body.chat-body { flex: 1; min-height: 0; }
+.dpane-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.chat-head h3 { margin: 0 0 2px; font-size: 15px; overflow-wrap: anywhere; }
+.chat-msgs { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 120px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.chat-msg { padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.chat-msg:last-child { border-bottom: none; }
+.chat-msg .who { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin-bottom: 2px; }
+.chat-msg.you { background: var(--accent-soft); }
+.chat-msg.you .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-msg.claude { background: var(--panel); }
+.chat-msg.error { color: var(--bad); }
+.chat-msg.dim { color: var(--dim); }
+.chat-steps summary { cursor: pointer; }
+.chat-steps ul { margin: 2px 0 4px; padding-left: 18px; }
+.chat-step { min-height: 1.3em; }
+.chat.busy .chat-step::before { content: "● "; color: var(--accent); }
+
+.chat-form { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.chat-form textarea { resize: vertical; min-height: 44px; width: 100%; }
+.chat-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.chat-said { margin-right: auto; }
+
+/* what a side chat is about */
+.chat-context { border: 1px solid var(--accent); border-radius: 6px; background: var(--panel); padding: 6px 10px; }
+.chat-context.sent { border-color: var(--line); }
+.chat-context > summary { cursor: pointer; }
+.chat-context p { margin: 4px 0; }
+.chat-context pre { white-space: pre-wrap; max-height: 14em; overflow: auto; margin: 4px 0; padding: 6px;
+  background: var(--bg); border-radius: 4px; font-size: 12px; }
+.chat-around > summary { cursor: pointer; }
+
+/* the tabs: a chat's mark, and the "+" at the end of either strip */
+.wtab .chat-mark { font-size: 12px; }
+.wtab-add { align-self: center; margin-left: 4px; padding: 1px 9px; border-radius: 6px; font-size: 15px; line-height: 1.2;
+  border: 1px solid var(--line); background: none; color: var(--dim); }
+.wtab-add:hover, .wtab-add:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
+
+/* a code block's bar: Copy, and Ask about it in a side chat */
+.codeblock { margin: 6px 0; }
+.code-actions { display: flex; gap: 4px; justify-content: flex-end; margin-bottom: 2px; opacity: .55; }
+.codeblock:hover .code-actions, .code-actions:focus-within { opacity: 1; }
+.code-actions button { font-size: 11px; padding: 0 7px; }
+.codeblock > pre { margin: 0; }
+
+.linkmenu-head { padding: 4px 10px 2px; }

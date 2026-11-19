@@ -1,0 +1,4292 @@
+#!/usr/bin/env bash
+# test-tatty.sh: smoke tests for Tatty (plugins/tatty/scripts/tatty.sh and
+# plugins/tatty/app/server.py), with throwaway state and no window shown.
+# Needs bash, curl and Python 3.8+; skips (exit 0) without Python or curl.
+# The workflow pages need the TT toolbox: TATTY_TOOLBOX names a Tims-AI-Toolbox
+# checkout, else the installed one is used (~/.claude/tt-plugins/core); without
+# either, those checks are skipped. Prints one line per check and a count; exit 1
+# on failure.
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+# Choosing what to run: --only, --changed, --parallel, --list and --help go to tools/test-tatty-plan.py (TATTY_ONLY=a,b
+# is --only a,b), which starts this script again for each group of sections with TATTY_SECTIONS set to the exact list.
+# With neither, everything runs, one section after the other.
+if [ -z "${TATTY_SECTIONS:-}" ] && { [ $# -gt 0 ] || [ -n "${TATTY_ONLY:-}" ]; }; then
+	PLAN_PY=python; command -v python3 >/dev/null 2>&1 && python3 -c 1 2>/dev/null && PLAN_PY=python3
+	exec "$PLAN_PY" "$root/tools/test-tatty-plan.py" "$@"
+fi
+W="$root/plugins/tatty/scripts/tatty.sh"
+TR="$root/plugins/tatty/scripts/tatty-root.sh"
+SRV="$root/plugins/tatty/app/server.py"
+T=$(mktemp -d)
+
+# The toolbox, found before CLAUDE_CONFIG_DIR is pointed at the throwaway folder.
+if [ -z "${TATTY_TOOLBOX:-}" ] && [ -f "${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tt-plugins}/core/skills/tt-common/scripts/workflow-state.sh" ]; then
+	export TATTY_TOOLBOX="${TT_PLUGINS_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tt-plugins}/core"
+fi
+# Everything else is the tests' own: Tatty's state, the Claude config folder
+# (open sessions' names), the events ledger and the workflow's links.
+export CLAUDE_CONFIG_DIR="$T/claude" TATTY_HOME="$T/home" TT_EVENTS_HOME="$T/events" TT_WORKFLOW_HOME="$T/workflow"
+# The desktop launcher's folder (%LOCALAPPDATA%\Tatty: boot.json, the tray app's builds) is the tests' own too: `boot` writes
+# there, and a test run from a checkout must never repoint the real launcher at it.
+export LOCALAPPDATA="$T/localappdata"; mkdir -p "$LOCALAPPDATA"
+mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+# A stand-in for Windows' folder dialog: "chooses" what $T/pick-answer says.
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/picker.log"\nout=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done\ncat "%s/pick-answer" >"$out" 2>/dev/null\n' "$T" "$T" >"$T/picker.sh"
+export TATTY_PICKER="$T/picker.sh"
+# Start reports the session it would open instead of opening it.
+export TATTY_DRYRUN=1
+# Opening a project starts its server but shows no window (no tray app, no browser tab).
+export TATTY_NO_UI=1
+# The toolbox's model choices and LLM connections are kept in its own folders;
+# these tests keep theirs in the throwaway one, with a stand-in copilot and codex
+# when the toolbox checkout has them.
+export TT_CONFIG_DIR="$T/ttconfig" TT_LLMS_HOME="$T/llms"
+export CLAUDE_CODE_USE_BEDROCK=0 # the toolbox lists first-party model ids, whatever this machine's settings.json says
+LLMS_FX="${TATTY_TOOLBOX:-/none}/tools/fixtures/llms"
+if [ -f "$LLMS_FX/fake-copilot.sh" ]; then export TT_COPILOT_BIN="$LLMS_FX/fake-copilot.sh" TT_CODEX_BIN="$LLMS_FX/fake-codex.sh"; fi
+# The host's command-line tools for the merge step: glab answers with what $T/glab-answer holds, gh isn't there.
+export TATTY_GLAB="$T/glab.sh" TATTY_GH="$T/none-such"
+# The updates run the claude command: a stand-in logs what it is asked and, for
+# `plugin update`, raises the version in the install record. The server's own
+# look at start-up is put off, so only the checks the tests ask for happen.
+export TATTY_CLAUDE="$T/claude.sh" TATTY_UPDATE_FIRST=100000
+cat >"$T/claude.sh" <<'EOS'
+#!/usr/bin/env bash
+# a User Stories headless run (it may run stories.sh): the stand-in is claude-p.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
+# a generated diagram's summaries and plan (they name their job in the system prompt): the stand-in is claude-dg.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"reading a class diagram"*|*"You draw the class diagram"*) exec bash "$(dirname "$0")/claude-dg.sh" "$@" ;; esac
+# the task panel's "Write it for me" (it names its job in the system prompt): the stand-in is claude-tw.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"You write up a task"*) exec bash "$(dirname "$0")/claude-tw.sh" "$@" ;; esac
+# the QA mode's drafts (they name their job in the system prompt) and Jira's answer to a create: the stand-in is claude-qa.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"You turn a tester"*|*"You break a feature"*|*mcp__atlassian__createJiraIssue*) exec bash "$(dirname "$0")/claude-qa.sh" "$@" ;; esac
+# a chat's turn (it names its conversation): the stand-in is claude-chat.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *--session-id*|*--resume*) exec bash "$(dirname "$0")/claude-chat.sh" "$@" ;; esac
+# the summary a small model writes of a side chat's context
+if [ "${1:-}" = -p ]; then case "$*" in *"You summarise"*)
+	printf '%s\n' "$@" >"$(dirname "$0")/summary.args"
+	echo '{"type":"result","is_error":false,"result":"A summary by the model.","total_cost_usd":0.001}'
+	exit 0 ;; esac; fi
+echo "$*" >>"$(dirname "$0")/claude.log"
+[ -f "$(dirname "$0")/claude-fail" ] && { echo "network is down" >&2; exit 1; }
+# the explanation a small model writes of one task's code changes (after the failing case above, so it can fail)
+if [ "${1:-}" = -p ]; then case "$*" in *"who is reviewing them"*)
+	[ -f "$(dirname "$0")/claude-diff-slow" ] && sleep 3
+	echo '{"type":"result","is_error":false,"result":"An addendum by the model.","total_cost_usd":0.001}'
+	exit 0 ;; esac; fi
+# A headless run for the Jira board: which job it is shows in the one MCP tool
+# it may use; it keeps its arguments (one a line) and answers with the canned
+# jira-<job>.out (jira-fail: Jira refuses; jira-slow: it takes a while).
+if [ "$1" = -p ]; then
+	d=$(dirname "$0")
+	case "$*" in
+	*mcp__atlassian__searchJiraIssuesUsingJql*) job=board ;;
+	*mcp__atlassian__getJiraIssue*) job=issue ;;
+	*mcp__atlassian__transitionJiraIssue*) job=move ;;
+	*) job=other ;;
+	esac
+	printf '%s\n' "$@" >"$d/jira-$job.args"
+	[ -f "$d/jira-slow" ] && sleep 2
+	if [ -f "$d/jira-fail" ]; then echo '{"is_error":true,"result":"Failed to search issues: Forbidden"}'; else cat "$d/jira-$job.out"; fi
+	exit 0
+fi
+if [ "$1 $2" = "plugin update" ]; then
+	sed -i -E "s/(\"$3\":\[\{\"scope\":\"user\",\"version\":\")[^\"]*/\199.0.0/" "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+fi
+exit 0
+EOS
+# The modes (the toolbox's discipline plugins) the server reports, instead of
+# whichever are installed on this machine. installed_modes() itself is checked
+# against real pointer folders further down.
+export TATTY_MODES=engineering,design
+# Settings' debug coins, with a password of the tests' own (server.py keeps only a hash of the real one).
+export TATTY_DEBUG_KEY=1c8bfe8f801d79745c4631d09fff36c82aa37fc4cce4fc946683d7b336b63032
+# (the server holds its log open until it has shut down: try again a few times rather than leave the folder behind)
+cleanup() { bash "$W" close >/dev/null 2>&1; local i; for i in 1 2 3 4 5 6 7 8; do rm -rf "$T" 2>/dev/null; [ -e "$T" ] || return 0; sleep 1; done; }
+trap cleanup EXIT
+pass=0; fail=0
+
+ok() { pass=$((pass + 1)); echo "ok    $1"; }
+bad() { fail=$((fail + 1)); echo "FAIL  $1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; }
+# expect <name> <exit code> <command...>: the command exits with the code
+expect() { local n=$1 want=$2; shift 2; "$@" >"$T/out" 2>&1; local rc=$?; [ "$rc" = "$want" ] && ok "$n" || bad "$n" "exit $rc, wanted $want: $(head -c 300 "$T/out")"; }
+has() { grep -qF -- "$3" "$2" && ok "$1" || bad "$1" "missing: $3"; }
+hasnt() { grep -qF -- "$3" "$2" && bad "$1" "unexpected: $3" || ok "$1"; }
+finish() { bash "$W" close >/dev/null 2>&1; echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]; exit; }
+
+# Helpers more than one section uses, here so that a section run without the one that first used them still has them
+# (a section's own state, such as a feature or a repository, is made by the section, and named in tools/test-tatty.sections).
+HAVE_LLMS=""
+[ -n "${TATTY_TOOLBOX:-}" ] && [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-connections/scripts/llms.sh" ] && HAVE_LLMS=1
+save() { post /api/doc/save "{\"name\":\"Draft\",\"file\":\"$1\",\"expected\":$2,\"text\":$3}"; }
+milestone() {
+	$PY -c "import json, sys
+events = [e for e in json.load(open(sys.argv[1], encoding='utf-8')) if e['type'] == 'milestone' and e.get('prefix') == sys.argv[2]]
+sys.exit(0 if len(events) == 1 and ($3) else 1)" "$T/ev" "$2" && ok "$1" || bad "$1" "$(grep -c milestone "$T/ev") milestone events"
+}
+tk() { curl -s -o "$T/tk" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/tasks/$1"; }
+wbc() { curl -s -o "$T/wb" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/$1"; }
+taskfile() { ls "$GB/items/$1"*.md 2>/dev/null | head -1; }
+scode() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/start"; }
+after() { $PY -c "import sys; a = open(sys.argv[1], encoding='utf-8').read().split('\n'); print(a[a.index(sys.argv[2]) + 1] if sys.argv[2] in a else '')" "$T/chat.args" "$1"; }
+upd_wait() { for _ in $(seq 1 50); do get /api/settings >"$T/set"; case $(pick "$T/set" "d['update']['status']") in checking|updating) sleep 0.2 ;; *) return 0 ;; esac; done; return 1; }
+write_installed() { printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"%s"}],"core@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}],"engineering@tims-ai-toolbox":[{"scope":"user","version":"0.1.0"}]}}' "$HAVE" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"; }
+
+# A section is guarded by `if section <slug>; then ... fi`. The base (the server and the checks of tatty.sh, above) and
+# the close at the end always run. Which sections need which others is in tools/test-tatty.sections.
+# (TATTY_TIMES=<file> logs when each section began, for the seconds column of that table.)
+section() {
+	[ -n "${TATTY_TIMES:-}" ] && printf '%s %s
+' "$1" "$SECONDS" >>"$TATTY_TIMES"
+	case " ${TATTY_SECTIONS:-all} " in *" all "*|*" $1 "*) return 0;; esac
+	return 1
+}
+
+echo "# tatty.sh"
+expect "no Python: exit 3" 3 env TATTY_PYTHON=no-such-python bash "$W" status
+if ! bash "$W" status >/dev/null 2>&1 && [ $? = 3 ] || ! command -v curl >/dev/null 2>&1; then
+	echo "skip  no Python 3.8+ or no curl: Tatty's tests need both"
+	finish
+fi
+PY=python; command -v python3 >/dev/null 2>&1 && python3 -c 1 2>/dev/null && PY=python3
+json() { $PY -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$TATTY_HOME/server.json"; }
+# pick <file> <python expression over d>: print what the JSON answer holds
+pick() { $PY -c "import json, sys; d = json.load(open(sys.argv[1], encoding='utf-8')); print($2)" "$1"; }
+TOOLBOX=0; [ -n "${TATTY_TOOLBOX:-}" ] && TOOLBOX=1
+
+expect "usage" 2 bash "$W"
+expect "status before open" 1 bash "$W" status
+has "says not open" "$T/out" "not open"
+expect "show before open" 1 bash -c "echo hi | bash '$W' show text Hi"
+expect "open" 0 bash "$W" open --no-browser
+has "prints the URL" "$T/out" "http://127.0.0.1:"
+expect "open again reuses it" 0 bash "$W" open --no-browser
+expect "status" 0 bash "$W" status
+has "attached" "$T/out" "attached"
+hasnt "no session yet" "$T/out" "claude mod"
+[ -f "$TATTY_HOME/server.json" ] && ok "state in TATTY_HOME" || bad "state in TATTY_HOME"
+
+P=$(json x 'd["port"]'); K=$(json x 'd["token"]'); U="http://127.0.0.1:$P"
+get() { curl -s -H "X-TT-Token: $K" "$U$1"; }
+post() { curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U$1"; }
+code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+get /api/events >"$T/ev"
+has "a fresh window greets" "$T/ev" '"title": "Tatty"'
+[ "$(code "$U/api/status")" = 403 ] && ok "no token: 403" || bad "no token: 403"
+[ "$(code -H "X-TT-Token: wrong" "$U/api/status")" = 403 ] && ok "wrong token: 403" || bad "wrong token: 403"
+[ "$(code -H "Host: evil.example:$P" -H "X-TT-Token: $K" "$U/api/status")" = 403 ] && ok "foreign Host: 403" || bad "foreign Host: 403"
+[ "$(code "$U/")" = 200 ] && ok "page served" || bad "page served"
+[ "$(code "$U/static/../server.py")" = 404 ] && ok "only the page's files" || bad "only the page's files"
+[ "$(code "$U/static/features.js")" = 200 ] && ok "features.js served" || bad "features.js served"
+[ "$(code "$U/static/modes.js")" = 200 ] && ok "modes.js served" || bad "modes.js served"
+[ "$(code "$U/static/tasktype.js")" = 200 ] && ok "tasktype.js served" || bad "tasktype.js served"
+[ "$(code "$U/static/split.js")" = 200 ] && ok "split.js served" || bad "split.js served"
+[ "$(code "$U/static/split.css")" = 200 ] && ok "split.css served" || bad "split.css served"
+[ "$(code "$U/static/chat.js")" = 200 ] && ok "chat.js served" || bad "chat.js served"
+[ "$(code "$U/static/chat.css")" = 200 ] && ok "chat.css served" || bad "chat.css served"
+[ "$(code "$U/static/theme.css")" = 200 ] && ok "theme.css served" || bad "theme.css served"
+[ "$(code -H "X-TT-Token: $K" "$U/api/view/rm")" = 404 ] && ok "unknown view refused" || bad "unknown view refused"
+get /api/status >"$T/st"
+[ "$(pick "$T/st" "','.join(d['modes'])")" = "engineering,design" ] &&
+	ok "status names the modes installed" || bad "status names the modes installed" "$(head -c 200 "$T/st")"
+
+expect "show" 0 bash -c "printf 'line one\r\n┌─┐ ◉\n' | bash '$W' show markdown 'A title'"
+get /api/events >"$T/ev"
+has "card kept" "$T/ev" '"title": "A title"'
+$PY -c "import json,sys; b=json.load(open(sys.argv[1]))[-1]['body']; sys.exit(b != 'line one\n┌─┐ ◉\n')" "$T/ev" &&
+	ok "CRLF folded, UTF-8 kept" || bad "CRLF folded, UTF-8 kept" "$(head -c 200 "$T/ev")"
+expect "bad kind refused" 2 bash -c "echo x | bash '$W' show nope T"
+
+Q='{"questions":[{"question":"Go ahead?","header":"Update","multiSelect":false,"options":[{"label":"Go ahead","description":"pull"},{"label":"No","description":"stop"}]}]}'
+expect "ask, no answer yet" 5 bash -c "echo '$Q' | bash '$W' ask --wait 1"
+has "prints the id" "$T/out" "id="
+id=$(sed -n 's/^id=//p' "$T/out")
+post /api/reply "{\"id\":\"$id\",\"answers\":{\"Go ahead?\":\"No\"}}" >/dev/null
+expect "answer after a reply" 0 bash "$W" answer "$id" --wait 2
+has "header and answer" "$T/out" "$(printf 'Update\tNo')"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"id\":\"$id\",\"answers\":{}}" "$U/api/reply")" = 409 ] &&
+	ok "answered once only" || bad "answered once only"
+
+# (declines the next question asked, not the last one: starting `ask` takes longer than any fixed wait on a slow machine)
+( $PY - "$U" "$K" "$id" <<'PYEOF'
+import json, sys, time, urllib.request
+u, k, old = sys.argv[1:4]
+def call(path, body=None):
+    r = urllib.request.Request(u + path, data=None if body is None else json.dumps(body).encode(),
+                               headers={"X-TT-Token": k, "Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(r, timeout=10))
+for _ in range(150):
+    asks = [e["id"] for e in call("/api/events") if e["type"] == "ask"]
+    if asks and asks[-1] != old:
+        call("/api/reply", {"id": asks[-1], "declined": True})
+        break
+    time.sleep(0.2)
+PYEOF
+) &
+expect "declined: exit 6" 6 bash -c "echo '$Q' | bash '$W' ask --wait 10"
+wait
+expect "not JSON" 2 bash -c "echo nope | bash '$W' ask"
+expect "too few options" 2 bash -c "echo '{\"questions\":[{\"question\":\"Q?\",\"options\":[\"one\"]}]}' | bash '$W' ask"
+expect "unknown id" 2 bash "$W" answer nope --wait 0
+
+expect "listen, nothing yet" 5 bash "$W" listen --wait 1
+post /api/say '{"text":"which skill for a bug?"}' >/dev/null
+expect "listen" 0 bash "$W" listen --wait 2
+has "the typed message" "$T/out" "which skill for a bug?"
+
+post /api/hello '{"session":"s1"}' >/dev/null
+expect "status with a session" 0 bash "$W" status
+has "a session works with Tatty" "$T/out" "attached (claude mod)"
+
+if section root; then
+echo "# tatty-root.sh"
+expect "no root set: exit 1" 1 env TATTY_HOME="$T/tr" bash "$TR"
+has "prints the default" "$T/out" "/Tatty"
+expect "relative path refused" 2 env TATTY_HOME="$T/tr" bash "$TR" set some/where
+expect "the Claude folder refused" 2 env TATTY_HOME="$T/tr" CLAUDE_CONFIG_DIR="$HOME/.claude" bash "$TR" set "$HOME/.claude/features-here" --create
+expect "a missing folder refused" 2 env TATTY_HOME="$T/tr" bash "$TR" set "$T/nope"
+expect "set --create" 0 env TATTY_HOME="$T/tr" bash "$TR" set "$T/myroot" --create
+[ -d "$T/myroot/features" ] && ok "made the features folder" || bad "made the features folder"
+expect "features folder" 0 env TATTY_HOME="$T/tr" bash "$TR" features
+has "is under the root" "$T/out" "myroot/features"
+
+fi
+if section modes; then
+echo "# modes"
+# Each toolbox plugin points <pointer home>/<plugin> at its install, so the
+# pointers say which disciplines are installed; core is the base, not a mode.
+mkdir -p "$T/pointers/core" "$T/pointers/engineering" "$T/pointers/production"
+$PY - "$SRV" "$T/pointers" "$T/modecfg" >"$T/m" 2>&1 <<'EOF'
+import importlib.util, json, os, pathlib, sys
+for v in ("TATTY_MODES", "TATTY_TOOLBOX"): os.environ.pop(v, None)
+os.environ["TT_PLUGINS_HOME"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+print("pointers:", m.installed_modes())
+os.environ["TT_PLUGINS_HOME"] = sys.argv[2] + "-none"
+print("none:", m.installed_modes())
+# A plugin just added has no pointer yet (that waits for a session to load it),
+# so Claude Code's own records are read too -- the toolbox's marketplace only.
+cfg = pathlib.Path(sys.argv[3]); (cfg / "plugins").mkdir(parents=True, exist_ok=True)
+(cfg / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {
+    "core@tims-ai-toolbox": [{"scope": "user"}], "design@tims-ai-toolbox": [{"scope": "user"}],
+    "production@someone-elses": [{"scope": "user"}]}}), encoding="utf-8")
+os.environ["CLAUDE_CONFIG_DIR"] = str(cfg)
+print("records:", m.installed_modes(), "from", m.toolbox_market())
+os.environ["TATTY_MODES"] = "design, nope ,engineering"
+print("forced:", m.installed_modes())
+EOF
+has "the pointers say which are installed" "$T/m" "pointers: ['engineering', 'production']"
+has "none installed" "$T/m" "none: []"
+has "a plugin with no pointer yet is in the records" "$T/m" "records: ['design'] from tims-ai-toolbox"
+has "TATTY_MODES names them instead" "$T/m" "forced: ['engineering', 'design']"
+
+# Add a discipline: the modes page has Claude Code install the plugin.
+post /api/mode/install '{"mode":"nope"}' >"$T/mi"
+has "a name that isn't a discipline is refused" "$T/mi" "not one of the toolbox's disciplines"
+post /api/mode/install '{"mode":"engineering"}' >"$T/mi"
+has "one already installed installs nothing" "$T/mi" '"already": true'
+post /api/mode/install '{"mode":"production"}' >"$T/mi"
+has "claude installs it for the user" "$T/claude.log" "plugin install production@tims-ai-toolbox --scope user"
+touch "$T/claude-fail"
+post /api/mode/install '{"mode":"production"}' >"$T/mi"
+has "a failed add says what claude said" "$T/mi" "network is down"
+has "and what to run by hand" "$T/mi" "/plugin install production@tims-ai-toolbox"
+rm -f "$T/claude-fail"
+
+fi
+if section taskfiles; then
+echo "# task files"
+# A task's file is a person's too (they may edit it in Obsidian): Tatty changes
+# only the line or the section it means to, and keeps the rest byte for byte.
+$PY - "$SRV" "$T/task.md" >"$T/tf" 2>&1 <<'EOF'
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+src = ("---\r\ntags: [game]\r\n---\r\n# t-0007 - Hand made\r\n\r\n* **status**: in review\r\n- **Estimate:** 3\r\n"
+       "\r\n## Notes\r\n\r\nkeep me\r\n").encode("utf-8")
+text, bom, crlf = m.task_decode(src)
+s = m.task_summary("t-0007 - Hand made.md", text)
+print("summary:", s["id"], "|", s["title"], "|", s["status"], "|", s["problems"])
+print("type of a file with none:", s["type"])
+print("type names:", [m.task_summary("T-0001 - a.md", "# T-0001: a\n\n- **Type:** %s\n" % v)["type"] for v in ("bug", "EPIC", " Story ", "Defect", "")])
+e = m.task_edit("# T-0001: a\n\n- **Type:** Task\n- **Status:** Backlog\n", {"Type": "Bug"})
+print("type edited in place:", e.count("**Type:**"), "- **Type:** Bug\n- **Status:** Backlog" in e)
+print("type strict:", [m.task_type(v, strict=True) for v in ("bug", "", "nonsense")], m.task_type("nonsense"))
+new = m.task_edit(text, {"Status": "Done"})
+a, b = text.split("\n"), new.split("\n")
+print("changed lines:", [i for i in range(max(len(a), len(b))) if a[i:i + 1] != b[i:i + 1]], repr(b[5]))
+p = pathlib.Path(sys.argv[2]); p.write_bytes(src)
+m.task_write(p, new, bom, crlf)
+data = p.read_bytes()
+print("crlf kept:", data.count(b"\r\n") == data.count(b"\n"), "rest kept:", data.replace(b"* **status**: Done", b"* **status**: in review") == src)
+print("field added:", repr(m.task_edit(text, {"Done": "2026-10-23"}).split("\n")[7]))
+d = m.task_parse(m.task_edit(text, description="Hello"))
+print("description:", repr(d["description"]), [x["heading"] for x in d["sections"]])
+print("labels:", m.task_labels("ui, UI , input,,"))
+s = m.task_summary("T-0009 - x.md", "# Just a title\n")
+print("H1 without an ID:", s["id"], "|", s["title"], "|", s["problems"])
+print("disagree:", m.task_summary("T-0001 - a.md", "# T-0002: a\n")["problems"])
+print("no ID:", m.task_summary("Untitled.md", "")["problems"])
+print("file name:", m.task_file_name("T-0003", 'What? A "quick" one: #2 / [draft]'))
+EOF
+has "a hand-made file is read" "$T/tf" "summary: T-0007 | Hand made | in review | []"
+has "type: a file with no Type line reads as a task" "$T/tf" "type of a file with none: Task"
+has "type: any case is a type; blank or unknown reads as a task" "$T/tf" "type names: ['Bug', 'Epic', 'Story', 'Task', 'Task']"
+has "type: an edit changes the Type line in place" "$T/tf" "type edited in place: 1 True"
+has "type: strict refuses only a name that isn't one" "$T/tf" "type strict: ['Bug', 'Task', None] Task"
+has "a change touches one line" "$T/tf" "changed lines: [5] '* **status**: Done'"
+has "keeping its key as written" "$T/tf" "'* **status**: Done'"
+has "its line ends and everything else" "$T/tf" "crlf kept: True rest kept: True"
+has "a field it hasn't got goes after the last" "$T/tf" "field added: '- **Done:** 2026-10-23'"
+has "a missing Description is added, before the other sections" "$T/tf" "description: 'Hello' ['Notes']"
+has "labels once each" "$T/tf" "labels: ['ui', 'input']"
+has "the name gives the ID when the title has none" "$T/tf" "H1 without an ID: T-0009 | Just a title | []"
+has "a name and title that disagree are a problem" "$T/tf" "its name says T-0001 but its title says T-0002"
+has "so is a file with no ID" "$T/tf" "no ID: ['has no task ID in its name or its title']"
+has "a title makes a file name" "$T/tf" "file name: T-0003 - What A quick one 2 draft.md"
+
+fi
+if section hub; then
+echo "# the Hub"
+# Several projects, each its own Tatty root; its own TATTY_HOME so the checks below keep the root unset.
+HH="$T/hubhome"; mkdir -p "$HH"
+wpath() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
+mkdir -p "$T/hubwork/alpha-repo"; HW=$(wpath "$T/hubwork")
+hub() { env TATTY_HOME="$HH" bash "$W" hub "$@"; }
+expect "hub: nothing listed yet" 0 hub list
+[ ! -s "$T/out" ] && ok "an empty list" || bad "an empty list" "$(cat "$T/out")"
+expect "hub: add a project" 0 hub add --name Alpha --root "$HW/alpha" --repo "$HW/alpha-repo"
+[ -d "$HW/alpha/features" ] && ok "adding makes the features folder" || bad "adding makes the features folder"
+[ ! -s "$HH/root" ] && ok "adding doesn't switch the root" || bad "adding doesn't switch the root"
+expect "hub: add and open" 0 hub add --name Beta --root "$HW/beta" --open
+has "the root is the opened project's" "$HH/root" "beta"
+expect "hub: list" 0 hub list
+has "both are listed" "$T/out" "Alpha"
+has "the open one is starred" "$T/out" "* "
+expect "hub: open by name" 0 hub open alpha
+has "the root follows" "$HH/root" "alpha"
+expect "hub: unknown project" 2 hub open nope
+expect "hub: a relative root refused" 2 hub add --name Bad --root some/where
+expect "hub: the Claude folder refused" 2 hub add --name Bad --root "$(wpath "$CLAUDE_CONFIG_DIR")/proj"
+expect "hub: a missing repo refused" 2 hub add --name Bad --root "$HW/bad" --repo "$HW/no-such-repo"
+expect "hub: a missing folder with --no-create" 2 hub add --name Bad --root "$HW/never" --no-create
+# The same server code over HTTP: show, forget, per-project records.
+env TATTY_HOME="$HH" bash "$W" open --no-browser >/dev/null 2>&1
+HP=$($PY -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['port'], d['token'])" "$HH/server.json")
+HU="http://127.0.0.1:${HP% *}"; HK=${HP#* }
+hget() { curl -s -H "X-TT-Token: $HK" "$HU$1"; }
+hpost() { curl -s -H "X-TT-Token: $HK" -H 'Content-Type: application/json' -d "$2" "$HU$1"; }
+hget /api/hub >"$T/j"
+pick "$T/j" "','.join(sorted(p['name'] for p in d['projects']))" >"$T/f"
+has "the page's list names the projects" "$T/f" "Alpha,Beta"
+pick "$T/j" "[p['name'] for p in d['projects'] if p['id'] == d['active']][0]" >"$T/f"
+has "the active one is the root's" "$T/f" "Alpha"
+hget /api/status >"$T/st"
+has "status says the Hub isn't pending" "$T/st" '"pending": false'
+hpost /api/hub '{"action":"show"}' >"$T/j"
+hget /api/status >"$T/st"
+has "show makes the Hub pending" "$T/st" '"pending": true'
+BETA=$(hget /api/hub | $PY -c "import json,sys; print([p['id'] for p in json.load(sys.stdin)['projects'] if p['name']=='Beta'][0])")
+ALPHA=$(hget /api/hub | $PY -c "import json,sys; print([p['id'] for p in json.load(sys.stdin)['projects'] if p['name']=='Alpha'][0])")
+[ "$(code -X POST -H "X-TT-Token: $HK" -H 'Content-Type: application/json' -d "{\"action\":\"forget\",\"id\":\"$ALPHA\"}" "$HU/api/hub")" = 409 ] &&
+	ok "the open project can't be forgotten" || bad "the open project can't be forgotten"
+hpost /api/hub "{\"action\":\"open\",\"id\":\"$BETA\"}" >"$T/j"
+has "opening answers with the project" "$T/j" '"name": "Beta"'
+hget /api/status >"$T/st"
+has "opening leaves the Hub pending: it is the launcher" "$T/st" '"pending": true'
+has "the root moved" "$HH/root" "beta"
+hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"name\":\"Alpha 2\"}" >"$T/j"
+has "a project is renamed" "$T/j" '"name": "Alpha 2"'
+has "short name: made from the name when none is set" "$T/j" '"key": "ALP"'
+hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"key\":\"al9\"}" >"$T/j"
+has "short name: set, in capitals" "$T/j" '"key": "AL9"'
+hpost /api/hub "{\"action\":\"update\",\"id\":\"$ALPHA\",\"key\":\"9-x\"}" >"$T/j"
+has "short name: only capitals and digits, a letter first" "$T/j" "A short name is a capital letter"
+hpost /api/hub "{\"action\":\"forget\",\"id\":\"$ALPHA\"}" >"$T/j"
+hasnt "a forgotten project is gone from the list" "$T/j" "Alpha 2"
+[ -d "$HW/alpha/features" ] && ok "forgetting deletes no folder" || bad "forgetting deletes no folder"
+hpost /api/hub '{"action":"nope"}' >"$T/j"
+has "an unknown action is refused" "$T/j" "action:"
+env TATTY_HOME="$HH" bash "$W" close --all >/dev/null 2>&1
+
+echo "# a window per project"
+# Every project has a server (and, on Windows, a tray app) of its own, so two can be open at once, each for its own project.
+PH="$T/projhome"; mkdir -p "$PH" "$HW/one-repo/sub" "$HW/two"
+ph() { env TATTY_HOME="$PH" bash "$W" "$@"; }
+phurl() { $PY -c "import json,sys; d=json.load(open(sys.argv[1])); print('http://127.0.0.1:%s' % d['port'], d['token'])" "$1"; }
+# pget <server file> <path>
+pget() { local u; u=$(phurl "$1"); curl -s -H "X-TT-Token: ${u#* }" "${u% *}$2"; }
+# ppost <server file> <path> <json>
+ppost() { local u; u=$(phurl "$1"); curl -s -H "X-TT-Token: ${u#* }" -H 'Content-Type: application/json' -d "$3" "${u% *}$2"; }
+ph hub add --name One --root "$HW/one" --repo "$HW/one-repo" >/dev/null 2>&1
+ph hub add --name Two --root "$HW/two" >/dev/null 2>&1
+ph open --no-browser >/dev/null 2>&1   # a folder in no project: the Hub's own server
+[ -f "$PH/server.json" ] && ok "the Hub has the server.json it always had" || bad "the Hub has the server.json it always had"
+pget "$PH/server.json" /api/hub >"$T/j"
+ONE=$(pick "$T/j" "[p['id'] for p in d['projects'] if p['name']=='One'][0]")
+TWO=$(pick "$T/j" "[p['id'] for p in d['projects'] if p['name']=='Two'][0]")
+pick "$T/j" "[(p['number'], p['open']) for p in d['projects'] if p['name'] in ('One','Two')]" >"$T/f"
+has "projects are numbered in the order they were added" "$T/f" "(1, False)"
+pget "$PH/server.json" /api/status >"$T/st"
+has "the Hub has no project" "$T/st" '"project": null'
+ppost "$PH/server.json" /api/hub '{"action":"show"}' >/dev/null   # as a launch from the shortcut does: the Hub is up, waiting for a pick
+ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$ONE\"}" >"$T/j"
+has "opening a project starts its window" "$T/j" '"window": "started"'
+[ -f "$PH/servers/$ONE.json" ] && ok "the project's server writes servers/<id>.json" || bad "the project's server writes servers/<id>.json"
+[ -f "$PH/server.json" ] && ok "opening one leaves the Hub up (it closes only when asked)" || bad "opening one leaves the Hub up"
+# the Hub is the launcher: after a project is opened it is still showing the projects, ready for the next pick
+pget "$PH/server.json" /api/status >"$T/st"; has "the Hub is still the launcher after an open" "$T/st" '"hub": {"pending": true}'
+pget "$PH/server.json" /api/hub >"$T/j"
+pick "$T/j" "[(p['name'], p['open']) for p in d['projects'] if p['name'] in ('One','Two')]" >"$T/f"
+has "and shows the project as open" "$T/f" "('One', True)"
+ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$ONE\"}" >"$T/j"
+has "an open project is brought forward, not started again" "$T/j" '"window": "open"'
+pget "$PH/server.json" /api/status >"$T/st"; has "(and the Hub is still the launcher)" "$T/st" '"hub": {"pending": true}'
+ppost "$PH/server.json" /api/hub "{\"action\":\"open\",\"id\":\"$TWO\",\"closeHub\":true}" >"$T/j"
+has "a second project opens beside the first" "$T/j" '"window": "started"'
+pget "$PH/servers/$ONE.json" /api/status >"$T/st"; has "the first says its number and name" "$T/st" '"project": {"id": "'"$ONE"'", "name": "One", "number": 1}'
+pget "$PH/servers/$TWO.json" /api/status >"$T/st"; has "the second says its own" "$T/st" '"number": 2'
+pget "$PH/servers/$ONE.json" /api/root >"$T/j"; has "the first answers for its own root" "$T/j" "/one\""
+pget "$PH/servers/$TWO.json" /api/root >"$T/j"; has "the second answers for its own" "$T/j" "/two\""
+pget "$PH/servers/$ONE.json" /api/root >"$T/j"; has "the first is unmoved by the second opening" "$T/j" "/one\""
+# Coins and unlocks belong to the project: each window has a wallet of its own (and so its own Tatty).
+pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"
+pick "$T/j" "(d['coins'], d['project']['name'], d['project']['number'])" >"$T/f"
+has "a project's wallet starts with the welcome gift, and says whose it is" "$T/f" "(100, 'One', 1)"
+ppost "$PH/servers/$ONE.json" /api/debug/coins '{"password":"letmein","amount":500}' >/dev/null
+ppost "$PH/servers/$ONE.json" /api/shop '{"action":"buy","id":"party"}' >"$T/j"
+pget "$PH/servers/$TWO.json" /api/wallet >"$T/j"
+pick "$T/j" "(d['coins'], 'party' in d['owned'], d['project']['name'])" >"$T/f"
+has "another project's coins and unlocks are its own" "$T/f" "(100, False, 'Two')"
+pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"
+pick "$T/j" "(d['coins'], 'party' in d['owned'])" >"$T/f"
+has "and the first has what it earned and bought" "$T/f" "(560, True)"
+[ -f "$PH/projects/$ONE/wallet.json" ] && ok "kept in the project's own folder" || bad "kept in the project's own folder"
+ppost "$PH/servers/$TWO.json" /api/debug/coins '{"password":"letmein","amount":-30}' >/dev/null
+pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"; pick "$T/j" "d['coins']" >"$T/f"; has "taking coins in one project leaves the other's" "$T/f" "560"
+# A milestone in the shared ledger pays the project whose feature it is, and only that one.
+mkdir -p "$HW/one/features/F1" "$TT_EVENTS_HOME"
+printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"build.unit_validated","key":"proj|WU1","prefix":"F1","folder":"%s","route":"full","qualifier":"WU1","skill":"tt-execute","approx":false}\n' \
+	"$HW/one/features/F1" >>"$TT_EVENTS_HOME/events.jsonl"
+for i in $(seq 1 12); do
+	pget "$PH/servers/$ONE.json" /api/wallet >"$T/j"; [ "$(pick "$T/j" "d['coins']")" = 580 ] && break; sleep 1
+done
+pick "$T/j" "d['coins']" >"$T/f"; has "a milestone pays the project it belongs to" "$T/f" "580"
+sleep 3
+pget "$PH/servers/$TWO.json" /api/wallet >"$T/j"; pick "$T/j" "d['coins']" >"$T/f"; has "and not another project" "$T/f" "70"
+sleep 3
+[ ! -f "$PH/server.json" ] && ok "the Hub is done with once a project is picked" || bad "the Hub is done with once a project is picked"
+ph status --all >"$T/f" 2>&1
+has "status --all lists the first window" "$T/f" "One"
+has "status --all lists the second window" "$T/f" "Two"
+ppost "$PH/servers/$ONE.json" /api/hub "{\"action\":\"forget\",\"id\":\"$TWO\"}" >"$T/j"
+has "a project open in a window can't be forgotten" "$T/j" "open in a window"
+ppost "$PH/servers/$ONE.json" /api/hub '{"action":"show"}' >"$T/j"
+has "a project's window opens the Hub in a window of its own" "$T/j" '"window": "started"'
+[ -f "$PH/servers/$ONE.json" ] && [ -f "$PH/server.json" ] && ok "and is left as it was" || bad "and is left as it was"
+(cd "$HW/one-repo/sub" && env TATTY_HOME="$PH" bash "$W" open --no-browser) >"$T/f" 2>&1
+has "open in a project's folder is that project's window" "$T/f" "project=$ONE"
+ph status --project Two >"$T/f" 2>&1; has "--project names a window" "$T/f" "attached"
+expect "--project refuses an unknown project" 2 bash "$W" status --project nope
+[ "$(env TATTY_HOME="$PH" TATTY_PROJECT_ROOT="$HW/two" bash "$TR")" = "$HW/two" ] && ok "tatty-root.sh answers for a project's server" || bad "tatty-root.sh answers for a project's server"
+ph close --project One >/dev/null 2>&1; sleep 1
+[ ! -f "$PH/servers/$ONE.json" ] && [ -f "$PH/servers/$TWO.json" ] && ok "close --project stops one window" || bad "close --project stops one window"
+ph close --all >/dev/null 2>&1; sleep 1
+[ -z "$(ls "$PH/servers" 2>/dev/null)" ] && [ ! -f "$PH/server.json" ] && ok "close --all stops every window" || bad "close --all stops every window" "$(ls "$PH/servers" 2>&1)"
+# One lock shared by the servers: the first to ask looks for updates, another only when its refresh stops.
+$PY - "$SRV" "$T/lockhome" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, sys, time
+home = pathlib.Path(sys.argv[2]); home.mkdir(parents=True, exist_ok=True)
+os.environ["TATTY_HOME"] = str(home)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+print("first:", m.update_leader())
+print("again:", m.update_leader())
+f = m.update_lock_file()
+f.write_text("1")                      # another server's
+print("held by another:", m.update_leader())
+old = time.time() - m.UPDATE_LOCK_STALE - 5
+os.utime(f, (old, old))
+print("stale lock taken over:", m.update_leader())
+m.update_release()
+print("released:", not f.exists())
+EOF
+has "the first server looks for updates" "$T/f" "first: True"
+has "and keeps the lock" "$T/f" "again: True"
+has "another doesn't while the lock is fresh" "$T/f" "held by another: False"
+has "it can once the lock goes stale" "$T/f" "stale lock taken over: True"
+has "the lock is let go at the end" "$T/f" "released: True"
+# Records kept by feature name belong to a project: the first project keeps them in the home, the others in their own folder.
+$PY - "$SRV" "$T/hubiso" "$HW" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, sys
+home = pathlib.Path(sys.argv[2]); os.environ["TATTY_HOME"] = str(home); os.environ["CLAUDE_CONFIG_DIR"] = str(home / "claude")
+os.environ.pop("TATTY_ROOT", None)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+base = pathlib.Path(sys.argv[3])
+(home).mkdir(parents=True, exist_ok=True)
+(base / "first" / "features").mkdir(parents=True, exist_ok=True)
+(home / "root").write_text(str(base / "first"), encoding="utf-8")   # Tatty's root before the Hub
+print("migrated:", m.hub_load()["projects"][0].get("legacy"), m.project_home() == home)
+m.save_branch("Same", {"repo": "r1", "branch": "one"})
+second = m.hub_register(str(base / "second"))
+(base / "second" / "features").mkdir(parents=True, exist_ok=True)
+(home / "root").write_text(str(base / "second"), encoding="utf-8")
+print("own folder:", m.project_home() == home / "projects" / second["id"])
+print("not seen:", m.branch_records().get("same"))
+m.save_branch("Same", {"repo": "r2", "branch": "two"})
+m.archived_set("Same", 5.0)
+(home / "root").write_text(str(base / "first"), encoding="utf-8")
+print("first keeps its own:", m.branch_records()["same"]["branch"], m.archived_at())
+(home / "root").write_text(str(base / "second"), encoding="utf-8")
+print("second keeps its own:", m.branch_records()["same"]["branch"], m.archived_at())
+EOF
+has "a root from before the Hub is the first project" "$T/f" "migrated: True True"
+has "another project has its own folder" "$T/f" "own folder: True"
+has "it doesn't see the first one's record" "$T/f" "not seen: None"
+has "the first keeps its record" "$T/f" "first keeps its own: one {}"
+has "the second keeps its own" "$T/f" "second keeps its own: two {'Same': 5.0}"
+
+fi
+if section prebuilt; then
+echo "# the installer's prebuilt exes"
+mkdir -p "$T/prebuilt" "$T/pbout"
+echo "exe" >"$T/prebuilt/TtCompanion.exe"
+$PY - "$SRV" "$T/prebuilt" "$T/pbout" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, sys
+os.environ["TATTY_PREBUILT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+exe = pathlib.Path(sys.argv[3]) / "bin" / "TtCompanion.exe"
+print("found:", m.prebuilt_dir() == pathlib.Path(sys.argv[2]))
+print("copied:", m.use_prebuilt("TtCompanion.exe", exe), exe.is_file())
+print("missing one:", m.use_prebuilt("Nope.exe", exe.with_name("Nope.exe")))
+EOF
+has "the prebuilt folder is found" "$T/f" "found: True"
+has "a prebuilt exe is put where it is expected" "$T/f" "copied: True True"
+has "a missing prebuilt exe is refused" "$T/f" "missing one: False"
+
+# An update's restart leaves the old tray app following the new server: a server that starts finds its
+# project's, if it runs from an older version's folder, to replace (never another home's, a picker, or a newer one).
+$PY - "$SRV" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+exe = lambda v: "C:\\Users\\me\\AppData\\Local\\Tatty\\companion\\" + v + "\\bin\\TtCompanion.exe"
+home = "C:\\Users\\me\\.claude\\tatty"
+print("args:", m.companion_args('"C:\\Program Files\\T\\TtCompanion.exe" --home "C:\\My Home\\tatty" --project ab12'))
+rows = [(1, exe("0.34.6"), exe("0.34.6") + " --home " + home + " --project ab12"),
+        (2, exe("0.34.6"), exe("0.34.6") + " --home " + home + " --project cd34"),
+        (3, exe("0.34.6"), exe("0.34.6") + " --home C:\\elsewhere --project ab12"),
+        (4, exe("0.34.6"), exe("0.34.6") + " --pick-folder --home " + home + " --project ab12"),
+        (5, exe("0.36.0"), exe("0.36.0") + " --home " + home + " --project ab12"),
+        (6, exe("0.35.2"), exe("0.35.2") + " --home " + home + " --project ab12"),
+        (7, exe("0.34.6"), exe("0.34.6") + " --home " + home)]
+print("older:", m.older_companions(rows, "ab12", home, "0.35.2"))
+print("the hub's:", m.older_companions(rows, "", home.replace("\\", "/"), "0.35.2"))
+print("names:", m.companion_names("ab12"))
+EOF
+has "a tray app's command line is read" "$T/f" "args: ('C:\\\\Program Files\\\\T\\\\TtCompanion.exe', {'--home': 'C:\\\\My Home\\\\tatty', '--project': 'ab12'})"
+has "only this project's older tray app, of this home, is replaced" "$T/f" "older: [1]"
+has "the Hub's is told apart from a project's" "$T/f" "the hub's: [7]"
+has "it has a quit event to be asked to leave by" "$T/f" "tatty-companion-quit-ab12"
+
+fi
+if section notoolbox; then
+echo "# without the toolbox"
+$PY - "$SRV" "$T/none" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, sys
+os.environ.pop("TATTY_TOOLBOX", None); os.environ["TT_PLUGINS_HOME"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+print("core:", m.toolbox_core())
+class S: cwd = "."; bash = "bash"
+print("view:", m.run_view(S, "where", {})["stderr"])
+EOF
+has "no toolbox found" "$T/f" "core: None"
+has "a view says so" "$T/f" "can't find the TT toolbox"
+
+fi
+if section clone; then
+echo "# the installer's toolbox clone and the Hub's LLM setup"
+mkdir -p "$T/mt" "$T/mtapp"
+BASHW=$(cygpath -w "$(command -v bash)" 2>/dev/null || command -v bash)
+$PY - "$SRV" "$T/mt" "$T/mtapp" "$BASHW" >"$T/f" 2>&1 <<'EOF'
+import importlib.util, os, pathlib, shutil, subprocess, sys, time
+base, app = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+os.environ.pop("TATTY_TOOLBOX", None); os.environ.pop("TATTY_MODES", None)
+os.environ["TT_PLUGINS_HOME"] = str(base / "no-pointers"); os.environ["LOCALAPPDATA"] = str(app)
+os.environ["CLAUDE_CONFIG_DIR"] = str(base / "claude")
+for v in ("TT_CLAUDE_BIN", "TT_COPILOT_BIN", "TT_CODEX_BIN"): os.environ.pop(v, None)
+os.environ["TATTY_CLAUDE"] = ""; os.environ["COPILOT_HOME"] = str(base / "copilot-home"); os.environ["TATTY_DRYRUN"] = "1"
+os.environ.pop("TATTY_WINGET", None)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+
+def put(p, text=""):
+    p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text, encoding="utf-8", newline="\n")
+
+# A toolbox repo (the "remote"), cloned the way the installer does it.
+git = lambda *a, cwd=None: subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, check=True)
+remote = base / "remote"; remote.mkdir()
+git("init", "-q", "-b", "main", cwd=remote); git("config", "user.email", "t@t", cwd=remote); git("config", "user.name", "t", cwd=remote)
+put(remote / "plugins/core/skills/tt-common/scripts/workflow-state.sh", "#!/usr/bin/env bash\n")
+put(remote / "plugins/core/skills/tt-connections/scripts/llms.sh", "#!/usr/bin/env bash\ncase \"$1\" in status) printf 'copilot\\tavailable\\t-\\nclaude\\tconnected\\t-\\n';; connect) echo \"connected $2\";; *) exit 1;; esac\n")
+put(remote / "plugins/design/skills/x/SKILL.md", "x"); put(remote / "plugins/engineering/skills/y/SKILL.md", "y")
+git("add", "-A", cwd=remote); git("commit", "-q", "-m", "one", cwd=remote)
+print("no clone yet:", m.toolbox_core())
+tb = app / "Tatty" / "toolbox"; tb.parent.mkdir(parents=True)
+git("clone", "-q", str(remote), str(tb))
+print("clone found:", m.toolbox_core() == tb / "plugins/core/skills")
+print("clone modes:", m.installed_modes())
+dirs = m.managed_plugin_dirs()
+print("plugin dirs:", [pathlib.PurePath(d).name for d in dirs if d != "--plugin-dir"])
+# an update on the remote: found, then taken
+put(remote / "plugins/design/skills/x/SKILL.md", "x2"); git("commit", "-qam", "two", cwd=remote)
+st = m.State(str(base), sys.argv[4])
+m.update_work(st, False); print("look:", st.update["status"])
+m.update_work(st, True); print("apply:", st.update["status"], (tb / "plugins/design/skills/x/SKILL.md").read_text())
+m.update_work(st, False); print("again:", st.update["status"])
+
+# LLM setup
+fake = base / "bin"; fake.mkdir()
+real_which = shutil.which
+shutil.which = lambda n, *a, **k: str(fake / n) if (fake / n).exists() else (real_which(n) if n in ("bash", "git") else None)
+m.extend_path = lambda: None
+v = m.llm_setup_view(st)
+print("view:", [(t["provider"], t["installed"], t["connected"]) for t in v["tools"]], v["toolbox"], v["winget"], v["anyConnected"])
+print("signin needs it installed:", m.llm_setup_change(st, {"action": "signin", "provider": "copilot"})[0])
+print("bad action:", m.llm_setup_change(st, {"action": "nope", "provider": "copilot"})[0], m.llm_setup_change(st, {"action": "install", "provider": "gemini"})[0])
+print("no winget:", m.llm_setup_change(st, {"action": "install", "provider": "copilot"})[0])
+put(base / "winget.sh", f"#!/usr/bin/env bash\necho \"$*\" >> '{base.as_posix()}/winget.log'\ntouch '{(fake / 'copilot').as_posix()}'\nexit 0\n")
+os.environ["TATTY_WINGET"] = str(base / "winget.sh")
+code, got = m.llm_setup_change(st, {"action": "install", "provider": "copilot"})
+print("install started:", code, [t["job"]["status"] for t in got["tools"] if t["provider"] == "copilot"])
+for _ in range(100):
+    if st.llm_jobs["copilot"]["status"] != "running": break
+    time.sleep(0.1)
+print("install done:", st.llm_jobs["copilot"]["status"], "|", (base / "winget.log").read_text().strip())
+print("again refused:", m.llm_setup_change(st, {"action": "install", "provider": "copilot"})[0])
+v = m.llm_setup_view(st)
+print("copilot now:", [(t["installed"], t["signedIn"], t["connected"], t["state"]) for t in v["tools"] if t["provider"] == "copilot"])
+put(base / "copilot-home" / "config.json", '// User settings\n{\n  // who\n  "loggedInUsers": [{"host": "https://github.com", "login": "me"}]\n}\n')
+print("signed in:", [t["signedIn"] for t in m.llm_setup_view(st)["tools"] if t["provider"] == "copilot"])
+code, got = m.llm_setup_change(st, {"action": "signin", "provider": "copilot"})
+import shlex
+run = shlex.split(got["said"].splitlines()[-1])  # the path is quoted when it has a character the shell treats specially (FIRST~1.LAS)
+print("signin:", code, run[0].endswith("/copilot") and run[1:] == ["login"])
+code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
+print("connect:", code, got.get("said"))
+shutil.rmtree(tb, onerror=lambda f, p, e: (os.chmod(p, 0o700), f(p)))
+code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
+print("connect without toolbox:", code)
+os.environ["TATTY_WINGET"] = str(base / "winget-fail.sh"); put(base / "winget-fail.sh", "#!/usr/bin/env bash\necho nope >&2\nexit 5\n")
+code, got = m.llm_setup_change(st, {"action": "install", "provider": "codex"})
+for _ in range(100):
+    if st.llm_jobs["codex"]["status"] != "running": break
+    time.sleep(0.1)
+print("failed install:", st.llm_jobs["codex"]["status"], "exit 5" in st.llm_jobs["codex"]["message"])
+EOF
+has "no clone, no toolbox" "$T/f" "no clone yet: None"
+has "the installer's clone is the toolbox" "$T/f" "clone found: True"
+has "its disciplines are the modes" "$T/f" "clone modes: ['engineering', 'design']"
+has "its plugins load into sessions" "$T/f" "plugin dirs: ['core', 'engineering', 'design']"
+has "an update is seen" "$T/f" "look: available"
+has "and fast-forwarded" "$T/f" "apply: ready x2"
+has "then it is current" "$T/f" "again: current"
+has "the view says what is installed and connected" "$T/f" "view: [('claude', False, False), ('copilot', False, False), ('codex', False, False)] True False False"
+has "signing in needs the tool installed" "$T/f" "signin needs it installed: 409"
+has "bad requests are refused" "$T/f" "bad action: 400 400"
+has "no winget says so" "$T/f" "no winget: 501"
+has "an install starts in the background" "$T/f" "install started: 202 ['running']"
+has "it runs winget for the exact id" "$T/f" "install done: done | install --id GitHub.Copilot --exact --silent"
+has "installing twice is refused" "$T/f" "again refused: 409"
+has "the installed tool is found, not signed in, not connected" "$T/f" "copilot now: [(True, False, False, 'available')]"
+has "Copilot's JSONC config says it is signed in" "$T/f" "signed in: [True]"
+has "sign in runs the tool's login in a terminal" "$T/f" "signin: 200 True"
+has "connect goes through the toolbox" "$T/f" "connect: 200 connected copilot"
+has "connecting needs the toolbox" "$T/f" "connect without toolbox: 501"
+has "a failed install says what happened" "$T/f" "failed install: error True"
+
+fi
+if section selfupdate; then
+echo "# the installer's Tatty updates itself from a release"
+mkdir -p "$T/su" "$T/suapp"
+$PY - "$SRV" "$T/su" "$T/suapp" "$BASHW" >"$T/f" 2>&1 <<'EOF'
+import hashlib, importlib.util, json, os, pathlib, sys, time
+base, app = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+os.environ.pop("TATTY_TOOLBOX", None); os.environ["LOCALAPPDATA"] = str(app)
+os.environ["TT_PLUGINS_HOME"] = str(base / "no-pointers"); os.environ["CLAUDE_CONFIG_DIR"] = str(base / "claude")
+rel = base / "latest.json"
+os.environ["TATTY_RELEASES_URL"] = rel.as_uri()
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+m.PLUGIN = m.APP / "plugin"; m.plugin_version = lambda: "0.23.0"
+exe = base / "Tatty-Setup-9.9.9.exe"; exe.write_bytes(b"MZ not really an installer")
+def release(version="9.9.9", digest=None, name=None):
+    sha = hashlib.sha256(exe.read_bytes()).hexdigest() if digest is None else digest
+    rel.write_text(json.dumps({"assets": [{"name": name or f"Tatty-Setup-{version}.exe", "browser_download_url": exe.as_uri(),
+                                           "digest": "sha256:" + sha, "size": exe.stat().st_size}]}))
+spawned = []
+m.spawn_installer = lambda p: spawned.append(pathlib.Path(p).name)
+st = m.State(str(base), sys.argv[4])
+print("is the installer's copy:", m.standalone_install())
+release()
+m.update_work(st, False)
+print("look:", st.update["status"], st.update["available"], [(r["name"], r["status"]) for r in st.update["plugins"]], spawned)
+st.chat_runs["x"] = 1
+m.update_work(st, True)
+print("busy:", st.update["status"], "isn't installed yet" in st.update["message"], spawned)
+st.chat_runs.clear()
+release(digest="0" * 64)
+m.update_work(st, True)
+print("bad checksum:", st.update["status"], "checksum" in st.update["message"], spawned, list((m.home() / "updates").glob("*.exe")))
+release(name="Tatty-Setup-evil.exe")
+m.update_work(st, False)
+print("no installer:", st.update["status"])
+release()
+m.update_work(st, True)
+print("apply:", st.update["status"], spawned, [p.name for p in (m.home() / "updates").glob("*")])
+release("0.23.0")
+m.update_work(st, False)
+print("current:", st.update["status"])
+rel.unlink()
+m.update_work(st, False)
+print("offline:", st.update["status"])
+m.PLUGIN = pathlib.Path(sys.argv[1]).resolve().parent.parent
+print("a checkout isn't the installer's copy:", m.standalone_install())
+EOF
+has "the installer's copy is recognised" "$T/f" "is the installer's copy: True"
+has "a newer release is seen" "$T/f" "look: available 9.9.9 [('tatty', 'available')] []"
+has "open work holds the update back" "$T/f" "busy: available True []"
+has "a download that fails its checksum is refused" "$T/f" "bad checksum: error True [] []"
+has "a release with no installer is an error" "$T/f" "no installer: error"
+has "an update downloads and starts the installer" "$T/f" "apply: updating ['Tatty-Setup-9.9.9.exe'] ['Tatty-Setup-9.9.9.exe']"
+has "the same version is current" "$T/f" "current: current"
+has "no network is an error, not a crash" "$T/f" "offline: error"
+has "a checkout is not updated that way" "$T/f" "a checkout isn't the installer's copy: False"
+
+fi
+[ "$TOOLBOX" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
+
+if section views; then
+echo "# toolbox views"
+FX="$T/fxroot"; cp -r "$root/tools/fixtures/tatty-root" "$FX"
+FX=$(cd "$FX" && { pwd -W 2>/dev/null || pwd; })
+D=$(cd "$FX/features/Demo" && { pwd -W 2>/dev/null || pwd; })
+get "/api/view/where?dir=$($PY -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$D")" >"$T/view"
+has "where view runs workflow-state" "$T/view" 'Demo\tprimary\t'
+get "/api/view/hello" >"$T/view"
+has "hello view runs the toolbox's banner" "$T/view" '"exit": 0'
+
+fi
+if section features; then
+echo "# features pages"
+DEMO=$($PY -c "import sys, pathlib; print(pathlib.Path(sys.argv[1]).resolve().as_posix())" "$FX/features/Demo")
+mkdir -p "$TT_EVENTS_HOME"
+printf '{"v":1,"ts":"2026-10-01T09:00:00Z","event":"plan.signed_off","prefix":"Demo","folder":"%s","route":"full","qualifier":"","approx":false}\n' "$DEMO" >"$TT_EVENTS_HOME/events.jsonl"
+printf '{"v":1,"ts":"2026-10-02T15:00:00Z","event":"build.unit_validated","prefix":"Demo","folder":"%s","route":"full","qualifier":"WU1","approx":true}\n' "$DEMO" >>"$TT_EVENTS_HOME/events.jsonl"
+printf '{"v":1,"ts":"2026-10-03T15:00:00Z","event":"build.complete","prefix":"Other","folder":"C:/somewhere/else","route":"full","qualifier":"","approx":false}\n' >>"$TT_EVENTS_HOME/events.jsonl"
+get /api/root >"$T/j"
+has "root not set yet" "$T/j" '"isSet": false'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"path\":\"$(cd "$CLAUDE_CONFIG_DIR" && { pwd -W 2>/dev/null || pwd; })/x\",\"create\":true}" "$U/api/root")" = 400 ] &&
+	ok "root in the Claude folder refused" || bad "root in the Claude folder refused"
+has "a folder dialog is available" "$T/j" '"picker": true'
+: >"$T/pick-answer"
+post /api/pick-folder '{"start":""}' >"$T/j"
+has "dialog cancelled" "$T/j" '"cancelled": true'
+printf '%s/features' "$FX" >"$T/pick-answer"
+post /api/pick-folder '{"start":""}' >"$T/j"
+has "dialog chose a folder" "$T/j" "fxroot/features"
+CHOSEN=$(pick "$T/j" "d['path']")
+post /api/root "{\"path\":\"$CHOSEN\"}" >"$T/j"
+has "root set" "$T/j" '"isSet": true'
+pick "$T/j" "d['root']" >"$T/f"
+hasnt "picking a features folder means its parent" "$T/f" "fxroot/features"
+has "the parent is the root" "$T/f" "fxroot"
+[ -s "$TATTY_HOME/root" ] && ok "the root setting is Tatty's" || bad "the root setting is Tatty's"
+get /api/features >"$T/j"
+has "the toolbox is found" "$T/j" '"toolbox": true'
+pick "$T/j" "'\n'.join(f['name'] + ' ' + f['route'] + ' ' + f['phase'] for f in d['features'])" >"$T/f"
+has "Demo is building" "$T/f" "Demo full building"
+has "Draft is planning" "$T/f" "Draft full planning"
+has "Bugfix is a bug" "$T/f" "Bugfix bug debug-done"
+has "Empty is new" "$T/f" "Empty new empty"
+has "Lite is a small change" "$T/f" "Lite lite lite-brief"
+pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['tasks']" >"$T/f"
+has "Demo's task counts" "$T/f" "{'done': 3, 'total': 4}"
+get "/api/feature?name=Demo" >"$T/j"
+pick "$T/j" "' | '.join(x['doc'] for x in d['docList'])" >"$T/f"
+has "documents in workflow order" "$T/f" "Comprehensive Tech Plan | Task Breakdown | Task Status"
+pick "$T/j" "' '.join(u['id'] + ':' + u['status'] for u in d['unitList'])" >"$T/f"
+has "work units" "$T/f" "WU1:Done WU2:In Progress"
+pick "$T/j" "' '.join(n['file'] for n in d['notes'])" >"$T/f"
+has "working notes" "$T/f" ".tt/Demo - Task Status/step-log.md"
+pick "$T/j" "' '.join(e['event'] for e in d['events'])" >"$T/f"
+has "this feature's events" "$T/f" "plan.signed_off build.unit_validated"
+hasnt "not another folder's" "$T/f" "build.complete"
+pick "$T/j" "[s['ts'] for s in d['stages'] if s['stage'] == 'Sign-off'][0]" >"$T/f"
+has "signed-off stages dated from the ledger" "$T/f" "2026-10-01T09:00:00Z"
+pick "$T/j" "d['action']['kind'] + ' ' + d['action']['label'] + ' ' + str(d['action']['row']) + ' ' + str('workflowStep' in d or 'liteStep' in d)" >"$T/f"
+has "a feature under way offers Continue, on the state script's own step" "$T/f" "continue Continue 0 False"
+get "/api/feature?name=Lite" >"$T/j"
+pick "$T/j" "d['action']['kind'] + ' ' + d['rows'][d['action']['row']]['skill']" >"$T/f"
+has "a small change continues with its own next skill, not through tt-workflow-lite" "$T/f" "continue tt-execute-lite"
+has "and the state script's own sentence says where it stands" "$T/j" "lite brief written"
+get "/api/feature?name=Bugfix" >"$T/j"
+pick "$T/j" "d['action']['kind'] + ' ' + d['rows'][d['action']['row']]['skill']" >"$T/f"
+has "a bug fix continues with its own next skill too" "$T/f" "continue tt-debug-doc"
+pick "$T/j" "' '.join(r['skill'] for r in d['rows'] if r['kind'] == 'alt')" >"$T/f"
+has "the other way on stays a row, for More options" "$T/f" "tt-lite-brief"
+get "/api/feature?name=Empty" >"$T/j"
+pick "$T/j" "d['action']['kind'] + ' ' + ' '.join(d['action']['modes'])" >"$T/f"
+has "a new feature offers Start Workflow and Start Workflow Lite" "$T/f" "start full lite"
+get "/api/feature?name=Draft" >"$T/j"
+pick "$T/j" "' '.join(s['stage'] + '=' + s['status'] for s in d['stages'])" >"$T/f"
+has "draft stages from the Stages table" "$T/f" "Scope & Constraints=In progress"
+has "skipped stage" "$T/f" "Familiarisation=Skipped"
+get "/api/doc?name=Demo&file=Demo%20-%20Task%20Status.md" >"$T/j"
+has "a document" "$T/j" "# Status"
+[ "$(code -H "X-TT-Token: $K" "$U/api/doc?name=Demo&file=.tt/Demo%20-%20Task%20Status/step-log.md")" = 200 ] && ok "a working note" || bad "a working note"
+for f in "..%2FDraft%2FDraft%20-%20Challenges.md" ".tt%2F..%2F..%2FDraft%2FDraft%20-%20Challenges.md" "Demo%20-%20Task%20Status.txt" "%2Fetc%2Fpasswd.md"; do
+	[ "$(code -H "X-TT-Token: $K" "$U/api/doc?name=Demo&file=$f")" = 403 ] && ok "refused: $f" || bad "refused: $f"
+done
+for n in "Nope" "..%2Ftatty-root" ".tt"; do
+	[ "$(code -H "X-TT-Token: $K" "$U/api/feature?name=$n")" = 404 ] && ok "no feature: $n" || bad "no feature: $n"
+done
+get "/api/resolve?name=Draft&target=Draft%20-%20Challenges" >"$T/j"
+has "a link to this feature's document" "$T/j" '"name": "Draft", "file": "Draft - Challenges.md"'
+get "/api/resolve?name=Draft&target=demo%20-%20task%20status" >"$T/j"
+has "a link to another feature's, any case" "$T/j" '"name": "Demo", "file": "Demo - Task Status.md"'
+get "/api/resolve?name=Draft&target=some%2Fpath%2FDemo%20-%20Task%20Breakdown.md" >"$T/j"
+has "a link with a path and .md" "$T/j" '"file": "Demo - Task Breakdown.md"'
+get "/api/resolve?name=Demo&target=step-log" >"$T/j"
+has "a link to a working note" "$T/j" '"file": ".tt/Demo - Task Status/step-log.md"'
+[ "$(code -H "X-TT-Token: $K" "$U/api/resolve?name=Draft&target=No%20Such%20Doc")" = 404 ] && ok "a link to nothing: 404" || bad "a link to nothing: 404"
+
+fi
+if section editdoc; then
+echo "# editing a document"
+CH="$FX/features/Draft/Draft - Challenges.md"
+CHF="Draft%20-%20Challenges.md"
+get "/api/doc?name=Draft&file=$CHF" >"$T/j"
+STAMP=$(pick "$T/j" "d['updated']")
+# save <file> <expected mtime> <text, as a JSON string>
+save "Draft - Challenges.md" "$STAMP" '"# Draft: Challenges\n\nedited\n"' >"$T/j"
+has "a saved document answers with its new mtime" "$T/j" '"updated"'
+has "and is written to the file" "$CH" "edited"
+get "/api/doc?name=Draft&file=$CHF" >"$T/j"
+has "and read back" "$T/j" "edited"
+save "Draft - Challenges.md" "$STAMP" '"stale"' >"$T/j"
+has "a save over a newer file is refused" "$T/j" "changed on disk"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Draft\",\"file\":\"Draft - Challenges.md\",\"expected\":$STAMP,\"text\":\"stale\"}" "$U/api/doc/save")" = 409 ] &&
+	ok "as a 409" || bad "as a 409"
+hasnt "and the file is left alone" "$CH" "stale"
+mkdir -p "$FX/features/Draft/.tt"
+printf 'one\r\ntwo\r\n' >"$FX/features/Draft/.tt/crlf.md"
+get "/api/doc?name=Draft&file=.tt%2Fcrlf.md" >"$T/j"
+save ".tt/crlf.md" "$(pick "$T/j" "d['updated']")" '"x\ny\n"' >"$T/j"
+has "a note with CRLF line ends is saved" "$T/j" '"updated"'
+[ "$($PY -c "import sys; print(open(sys.argv[1], 'rb').read())" "$FX/features/Draft/.tt/crlf.md")" = "b'x\\r\\ny\\r\\n'" ] &&
+	ok "and keeps its CRLF" || bad "and keeps its CRLF"
+[ -z "$(ls -A "$FX/features/Draft" "$FX/features/Draft/.tt" | grep tatty-tmp)" ] && ok "no temp file left behind" || bad "no temp file left behind"
+for f in "../Demo/Demo - Task Status.md" "Draft - Challenges.txt" "/etc/passwd.md" ".tt/../../Demo/Demo - Task Status.md" "No Such.md"; do
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Draft\",\"file\":\"$f\",\"expected\":1,\"text\":\"x\"}" "$U/api/doc/save")" = 403 ] &&
+		ok "save refused: $f" || bad "save refused: $f"
+done
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","file":"a.md","expected":1,"text":"x"}' "$U/api/doc/save")" = 404 ] &&
+	ok "save: no such feature" || bad "save: no such feature"
+for body in '{"name":"Draft","file":"Draft - Challenges.md","expected":1}' '{"name":"Draft","file":"Draft - Challenges.md","expected":1,"text":5}' \
+	'{"name":"Draft","file":"Draft - Challenges.md","text":"x"}' '{"name":"Draft","file":"Draft - Challenges.md","expected":"1","text":"x"}'; do
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$body" "$U/api/doc/save")" = 400 ] &&
+		ok "save needs text and the mtime" || bad "save needs text and the mtime" "$body"
+done
+[ "$(code -H 'Content-Type: application/json' -d '{"name":"Draft","file":"Draft - Challenges.md","expected":1,"text":"x"}' "$U/api/doc/save")" = 403 ] &&
+	ok "save needs the token" || bad "save needs the token"
+BIG="$T/big.json"; $PY -c "import json, sys; print(json.dumps({'name': 'Draft', 'file': 'Draft - Challenges.md', 'expected': 1, 'text': 'x' * 1100000}))" >"$BIG"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary "@$BIG" "$U/api/doc/save")" = 400 ] &&
+	ok "a document over 1 MB is refused" || bad "a document over 1 MB is refused"
+[ "$(code "$U/static/views.js")" = 200 ] && ok "views.js is served" || bad "views.js is served"
+[ "$(code "$U/static/usage.js")" = 200 ] && ok "usage.js is served" || bad "usage.js is served"
+
+fi
+if section newfeature; then
+echo "# a new feature"
+post /api/new-feature '{"name":"Shiny Thing"}' >"$T/j"
+has "made" "$T/j" '"name": "Shiny Thing"'
+[ -d "$FX/features/Shiny Thing" ] && ok "in Tatty's features folder" || bad "in Tatty's features folder"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo"}' "$U/api/new-feature")" = 409 ] &&
+	ok "a feature with documents isn't remade" || bad "a feature with documents isn't remade"
+for n in "a/b" "" ".." "what?"; do
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"$n\"}" "$U/api/new-feature")" = 400 ] &&
+		ok "refused name: '$n'" || bad "refused name: '$n'"
+done
+get /api/features >"$T/j"
+NF=$(pick "$T/j" "d['nextId']")
+case "$NF" in [A-Z]*-0001) ok "the features list says the next new feature's ID" ;; *) bad "the features list says the next new feature's ID" "$NF" ;; esac
+post /api/new-feature '{"title":"A settings page: with a very long title, longer than the branch takes"}' >"$T/j"
+N1=$(pick "$T/j" "d['name']")
+[ "$N1" = "$NF" ] && ok "new feature: named by the next ID" || bad "new feature: named by the next ID" "$(cat "$T/j")"
+[ -d "$FX/features/$N1" ] && ok "new feature: its folder is the ID" || bad "new feature: its folder is the ID"
+get "/api/feature?name=$N1" >"$T/j"
+[ "$(pick "$T/j" "d['title']")" = "A settings page: with a very long title, longer than the branch takes" ] && ok "new feature: what was typed is its title" || bad "new feature: what was typed is its title" "$(pick "$T/j" "d.get('title')")"
+post /api/new-feature '{"title":"Second"}' >"$T/j"
+N2=$(pick "$T/j" "d['name']")
+[ "${N2%-*}" = "${N1%-*}" ] && [ "${N2##*-}" = 0002 ] && ok "new feature: the next number" || bad "new feature: the next number" "$N1 $N2"
+post /api/feature/delete "{\"name\":\"$N2\",\"confirm\":\"I understand\"}" >/dev/null
+post /api/new-feature '{"title":"Third"}' >"$T/j"
+[ "$(pick "$T/j" "d['name']")" = "${N1%-*}-0003" ] && ok "new feature: a deleted feature's number isn't used again" || bad "new feature: a deleted feature's number isn't used again" "$(cat "$T/j")"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"title":"  "}' "$U/api/new-feature")" = 400 ] &&
+	ok "new feature: it needs a title" || bad "new feature: it needs a title"
+get /api/features >"$T/j"
+[ "$(pick "$T/j" "[f.get('title') for f in d['features'] if f['name'] == 'Shiny Thing']")" = "['']" ] && ok "a feature named as typed has no title" || bad "a feature named as typed has no title" "$(pick "$T/j" "[(f['name'], f.get('title')) for f in d['features']]")"
+
+fi
+if section project; then
+echo "# the project a feature is started in"
+# a throwaway git repository, not the one these tests run from: a first Start makes a branch in it
+GITID="-c user.name=t -c user.email=t@example.com"
+mkdir -p "$T/proj/plugins/tatty" && git -C "$T/proj" init -q -b main && : >"$T/proj/plugins/tatty/x" &&
+	git -C "$T/proj" add -A && git -C "$T/proj" $GITID commit -q -m first
+HERE=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; })
+get "/api/feature?name=Demo" >"$T/j"
+has "no project known yet" "$T/j" '"project": null'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","row":0}' "$U/api/start")" = 400 ] &&
+	ok "start refused without a project" || bad "start refused without a project"
+mkdir -p "$TT_WORKFLOW_HOME"
+printf '%s\t%s\t2026-10-20\n' "$HERE" "$FX/features/Demo" >"$TT_WORKFLOW_HOME/links.tsv"
+get "/api/feature?name=Demo" >"$T/j"
+has "project from the tt-workflow link" "$T/j" '"projectFrom": "link"'
+post /api/project "{\"name\":\"Draft\",\"path\":\"$HERE\"}" >/dev/null # (the other feature the sections below start is in the same project)
+fi
+if section startstep; then
+echo "# starting the next step"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+has "starts" "$T/j" '"ok": true'
+has "session named feature : stage" "$T/j" '"name": "Demo : Build"'
+has "with the next command" "$T/j" '/tt-execute \"'
+has "Tatty's own launcher" "$T/j" "Prompt: /tt-execute"
+has "the session carries its tag" "$T/j" "TATTY_SESSION="
+has "and records its questions for Tatty to ask" "$T/j" "TT_DECIDE=elsewhere"
+has "and, from a checkout, loads this plugin" "$T/j" "--plugin-dir"
+mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+printf '{"version":2,"plugins":{"tatty@tims-ai-companion":[{"scope":"user","installPath":"x"}]}}' >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+hasnt "once installed at user scope, no --plugin-dir" "$T/j" "--plugin-dir"
+rm -f "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+printf '{"pid":1,"name":"Demo : Build"}' >"$CLAUDE_CONFIG_DIR/sessions/1.json"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+has "a name an open session has gets a number" "$T/j" '"name": "Demo : Build (2)"'
+rm -f "$CLAUDE_CONFIG_DIR/sessions/1.json"
+post /api/start '{"name":"Demo","row":"workflow"}' >"$T/j"
+has "handed to tt-workflow" "$T/j" '"name": "Demo : Workflow"'
+has "with the workflow's own command" "$T/j" "/tt-workflow \\\""
+post /api/start "{\"name\":\"Lite\",\"row\":\"lite\",\"project\":\"$HERE\"}" >"$T/j"
+has "a small change resumes" "$T/j" '"name": "Lite : Lite"'
+has "through tt-workflow-lite" "$T/j" '/tt-workflow-lite \"'
+post /api/start "{\"name\":\"Lite\",\"row\":\"lite\",\"hint\":\"fix <x>   thing\"}" >"$T/j"
+has "a description follows the folder, <> and all" "$T/j" "fix <x> thing"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Empty\",\"row\":0,\"project\":\"$HERE\"}" "$U/api/start")" = 400 ] &&
+	ok "a placeholder must be filled" || bad "a placeholder must be filled"
+post /api/start "{\"name\":\"Empty\",\"row\":0,\"project\":\"$HERE\",\"values\":{\"idea, spec or ticket\":\"a settings page\"}}" >"$T/j"
+has "an empty feature starts" "$T/j" '"name": "Empty : Start"'
+has "with the placeholder filled" "$T/j" "/tt-adversarial-plan a settings page"
+# Start Workflow and Start Workflow Lite, on a feature with nothing written yet: the person says what it is, and
+# the folder and prefix are handed over as tt-workflow and tt-workflow-lite hand them to their first skill
+post /api/new-feature '{"name":"Begin Test"}' >/dev/null
+bcode() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/start"; }
+[ "$(bcode "{\"name\":\"Begin Test\",\"begin\":\"full\",\"project\":\"$HERE\"}")" = 400 ] &&
+	ok "Start Workflow needs to be told what it is" || bad "Start Workflow needs to be told what it is"
+[ "$(bcode "{\"name\":\"Begin Test\",\"begin\":\"lite\",\"idea\":\"x\",\"project\":\"$HERE\"}")" = 400 ] &&
+	ok "Start Workflow Lite needs a bug or a feature" || bad "Start Workflow Lite needs a bug or a feature"
+[ "$(bcode "{\"name\":\"Demo\",\"begin\":\"full\",\"idea\":\"x\",\"project\":\"$HERE\"}")" = 400 ] &&
+	ok "a feature already started can't be begun again" || bad "a feature already started can't be begun again"
+post /api/start "{\"name\":\"Begin Test\",\"begin\":\"full\",\"idea\":\"Add dark mode\",\"project\":\"$HERE\"}" >"$T/j"
+has "Start Workflow is named Start" "$T/j" '"name": "Begin Test : Start"'
+pick "$T/j" "d['command']" >"$T/f"
+has "it hands the idea to planning" "$T/f" "/tt-adversarial-plan Add dark mode. Folder: "
+has "with the folder and the prefix" "$T/f" ". Prefix: Begin Test"
+hasnt "and not through tt-workflow" "$T/f" "tt-workflow"
+post /api/start "{\"name\":\"Begin Test\",\"begin\":\"lite\",\"kind\":\"feature\",\"idea\":\"Tweak the title.\",\"project\":\"$HERE\"}" >"$T/j"
+has "Start Workflow Lite is named Lite" "$T/j" '"name": "Begin Test : Lite"'
+pick "$T/j" "d['command']" >"$T/f"
+has "a small feature starts the lite exploration" "$T/f" "/tt-familiarise lite Tweak the title. Mode: lite. Folder: "
+has "with the prefix, once" "$T/f" ". Prefix: Begin Test."
+hasnt "and not through tt-workflow-lite" "$T/f" "tt-workflow"
+post /api/start "{\"name\":\"Begin Test\",\"begin\":\"lite\",\"kind\":\"bug\",\"idea\":\"It crashes\",\"project\":\"$HERE\"}" >"$T/j"
+pick "$T/j" "d['command']" >"$T/f"
+has "a bug starts the debugger" "$T/f" "/tt-debug It crashes. Folder: "
+get "/api/feature?name=Empty" >"$T/j"
+has "the chosen project is remembered" "$T/j" '"projectFrom": "chosen"'
+post /api/project "{\"name\":\"Draft\",\"path\":\"$HERE\"}" >"$T/j"
+has "a project can be chosen" "$T/j" '"projectFrom": "chosen"'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Draft","path":"C:/no/such/place"}' "$U/api/project")" = 400 ] &&
+	ok "a missing project folder refused" || bad "a missing project folder refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","row":7}' "$U/api/start")" = 400 ] &&
+	ok "no such step" || bad "no such step"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","row":0}' "$U/api/start")" = 404 ] &&
+	ok "no such feature" || bad "start: no such feature"
+
+fi
+if section branches; then
+echo "# branches and merging"
+GR="$T/gitrepo"
+mkdir -p "$GR" && git -C "$GR" init -q -b main && : >"$GR/a" && git -C "$GR" add -A && git -C "$GR" $GITID commit -q -m first
+GRW=$(cd "$GR" && { pwd -W 2>/dev/null || pwd; })
+here_branch() { git -C "$GR" branch --show-current; }
+post /api/new-feature '{"name":"Brand New"}' >/dev/null
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "a first Start would make a branch" "$T/j" '"create": "feature/Brand-New"'
+post /api/new-feature '{"title":"A settings page: with a very long title, longer than the branch takes"}' >"$T/j"
+N1=$(pick "$T/j" "d['name']")
+get "/api/branch?name=$N1&project=$GRW" >"$T/j"
+[ "$(pick "$T/j" "d['create']")" = "feature/$N1-a-settings-page-with-a-very" ] && ok "a feature named by an ID: its branch is the ID and its title's first words" || bad "a feature named by an ID: its branch is the ID and its title's first words" "$(pick "$T/j" "d.get('create')")"
+post /api/feature/delete "{\"name\":\"$N1\",\"confirm\":\"I understand\"}" >/dev/null
+has "from the branch the repo is on" "$T/j" '"current": "main"'
+[ "$(here_branch)" = main ] && ok "looking changes nothing" || bad "looking changes nothing"
+printf 'x' >>"$GR/a"
+post /api/start "{\"name\":\"Brand New\",\"row\":0,\"project\":\"$GRW\",\"isolate\":false,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "the Start makes the branch" "$T/j" '"branch": "feature/Brand-New"'
+has "from the branch the repo was on" "$T/j" '"base": "main"'
+has "says a changed file came with it" "$T/j" "1 changed file(s) already in the tree came with it"
+[ "$(here_branch)" = feature/Brand-New ] && ok "the repo is on it" || bad "the repo is on it" "$(here_branch)"
+git -C "$GR" checkout -q -- a
+git -C "$GR" switch -q main
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "a later Start switches back to it" "$T/j" "Switched to feature/Brand-New"
+[ "$(here_branch)" = feature/Brand-New ] && ok "the repo is on it again" || bad "the repo is on it again" "$(here_branch)"
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "and when it is there already, stays" "$T/j" '"branchNote": "On feature/Brand-New."'
+get "/api/feature?name=Brand%20New" >"$T/j"
+has "the feature page knows its branch" "$T/j" '"branch": "feature/Brand-New"'
+git -C "$GR" switch -q main
+post /api/new-feature '{"name":"Brand-New"}' >/dev/null
+post /api/start "{\"name\":\"Brand-New\",\"row\":0,\"project\":\"$GRW\",\"isolate\":false,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "a taken name gets a number" "$T/j" '"branch": "feature/Brand-New-2"'
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "and the Start panel warns about the other workflow in the repo" "$T/j" '"others": ["brand-new"]'
+git -C "$GR" branch other-work
+has "the Start panel lists the repo's branches" "$T/j" '"branches": ['
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "including one that already exists" "$T/j" '"other-work"'
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"other-work\"}" >"$T/j"
+has "an existing branch can be chosen for the feature" "$T/j" '"branch": "other-work"'
+has "and the request found for the old one is forgotten" "$T/j" '"state": ""'
+git -C "$GR" switch -q main
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "the next Start switches to the chosen branch" "$T/j" "Switched to other-work"
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"feature/Brand-New\"}" >"$T/j"
+has "and it can be changed back" "$T/j" '"branch": "feature/Brand-New"'
+GR2="$T/gitrepo2"
+mkdir -p "$GR2" && git -C "$GR2" init -q -b main && : >"$GR2/b" && git -C "$GR2" add -A && git -C "$GR2" $GITID commit -q -m first && git -C "$GR2" branch elsewhere
+GR2W=$(cd "$GR2" && { pwd -W 2>/dev/null || pwd; })
+get "/api/branch?name=Brand%20New&project=$GRW&repo=$GR2W" >"$T/j"
+has "another repository's branches can be looked at" "$T/j" '"elsewhere"'
+has "which is that repository" "$T/j" "gitrepo2"
+get "/api/branch?name=Brand%20New&project=$GRW&repo=$T/plain" >"$T/j"
+has "a folder that isn't a repository says so" "$T/j" "isn't in a git repository"
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GR2W\",\"branch\":\"elsewhere\"}" >"$T/j"
+has "a branch in another repository can be chosen" "$T/j" "gitrepo2"
+has "and it is recorded as pinned" "$TATTY_HOME/branches.json" '"pinned": true'
+get "/api/branch?name=Brand%20New&project=$GRW" >"$T/j"
+has "the feature's repository is the one chosen, not the project's" "$T/j" '"branch": "elsewhere"'
+has "and it is among the repositories to pick from" "$T/j" "gitrepo2"
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "a Start switches that repository" "$T/j" "Switched to elsewhere"
+has "and gives the session the repository" "$T/j" "--add-dir"
+[ "$(git -C "$GR2" branch --show-current)" = elsewhere ] && ok "the other repository is on it" || bad "the other repository is on it"
+git -C "$GR" switch -q feature/Brand-New-2
+post /api/branch "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"feature/Brand-New\"}" >"$T/j"
+hasnt "choosing the project's own repository again unpins it" "$TATTY_HOME/branches.json" '"pinned": true'
+git -C "$GR" switch -q feature/Brand-New-2
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Brand New\",\"project\":\"$GRW\",\"branch\":\"no-such-branch\"}" "$U/api/branch")" = 400 ] &&
+	ok "a branch the repo doesn't have is refused" || bad "a branch the repo doesn't have is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Nope\",\"project\":\"$GRW\",\"branch\":\"main\"}" "$U/api/branch")" = 404 ] &&
+	ok "no such feature" || bad "choosing a branch: no such feature"
+mkdir -p "$T/plain"
+PLW=$(cd "$T/plain" && { pwd -W 2>/dev/null || pwd; })
+post /api/new-feature '{"name":"Plain One"}' >/dev/null
+post /api/start "{\"name\":\"Plain One\",\"row\":0,\"project\":\"$PLW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "outside a git repository there is no branch, and no failure" "$T/j" '"ok": true'
+has "and it says so" "$T/j" "Not in a git repository"
+post /api/start '{"name":"Draft","row":"workflow"}' >"$T/j"
+has "a feature already under way adopts the branch the repo is on" "$T/j" '"branchNote": "Working on'
+git -C "$GR" switch -q feature/Brand-New
+printf 'x' >>"$GR/a"
+git -C "$GR" $GITID commit -q -am other-work
+git -C "$GR" switch -q main
+printf 'conflict' >"$GR/a"
+post /api/start "{\"name\":\"Brand New\",\"row\":\"workflow\",\"project\":\"$GRW\"}" >"$T/j"
+has "a switch git refuses is an error, and nothing starts" "$T/j" "Couldn't switch"
+git -C "$GR" checkout -q -- a
+git -C "$GR" switch -q main
+post /api/settings '{"branchPrefix":"work/"}' >"$T/j"
+has "the prefix is a setting" "$T/j" '"branchPrefix": "work/"'
+post /api/settings '{"branchPrefix":"bad prefix"}' >"$T/j"
+has "a bad prefix goes back to the default" "$T/j" '"branchPrefix": "feature/"'
+post /api/new-feature '{"name":"Zed"}' >/dev/null
+post /api/settings '{"branchPrefix":"work/"}' >/dev/null
+git -C "$GR" switch -q main
+post /api/start "{\"name\":\"Zed\",\"row\":0,\"project\":\"$GRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "new branches take the prefix" "$T/j" '"branch": "work/Zed"'
+post /api/settings '{"branchPrefix":"feature/"}' >/dev/null
+
+fi
+if section worktrees; then
+echo "# worktrees"
+# a feature's first Start makes a branch in a worktree of its own, beside the repo; the repo's checkout is left alone
+WR="$T/wtrepo"
+mkdir -p "$WR" && git -C "$WR" init -q -b main && : >"$WR/a" && git -C "$WR" add -A && git -C "$WR" $GITID commit -q -m first
+WRW=$(cd "$WR" && { pwd -W 2>/dev/null || pwd; })
+git -C "$WR" switch -q -c scratch  # main is free for a worktree below
+printf 'dirty' >>"$WR/a"
+post /api/new-feature '{"name":"Wt One"}' >/dev/null
+get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
+has "a first Start can be given a worktree" "$T/j" '"canIsolate": true'
+has "and says where" "$T/j" 'wtrepo.worktrees/feature-Wt-One'
+has "from the branch the repo is on" "$T/j" '"baseDefault": "scratch"'
+[ ! -d "$WR.worktrees" ] && ok "looking makes nothing" || bad "looking makes nothing"
+post /api/start "{\"name\":\"Wt One\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "the Start makes the branch" "$T/j" '"branch": "feature/Wt-One"'
+has "from the branch the repo was on" "$T/j" '"base": "scratch"'
+has "in a worktree of its own" "$T/j" 'wtrepo.worktrees/feature-Wt-One"'
+has "and the session runs there" "$T/j" 'wtrepo.worktrees/feature-Wt-One && TATTY_SESSION'
+[ "$(git -C "$WR" branch --show-current)" = scratch ] && ok "the repo's checkout stays on its branch" || bad "the repo's checkout stays on its branch"
+[ -n "$(git -C "$WR" status --porcelain)" ] && ok "and keeps its uncommitted files" || bad "and keeps its uncommitted files"
+[ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "the worktree is on the branch" || bad "the worktree is on the branch"
+[ ! -s "$WR.worktrees/feature-Wt-One/a" ] && ok "without the repo's uncommitted changes" || bad "without the repo's uncommitted changes"
+has "the record keeps the worktree" "$TATTY_HOME/branches.json" '"worktree"'
+get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
+has "the Start panel then says it is isolated" "$T/j" '"isolated": true'
+post /api/new-feature '{"name":"Wt Two"}' >/dev/null
+post /api/start "{\"name\":\"Wt Two\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "a second feature gets a worktree of its own" "$T/j" 'wtrepo.worktrees/feature-Wt-Two"'
+[ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "the first is not disturbed" || bad "the first is not disturbed"
+get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
+has "and neither warns about sharing a working tree" "$T/j" '"others": []'
+post /api/start "{\"name\":\"Wt One\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
+has "a later Start finds the worktree again" "$T/j" '"branchNote": "On feature/Wt-One in '
+git -C "$WR" worktree remove --force "$WR.worktrees/feature-Wt-One"
+post /api/start "{\"name\":\"Wt One\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
+has "a removed folder is made again" "$T/j" "Made the worktree"
+[ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "on the same branch" || bad "on the same branch"
+git -C "$WR" worktree remove --force "$WR.worktrees/feature-Wt-Two" && git -C "$WR" branch -q -D feature/Wt-Two
+post /api/start "{\"name\":\"Wt Two\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
+has "a deleted branch is made again too" "$T/j" "Made the worktree"
+git -C "$WR" show-ref --verify --quiet refs/heads/feature/Wt-Two && ok "from where it began" || bad "from where it began"
+# the reported failure: main is checked out in another worktree (a release's leftover) and a feature's record says main
+git -C "$WR" worktree add -q "$T/mainwt" main
+post /api/new-feature '{"name":"Wt Held"}' >/dev/null
+post /api/branch "{\"name\":\"Wt Held\",\"project\":\"$WRW\",\"branch\":\"main\"}" >/dev/null
+get "/api/branch?name=Wt%20Held&project=$WRW" >"$T/j"
+has "a feature on a shared branch is offered a worktree" "$T/j" '"protected": true'
+post /api/start "{\"name\":\"Wt Held\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
+has "without one, the refusal names where main is" "$T/j" "is checked out in"
+hasnt "and nothing starts" "$T/j" '"ok": true'
+post /api/start "{\"name\":\"Wt Held\",\"row\":\"workflow\",\"project\":\"$WRW\",\"isolate\":true}" >"$T/j"
+has "with Own worktree it starts" "$T/j" '"ok": true'
+has "on a branch of its own" "$T/j" '"branch": "feature/Wt-Held"'
+has "from the shared branch" "$T/j" '"base": "main"'
+[ "$(git -C "$T/mainwt" branch --show-current)" = main ] && ok "the folder holding main is untouched" || bad "the folder holding main is untouched"
+# a branch held by a worktree the person made by hand is used, not an error
+git -C "$WR" worktree add -q -b hand-made "$T/handwt"
+post /api/new-feature '{"name":"Wt Hand"}' >/dev/null
+post /api/branch "{\"name\":\"Wt Hand\",\"project\":\"$WRW\",\"branch\":\"hand-made\"}" >/dev/null
+post /api/start "{\"name\":\"Wt Hand\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
+has "a branch another worktree holds is used" "$T/j" "where hand-made is checked out"
+has "and the session runs there" "$T/j" 'handwt && TATTY_SESSION'
+# a worktree is opt-in: without it the branch is made in the repo's own checkout
+post /api/new-feature '{"name":"Wt Plain"}' >/dev/null
+post /api/start "{\"name\":\"Wt Plain\",\"row\":0,\"project\":\"$WRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "by default the branch is made in the repo's own checkout" "$T/j" '"branchNote": "Made feature/Wt-Plain from scratch.'
+hasnt "with no worktree" "$T/j" 'wtrepo.worktrees/feature-Wt-Plain'
+[ "$(git -C "$WR" branch --show-current)" = feature/Wt-Plain ] && ok "the repo is on it" || bad "the repo is on it"
+git -C "$WR" checkout -q -- a; git -C "$WR" switch -q scratch
+# archive takes away a clean worktree, leaves one with work in it, and keeps the branches
+printf 'wip' >"$WR.worktrees/feature-Wt-Two/new.txt"
+post /api/feature/archive '{"name":"Wt One"}' >"$T/j"
+has "archiving says the clean worktree was removed" "$T/j" "Removed the worktree"
+[ ! -d "$WR.worktrees/feature-Wt-One" ] && ok "its folder is gone" || bad "its folder is gone"
+git -C "$WR" show-ref --verify --quiet refs/heads/feature/Wt-One && ok "its branch is kept" || bad "its branch is kept"
+post /api/feature/archive '{"name":"Wt Two"}' >"$T/j"
+has "one with uncommitted files is left in place" "$T/j" "has uncommitted or untracked files"
+[ -d "$WR.worktrees/feature-Wt-Two" ] && ok "its folder is still there" || bad "its folder is still there"
+post /api/feature/restore '{"name":"Wt One"}' >/dev/null
+post /api/start "{\"name\":\"Wt One\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
+has "a restored feature gets its worktree back" "$T/j" "Made the worktree"
+post /api/feature/delete '{"name":"Wt Two","archived":true,"confirm":"I understand"}' >"$T/j"
+has "deleting a feature leaves a worktree with work in it too" "$T/j" "has uncommitted or untracked files"
+[ -d "$WR.worktrees/feature-Wt-Two" ] && ok "and its folder is still there" || bad "and its folder is still there"
+
+fi
+if section mergestep; then
+echo "# the merge step"
+# A finished build: the Demo feature's documents with the status Complete, as the toolbox writes it.
+SH="$FX/features/Shipped"
+mkdir -p "$SH"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+	sed 's/Demo/Shipped/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$SH/Shipped - $f.md"
+done
+git -C "$GR" switch -q main
+post /api/project "{\"name\":\"Shipped\",\"path\":\"$GRW\"}" >/dev/null
+get "/api/feature?name=Shipped" >"$T/j"
+has "the toolbox says the build is complete" "$T/j" '"phase": "complete"'
+has "Tatty adds the Review step after it" "$T/j" '"skill": "tatty:review"'
+hasnt "in place of the toolbox's own review row" "$T/j" '"skill": "tt-branch-review"'
+bash "$root/plugins/tatty/scripts/suggestions.sh" init "$SH/Shipped - Review Suggestions.md" --branch feature/Brand-New --base main --head 1 >/dev/null
+bash "$root/plugins/tatty/scripts/suggestions.sh" done "$SH/Shipped - Review Suggestions.md" >/dev/null
+get "/api/feature?name=Shipped" >"$T/j"
+has "a finished review leads to the merge phase" "$T/j" '"skill": "tatty:merge"'
+has "named for the stage" "$T/j" '"stage": "Merge"'
+IDX=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r['phase'] == 'merge'][0]")
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"check"}' "$U/api/merge")" = 409 ] && ok "no branch yet: nothing to check" || bad "no branch yet: nothing to check"
+git -C "$GR" switch -q feature/Brand-New
+post /api/start "{\"name\":\"Shipped\",\"row\":$IDX}" >"$T/j"
+has "the merge session starts" "$T/j" '"name": "Shipped : Merge"'
+has "with the merge skill" "$T/j" "Prompt: /tatty:merge"
+has "the context after it" "$T/j" "Context from Tatty:"
+has "naming the branch" "$T/j" "Branch: feature/Brand-New"
+hasnt "no placeholder to fill" "$T/j" "say what goes in"
+# glab stands in for the host: it answers with what $T/glab-answer holds
+printf '#!/usr/bin/env bash\necho "$*" >>"%s/glab.log"\ncat "%s/glab-answer"\n' "$T" "$T" >"$T/glab.sh"
+echo '[]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "no request found: nothing recorded" "$T/j" '"state": ""'
+has "it asked glab for the branch" "$T/glab.log" "mr list --source-branch feature/Brand-New"
+echo '[{"web_url":"https://git.example/mr/7","iid":7,"state":"opened"}]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check"}' >"$T/j"
+has "a look within 30 s is not repeated" "$T/j" '"state": ""'
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "an open request is found" "$T/j" '"state": "opened"'
+has "with its link" "$T/j" '"url": "https://git.example/mr/7"'
+get /api/events >"$T/ev"
+has "and the page is told" "$T/ev" '"event": "merge.opened"'
+get "/api/features" >"$T/j"
+has "the feature is in review" "$T/j" '"state": "opened"'
+echo '[{"web_url":"https://git.example/mr/7","iid":7,"state":"merged"}]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "a merged request is found" "$T/j" '"state": "merged"'
+get /api/events >"$T/ev"
+has "and celebrated" "$T/ev" '"event": "merge.merged"'
+get "/api/feature?name=Shipped" >"$T/j"
+hasnt "merged: no merge step left" "$T/j" '"skill": "tatty:merge"'
+echo '[{"web_url":"https://git.example/mr/7","iid":7,"state":"opened"}]' >"$T/glab-answer"
+post /api/merge '{"name":"Shipped","action":"check","force":true}' >"$T/j"
+has "never back from merged" "$T/j" '"state": "merged"'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"opened","url":"javascript:1"}' "$U/api/merge")" = 400 ] && ok "a request's link is http(s)" || bad "a request's link is http(s)"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Shipped","action":"nope"}' "$U/api/merge")" = 400 ] && ok "an unknown action refused" || bad "an unknown action refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","action":"check"}' "$U/api/merge")" = 404 ] && ok "no such feature" || bad "no such feature"
+[ -f "$root/plugins/tatty/skills/merge/SKILL.md" ] && ok "the merge skill is in the plugin" || bad "the merge skill is in the plugin"
+head -n 2 "$root/plugins/tatty/skills/merge/SKILL.md" | tail -n 1 | grep -q '^name: merge' && ok "named merge" || bad "named merge"
+
+fi
+if section reviewrepo; then
+echo "# reviewing a branch, in the repo it is in"
+[ "$(code "$U/static/review.js")" = 200 ] && ok "review.js served" || bad "review.js served"
+RVD="$FX/features/Reviewing"; mkdir -p "$RVD"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+	sed 's/Demo/Reviewing/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$RVD/Reviewing - $f.md"
+done
+post /api/project "{\"name\":\"Reviewing\",\"path\":\"$GRW\"}" >/dev/null
+get "/api/feature?name=Reviewing" >"$T/j"
+has "Tatty's Review step is offered once the build is complete" "$T/j" '"skill": "tatty:review"'
+RV=$(pick "$T/j" "[i for i, r in enumerate(d['rows']) if r.get('skill') == 'tatty:review'][0]")
+OR="$T/otherrepo"
+mkdir -p "$OR" && git -C "$OR" init -q -b main && : >"$OR/b" && git -C "$OR" add -A && git -C "$OR" $GITID commit -q -m first && git -C "$OR" branch feature/other
+ORW=$(cd "$OR" && { pwd -W 2>/dev/null || pwd; })
+get "/api/review?name=Reviewing" >"$T/j"
+has "the feature's own branch is offered" "$T/j" '"branch": "feature/Brand-New"'
+get "/api/review?name=Reviewing&repo=$ORW" >"$T/j"
+has "another repo offers the branch it is on" "$T/j" '"branch": "main"'
+get "/api/review?name=Reviewing&repo=$T" >"$T/j"
+has "a folder that isn't a repo is said not to be" "$T/j" "isn't in a git repository"
+[ "$(code -H "X-TT-Token: $K" "$U/api/review?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
+cp "$TATTY_HOME/branches.json" "$T/branches.before"
+post /api/start "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"feature/other\",\"against\":\"main\"}}" >"$T/j"
+has "the review session starts" "$T/j" "Prompt: /tatty:review"
+has "with the branch" "$T/j" "Branch: feature/other"
+has "and the base" "$T/j" "Against: main"
+has "and the document it writes" "$T/j" "Document: "
+has "and the script that writes it" "$T/j" "suggestions.sh"
+has "in the other repo" "$T/j" "otherrepo"
+hasnt "the toolbox's placeholder is never sent" "$T/j" "[branch]"
+get "/api/feature?name=Reviewing" >"$T/j"
+has "the feature keeps its own project" "$T/j" "gitrepo"
+hasnt "which is not changed" "$TATTY_HOME/projects.tsv" "otherrepo"
+cmp -s "$TATTY_HOME/branches.json" "$T/branches.before" && ok "and its branch record" || bad "and its branch record"
+[ "$(git -C "$OR" branch --show-current)" = main ] && ok "a review switches nothing" || bad "a review switches nothing"
+post /api/start "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\"}}" >"$T/j"
+has "no branch: the one checked out" "$T/j" "Branch: (the branch that is checked out)"
+hasnt "and no placeholder" "$T/j" "[branch]"
+hasnt "nor a base" "$T/j" "Against:"
+post /api/start "{\"name\":\"Reviewing\",\"row\":$RV}" >"$T/j"
+hasnt "started without the panel, the placeholder still isn't sent" "$T/j" "[branch]"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$ORW\",\"branch\":\"a b\"}}" "$U/api/start")" = 400 ] && ok "a branch with a space is refused" || bad "a branch with a space is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$T\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't a repo is refused" || bad "a folder that isn't a repo is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Reviewing\",\"row\":$RV,\"review\":{\"repo\":\"$T/nowhere\"}}" "$U/api/start")" = 400 ] && ok "a folder that isn't there is refused" || bad "a folder that isn't there is refused"
+
+fi
+if section commit; then
+echo "# committing what the workflow left"
+[ "$(code "$U/static/commit.js")" = 200 ] && ok "commit.js served" || bad "commit.js served"
+[ "$(code "$U/static/commit.css")" = 200 ] && ok "commit.css served" || bad "commit.css served"
+CR="$T/commitrepo"
+mkdir -p "$CR" && git -C "$CR" init -q -b main && git -C "$CR" config user.email t@example.com && git -C "$CR" config user.name Tester
+for n in 1 2 3; do printf "$n" >"$CR/f$n.txt"; git -C "$CR" add -A; git -C "$CR" commit -q -m "feat: change $n [KEY-$n]"; done
+git -C "$CR" switch -q -c feature/Commit-Demo
+CRW=$(cd "$CR" && { pwd -W 2>/dev/null || pwd; })
+mkdir -p "$FX/features/Commit Demo/.tt/Commit Demo - Task Status/results"
+printf '# Result: T01 — Add the widget\n\n## Files Modified\n- change `src/widget.txt`: x\n- create `docs/`: y\n\n## Summary\nok\n' >"$FX/features/Commit Demo/.tt/Commit Demo - Task Status/results/T01.md"
+$PY -c "import json,os,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)) if os.path.exists(p) else {}; d['commit demo']={'repo':sys.argv[2],'branch':'feature/Commit-Demo','base':'main','created':1,'merge':{}}; json.dump(d,open(p,'w'))" "$TATTY_HOME" "$CRW"
+mkdir -p "$CR/src" "$CR/docs"; printf w >"$CR/src/widget.txt"; printf d >"$CR/docs/a.md"; printf o >"$CR/other.txt"; printf s >"$CR/.env"; rm -f "$CR/f3.txt"
+cpost() { curl -s -o "$T/fc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/commit"; }
+get "/api/commit?name=Commit%20Demo" >"$T/j"
+[ "$(pick "$T/j" "sorted(f['path'] for f in d['files'] if f['workflow'])")" = "['docs/a.md', 'src/widget.txt']" ] && ok "the workflow's own files are the ones its results name (a folder too)" || bad "the workflow's own files" "$(head -c 500 "$T/j")"
+[ "$(pick "$T/j" "sorted(f['path'] for f in d['files'] if not f['workflow'])")" = "['.env', 'f3.txt', 'other.txt']" ] && ok "the rest are listed apart" || bad "the rest are listed apart"
+[ "$(pick "$T/j" "[f['path'] for f in d['files'] if f['secret']]")" = "['.env']" ] && ok "a file that looks like a secret is marked" || bad "a file that looks like a secret is marked"
+[ "$(pick "$T/j" "[f['state'] for f in d['files'] if f['path'] == 'f3.txt']")" = "['deleted']" ] && ok "a deletion is a change too" || bad "a deletion is a change too"
+has "the branch is the feature's" "$T/j" '"branch": "feature/Commit-Demo"'
+has "the message follows the repo's style" "$T/j" '"message": "feat: '
+has "and lists the workflow's tasks" "$T/j" '- Add the widget'
+[ "$(code -H "X-TT-Token: $K" "$U/api/commit?name=Nope")" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(cpost '{"name":"Commit Demo","files":["src/widget.txt"],"message":"  "}')" = 400 ] && ok "a commit needs a message" || bad "a commit needs a message"
+[ "$(cpost '{"name":"Commit Demo","files":[],"message":"m"}')" = 400 ] && ok "and something to commit" || bad "and something to commit"
+[ "$(cpost '{"name":"Commit Demo","files":["not/there.txt"],"message":"m"}')" = 409 ] && ok "a file that isn't changed is refused" || bad "a file that isn't changed is refused"
+git -C "$CR" switch -q main
+[ "$(cpost '{"name":"Commit Demo","all":true,"message":"m"}')" = 409 ] && ok "not on the feature's branch: refused" || bad "not on the feature's branch: refused" "$(cat "$T/fc")"
+git -C "$CR" switch -q feature/Commit-Demo
+git -C "$CR" add f1.txt 2>/dev/null; printf 'staged by me' >"$CR/f1.txt"; git -C "$CR" add f1.txt
+[ "$(cpost '{"name":"Commit Demo","files":["src/widget.txt","docs/a.md"],"message":"feat: add the widget\n\n- Add the widget"}')" = 200 ] && ok "the chosen files are committed" || bad "the chosen files are committed" "$(cat "$T/fc")"
+has "and the commit is named" "$T/fc" '"files": 2'
+[ "$(git -C "$CR" log -1 --format=%s)" = "feat: add the widget" ] && ok "with the message as written" || bad "with the message as written"
+[ "$(git -C "$CR" show --name-only --format= HEAD | sort | tr '\n' ' ')" = "docs/a.md src/widget.txt " ] && ok "only those files" || bad "only those files" "$(git -C "$CR" show --name-only --format= HEAD)"
+git -C "$CR" log -1 --format=%B >"$T/msg"; hasnt "and no trailer is added" "$T/msg" "Co-Authored"
+git -C "$CR" status --porcelain >"$T/st"
+has "what wasn't chosen stays uncommitted" "$T/st" "?? other.txt"
+has "and what I had staged stays staged" "$T/st" "M  f1.txt"
+printf '#!/bin/sh\necho "lint says no" >&2\nexit 1\n' >"$CR/.git/hooks/pre-commit"; chmod +x "$CR/.git/hooks/pre-commit"
+git -C "$CR" status --porcelain >"$T/st1"
+[ "$(cpost '{"name":"Commit Demo","files":["other.txt"],"message":"x"}')" = 422 ] && ok "a hook that refuses is reported" || bad "a hook that refuses is reported" "$(cat "$T/fc")"
+has "with what it said" "$T/fc" "lint says no"
+git -C "$CR" status --porcelain >"$T/st2"; cmp -s "$T/st1" "$T/st2" && ok "and the index is as it was" || bad "and the index is as it was"
+rm -f "$CR/.git/hooks/pre-commit"
+[ "$(cpost '{"name":"Commit Demo","all":true,"message":"chore: the rest"}')" = 200 ] && ok "Commit everything" || bad "Commit everything" "$(cat "$T/fc")"
+git -C "$CR" status --porcelain >"$T/st"
+[ "$(cat "$T/st" | tr -d '\r' | tr '\n' ' ')" = "?? .env " ] && ok "all but the file that looks like a secret" || bad "all but the file that looks like a secret" "$(cat "$T/st")"
+get "/api/commit?name=Commit%20Demo" >"$T/j"
+[ "$(pick "$T/j" "[f['path'] for f in d['files']]")" = "['.env']" ] && ok "the page then lists only that" || bad "the page then lists only that"
+
+fi
+if section unitgate; then
+echo "# the break after a validated work unit"
+[ "$(code "$U/static/unitgate.js")" = 200 ] && ok "unitgate.js served" || bad "unitgate.js served"
+GR="$T/gaterepo"
+mkdir -p "$GR" && git -C "$GR" init -q -b main && git -C "$GR" config user.email t@example.com && git -C "$GR" config user.name Tester
+printf 1 >"$GR/base.txt"; git -C "$GR" add -A; git -C "$GR" commit -q -m "feat: base [KEY-1]"
+git -C "$GR" switch -q -c feature/Gate-Demo
+GRW=$(cd "$GR" && { pwd -W 2>/dev/null || pwd; })
+GD="$FX/features/Gate Demo"
+mkdir -p "$GD/.tt/Gate Demo - Task Status/results"
+gate_status() { printf '# Status\n- State: In Progress\n\n# Work Unit Board\n| ID | Outcome | Tasks | Validated by | Status | Notes |\n|---|---|---|---|---|---|\n| WU1 | Save settings | T01 | Agent | %s | |\n| WU2 | See a greeting | T02 | Agent | %s | |\n\n# Task Board\n| ID | Task | Executor | Work unit | Depends on | Status | Notes |\n|---|---|---|---|---|---|---|\n| T01 | Add the store | Agent | WU1 | — | Done | |\n| T02 | Add the greeting | Agent | WU2 | T01 | Todo | |\n' "$1" "$2" >"$GD/Gate Demo - Task Status.md"; }
+gate_status Done "Not Started"
+printf '# Result: T01 — Add the store\n\n## Files Modified\n- create `src/store.txt`: x\n\n## Summary\nok\n' >"$GD/.tt/Gate Demo - Task Status/results/T01.md"
+$PY -c "import json,os,sys; p=sys.argv[1]+'/branches.json'; d=json.load(open(p)) if os.path.exists(p) else {}; d['gate demo']={'repo':sys.argv[2],'branch':'feature/Gate-Demo','base':'main','created':1,'merge':{}}; json.dump(d,open(p,'w'))" "$TATTY_HOME" "$GRW"
+mkdir -p "$GR/src"; printf s >"$GR/src/store.txt"; printf o >"$GR/other.txt"
+upost() { curl -s -o "$T/ug" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/$1"; }
+get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']['unit'] + ' ' + d['unitGate']['next']")" = "WU1 WU2" ] && ok "a Done unit with one still to start is a break" || bad "a Done unit with one still to start is a break" "$(head -c 400 "$T/j")"
+[ "$(pick "$T/j" "d['action']['kind']")" = unitgate ] && ok "and the page's first action says so" || bad "and the page's first action says so"
+gate_status "In Progress" "Not Started"; get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "no break while the first unit is not yet Done" || bad "no break while the first unit is not yet Done"
+gate_status Done "In Progress"; get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "none once the next unit has begun" || bad "none once the next unit has begun"
+gate_status Done Done; get "/api/feature?name=Gate%20Demo" >"$T/j"
+[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "none after the last unit (the complete build has its own Commit)" || bad "none after the last unit"
+gate_status Done "Not Started"
+[ "$(upost unit-commit '{"name":"Nope"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(upost unit-commit '{"name":"Gate Demo"}')" = 200 ] && ok "Commit work commits" || bad "Commit work commits" "$(cat "$T/ug")"
+has "naming the unit" "$T/ug" '(WU1)'
+has "and counting the changes it left" "$T/ug" '"others": 1'
+[ "$(git -C "$GR" show --name-only --format= HEAD | tr -d '\r' | tr '\n' ' ')" = "src/store.txt " ] && ok "only the files the results name" || bad "only the files the results name" "$(git -C "$GR" show --name-only --format= HEAD)"
+git -C "$GR" log -1 --format=%B >"$T/msg"; hasnt "with no trailer" "$T/msg" "Co-Authored"
+git -C "$GR" status --porcelain >"$T/st"; has "the other change stays uncommitted" "$T/st" "?? other.txt"
+get "/api/feature?name=Gate%20Demo" >"$T/j"
+has "the break stays after committing" "$T/j" '"unit": "WU1"'
+[ "$(upost unit-commit '{"name":"Gate Demo"}')" = 409 ] && ok "a second Commit work has nothing to commit" || bad "a second Commit work has nothing to commit" "$(cat "$T/ug")"
+if [ "$TOOLBOX" = 1 ]; then
+	post /api/project "{\"name\":\"Gate Demo\",\"path\":\"$GRW\"}" >/dev/null
+	[ "$(upost unit-continue '{"name":"Gate Demo"}')" = 200 ] && ok "Continue opens a new session" || bad "Continue opens a new session" "$(cat "$T/ug")"
+	has "which was started" "$T/ug" '"ok": true'
+	get "/api/feature?name=Gate%20Demo" >"$T/j"
+	[ "$(pick "$T/j" "d['unitGate']")" = None ] && ok "and the break is over" || bad "and the break is over"
+else
+	echo "skip  no toolbox: Continue needs the workflow's next step"
+fi
+gate_status Done "In Progress"
+[ "$(upost unit-commit '{"name":"Gate Demo"}')" = 409 ] && ok "no break, no commit" || bad "no break, no commit"
+[ "$(upost unit-continue '{"name":"Gate Demo"}')" = 409 ] && ok "and no Continue" || bad "and no Continue"
+
+fi
+if section reviewstep; then
+echo "# the Review step: suggestions, decisions, the changes, the commit"
+[ "$(code "$U/static/review-page.js")" = 200 ] && ok "review-page.js served" || bad "review-page.js served"
+[ "$(code "$U/static/review-page.css")" = 200 ] && ok "review-page.css served" || bad "review-page.css served"
+SUG="$root/plugins/tatty/scripts/suggestions.sh"
+RD="$T/rdoc"; mkdir -p "$RD"; D1="$RD/Solo - Review Suggestions.md"
+bash "$SUG" >/dev/null 2>&1; [ $? = 2 ] && ok "suggestions.sh with no command is a usage error" || bad "suggestions.sh with no command is a usage error"
+expect "init a document" 0 bash "$SUG" init "$D1" --repo "$CRW" --branch feature/x --base main --head abc1234 --report "$RD/Review.md"
+expect "init again is refused" 1 bash "$SUG" init "$D1" --branch feature/x
+expect "a name that isn't <Feature> - Review Suggestions" 1 bash "$SUG" init "$RD/notes.md" --branch b
+expect "a document that isn't there" 2 bash "$SUG" status "$RD/Nope - Review Suggestions.md"
+bash "$SUG" add "$D1" >"$T/out" 2>&1 <<'EOF'
+summary: Null check missing in Load
+severity: major
+dimension: correctness
+where: src/load.py:42
+finding: Load() dereferences the result of find() without checking it.
+  A missing file crashes the whole import.
+option: A | Guard the result | Return early with a clear error when find() gives None | recommended
+option: B | Raise a typed error | Let callers decide: raise LoadError(path)
+---
+summary: Magic number in the retry loop
+severity: nit
+where: src/net.py:7
+finding: 3 is used for the retry count.
+option: A | Name the constant | RETRIES = 3 at the top of the module | recommended
+EOF
+has "suggestions are added with the next ids" "$T/out" "added RS01 RS02"
+bash "$SUG" add "$D1" >"$T/out" 2>&1 <<'EOF'
+summary: A third
+option: A | Do it | now
+EOF
+has "ids are never reused" "$T/out" "added RS03"
+has "'Leave as is' is always an option" "$D1" "**C** — Leave as is"
+expect "a suggestion needs options" 1 bash -c "printf 'summary: x\n' | bash '$SUG' add '$D1'"
+expect "an unknown severity is refused" 1 bash -c "printf 'summary: x\nseverity: huge\noption: A | a | b\n' | bash '$SUG' add '$D1'"
+bash "$SUG" status "$D1" >"$T/out"
+has "the status counts" "$T/out" "total=3"
+has "and says the phase" "$T/out" "phase=decide"
+expect "an option that isn't there" 1 bash "$SUG" decide "$D1" RS01 Z
+expect "'other' needs words" 1 bash "$SUG" decide "$D1" RS01 other
+expect "no such suggestion" 1 bash "$SUG" decide "$D1" RS09 A
+expect "no result before everything is decided" 1 bash "$SUG" result "$D1" RS01 applied
+expect "the document is in its layout" 0 bash "$SUG" check "$D1"
+printf 'not a review document' >"$RD/Bad - Review Suggestions.md"
+expect "a document that isn't in the layout is reported" 1 bash "$SUG" check "$RD/Bad - Review Suggestions.md"
+# CRLF and a BOM are kept
+D2="$RD/Crlf - Review Suggestions.md"
+bash "$SUG" init "$D2" --branch b --base main --head 1 >/dev/null
+printf 'summary: Crlf one\noption: A | Do | it\n' | bash "$SUG" add "$D2" >/dev/null
+$PY -c "import sys; p=sys.argv[1]; b=open(p,'rb').read().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n'); open(p,'wb').write(b'\xef\xbb\xbf'+b)" "$D2"
+bash "$SUG" decide "$D2" RS01 A >/dev/null
+[ "$($PY -c "import sys; b=open(sys.argv[1],'rb').read(); print(b.startswith(b'\xef\xbb\xbf'), b.count(b'\n') == b.count(b'\r\n'))" "$D2")" = "True True" ] && ok "a BOM and CRLF are kept" || bad "a BOM and CRLF are kept"
+# nothing to change: done straight away
+D3="$RD/None - Review Suggestions.md"
+bash "$SUG" init "$D3" --branch b --base main --head 1 >/dev/null
+expect "no findings: done" 0 bash "$SUG" done "$D3"
+bash "$SUG" status "$D3" >"$T/out"; has "and the next phase is the merge" "$T/out" "phase=merge"
+# a replaced document is kept
+expect "start again with --replace" 0 bash "$SUG" init "$D3" --branch b --base main --head 2 --replace
+ls "$RD/.tt/Review Suggestions history/"*"None - Review Suggestions.md" >/dev/null 2>&1 && ok "and the old one is kept" || bad "and the old one is kept"
+
+# the Review step on a feature whose build is complete: Commit Demo (its branch is in $CR)
+CD="$FX/features/Commit Demo"; DOC="$CD/Commit Demo - Review Suggestions.md"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do
+	sed 's/Demo/Commit Demo/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$CD/Commit Demo - $f.md"
+done
+rpost() { curl -s -o "$T/rv" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/review/$1"; }
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "after the build: the Review step" "$T/j" '"skill": "tatty:review"'
+has "named for the step" "$T/j" '"stage": "Review"'
+hasnt "the toolbox's own review row is hidden" "$T/j" '"skill": "tt-branch-review"'
+hasnt "and there is no merge row yet" "$T/j" '"skill": "tatty:merge"'
+has "the page is told where the step stands" "$T/j" '"review": {"phase": "review"}'
+[ "$(rpost done '{"name":"Commit Demo"}')" = 409 ] && ok "a review that isn't applied can't be marked done" || bad "a review that isn't applied can't be marked done"
+[ "$(code -H "X-TT-Token: $K" "$U/api/review/suggestions?name=Commit%20Demo")" = 404 ] && ok "no suggestions yet: a 404" || bad "no suggestions yet: a 404"
+bash "$SUG" init "$DOC" --repo "$CRW" --branch feature/Commit-Demo --base main --head abc1234 --report "$RD/Review.md" >/dev/null
+bash "$SUG" add "$DOC" >/dev/null <<'EOF'
+summary: Guard the widget
+severity: major
+where: src/widget.txt:1
+finding: The widget is not checked.
+option: A | Guard it | Add the check | recommended
+option: B | Leave it | Not needed
+---
+summary: Rename the helper
+severity: nit
+where: docs/a.md:1
+finding: The helper's name is vague.
+option: A | Rename | Use a clearer name | recommended
+EOF
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "suggestions to decide: a link to the page" "$T/j" '"link": "#feature/Commit%20Demo/review"'
+has "the step says how many" "$T/j" "2 suggestions for you to decide on (0 decided)"
+has "the feature carries the step's state" "$T/j" '"phase": "decide"'
+get "/api/review/suggestions?name=Commit%20Demo" >"$T/j"
+[ "$(pick "$T/j" "(d['counts']['total'], [o['key'] for o in d['items'][0]['options']])")" = "(2, ['A', 'B'])" ] && ok "the page gets the suggestions with their options" || bad "the page gets the suggestions with their options" "$(head -c 300 "$T/j")"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"Z"}')" = 409 ] && ok "an option that isn't there is refused" || bad "an option that isn't there is refused"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"other"}')" = 409 ] && ok "'other' needs words" || bad "'other' needs words"
+[ "$(rpost decide '{"name":"Nope","id":"RS01","choice":"A"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"A","note":"yes"}')" = 200 ] && ok "a decision is recorded" || bad "a decision is recorded" "$(cat "$T/rv")"
+has "not the last: no session yet" "$T/rv" '"started": null'
+has "and it is in the document" "$DOC" "- **Decision:** A"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS02","choice":"other","note":"leave it, the docs go next week"}')" = 200 ] && ok "the last decision" || bad "the last decision" "$(cat "$T/rv")"
+has "starts the session that makes the changes" "$T/rv" '"name": "Commit Demo : Apply review"'
+has "with the apply skill" "$T/rv" "Prompt: /tatty:apply-review"
+has "and the document it works from" "$T/rv" "Document: "
+has "in the reviewed repo" "$T/rv" "commitrepo"
+[ "$(rpost apply '{"name":"Commit Demo"}')" = 409 ] && ok "it isn't started twice" || bad "it isn't started twice"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"B"}')" = 200 ] && ok "a decision can still be changed before the changes are made" || bad "a decision can still be changed before the changes are made"
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "the step waits for the changes" "$T/j" '"phase": "apply"'
+has "its row is the apply skill" "$T/j" '"skill": "tatty:apply-review"'
+bash "$SUG" result "$DOC" RS01 applied "guarded the widget" >/dev/null
+bash "$SUG" result "$DOC" RS02 skipped "left, by choice" >/dev/null
+bash "$SUG" finish "$DOC" >/dev/null
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "then the commit: a link to the Commit page" "$T/j" '"link": "#feature/Commit%20Demo/commit"'
+has "with what became of the suggestions" "$T/j" "1 applied, 1 skipped, 0 blocked"
+[ "$(rpost decide '{"name":"Commit Demo","id":"RS01","choice":"A"}')" = 409 ] && ok "a decision can't change once the changes are made" || bad "a decision can't change once the changes are made"
+printf 'applied' >"$CR/applied.txt"
+get "/api/commit?name=Commit%20Demo" >"$T/j"
+has "the commit is named for the review" "$T/j" "ddress review suggestions"
+has "and says so" "$T/j" '"afterReview": true'
+has "listing what was applied" "$T/j" "Guard the widget"
+[ "$(cpost '{"name":"Commit Demo","files":["applied.txt"],"message":"fix: address review suggestions"}')" = 200 ] && ok "committed" || bad "committed" "$(cat "$T/fc")"
+has "which finishes the review" "$T/fc" '"reviewDone": true'
+get "/api/feature?name=Commit%20Demo" >"$T/j"
+has "the merge phase follows" "$T/j" '"skill": "tatty:merge"'
+has "the review is done" "$T/j" '"status": "Done"'
+hasnt "no review row is left" "$T/j" '"skill": "tatty:review"'
+for s in review apply-review; do
+	head -n 2 "$root/plugins/tatty/skills/$s/SKILL.md" | tail -n 1 | grep -q "^name: $s" && ok "the $s skill is in the plugin" || bad "the $s skill is in the plugin"
+done
+# a document that isn't in its layout stops the step with a warning
+BF="$FX/features/Broken"; mkdir -p "$BF"
+for f in "Comprehensive Tech Plan" "Task Breakdown" "Task Status"; do sed 's/Demo/Broken/g; s/^- State: .*/- State: Complete/' "$FX/features/Demo/Demo - $f.md" >"$BF/Broken - $f.md"; done
+printf 'not a review document' >"$BF/Broken - Review Suggestions.md"
+get "/api/feature?name=Broken" >"$T/j"
+has "a broken document is a warning row" "$T/j" '"phase": "review-broken"'
+has "and the page is told" "$T/j" '"phase": "broken"'
+rm -rf "$BF"
+
+fi
+if section live; then
+echo "# a started session, live"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+TAG=$(pick "$T/j" "d['tag']")
+case $TAG in s-*) ok "the session has a tag" ;; *) bad "the session has a tag" "$(cat "$T/j")" ;; esac
+get "/api/sessions?name=Demo" >"$T/j"
+has "listed for the feature, starting" "$T/j" "\"tag\": \"$TAG\""
+has "starting" "$T/j" '"status": "starting"'
+get /api/features >"$T/j"
+pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['live']" >"$T/f"
+has "the home card shows it live" "$T/f" "'name': 'Demo : Build'"
+post /api/hello "{\"session\":\"abc\",\"tag\":\"$TAG\"}" >/dev/null
+get "/api/feature?name=Demo" >"$T/j"
+pick "$T/j" "[s['status'] for s in d['sessions'] if s['tag'] == '$TAG'][0]" >"$T/f"
+has "running once its mod says hello" "$T/f" "running"
+get /api/status >"$T/j"
+hasnt "a started session isn't the main one" "$T/j" '"session": "abc"'
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool\",\"tool\":\"Read\",\"text\":\"Demo - Task Status.md\",\"id\":\"t1\"}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"tool-done\",\"tool\":\"Read\",\"id\":\"t1\",\"ok\":true}" >/dev/null
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"tag\":\"$TAG\",\"kind\":\"nope\"}" "$U/api/activity")" = 400 ] &&
+	ok "unknown activity refused" || bad "unknown activity refused"
+get /api/events >"$T/j"
+pick "$T/j" "' '.join(e['kind'] + ':' + e['tool'] for e in d if e['type'] == 'activity' and e['tag'] == '$TAG')" >"$T/f"
+has "its activity, tagged" "$T/f" "tool:Read tool-done:Read"
+get "/api/sessions?name=Demo" >"$T/j"
+has "what it is doing" "$T/j" '"doing": "Read Demo - Task Status.md"'
+pick "$T/j" "[s['usage'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "no usage before the first report" "$T/f" "None"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":1200,\"output\":340,\"cacheRead\":50000,\"cacheWrite\":800,\"model\":\"m\",\"context\":{\"tokens\":52000,\"window\":200000},\"costUsd\":0.42}}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+pick "$T/j" "[s['usage'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "its usage totals are kept" "$T/f" "'input': 1200, 'output': 340, 'cacheRead': 50000, 'cacheWrite': 800"
+has "the context window" "$T/f" "'context': {'window': 200000, 'tokens': 52000}"
+has "the cost" "$T/f" "'costUsd': 0.42"
+get /api/events >"$T/j"
+pick "$T/j" "[e['usage']['input'] for e in d if e['type'] == 'session' and e['tag'] == '$TAG' and e.get('usage')][-1]" >"$T/f"
+has "a session event carries it to the page" "$T/f" "1200"
+pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] == 'usage'])" >"$T/f"
+has "usage is not a row in the feed" "$T/f" "0"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":-5,\"output\":\"x\",\"cacheRead\":2.9,\"costUsd\":-1}}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+pick "$T/j" "[s['usage'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "bad counts are made safe" "$T/f" "'input': 0, 'output': 0, 'cacheRead': 2, 'cacheWrite': 0"
+hasnt "and a negative cost dropped" "$T/f" "costUsd"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"usage","usage":{}}' "$U/api/activity")" = 404 ] &&
+	ok "usage for an unknown session refused" || bad "usage for an unknown session refused"
+# the main loop's turns and the subagents: what the page's status and bar are made of
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"turn\",\"state\":\"start\"}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\"},{\"id\":\"a2\",\"type\":\"Explore\",\"description\":\"find the callers\",\"status\":\"waiting\"},{\"id\":\"a3\",\"type\":\"general-purpose\",\"status\":\"nonsense\"},{\"type\":\"no id\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[s['turn'] for s in d if s['tag'] == '$TAG'][0]")" = "True" ] && ok "a turn is under way" || bad "a turn is under way"
+[ "$(pick "$T/j" "[(a['id'], a['type'], a['status']) for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]]")" = "[('a1', 'Explore', 'running'), ('a2', 'Explore', 'waiting'), ('a3', 'general-purpose', 'running')]" ] &&
+	ok "subagents are kept, one without an id dropped, an odd status made safe" || bad "subagents are kept" "$(pick "$T/j" "[s['agents'] for s in d if s['tag'] == '$TAG'][0]")"
+pick "$T/j" "[a['since'] for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]][0]" >"$T/f"
+SINCE=$(cat "$T/f")
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"turn\",\"state\":\"end\"}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[s['turn'] for s in d if s['tag'] == '$TAG'][0]")" = "False" ] && ok "and the turn ends while a subagent goes on" || bad "and the turn ends while a subagent goes on"
+[ "$(pick "$T/j" "[a['since'] for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]][0]")" = "$SINCE" ] && ok "a subagent keeps the time it was first seen" || bad "a subagent keeps the time it was first seen"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\",\"model\":\"us.anthropic.claude-opus-5-5\",\"asked\":\"opus\"},{\"id\":\"a2\",\"type\":\"Explore\",\"description\":\"no model\",\"status\":\"running\",\"asked\":\"haiku\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(a['id'], a.get('model'), a.get('asked')) for a in [s['agents'] for s in d if s['tag'] == '$TAG'][0]]")" = "[('a1', 'us.anthropic.claude-opus-5-5', 'opus'), ('a2', None, None)]" ] &&
+	ok "a subagent says the model it was asked for and the one it runs on" || bad "a subagent's models" "$(pick "$T/j" "[s['agents'] for s in d if s['tag'] == '$TAG'][0]")"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[{\"id\":\"a1\",\"type\":\"Explore\",\"description\":\"map the stream code\",\"status\":\"running\"}]}" >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] in ('turn', 'agents')])" >"$T/f"
+has "neither is a row in the feed" "$T/f" "0"
+# the shell commands running in the background: a turn over while one runs is waiting on it, not on the person
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"shells\",\"shells\":[{\"id\":\"b1\",\"command\":\"bash tools/test-tatty.sh   --parallel\",\"description\":\"Run the suite\"},{\"command\":\"no id\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(x['id'], x['command'], x['description']) for x in [s['shells'] for s in d if s['tag'] == '$TAG'][0]]")" = "[('b1', 'bash tools/test-tatty.sh --parallel', 'Run the suite')]" ] &&
+	ok "a background command is kept, one without an id dropped" || bad "a background command is kept" "$(pick "$T/j" "[s.get('shells') for s in d if s['tag'] == '$TAG'][0]")"
+SHSINCE=$(pick "$T/j" "[x['since'] for x in [s['shells'] for s in d if s['tag'] == '$TAG'][0]][0]")
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"shells\",\"shells\":[{\"id\":\"b1\",\"command\":\"bash tools/test-tatty.sh --parallel\"},{\"id\":\"b2\",\"command\":\"sleep 5\"}]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[x['since'] for x in [s['shells'] for s in d if s['tag'] == '$TAG'][0]][0]")" = "$SHSINCE" ] && ok "a background command keeps the time it was first seen" || bad "a background command keeps the time it was first seen"
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"shells\",\"shells\":[]}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[s['shells'] for s in d if s['tag'] == '$TAG'][0]")" = "[]" ] && ok "and it goes once it has finished" || bad "and it goes once it has finished"
+get /api/events >"$T/j"
+pick "$T/j" "len([e for e in d if e['type'] == 'activity' and e['kind'] == 'shells'])" >"$T/f"
+has "nor are the background commands" "$T/f" "0"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope","kind":"turn","state":"start"}' "$U/api/activity")" = 404 ] &&
+	ok "a turn for an unknown session refused" || bad "a turn for an unknown session refused"
+
+# code diff: the file edits a subagent makes, kept under the task in progress. The
+# copies of Demo's documents in $FX are changed here and put back at the end.
+DEMOD="$FX/features/Demo"
+# diff_wait <text>: /api/diffs has the text within ten seconds
+diff_wait() {
+	local i=0
+	while [ $i -lt 20 ]; do
+		get "/api/diffs?name=Demo" >"$T/dj"
+		grep -qF -- "$1" "$T/dj" && return 0
+		sleep 0.5
+		i=$((i + 1))
+	done
+	return 1
+}
+# change_body <file> <old line> <new line>: what the mod reports for an Edit
+change_body() { printf '{"tag":"%s","tool":"Edit","agent":"a9","file":"%s","type":"update","hunks":[{"oldStart":3,"oldLines":1,"newStart":3,"newLines":1,"lines":["-%s","+%s"]}]}' "$TAG" "$1" "$2" "$3"; }
+# the T03 card gets the two lines the fixture's other card has, and its row goes In Progress
+$PY -c "import sys; p = sys.argv[1]; lines = open(p, 'rb').read().replace(b'\r\n', b'\n').split(b'\n'); i = [n for n, l in enumerate(lines) if l.startswith(b'### T03 ')][0]
+lines[i + 1:i + 1] = [b'', b'**In plain English:** Adds the greeting for the tool to print.', b'', b'**Goal:** A greet.sh that prints hello.']
+open(p, 'wb').write(b'\n'.join(lines))" "$DEMOD/Demo - Task Breakdown.md"
+sed -i -E 's/^(\| T03 .*)\| Implemented \|/\1| In Progress |/' "$DEMOD/Demo - Task Status.md"
+post /api/change "$(change_body "$FX/src/greet.sh" "echo hi" "echo hello")" >"$T/j"
+has "code diff: change is answered with its id" "$T/j" '"ok": true'
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(c['type'], c['task'], c['file'].endswith('/src/greet.sh'), [l for h in c['hunks'] for l in h['lines']]) for c in d['changes']]")" = "[('update', 'T03', True, ['-echo hi', '+echo hello'])]" ] &&
+	ok "code diff: change is kept under the task In Progress" || bad "code diff: change is kept under the task In Progress" "$(head -c 400 "$T/j")"
+post /api/change "$(change_body "$DEMOD/inside-the-feature.md" "a" "b")" >"$T/j"
+has "code diff: change inside the feature folder is skipped" "$T/j" '"skipped": "feature folder"'
+get "/api/diffs?name=Demo" >"$T/j"
+hasnt "code diff: change inside the feature folder is not kept" "$T/j" "inside-the-feature.md"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"tag\":\"$TAG\",\"tool\":\"Bash\",\"file\":\"$FX/src/greet.sh\",\"hunks\":[]}" "$U/api/change")" = 400 ] &&
+	ok "code diff: change by an unknown tool refused" || bad "code diff: change by an unknown tool refused"
+[ "$(code -H "X-TT-Token: $K" "$U/api/diffs?name=Nope")" = 404 ] &&
+	ok "code diff: change list of an unknown feature is 404" || bad "code diff: change list of an unknown feature is 404"
+
+# its words come from the task's card, and from the result file the coder wrote
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(t['plain'], t['goal']) for t in d['tasks'] if t['id'] == 'T03']")" = "[('Adds the greeting for the tool to print.', 'A greet.sh that prints hello.')]" ] &&
+	ok "code diff: words come from the task's card" || bad "code diff: words come from the task's card" "$(pick "$T/j" "d['tasks']")"
+mkdir -p "$DEMOD/.tt/Demo - Task Status/results"
+printf '# T03\n\n## Summary\nThe greeting prints hello.\n\n## Files Modified\n- src/greet.sh\n' >"$DEMOD/.tt/Demo - Task Status/results/T03.md"
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[t['summary'] for t in d['tasks'] if t['id'] == 'T03']")" = "['The greeting prints hello.']" ] &&
+	ok "code diff: words include the result summary" || bad "code diff: words include the result summary" "$(pick "$T/j" "d['tasks']")"
+[ "$(pick "$T/j" "(d['progress']['tasks']['done'], d['progress']['tasks']['total'], d['progress']['units']['done'], d['progress']['units']['total'], d['running'])")" = "(2, 4, 1, 2, True)" ] &&
+	ok "code diff: progress counts and running" || bad "code diff: progress counts and running" "$(pick "$T/j" "(d['progress'], d['running'])")"
+
+# more info: a small model explains the task's changes (the stand-in answers; its
+# calls are taken out of claude.log again, which a later check reads)
+cp "$T/claude.log" "$T/claude.log.before" 2>/dev/null || : >"$T/claude.log.before"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T03"}' "$U/api/diff-more")" = 200 ] &&
+	ok "code diff: more info is started" || bad "code diff: more info is started"
+diff_wait "An addendum by the model." && ok "code diff: more info is stored" || bad "code diff: more info is stored" "$(head -c 400 "$T/dj")"
+diff_wait '"busy": []' || bad "code diff: the first more info run finished"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T99"}' "$U/api/diff-more")" = 400 ] &&
+	ok "code diff: more info for a task not on the board is refused" || bad "code diff: more info for a task not on the board is refused"
+touch "$T/claude-fail"
+post /api/diff-more '{"name":"Demo","task":"T03"}' >/dev/null
+diff_wait "The model couldn't write one." && ok "code diff: more info keeps the error text" || bad "code diff: more info keeps the error text" "$(head -c 400 "$T/dj")"
+diff_wait '"busy": []' || bad "code diff: the failing more info run finished"
+rm -f "$T/claude-fail"
+cp "$T/claude.log.before" "$T/claude.log"
+
+# a second ask for a task that is still being written is told so (the stand-in is made slow)
+touch "$T/claude-diff-slow"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T03"}' "$U/api/diff-more")" = 200 ] &&
+	ok "code diff: a slow more info is started" || bad "code diff: a slow more info is started"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T03"}' "$U/api/diff-more")" = 409 ] &&
+	ok "code diff: a second ask while one is being written is refused" || bad "code diff: a second ask while one is being written is refused"
+diff_wait '"busy": []' || bad "code diff: the slow more info run finished"
+rm -f "$T/claude-diff-slow"
+cp "$T/claude.log.before" "$T/claude.log"
+
+# what the hook reports is made safe to keep: whole numbers, lines that start with a space, - or +, at most 1000 characters
+$PY -c "import json, sys; print(json.dumps({'tag': sys.argv[1], 'tool': 'Edit', 'agent': 'a9', 'file': sys.argv[2], 'type': 'update', 'hunks': [
+  {'oldStart': 'x', 'oldLines': 1, 'newStart': 3, 'newLines': 1, 'lines': ['-keep', 'xdropped', 7, '+kept', '+' + 'y' * 1500]},
+  {'oldStart': 1, 'oldLines': 1, 'newStart': 1, 'newLines': 1, 'lines': ['xonly']}, 'not a hunk']}))" "$TAG" "$FX/src/odd.sh" >"$T/odd.json"
+curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/odd.json" "$U/api/change" >"$T/j"
+has "code diff: an odd change is answered" "$T/j" '"ok": true'
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(len(c['hunks']), c['hunks'][0]['oldStart'], [l[:6] for l in c['hunks'][0]['lines']], max(len(l) for l in c['hunks'][0]['lines'])) for c in d['changes'] if c['file'].endswith('/src/odd.sh')]")" = "[(1, 0, ['-keep', '+kept', '+yyyyy'], 1000)]" ] &&
+	ok "code diff: odd hunks are cleaned before they are kept" || bad "code diff: odd hunks are cleaned before they are kept" "$(head -c 400 "$T/j")"
+$PY -c "import json, sys; print(json.dumps({'tag': sys.argv[1], 'tool': 'Edit', 'agent': 'a9', 'file': sys.argv[2], 'type': 'update', 'hunks': [
+  {'oldStart': 1, 'oldLines': 0, 'newStart': 1, 'newLines': 1, 'lines': ['x only']}]}))" "$TAG" "$FX/src/nothing.sh" >"$T/odd.json"
+curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/odd.json" "$U/api/change" >"$T/j"
+has "code diff: a change left with no line is skipped" "$T/j" '"skipped": "no lines"'
+
+# a feature keeps about 2 MiB of changes: when three of 0.9 MiB come, the oldest goes
+for n in 1 2 3; do
+	$PY -c "import json, sys; print(json.dumps({'tag': sys.argv[1], 'tool': 'Write', 'agent': 'a9', 'file': sys.argv[2], 'type': 'create', 'hunks': [
+  {'oldStart': 0, 'oldLines': 0, 'newStart': 1, 'newLines': 900, 'lines': ['+' + 'z' * 998] * 900}]}))" "$TAG" "$FX/src/big$n.sh" >"$T/big.json"
+	curl -s -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/big.json" "$U/api/change" >"$T/j"
+done
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "[c['file'].rsplit('/', 1)[1] for c in d['changes'] if '/big' in c['file']]")" = "['big2.sh', 'big3.sh']" ] &&
+	ok "code diff: over its cap the oldest changes go first" || bad "code diff: over its cap the oldest changes go first" "$(pick "$T/j" "[c['file'] for c in d['changes']]")"
+
+# with no task in progress a change belongs to none
+sed -i -E 's/^(\| T03 .*)\| In Progress \|/\1| Implemented |/' "$DEMOD/Demo - Task Status.md"
+post /api/change "$(change_body "$FX/src/other.sh" "x=1" "x=2")" >/dev/null
+get "/api/diffs?name=Demo" >"$T/j"
+[ "$(pick "$T/j" "(d['changes'][-1]['file'].endswith('/src/other.sh'), d['changes'][-1]['task'] == '', d['running'])")" = "(True, True, False)" ] &&
+	ok "code diff: change with no task In Progress belongs to none" || bad "code diff: change with no task In Progress belongs to none" "$(head -c 400 "$T/j")"
+cp "$root/tools/fixtures/tatty-root/features/Demo/Demo - Task Status.md" "$root/tools/fixtures/tatty-root/features/Demo/Demo - Task Breakdown.md" "$DEMOD/"
+rm -rf "$DEMOD/.tt/Demo - Task Status/results"
+
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"agents\",\"agents\":[]}" >/dev/null
+post /api/activity "{\"tag\":\"$TAG\",\"kind\":\"usage\",\"usage\":{\"input\":1200,\"output\":340,\"cacheRead\":50000,\"cacheWrite\":800,\"context\":{\"tokens\":52000,\"window\":200000},\"costUsd\":0.42}}" >/dev/null
+post /api/ask "{\"tag\":\"$TAG\",\"questions\":[{\"question\":\"Carry on?\",\"header\":\"Go\",\"options\":[\"Yes\",\"No\"]}]}" >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "[e['source'] + '|' + e['tag'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
+has "its question, named for the session" "$T/f" "Demo : Build|$TAG"
+# Its alert goes to the question on the session's tab, not just the feature's page
+pick "$T/j" "[e['link'] == '#workflows/$TAG/ask/' + e['id'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
+has "a started session's question links to its card on the tab" "$T/f" "True"
+post /api/say "{\"tag\":\"$TAG\",\"text\":\"use the new folder\"}" >/dev/null
+expect "the main inbox doesn't get it" 5 bash "$W" listen --wait 1
+get "/api/inbox?wait=1&tag=$TAG&client=claude-mod" >"$T/j"
+has "the session's inbox does" "$T/j" "use the new folder"
+post /api/bye "{\"tag\":\"$TAG\"}" >/dev/null
+get "/api/sessions?name=Demo" >"$T/j"
+pick "$T/j" "[s['status'] for s in d if s['tag'] == '$TAG'][0]" >"$T/f"
+has "ended" "$T/f" "ended"
+get /api/features >"$T/j"
+pick "$T/j" "[f for f in d['features'] if f['name'] == 'Demo'][0]['live']" >"$T/f"
+hasnt "no longer live" "$T/f" "$TAG"
+get /api/events >"$T/j"
+pick "$T/j" "[e['feature'] for e in d if e['type'] == 'ask'][-1]" >"$T/f"
+has "a started session's question is about its feature" "$T/f" "Demo"
+
+fi
+if section tabs; then
+echo "# workflow tabs: several sessions, one stopped"
+# Real processes stand in for the claudes; claude lists each in <config>/sessions/<pid>.json.
+winpid() { cat "/proc/$1/winpid" 2>/dev/null || echo "$1"; }
+alive() { kill -0 "$1" 2>/dev/null; }
+gone() { for _ in 1 2 3 4 5 6 7 8 9 10; do alive "$1" || return 0; sleep 0.3; done; return 1; }
+register() { printf '{"pid":%s,"sessionId":"%s","name":"%s"}' "$(winpid "$1")" "$2" "$3" >"$CLAUDE_CONFIG_DIR/sessions/tab-$1.json"; }
+sleep 300 & PA=$!
+sleep 300 & PB=$!
+sleep 300 & PC=$!
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+TA=$(pick "$T/j" "d['tag']")
+post /api/start '{"name":"Draft","row":"workflow"}' >"$T/j"
+TB=$(pick "$T/j" "d['tag']")
+post /api/hello "{\"session\":\"sess-a\",\"tag\":\"$TA\"}" >/dev/null
+post /api/hello "{\"session\":\"sess-b\",\"tag\":\"$TB\"}" >/dev/null
+register "$PA" sess-a "a"
+register "$PB" sess-b "b"
+get /api/sessions >"$T/j"
+has "every feature's sessions are listed without a name" "$T/j" "\"tag\": \"$TA\""
+has "the other feature's too" "$T/j" "\"tag\": \"$TB\""
+post /api/session/stop "{\"tag\":\"$TB\"}" >"$T/j"
+has "stopping a session kills its claude" "$T/j" '"killed": true'
+gone "$PB" && ok "its process is gone" || bad "its process is gone"
+alive "$PA" && ok "the other session's is not touched" || bad "the other session's is not touched"
+get /api/sessions >"$T/j"
+hasnt "the stopped session leaves the tabs" "$T/j" "\"tag\": \"$TB\""
+has "the other stays" "$T/j" "\"tag\": \"$TA\""
+get "/api/sessions?name=Draft" >"$T/j"
+pick "$T/j" "[s['status'] + ':' + str(s.get('stopped')) for s in d if s['tag'] == '$TB'][0]" >"$T/f"
+has "it is kept on its feature, ended and stopped" "$T/f" "ended:True"
+post /api/bye "{\"tag\":\"$TB\"}" >/dev/null
+get /api/sessions >"$T/j"
+hasnt "a late goodbye doesn't bring the tab back" "$T/j" "\"tag\": \"$TB\""
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"tag":"s-nope"}' "$U/api/session/stop")" = 404 ] &&
+	ok "stopping an unknown session refused" || bad "stopping an unknown session refused"
+# Not heard from yet: found by the name it was started with.
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+TC=$(pick "$T/j" "d['tag']")
+NC=$(pick "$T/j" "d['name']")
+register "$PC" "" "$NC"
+post /api/session/stop "{\"tag\":\"$TC\"}" >"$T/j"
+has "a session not heard from is found by name" "$T/j" '"killed": true'
+gone "$PC" && ok "and stopped" || bad "and stopped"
+# Ended on its own: closing the tab only dismisses it (its process id may belong to something else by now).
+post /api/bye "{\"tag\":\"$TA\"}" >/dev/null
+post /api/session/stop "{\"tag\":\"$TA\"}" >"$T/j"
+has "an ended session is only dismissed" "$T/j" '"killed": false'
+alive "$PA" && ok "and nothing is killed" || bad "and nothing is killed"
+get /api/sessions >"$T/j"
+hasnt "and its tab goes" "$T/j" "\"tag\": \"$TA\""
+kill "$PA" 2>/dev/null; rm -f "$CLAUDE_CONFIG_DIR"/sessions/tab-*.json
+
+fi
+if section planids; then
+echo "# planning IDs"
+# (the Challenges as the fixture has them, not as the editing checks left them: a changed file is read again)
+cp "$root/tools/fixtures/tatty-root/features/Draft/Draft - Challenges.md" "$FX/features/Draft/"
+get "/api/items?name=Draft" >"$T/j"
+if grep -q '"ids": {}' "$T/j"; then
+	echo "skip  planning IDs: this toolbox's ids.sh has no index command"
+else
+	pick "$T/j" "' '.join(k + ':' + v['form'] + ':' + v['file'] for k, v in sorted(d['ids'].items()))" >"$T/f"
+	has "a challenge is its heading in the Challenges" "$T/f" "CH1:heading:Draft - Challenges.md"
+	has "a requirement is a plan item" "$T/f" "R1:item:Draft - Comprehensive Tech Plan.md"
+	has "a decision is a plan row" "$T/f" "CD1:row:Draft - Comprehensive Tech Plan.md"
+	has "a proposal is its heading in the Tech Proposals" "$T/f" "P1:heading:Draft - Tech Proposals.md"
+	hasnt "an ID only cited isn't an item" "$T/f" "S1:"
+	get "/api/item?name=Draft&id=CH1" >"$T/j"
+	pick "$T/j" "d['doc'] + '|' + d['title'] + '|' + str('**Severity:** blocking' in d['block'])" >"$T/f"
+	has "a challenge's card is its section" "$T/f" "Challenges|What happens when the disk is full?|True"
+	hasnt "and stops at the next challenge" "$T/j" "CH2"
+	get "/api/item?name=Draft&id=CD1" >"$T/j"
+	pick "$T/j" "dict(d['fields'])['Outcome']" >"$T/f"
+	has "a row's card has its cells by column" "$T/f" "It is shown, never retried"
+	get "/api/item?name=Demo&id=R1" >"$T/j"
+	pick "$T/j" "d['form'] + '|' + d['block']" >"$T/f"
+	has "a requirement without a block id is still found" "$T/f" "item|- **R1:** Settings are kept between runs."
+	get "/api/item?name=Demo&id=T01" >"$T/j"
+	pick "$T/j" "d['doc'] + '|' + d['title']" >"$T/f"
+	has "a task is its card in the breakdown" "$T/f" "Task Breakdown|Add the settings store"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/item?name=Draft&id=R9")" = 404 ] && ok "an ID the feature doesn't define: 404" || bad "an ID the feature doesn't define: 404"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/items?name=Nope")" = 404 ] && ok "items of no feature: 404" || bad "items of no feature: 404"
+fi
+# A session Tatty didn't start: its project (the folder it runs in, from its
+# <pid>.json) is linked to a feature by tt-workflow, so its questions are about that one.
+printf '{"pid":2,"sessionId":"sess-ids","cwd":"%s/plugins/tatty"}' "$HERE" >"$CLAUDE_CONFIG_DIR/sessions/2.json"
+post /api/ask '{"session":"sess-ids","questions":[{"question":"Is R1 done?","options":["Yes","No"]}]}' >/dev/null
+post /api/ask '{"session":"sess-elsewhere","questions":[{"question":"Is R2 done?","options":["Yes","No"]}]}' >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "' '.join([repr(e['feature']) for e in d if e['type'] == 'ask'][-2:])" >"$T/f"
+has "a linked project's question is about its feature, one elsewhere about none" "$T/f" "'Demo' ''"
+# Each alert says which page it is about, for the avatar's click to go there
+pick "$T/j" "' '.join([repr(e['link']) for e in d if e['type'] == 'ask'][-2:])" >"$T/f"
+has "a question's link is its feature's page, or none" "$T/f" "'#feature/Demo' ''"
+post /api/show '{"kind":"reply","title":"Done","body":"All set.","session":"sess-ids"}' >/dev/null
+post /api/show '{"kind":"reply","body":"Nothing to link.","session":"sess-elsewhere"}' >/dev/null
+get /api/events >"$T/j"
+pick "$T/j" "' '.join([repr(e['link']) for e in d if e['type'] == 'card' and e['kind'] == 'reply'][-2:])" >"$T/f"
+has "a reply's link is its feature's page, or none" "$T/f" "'#feature/Demo' ''"
+rm -f "$CLAUDE_CONFIG_DIR/sessions/2.json"
+
+fi
+if section desktop; then
+echo "# the desktop app"
+# boot is what the Desktop shortcut runs: it reuses the open window. Tatty keeps
+# no Claude session of its own in a terminal any more (its chats are headless).
+mkdir -p "$T/proj"
+PROJ=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; })
+expect "boot" 0 bash "$W" boot --no-browser --project "$PROJ"
+has "reuses the window" "$T/out" "$U"
+hasnt "starts no Claude session" "$T/out" "claude="
+hasnt "nor a terminal for one" "$T/out" "Would run"
+[ ! -f "$TATTY_HOME/claude-link.json" ] && ok "keeps no link to a conversation of its own" || bad "keeps no link to a conversation of its own"
+expect "boot refuses a folder that isn't there" 2 bash "$W" boot --no-browser --project "$PROJ/nope"
+expect "boot still takes --no-claude" 0 bash "$W" boot --no-browser --no-claude
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/claude/show")" = 404 ] &&
+	ok "there's no Claude terminal to show" || bad "there's no Claude terminal to show"
+
+fi
+if section milestones; then
+echo "# milestones"
+# The toolbox records a feature's progress in its own ledger as it happens, and
+# knows nothing of Tatty. Tatty follows the file and celebrates what it says.
+ledger() {
+	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"%s|%s","prefix":"%s","folder":"%s","route":"full","qualifier":"%s","skill":"tt-execute","approx":false}\n' \
+		"$1" "$1" "${2:-}" "${3:-Demo}" "${4:-$DEMO}" "${2:-}" >>"$TT_EVENTS_HOME/events.jsonl"
+}
+# waitfor <text>: the events have it within ten seconds (the watcher looks every
+# LEDGER_POLL seconds, so nothing here can be immediate)
+waitfor() {
+	local i=0
+	while [ $i -lt 20 ]; do
+		get /api/events >"$T/ev"
+		grep -qF -- "$1" "$T/ev" && return 0
+		sleep 0.5
+		i=$((i + 1))
+	done
+	return 1
+}
+# milestone <name> <python test over the one milestone event with that prefix>
+
+ledger build.unit_validated WU7 Wunit
+waitfor '"qualifier": "WU7"' && ok "a work unit validated is announced" || bad "a work unit validated is announced"
+milestone "with what it was and how big a thing" Wunit \
+	"events[0]['label'] == 'Work unit validated' and events[0]['tier'] == 'mid' and events[0]['qualifier'] == 'WU7'"
+milestone "and the skill, the feature and its page" Wunit \
+	"events[0]['skill'] == 'tt-execute' and events[0]['feature'] == 'Demo' and events[0]['link'] == '#feature/Demo'"
+ledger build.complete "" Nowhere "$T/not-a-feature"
+waitfor '"prefix": "Nowhere"' && ok "a milestone of a folder that is no feature's is announced" || bad "a milestone of a folder that is no feature's is announced"
+milestone "with no page to go to" Nowhere "events[0]['feature'] == '' and events[0]['link'] == ''"
+ledger build.unit_validated WU7 Wunit  # the same key again: the toolbox re-reconciled
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+milestone "announced once per key" Wunit "events[0]['qualifier'] == 'WU7'"
+ledger nonsense.event "" Nonsense
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+hasnt "an event it doesn't know is ignored" "$T/ev" "nonsense.event"
+
+post /api/milestone '{"event":"plan.signed_off","prefix":"Zed"}' >"$T/j"
+has "a milestone to order" "$T/j" '"seq"'
+get /api/events >"$T/ev"
+milestone "signing a plan off is the big one" Zed \
+	"events[0]['label'] == 'Plan signed off' and events[0]['tier'] == 'big'"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"event":"nope"}' "$U/api/milestone")" = 400 ] &&
+	ok "an unknown milestone refused" || bad "an unknown milestone refused"
+expect "cheer" 0 bash "$W" cheer plan.approach_closed --prefix Cheered
+get /api/events >"$T/ev"
+milestone "cheer celebrates a step" Cheered \
+	"events[0]['label'] == 'Approach closed' and events[0]['tier'] == 'small'"
+expect "cheer needs an event it knows" 2 bash "$W" cheer not-an-event
+
+# A window that has just opened says nothing of what was finished before it: the
+# watcher starts from the end of the ledger as it stands, or Tatty would arrive
+# in the middle of a party for last week's work.
+bash "$W" close >/dev/null 2>&1
+sleep 1
+expect "open again, with a ledger already full" 0 bash "$W" open --no-browser
+P=$(json x 'd["port"]'); K=$(json x 'd["token"]'); U="http://127.0.0.1:$P"
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+hasnt "the ledger's history isn't celebrated" "$T/ev" '"type": "milestone"'
+ledger build.complete "" Fresh
+waitfor '"prefix": "Fresh"' && ok "but the next milestone is" || bad "but the next milestone is"
+
+fi
+if section coins; then
+echo "# coins and the shop"
+# A wallet belongs to a project (the legacy one's is Tatty's home's wallet.json): it starts with shop.json's
+# welcome gift and Polished Tatty, and the page reads it, with the catalogue, from /api/wallet.
+coins() { get /api/wallet >"$T/w"; pick "$T/w" "d['coins']"; }
+# (a wallet of its own for this: sections before this one may have earned plenty, and the view shows the last ten)
+[ -f "$TATTY_HOME/wallet.json" ] && mv "$TATTY_HOME/wallet.json" "$T/wallet.kept"
+get /api/wallet >"$T/w"
+[ -f "$T/wallet.kept" ] && mv "$T/wallet.kept" "$TATTY_HOME/wallet.json"
+[ "$(pick "$T/w" "d['coins'] == 100 and d['log'][0]['amount'] == 100 and d['log'][0]['reason'] == 'Welcome to the shop'")" = True ] &&
+	ok "a new wallet starts with the welcome gift" || bad "a new wallet starts with the welcome gift" "$(head -c 300 "$T/w")"
+get /api/wallet >"$T/w"
+[ "$(pick "$T/w" "d['avatar'] == 'polished' and 'polished' in d['owned']")" = True ] &&
+	ok "and Polished Tatty, his to start with" || bad "and Polished Tatty, his to start with" "$(head -c 300 "$T/w")"
+[ "$(pick "$T/w" "len(d['catalogue']['avatars']) == 6 and len(d['catalogue']['items']) > 50")" = True ] &&
+	ok "the catalogue comes with it" || bad "the catalogue comes with it"
+get /api/status >"$T/s"
+[ "$(pick "$T/s" "d['coins']")" = "$(coins)" ] && ok "the status says the balance" || bad "the status says the balance" "$(head -c 300 "$T/s")"
+
+# A milestone pays by its tier, once per ledger key, and says so with a "coins" event.
+coin_row() {
+	mkdir -p "$TT_EVENTS_HOME"
+	printf '{"v":1,"ts":"2026-10-04T10:00:00Z","event":"%s","key":"coins|%s","prefix":"Coins","folder":"%s","route":"full","qualifier":"%s","skill":"tt-execute","approx":false}\n' \
+		"$1" "$2" "$DEMO" "$2" >>"$TT_EVENTS_HOME/events.jsonl"  # (a milestone pays the project whose feature it is)
+}
+coins_wait() { local i; for i in $(seq 1 20); do get /api/events >"$T/ev"; grep -qF -- "$1" "$T/ev" && return 0; sleep 0.5; done; return 1; }
+paid() { $PY -c "import json, sys
+ev = [e for e in json.load(open(sys.argv[1], encoding='utf-8')) if e['type'] == 'coins' and e['key'] == sys.argv[2]]
+print(len(ev), ev[-1]['amount'] if ev else 0, ev[-1]['paid'] if ev else '', ev[-1].get('milestone', 0) > 0 if ev else '')" "$T/ev" "$1"; }
+before=$(coins)
+coin_row build.unit_validated CU1
+coins_wait '"key": "ledger:coins|CU1"' && ok "a milestone pays" || bad "a milestone pays"
+[ "$(paid 'ledger:coins|CU1')" = "1 20 True True" ] && ok "a mid one, 20 coins, from its milestone" || bad "a mid one, 20 coins, from its milestone" "$(paid 'ledger:coins|CU1')"
+[ "$(coins)" = "$((before + 20))" ] && ok "into the wallet" || bad "into the wallet" "$before -> $(coins)"
+has "which remembers it paid" "$TATTY_HOME/wallet.json" '"ledger:coins|CU1"'
+coin_row build.unit_validated CU1  # the same key again
+sleep "$((2 * 2))"
+get /api/events >"$T/ev"
+[ "$(paid 'ledger:coins|CU1')" = "1 20 True True" ] && [ "$(coins)" = "$((before + 20))" ] &&
+	ok "the same milestone doesn't pay twice" || bad "the same milestone doesn't pay twice" "$(paid 'ledger:coins|CU1') $(coins)"
+# Another window's server (another process, the same wallet) pays nothing more for a key it sees after
+# this one has paid it, though a moment later it still says so, for its own window to show.
+$PY - "$TATTY_HOME" "$root/plugins/tatty/app" <<'PYEOF' >"$T/other" 2>&1
+import json, os, sys, types
+os.environ["TATTY_HOME"], here = sys.argv[1], sys.argv[2]
+sys.argv = ["server.py"]
+sys.path.insert(0, here)
+import importlib.util
+spec = importlib.util.spec_from_file_location("srv", os.path.join(here, "server.py"))
+srv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(srv)
+said = []
+st = types.SimpleNamespace(emit=lambda t, **d: said.append(d) or d)
+srv.reward(st, "ledger:coins|CU1", "mid", "Work unit validated")
+srv.reward(st, "ledger:coins|elsewhere", "small", "Something small")
+print(json.dumps([[d["paid"], d["amount"]] for d in said]))
+PYEOF
+has "another server pays nothing twice, but says so" "$T/other" '[[false, 20], [true, 8]]'
+before=$((before + 28))
+[ "$(coins)" = "$before" ] && ok "and what it did pay is in the one wallet" || bad "and what it did pay is in the one wallet" "$(coins), wanted $before; $(head -c 300 "$T/other")"
+
+# A question answered pays a little; one declined pays nothing.
+Q='{"questions":[{"question":"Coins?","header":"Coins","multiSelect":false,"options":[{"label":"Yes","description":""},{"label":"No","description":""}]}]}'
+echo "$Q" | bash "$W" ask --wait 0 >"$T/out" 2>&1; id=$(sed -n 's/^id=//p' "$T/out")
+post /api/reply "{\"id\":\"$id\",\"answers\":{\"Coins?\":\"Yes\"}}" >/dev/null
+get /api/events >"$T/ev"
+[ "$(paid "answer:$id")" = "1 2 True False" ] && [ "$(coins)" = "$((before + 2))" ] &&
+	ok "a question answered pays 2" || bad "a question answered pays 2" "$(paid "answer:$id") $(coins)"
+echo "$Q" | bash "$W" ask --wait 0 >"$T/out" 2>&1; id=$(sed -n 's/^id=//p' "$T/out")
+post /api/reply "{\"id\":\"$id\",\"declined\":true}" >/dev/null
+get /api/events >"$T/ev"
+[ "$(paid "answer:$id")" = "0 0  " ] && ok "a question declined pays nothing" || bad "a question declined pays nothing" "$(paid "answer:$id")"
+before=$((before + 2))
+
+# The shop: buy (once, with the coins for it), wear what is owned, choose an avatar unlocked.
+shop() { code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/shop"; }
+shopto() { curl -s -o "$T/shop" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/shop"; }
+[ "$(shop '{"action":"steal","id":"crown"}')" = 400 ] && ok "a shop action it doesn't know is refused" || bad "a shop action it doesn't know is refused"
+[ "$(shop '{"action":"buy","id":"no-such-hat"}')" = 404 ] && ok "so is a thing it doesn't sell" || bad "so is a thing it doesn't sell"
+[ "$(shopto '{"action":"buy","id":"owl"}')" = 409 ] && [ "$(pick "$T/shop" "d['error'] == 'not enough coins' and d['need'] == 600 - $before")" = True ] &&
+	ok "not enough coins: refused, saying how many more" || bad "not enough coins: refused, saying how many more" "$(cat "$T/shop")"
+[ "$(shopto '{"action":"buy","id":"party"}')" = 200 ] && [ "$(pick "$T/shop" "d['coins'] == $before - 40 and 'party' in d['owned']")" = True ] &&
+	ok "a party hat bought for 40" || bad "a party hat bought for 40" "$(cat "$T/shop")"
+[ "$(shop '{"action":"buy","id":"party"}')" = 409 ] && ok "and not bought twice" || bad "and not bought twice"
+[ "$(pick "$TATTY_HOME/wallet.json" "d['log'][-1] == {**d['log'][-1], 'amount': -40, 'reason': 'Bought: Party hat'}")" = True ] &&
+	ok "the purchase is in the wallet's log" || bad "the purchase is in the wallet's log"
+[ "$(shop '{"action":"wear","slot":"hat","id":"crown"}')" = 409 ] && ok "a hat not bought can't be worn" || bad "a hat not bought can't be worn"
+[ "$(shop '{"action":"wear","slot":"neck","id":"party"}')" = 404 ] && ok "nor a hat round the neck" || bad "nor a hat round the neck"
+[ "$(shopto '{"action":"wear","slot":"hat","id":"party"}')" = 200 ] && [ "$(pick "$T/shop" "d['outfit']")" = "{'hat': 'party'}" ] &&
+	ok "the party hat worn" || bad "the party hat worn" "$(cat "$T/shop")"
+get /api/status >"$T/s"
+[ "$(pick "$T/s" "d['look']")" = "polished|hat=party" ] && ok "the status says what he looks like, for the tray app" || bad "the status says what he looks like, for the tray app" "$(head -c 300 "$T/s")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[e['did'] for e in d if e['type'] == 'wallet']")" = "['buy', 'wear']" ] &&
+	ok "each change tells the windows" || bad "each change tells the windows" "$(pick "$T/ev" "[e.get('did') for e in d if e['type'] == 'wallet']")"
+[ "$(shopto '{"action":"wear","slot":"hat","id":""}')" = 200 ] && [ "$(pick "$T/shop" "d['outfit']")" = "{}" ] &&
+	ok "and taken off" || bad "and taken off" "$(cat "$T/shop")"
+[ "$(shop '{"action":"choose","id":"owl"}')" = 409 ] && ok "an avatar not unlocked can't be chosen" || bad "an avatar not unlocked can't be chosen"
+[ "$(shop '{"action":"choose","id":"polished"}')" = 200 ] && ok "the one he starts with can" || bad "the one he starts with can"
+# Settings' Debug section: coins for the asking, but only with the password.
+dbg() { curl -s -o "$T/dbg" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/debug/coins"; }
+[ "$(dbg '{"password":"nope","amount":100}')" = 403 ] && ok "debug coins: a wrong password is refused" || bad "debug coins: a wrong password is refused"
+[ "$(dbg '{"password":"letmein","amount":0}')" = 200 ] && ok "the right one unlocks it" || bad "the right one unlocks it" "$(cat "$T/dbg")"
+had=$(coins)
+[ "$(dbg '{"password":"letmein","amount":500}')" = 200 ] && [ "$(coins)" = "$((had + 500))" ] &&
+	ok "and 500 coins arrive" || bad "and 500 coins arrive" "$had -> $(coins): $(cat "$T/dbg")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[(e['amount'], e['kind']) for e in d if e['type'] == 'coins'][-1]")" = "(500, 'debug')" ] &&
+	ok "said like any reward, for the purse" || bad "said like any reward, for the purse"
+[ "$(dbg '{"password":"letmein","amount":-200}')" = 200 ] && [ "$(coins)" = "$((had + 300))" ] &&
+	ok "a negative amount takes them away" || bad "a negative amount takes them away" "$(coins)"
+[ "$(dbg '{"password":"letmein","amount":"lots"}')" = 400 ] && [ "$(dbg '{"password":"letmein","amount":1000000}')" = 400 ] &&
+	ok "an amount that isn't a sensible number is refused" || bad "an amount that isn't a sensible number is refused"
+# Themes: the app wears one (looks.js). Minimal is everyone's; the rest are bought like anything else,
+# put on with the theme action, and said in the status and the "wallet" event so every window follows.
+get /api/wallet >"$T/w"
+[ "$(pick "$T/w" "d['theme'] == 'minimal' and 'minimal' in d['owned']")" = True ] &&
+	ok "the app wears Minimal, everyone's to start with" || bad "the app wears Minimal, everyone's to start with" "$(head -c 300 "$T/w")"
+[ "$(pick "$T/w" "[t['id'] for t in d['catalogue']['themes']] == ['minimal', 'chart', 'map', 'chrono', 'drive', 'kin', 'aur'] and all(t.get('rarity') for t in d['catalogue']['themes']) and [t['id'] for t in d['catalogue']['themes'] if not t.get('price')] == ['minimal']")" = True ] &&
+	ok "the catalogue sells six themes, each with its rarity" || bad "the catalogue sells six themes, each with its rarity" "$(pick "$T/w" "d['catalogue']['themes']")"
+[ "$(pick "$T/w" "not {t['id'] for t in d['catalogue']['themes']} & {x['id'] for x in d['catalogue']['avatars'] + d['catalogue']['items']}")" = True ] &&
+	ok "no theme shares an id with an avatar or an accessory" || bad "no theme shares an id with an avatar or an accessory"
+$PY - "$root/plugins/tatty/app" <<'PYEOF' >"$T/looks" 2>&1
+import json, os, re, sys
+here = sys.argv[1]
+cat = json.load(open(os.path.join(here, "shop.json"), encoding="utf-8"))
+files = dict(re.findall(r'(\w+): "(look-\w+\.js)"', open(os.path.join(here, "web", "looks.js"), encoding="utf-8").read()))
+css = open(os.path.join(here, "web", "looks.css"), encoding="utf-8").read()
+bad = []
+for t in cat["themes"]:
+    if t["id"] == "minimal":
+        continue
+    f = files.get(t["id"])
+    if not f or not re.search(r'id: "%s"' % t["id"], open(os.path.join(here, "web", f), encoding="utf-8").read()):
+        bad.append(t["id"] + ": no look file registers it")
+    for shade in ('[data-look="%s"] {' % t["id"], '[data-look="%s"][data-shade="dark"] {' % t["id"]):
+        if shade not in css:
+            bad.append(t["id"] + ": no palette " + shade)
+print(json.dumps(bad))
+PYEOF
+has "every theme sold has a look file and a light and a dark palette" "$T/looks" '[]'
+[ "$(shop '{"action":"theme","id":"no-such-theme"}')" = 404 ] && ok "a theme it doesn't sell can't be worn" || bad "a theme it doesn't sell can't be worn"
+[ "$(shop '{"action":"theme","id":"party"}')" = 404 ] && ok "nor can a hat be worn as one" || bad "nor can a hat be worn as one"
+[ "$(shop '{"action":"theme","id":"chart"}')" = 409 ] && ok "a theme not bought can't be worn" || bad "a theme not bought can't be worn"
+dbg '{"password":"letmein","amount":3000}' >/dev/null
+had=$(coins)
+[ "$(shopto '{"action":"buy","id":"chart"}')" = 200 ] && [ "$(pick "$T/shop" "d['coins'] == $had - 900 and 'chart' in d['owned'] and d['theme'] == 'minimal'")" = True ] &&
+	ok "Star Chart bought for 900" || bad "Star Chart bought for 900" "$(cat "$T/shop")"
+[ "$(shopto '{"action":"theme","id":"chart"}')" = 200 ] && [ "$(pick "$T/shop" "d['theme']")" = chart ] &&
+	ok "and worn" || bad "and worn" "$(cat "$T/shop")"
+[ "$(pick "$TATTY_HOME/wallet.json" "d['theme']")" = chart ] && ok "the wallet keeps it" || bad "the wallet keeps it"
+get /api/status >"$T/s"
+[ "$(pick "$T/s" "d['theme']")" = chart ] && ok "the status says the theme worn, for the other windows" || bad "the status says the theme worn, for the other windows" "$(head -c 300 "$T/s")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[(e['did'], e['theme']) for e in d if e['type'] == 'wallet'][-1]")" = "('theme', 'chart')" ] &&
+	ok "and the wallet event says it" || bad "and the wallet event says it" "$(pick "$T/ev" "[(e.get('did'), e.get('theme')) for e in d if e['type'] == 'wallet']")"
+[ "$(shopto '{"action":"theme","id":"minimal"}')" = 200 ] && [ "$(pick "$T/shop" "d['theme']")" = minimal ] &&
+	ok "Minimal can always be put back on" || bad "Minimal can always be put back on" "$(cat "$T/shop")"
+shop '{"action":"theme","id":"chart"}' >/dev/null
+# ... and unlocks can be taken away again, to be bought again: but only with the password, never a free one.
+dbl() { curl -s -o "$T/dbl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/debug/lock"; }
+[ "$(dbl '{"password":"nope","id":"party"}')" = 403 ] && ok "debug lock: a wrong password is refused" || bad "debug lock: a wrong password is refused"
+[ "$(dbl '{"password":"letmein","id":"polished"}')" = 409 ] && ok "a free avatar can't be locked" || bad "a free avatar can't be locked" "$(cat "$T/dbl")"
+[ "$(dbl '{"password":"letmein","id":"minimal"}')" = 409 ] && ok "nor the free theme" || bad "nor the free theme" "$(cat "$T/dbl")"
+[ "$(dbl '{"password":"letmein","id":"chart"}')" = 200 ] && [ "$(pick "$T/dbl" "'chart' not in d['owned'] and d['theme'] == 'minimal'")" = True ] &&
+	ok "a theme worn, locked again, is taken off: Minimal again" || bad "a theme worn, locked again, is taken off: Minimal again" "$(cat "$T/dbl")"
+[ "$(dbl '{"password":"letmein","id":"no-such-thing"}')" = 404 ] && ok "nor something that isn't unlocked" || bad "nor something that isn't unlocked"
+shopto '{"action":"wear","slot":"hat","id":"party"}' >/dev/null
+[ "$(dbl '{"password":"letmein","id":"party"}')" = 200 ] && [ "$(pick "$T/dbl" "'party' not in d['owned'] and d['outfit'] == {}")" = True ] &&
+	ok "an unlock is locked again, and taken off" || bad "an unlock is locked again, and taken off" "$(cat "$T/dbl")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[e['did'] for e in d if e['type'] == 'wallet'][-1]")" = debug ] && ok "and the windows are told" || bad "and the windows are told"
+dbg '{"password":"letmein","amount":3000}' >/dev/null
+[ "$(shop '{"action":"buy","id":"party"}')" = 200 ] && ok "so it can be bought again" || bad "so it can be bought again"
+shop '{"action":"buy","id":"owl"}' >/dev/null; shop '{"action":"choose","id":"owl"}' >/dev/null
+[ "$(dbl '{"password":"letmein","id":"all"}')" = 200 ] && [ "$(pick "$T/dbl" "d['owned'] == ['polished', 'minimal'] and d['avatar'] == 'polished' and d['outfit'] == {} and d['theme'] == 'minimal'")" = True ] &&
+	ok "all of them, and the avatar chosen falls back to a free one" || bad "all of them, and the avatar chosen falls back to a free one" "$(cat "$T/dbl")"
+hasnt "the password itself isn't in the server" "$root/plugins/tatty/app/server.py" "tatemon"
+# A wallet edited by hand can't give him what he doesn't own.
+$PY -c "import json, sys; p = sys.argv[1]; w = json.load(open(p)); w.update(coins='lots', outfit={'hat': 'crown'}, avatar='owl', theme='aur'); json.dump(w, open(p, 'w'))" "$TATTY_HOME/wallet.json"
+get /api/wallet >"$T/w"
+[ "$(pick "$T/w" "d['coins'] == 0 and d['outfit'] == {} and d['avatar'] == 'polished' and d['theme'] == 'minimal'")" = True ] &&
+	ok "a mangled wallet is read safely" || bad "a mangled wallet is read safely" "$(head -c 300 "$T/w")"
+for f in avatar.js avatar.css sfx.js wallet.js shop.js shop.css looks.js looks.css look-chart.js look-map.js look-kin.js look-chrono.js look-aur.js look-drive.js; do
+	[ "$(code "$U/static/$f")" = 200 ] || bad "$f served"
+done
+ok "the shop's scripts and styles are served"
+
+fi
+if section settings; then
+echo "# settings and updates"
+get /api/settings >"$T/set"
+[ "$(pick "$T/set" "d['autoUpdate']")" = True ] && ok "auto-update is on by default" || bad "auto-update is on by default" "$(head -c 200 "$T/set")"
+[ "$(pick "$T/set" "d['update']['status']")" = idle ] && ok "no update looked for yet" || bad "no update looked for yet"
+post /api/settings '{"autoUpdate":false,"nonsense":1}' >"$T/set"
+[ "$(pick "$T/set" "d['autoUpdate']")" = False ] && ok "auto-update turned off" || bad "auto-update turned off" "$(head -c 200 "$T/set")"
+hasnt "unknown settings not kept" "$TATTY_HOME/settings.json" nonsense
+post /api/settings '{"autoUpdate":"yes"}' >"$T/set"
+[ "$(pick "$T/set" "d['autoUpdate']")" = False ] && ok "a wrong type is ignored" || bad "a wrong type is ignored"
+post /api/settings '{"autoUpdate":true}' >/dev/null
+has "the choice is kept in Tatty's home" "$TATTY_HOME/settings.json" '"autoUpdate": true'
+[ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served" || bad "settings.js served"
+# The light/dark button (theme.js): the choice is kept in the settings, "" follows Windows.
+[ "$(pick "$T/set" "d['theme']")" = "" ] && ok "the theme follows Windows by default" || bad "the theme follows Windows by default" "$(head -c 200 "$T/set")"
+post /api/settings '{"theme":"dark"}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = dark ] && ok "dark chosen" || bad "dark chosen" "$(head -c 200 "$T/set")"
+has "the theme is kept in Tatty's home" "$TATTY_HOME/settings.json" '"theme": "dark"'
+post /api/settings '{"theme":"nonsense"}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = "" ] && ok "a theme that is neither light nor dark goes back to Windows" || bad "a theme that is neither light nor dark goes back to Windows"
+post /api/settings '{"theme":"light"}' >/dev/null
+post /api/settings '{"theme":5}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = light ] && ok "a wrong type is ignored" || bad "a wrong type is ignored" "$(head -c 200 "$T/set")"
+post /api/settings '{"theme":""}' >"$T/set"
+[ "$(pick "$T/set" "d['theme']")" = "" ] && ok "Match Windows clears the choice" || bad "Match Windows clears the choice"
+for f in theme.js theme-init.js; do
+	[ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"
+done
+curl -s "$U/static/theme.css" >"$T/theme.css"
+[ "$($PY -c "import sys; t = open(sys.argv[1], encoding='utf-8').read(); a = t.split('prefers-color-scheme: dark) {')[1].split('}')[0]; b = t.split('data-theme=\"dark\"] {')[1].split('}')[0]; print(a.split('{', 1)[1].split() == b.split())" "$T/theme.css")" = True ] &&
+	ok "theme.css: Windows' dark values and the chosen dark's are the same" || bad "theme.css: Windows' dark values and the chosen dark's are the same"
+
+# Run from a checkout (no install record), there is nothing to update.
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = checkout ] && ok "a checkout has nothing to update" || bad "a checkout has nothing to update" "$(head -c 300 "$T/set")"
+
+# An install of this very version, from a marketplace that offers 99.0.0; and the
+# toolbox's core and engineering, of which the marketplace offers a newer core only.
+HAVE=$($PY -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$root/plugins/tatty/.claude-plugin/plugin.json")
+mkdir -p "$CLAUDE_CONFIG_DIR/plugins" "$T/market/.claude-plugin" "$T/market/plugins/tatty/.claude-plugin" "$T/tbox/.claude-plugin"
+write_installed
+printf '{"fake-market":{"installLocation":"%s"},"tims-ai-toolbox":{"installLocation":"%s"}}' "$(cygpath -m "$T/market" 2>/dev/null || echo "$T/market")" "$(cygpath -m "$T/tbox" 2>/dev/null || echo "$T/tbox")" >"$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
+printf '{"name":"tims-ai-toolbox","plugins":[{"name":"core","version":"99.0.0"},{"name":"engineering","version":"0.1.0"}]}' >"$T/tbox/.claude-plugin/marketplace.json"
+printf '{"name":"fake-market","plugins":[{"name":"tatty","source":"./plugins/tatty"}]}' >"$T/market/.claude-plugin/marketplace.json"
+printf '{"name":"tatty","version":"99.0.0"}' >"$T/market/plugins/tatty/.claude-plugin/plugin.json"
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = available ] && ok "a newer version is found" || bad "a newer version is found" "$(head -c 300 "$T/set")"
+[ "$(pick "$T/set" "d['update']['available']")" = 99.0.0 ] && ok "and named" || bad "and named"
+[ "$(pick "$T/set" "d['update']['plugins'][0]['name']")" = tatty ] && ok "Tatty is listed first" || bad "Tatty is listed first"
+[ "$(pick "$T/set" "','.join(r['name'] + ':' + r['status'] for r in d['update']['plugins'])")" = "tatty:available,core:available,engineering:current" ] &&
+	ok "the toolbox plugins are looked at too" || bad "the toolbox plugins are looked at too" "$(head -c 400 "$T/set")"
+has "the marketplace was refreshed first" "$T/claude.log" "plugin marketplace update fake-market"
+has "and the toolbox's" "$T/claude.log" "plugin marketplace update tims-ai-toolbox"
+hasnt "checking installs nothing" "$T/claude.log" "plugin update"
+post /api/update '{"action":"apply"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "installed: ready for a restart" || bad "installed: ready for a restart" "$(head -c 300 "$T/set")"
+has "claude installed it for the user" "$T/claude.log" "plugin update tatty@fake-market --scope user"
+has "and the newer toolbox plugin" "$T/claude.log" "plugin update core@tims-ai-toolbox --scope user"
+hasnt "but not the one that is current" "$T/claude.log" "plugin update engineering"
+[ "$(pick "$T/set" "','.join(r['name'] + ':' + r['status'] for r in d['update']['plugins'])")" = "tatty:ready,core:ready,engineering:current" ] &&
+	ok "each plugin has its own state" || bad "each plugin has its own state" "$(head -c 400 "$T/set")"
+has "the toolbox is said to be for new sessions" "$T/set" "Claude sessions started from now on"
+has "the page is told to restart" "$T/set" "Restart Tatty"
+get /api/events >"$T/ev"
+has "the page hears of it" "$T/ev" '"type": "update"'
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "still ready until restarted" || bad "still ready until restarted"
+touch "$T/claude-fail"
+write_installed
+post /api/update '{"action":"check"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = error ] && ok "a failed refresh is an error" || bad "a failed refresh is an error" "$(head -c 300 "$T/set")"
+has "with claude's words" "$T/set" "network is down"
+rm -f "$T/claude-fail"
+
+fi
+if section launching; then
+echo "# launching: the installed Tatty, and a look for updates"
+# The launcher's folder is the tests' own: a boot or an install run from a checkout must not repoint the real one.
+case "$LOCALAPPDATA" in "$T"*) ok "the launcher's folder is the tests' own" ;; *) bad "the launcher's folder is the tests' own" "$LOCALAPPDATA" ;; esac
+IT="$T/installed-tatty"
+mkdir -p "$IT/scripts" "$IT/app" "$IT/.claude-plugin" "$LOCALAPPDATA/Tatty"
+: >"$IT/scripts/tatty.sh"; printf '{"name":"tatty","version":"99.0.0"}' >"$IT/.claude-plugin/plugin.json"
+ITW=$(cygpath -m "$IT" 2>/dev/null || echo "$IT")
+CKW=$(cygpath -m "$root/plugins/tatty" 2>/dev/null || echo "$root/plugins/tatty")
+printf '{"version":2,"plugins":{"tatty@fake-market":[{"scope":"user","version":"99.0.0","installPath":"%s"}]}}' "$ITW" >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+bootj() { $PY -c "import json,sys; d=json.load(open(sys.argv[1])); print($1)" "$LOCALAPPDATA/Tatty/boot.json"; }
+looked() { grep -c "marketplace update fake-market" "$T/claude.log"; }
+waitlook() { for _ in $(seq 1 50); do [ "$(looked)" -gt "$1" ] && return 0; sleep 0.2; done; return 1; }
+# A boot.json that names a checkout (as a test run from a worktree once left it) is not kept: the launcher follows the install.
+post /api/settings '{"autoUpdate":false}' >/dev/null  # so the relaunch below only looks, and doesn't restart the test server
+printf '{"bash":"bash","pluginRoot":"%s"}' "$CKW" >"$LOCALAPPDATA/Tatty/boot.json"
+N=$(looked)
+expect "boot, with the server up" 0 bash "$W" boot --no-browser
+[ "$(bootj "d['pluginRoot']")" = "$ITW" ] && ok "boot points the launcher at the installed Tatty, not the checkout it ran from" || bad "boot points the launcher at the installed Tatty" "$(bootj "d")"
+[ "$(bootj "d['pin']")" = False ] && ok "unpinned" || bad "unpinned"
+waitlook "$N" && ok "a launch with the server up has it look for an update" || bad "a launch with the server up has it look for an update"
+# A checkout pinned on purpose stays what it is, and isn't looked at for updates.
+printf '{"bash":"bash","pluginRoot":"%s","pin":true}' "$CKW" >"$LOCALAPPDATA/Tatty/boot.json"
+N=$(looked)
+expect "boot, pinned" 0 bash "$W" boot --no-browser
+sleep 1.5
+[ "$(bootj "d['pluginRoot']")" = "$CKW" ] && [ "$(bootj "d['pin']")" = True ] && ok "a pinned checkout stays pinned" || bad "a pinned checkout stays pinned" "$(bootj "d")"
+[ "$(looked)" = "$N" ] && ok "and no look for an update" || bad "and no look for an update"
+post /api/settings '{"autoUpdate":true}' >/dev/null
+# The rest in-process: the launcher file's rules, the look before a cold start, and when a relaunch may restart.
+$PY - "$SRV" "$ITW" "$CKW" >"$T/m" 2>&1 <<'EOF'
+import importlib.util, json, os, sys
+os.environ.pop("TATTY_LAUNCH_UPDATED", None); os.environ.pop("TATTY_NO_LAUNCH_UPDATE", None)
+spec = importlib.util.spec_from_file_location("srv", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True; spec.loader.exec_module(m)
+it, ck = sys.argv[2], sys.argv[3]
+def boot(): return json.loads(m.BOOT_JSON.read_text(encoding="utf-8"))
+m.BOOT_JSON.unlink(missing_ok=True)
+m.write_boot_json("b"); print("default:", boot()["pluginRoot"] == it, boot()["pin"])
+m.write_boot_json("b", pin=True); print("pin:", boot()["pluginRoot"].lower() == m.PLUGIN.as_posix().lower(), boot()["pin"])
+m.write_boot_json("b"); print("kept:", boot()["pluginRoot"].lower() == m.PLUGIN.as_posix().lower(), boot()["pin"])
+m.write_boot_json("b", pin=False); print("unpin:", boot()["pluginRoot"] == it, boot()["pin"])
+print("ok:", m.relaunch_restart_ok({"server": True, "openQuestions": 0, "busy": 0}),
+      "question:", m.relaunch_restart_ok({"server": True, "openQuestions": 1, "busy": 0}),
+      "busy:", m.relaunch_restart_ok({"server": True, "openQuestions": 0, "busy": 2}),
+      "nothing:", m.relaunch_restart_ok({"server": False, "openQuestions": 0, "busy": 0}))
+st = m.State(os.getcwd(), "bash")
+print("newer:", str(m.update_at_launch("bash", os.getcwd())).replace("\\", "/").lower() == it.lower())
+os.environ["TATTY_LAUNCH_UPDATED"] = "1"
+print("again:", m.update_at_launch("bash", os.getcwd()))
+del os.environ["TATTY_LAUNCH_UPDATED"]
+os.environ["TATTY_NO_LAUNCH_UPDATE"] = "1"
+print("off:", m.update_at_launch("bash", os.getcwd()))
+del os.environ["TATTY_NO_LAUNCH_UPDATE"]
+# the installed Tatty is this very copy: nothing to move to
+rec = m.config_dir() / "plugins" / "installed_plugins.json"
+rec.write_text(json.dumps({"version": 2, "plugins": {"tatty@fake-market": [{"scope": "user", "version": "99.0.0", "installPath": ck}]}}), encoding="utf-8")
+print("same:", m.update_at_launch("bash", os.getcwd()))
+rec.write_text(json.dumps({"version": 2, "plugins": {}}), encoding="utf-8")
+m.BOOT_JSON.unlink(missing_ok=True)
+m.write_boot_json("b"); print("no install:", boot()["pluginRoot"].lower() == m.PLUGIN.as_posix().lower())
+EOF
+has "the launcher file names the install by default" "$T/m" "default: True False"
+has "pinning names the checkout" "$T/m" "pin: True True"
+has "a boot after it keeps the pin" "$T/m" "kept: True True"
+has "unpinning goes back to the install" "$T/m" "unpin: True False"
+has "a relaunch restarts only when nothing is cut off" "$T/m" "ok: True question: False busy: False nothing: False"
+has "a cold start looks, and carries on from a newer install" "$T/m" "newer: True"
+has "but not twice in one launch" "$T/m" "again: None"
+has "nor when switched off" "$T/m" "off: None"
+has "nor when the install is this very copy" "$T/m" "same: None"
+has "with no install, the checkout is all there is to name" "$T/m" "no install: True"
+write_installed
+
+fi
+if section jira; then
+echo "# the Jira board"
+# The claude stand-in answers the headless runs (see claude.sh above): a board of
+# three good tickets and one with no proper key, a ticket's detail, and a move.
+cat >"$T/jira-board.out" <<'EOJ'
+{"is_error":false,"total_cost_usd":0.02,"usage":{"input_tokens":10,"cache_read_input_tokens":15000,"output_tokens":500},
+ "structured_output":{"site":"https://example.atlassian.net/","cloudId":"c-1","issues":[
+  {"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open","statusCategory":"todo","priority":"P2","parentKey":"ABC-9","parentSummary":"The epic"},
+  {"key":"ABC-2","summary":"Under way","type":"Story","status":"In Review","statusCategory":"inprogress"},
+  {"key":"ABC-3","summary":"Done one","type":"Task","status":"Closed","statusCategory":"done"},
+  {"key":"not a key","summary":"x","type":"Bug","status":"Open","statusCategory":"todo"}]}}
+EOJ
+cat >"$T/jira-issue.out" <<'EOJ'
+{"is_error":false,"usage":{"input_tokens":5},"structured_output":{"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open",
+ "description":"### Steps\n\n1. Open it\n\n![](blob:https://media.example/abc)","labels":["ui"],
+ "transitions":[{"id":"7","name":"Start work","to":"In Progress"},{"id":"5","name":"Send to review","to":"In Review"},{"id":"3","name":"Closed","to":"Closed"}]}}
+EOJ
+echo '{"is_error":false,"usage":{},"structured_output":{"ok":true}}' >"$T/jira-move.out"
+printf '{"mcpServers":{"atlassian":{"type":"http","url":"https://mcp.example/v1/mcp"},"other":{"type":"http","url":"https://x"}}}' >"$CLAUDE_CONFIG_DIR/.claude.json"
+jira_wait() { for _ in $(seq 1 50); do get /api/jira >"$T/jb"; [ "$(pick "$T/jb" "len(d['busy'])")" = 0 ] && return 0; sleep 0.2; done; return 1; }
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "(d['fetchedAt'], len(d['issues']))")" = "(0, 0)" ] && ok "no board until it is fetched" || bad "no board until it is fetched" "$(head -c 200 "$T/jb")"
+hasnt "looking spends nothing" "$T/claude.log" "-p "
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/jira/refresh")" = 202 ] && ok "refresh starts" || bad "refresh starts"
+jira_wait && ok "and finishes" || bad "and finishes"
+[ "$(pick "$T/jb" "','.join(i['key'] for i in d['issues'])")" = "ABC-1,ABC-2,ABC-3" ] && ok "only well-formed tickets are kept, in Jira's order" || bad "only well-formed tickets are kept, in Jira's order" "$(head -c 400 "$T/jb")"
+[ -f "$TATTY_HOME/jira/board.json" ] && ok "the board is kept in Tatty's home" || bad "the board is kept in Tatty's home"
+[ "$(pick "$T/jb" "d['issues'][0]['url']")" = "https://example.atlassian.net/browse/ABC-1" ] && ok "each ticket links to Jira" || bad "each ticket links to Jira" "$(pick "$T/jb" "d['issues'][0]")"
+[ "$(pick "$T/jb" "d['usage']['tokens']")" = 15510 ] && ok "the tokens it took are kept" || bad "the tokens it took are kept"
+has "the board run may search" "$T/jira-board.args" "mcp__atlassian__searchJiraIssuesUsingJql"
+hasnt "but not move tickets" "$T/jira-board.args" "mcp__atlassian__transitionJiraIssue"
+has "with no built-in tools" "$T/jira-board.args" "--tools"
+has "on the small model" "$T/jira-board.args" "haiku"
+has "loading only the Jira server" "$T/jira-board.args" '{"mcpServers": {"atlassian": {"type": "http", "url": "https://mcp.example/v1/mcp"}}}'
+has "and only that" "$T/jira-board.args" "--strict-mcp-config"
+has "with the JQL from Settings" "$T/jira-board.args" "sprint in openSprints()"
+touch "$T/jira-slow"
+post /api/jira/refresh '{}' >/dev/null
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/jira/refresh")" = 409 ] && ok "one refresh at a time" || bad "one refresh at a time"
+jira_wait; rm -f "$T/jira-slow"
+has "the next run knows the site" "$T/jira-board.args" "cloudId c-1"
+touch "$T/jira-fail"
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "len(d['issues'])")" = 3 ] && ok "a failed refresh keeps the board" || bad "a failed refresh keeps the board"
+has "and says why" "$T/jb" "Forbidden"
+rm -f "$T/jira-fail"
+get "/api/jira/issue?key=ABC-1" >"$T/ji"
+has "a ticket isn't loaded until asked" "$T/ji" '"cached": false'
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ZZZ-1"}' "$U/api/jira/issue")" = 400 ] && ok "only tickets on the board are loaded" || bad "only tickets on the board are loaded"
+[ "$(code -H "X-TT-Token: $K" "$U/api/jira/issue?key=..%2Fboard")" = 400 ] && ok "a ticket key is only a key" || bad "a ticket key is only a key"
+post /api/jira/issue '{"key":"ABC-1"}' >/dev/null; jira_wait
+get "/api/jira/issue?key=ABC-1" >"$T/ji"
+has "a ticket loaded" "$T/ji" "### Steps"
+has "its pictures stay in Jira" "$T/ji" "(picture in Jira)"
+hasnt "as links only" "$T/ji" "blob:"
+hasnt "the ticket run may only read" "$T/jira-issue.args" "mcp__atlassian__transitionJiraIssue"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ABC-2"}' "$U/api/jira/start")" = 400 ] && ok "a workflow needs the ticket loaded" || bad "a workflow needs the ticket loaded"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"key":"ABC-1"}' "$U/api/jira/start")" = 400 ] && ok "and a project" || bad "and a project"
+post /api/jira/start "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" >"$T/js"
+has "a workflow starts from a ticket" "$T/js" '"ok": true'
+has "as a feature named for it" "$T/js" '"feature": "ABC-1"'
+TK="$FX/features/ABC-1/ABC-1 - Ticket.md"
+[ -f "$TK" ] && ok "the ticket is written into its folder" || bad "the ticket is written into its folder"
+has "as a document" "$TK" "# ABC-1: Fix the thing"
+has "with its description" "$TK" "1. Open it"
+has "and its link" "$TK" "(https://example.atlassian.net/browse/ABC-1)"
+has "the workflow's own first step, on the ticket" "$T/js" "Prompt: /tt-adversarial-plan the Jira ticket ABC-1 in"
+has "naming the folder and prefix as tt-workflow does" "$T/js" "Prefix: ABC-1"
+hasnt "the prefix is only the key" "$T/js" "Prefix: ABC-1 -"
+has "the session is named by the key, with the summary" "$T/js" "Name: ABC-1 \u00b7 Fix the thing : "
+has "the ticket moves" "$T/js" '"moving": true'
+jira_wait
+has "by the transition to In Progress" "$T/jira-move.args" "transition id 7"
+has "the move run may move" "$T/jira-move.args" "mcp__atlassian__transitionJiraIssue"
+hasnt "and do nothing else" "$T/jira-move.args" "mcp__atlassian__getJiraIssue"
+[ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "In Progress/inprogress" ] && ok "the board shows it moved" || bad "the board shows it moved" "$(pick "$T/jb" "d['issues'][0]")"
+[ "$(pick "$T/jb" "d['started'].get('ABC-1')")" = "ABC-1" ] && ok "the board knows its feature" || bad "the board knows its feature"
+[ "$(pick "$T/jb" "d['project']")" = "$HERE" ] && ok "the project is remembered for the next" || bad "the project is remembered for the next" "$(pick "$T/jb" "d['project']")"
+get "/api/feature?name=$($PY -c 'import urllib.parse; print(urllib.parse.quote("ABC-1"))')" >"$T/j"
+has "it is one of the features, its ticket first" "$T/j" '"doc": "Ticket"'
+[ "$(pick "$T/j" "d['title']")" = "Fix the thing" ] && ok "its title is the ticket's summary" || bad "its title is the ticket's summary" "$(pick "$T/j" "d.get('title')")"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"key\":\"ABC-1\",\"project\":\"$HERE\"}" "$U/api/jira/start")" = 409 ] && ok "not started twice into the same folder" || bad "not started twice into the same folder"
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-2"}' >/dev/null; jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "a ticket under way isn't moved" || bad "a ticket under way isn't moved"
+get /api/events >"$T/ev"
+has "and the page is told so" "$T/ev" "ABC-2 is already In Review"
+[ "$(code "$U/static/jira.js")" = 200 ] && ok "jira.js served" || bad "jira.js served"
+# a request opened for ABC-1's feature sends the ticket to In Review, whatever the board had said
+rm -f "$T/jira-move.args"
+post /api/merge '{"name":"ABC-1","action":"opened","url":"https://git.example/mr/3"}' >"$T/j"
+has "an opened request is recorded" "$T/j" '"state": "opened"'
+jira_wait
+has "the ticket goes to In Review (by the transition's id)" "$T/jira-move.args" "transition id 5"
+has "naming the status" "$T/jira-move.args" "the move to In Review"
+[ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "In Review/inprogress" ] && ok "the board shows it in review" || bad "the board shows it in review" "$(pick "$T/jb" "d['issues'][0]")"
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-1","to":"In Review"}' >/dev/null; jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "a ticket already there isn't moved again" || bad "a ticket already there isn't moved again"
+post /api/jira/move '{"key":"ABC-1","to":"Closed"}' >/dev/null; jira_wait
+has "a status picked from the ticket's moves" "$T/jira-move.args" "transition id 3"
+[ "$(pick "$T/jb" "d['issues'][0]['status'] + '/' + d['issues'][0]['statusCategory']")" = "Closed/done" ] && ok "and the board shows it, done" || bad "and the board shows it, done" "$(pick "$T/jb" "d['issues'][0]")"
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-1","to":"Nowhere"}' >/dev/null; jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "a status Jira doesn't offer isn't asked for" || bad "a status Jira doesn't offer isn't asked for"
+get /api/events >"$T/ev"
+has "and the page is told" "$T/ev" "Jira offers ABC-1 no move to Nowhere"
+# the Jira board, laid out and started the way a task is
+[ "$(code "$U/static/taskboard.js")" = 200 ] && ok "taskboard.js served" || bad "taskboard.js served"
+[ "$(code "$U/static/taskboard.css")" = 200 ] && ok "taskboard.css served" || bad "taskboard.css served"
+wcancel() { curl -s -o "$T/wc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/workflow/cancel"; }
+post /api/jira/issue '{"key":"ABC-2"}' >/dev/null; jira_wait
+post /api/jira/issue '{"key":"ABC-3"}' >/dev/null; jira_wait
+# a status picked (a drop on a column) is moved to even when it is In Progress and the ticket is under way
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-2","to":"In Progress"}' >/dev/null; jira_wait
+has "a ticket under way is moved to In Progress when that is picked" "$T/jira-move.args" "transition id 7"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"workdir\":\"$FX/nope\"}" "$U/api/jira/start")" = 400 ] && ok "a work folder must exist" || bad "a work folder must exist"
+post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"workdir\":\"$FX\",\"mode\":\"lite\",\"feature\":\"ABC-2 - Under way\"}" >"$T/js"
+has "a lite workflow starts from a ticket, with a work folder" "$T/js" '"ok": true'
+has "named as it is asked" "$T/js" '"feature": "ABC-2 - Under way"'
+has "with the lite route's own command" "$T/js" "Prompt: /tt-workflow-lite \\\""
+has "on the ticket" "$T/js" "the Jira ticket ABC-2 in"
+has "named as lite" "$T/js" "Name: ABC-2 - Under way \\u00b7 "
+has "as lite" "$T/js" " : Lite\\nPrompt:"
+has "the session adds the work folder" "$T/js" "--add-dir $FX"
+has "and still runs in the project" "$T/js" "cd $HERE &&"
+has "and says where the work is done" "$T/js" "Never read, build or verify against $HERE"
+TW="$FX/features/ABC-2 - Under way/ABC-2 - Under way - Ticket.md"
+has "the ticket says it too" "$TW" "## Working folder"
+has "and which repo to write in its documents" "$TW" "Write **Repo:** $FX in every document"
+jira_wait
+[ "$(pick "$T/jb" "d['workdir']")" = "$FX" ] && ok "the work folder is remembered for the next" || bad "the work folder is remembered for the next" "$(pick "$T/jb" "d['workdir']")"
+post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\"}" >"$T/js"
+has "a second start is refused, naming the feature" "$T/js" '"feature": "ABC-2 - Under way"'
+has "and why" "$T/js" "A workflow was started from this ticket already."
+post /api/jira/start "{\"key\":\"ABC-3\",\"project\":\"$HERE\",\"workdir\":\"$HERE\",\"name\":\"ABC-3 - Done one\"}" >"$T/js"
+has "a start with only the name asked for (the old field) still works" "$T/js" '"feature": "ABC-3 - Done one"'
+hasnt "a card start makes no worktree unless asked" "$T/js" '.worktrees/'
+hasnt "a work folder that is the project isn't a split" "$T/js" "--add-dir"
+hasnt "and the ticket has no work-folder section" "$FX/features/ABC-3 - Done one/ABC-3 - Done one - Ticket.md" "## Working folder"
+jira_wait
+[ "$(pick "$T/jb" "repr(d['workdir'])")" = "''" ] && ok "so none is remembered" || bad "so none is remembered" "$(pick "$T/jb" "repr(d['workdir'])")"
+# what the board says of a started ticket's workflow (after a refresh that puts the tickets back where the fixture has them)
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "(d['workflows']['ABC-1']['route'], d['workflows']['ABC-2']['route'], 'ABC-3' in d['workflows'])")" = "('full', 'lite', False)" ] && ok "a card knows the route: full, or lite before its documents say; a done ticket's isn't asked" || bad "a card knows the route" "$(pick "$T/jb" "d['workflows']")"
+[ "$(pick "$T/jb" "(d['workflows']['ABC-2']['session']['status'], d['workflows']['ABC-2']['ticketOnly'], d['workflows']['ABC-2']['phase'])")" = "('starting', True, 'empty')" ] && ok "and its session, and where it stands" || bad "and its session, and where it stands" "$(pick "$T/jb" "d['workflows']['ABC-2']")"
+get "/api/feature?name=ABC-2%20-%20Under%20way" >"$T/j"
+[ "$(pick "$T/j" "(d['ticket'], d['task'])")" = "('ABC-2', None)" ] && ok "a feature knows its ticket" || bad "a feature knows its ticket" "$(pick "$T/j" "(d['ticket'], d['task'])")"
+# cancel: the session ended, the ticket unlinked (Jira is not asked to move it back), the ticket-only folder out of the way
+rm -f "$T/jira-move.args"
+[ "$(wcancel '{"name":"ABC-2 - Under way"}')" = 200 ] && ok "a ticket's workflow is cancelled" || bad "a ticket's workflow is cancelled" "$(cat "$T/wc")"
+has "its session ended" "$T/wc" '"stopped": 1'
+has "it names the ticket" "$T/wc" '"ticket": "ABC-2"'
+has "its ticket-only folder was removed" "$T/wc" '"folder": "removed"'
+[ ! -e "$FX/features/ABC-2 - Under way" ] && ls "$FX/features/.deleted/ABC-2 - Under way/"*Ticket.md >/dev/null 2>&1 && ok "into features/.deleted, not gone" || bad "into features/.deleted, not gone" "$(ls -a "$FX/features" "$FX/features/.deleted")"
+jira_wait
+[ ! -f "$T/jira-move.args" ] && ok "and Jira isn't asked to move the ticket back" || bad "and Jira isn't asked to move the ticket back"
+[ "$(pick "$T/jb" "('ABC-2' in d['started'], 'ABC-2' in d['workflows'])")" = "(False, False)" ] && ok "the board forgets the start" || bad "the board forgets the start" "$(pick "$T/jb" "(d['started'], d['workflows'])")"
+hasnt "begun.json too" "$TATTY_HOME/jira/begun.json" "ABC-2"
+post /api/jira/start "{\"key\":\"ABC-2\",\"project\":\"$HERE\",\"mode\":\"lite\"}" >"$T/js"
+has "the ticket can be started again" "$T/js" '"ok": true'
+# delete unlinks too
+post /api/feature/delete '{"name":"ABC-3 - Done one","confirm":"I understand"}' >"$T/j"
+has "a started ticket's feature is deleted" "$T/j" '"ok": true'
+hasnt "and the ticket is unlinked" "$TATTY_HOME/jira/started.tsv" "ABC-3"
+hasnt "and forgotten in begun.json" "$TATTY_HOME/jira/begun.json" "ABC-3"
+
+# the layout: the statuses are the columns, in the person's order
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "open,in review,in progress,closed" ] && ok "a column per status, by category; one nobody is in (a move the tickets offer) is a column to drop on" || bad "a column per status" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
+[ "$(pick "$T/jb" "[t['key'] for t in d['columns'][0]['tasks']]")" = "['ABC-1']" ] && ok "with its tickets" || bad "with its tickets" "$(pick "$T/jb" "d['columns'][0]")"
+[ "$(pick "$T/jb" "(d['columns'][0]['tasks'][0]['id'], d['columns'][0]['tasks'][0]['title'], d['columns'][0]['name'], d['columns'][0]['cat'])")" = "('ABC-1', 'Fix the thing', 'Open', 'todo')" ] && ok "each card has an id and a title, each column its name and category" || bad "card and column fields" "$(pick "$T/jb" "d['columns'][0]")"
+[ "$(pick "$T/jb" "[c['tasks'] for c in d['columns'] if c['id'] == 'in progress']")" = "[[]]" ] && ok "an empty one stays a column" || bad "an empty one stays a column"
+jl() { curl -s -o "$T/jl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/jira/layout"; }
+cols() { pick "$T/jl" "','.join(c['id'] for c in d['columns'])"; }
+[ "$(jl '{"op":"move","status":"in review","dir":1}')" = 200 ] && ok "a column moves right" || bad "a column moves right" "$(cat "$T/jl")"
+[ "$(cols)" = "open,in progress,in review,closed" ] && ok "one place along" || bad "one place along" "$(cols)"
+[ -f "$TATTY_HOME/jira/layout.json" ] && ok "kept in Tatty's home" || bad "kept in Tatty's home"
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "open,in progress,in review,closed" ] && ok "and read back" || bad "and read back"
+[ "$(jl '{"op":"move","status":"open","dir":-1}')" = 200 ] && [ "$(cols)" = "open,in progress,in review,closed" ] && ok "the first column can't move left" || bad "the first column can't move left" "$(cols)"
+[ "$(jl '{"op":"hide","status":"open"}')" = 200 ] && ok "a column is hidden" || bad "a column is hidden"
+[ "$(cols)" = "in progress,in review,closed" ] && ok "no longer a column" || bad "no longer a column" "$(cols)"
+[ "$(pick "$T/jl" "[(h['id'], h['name'], h['count']) for h in d['hidden']]")" = "[('open', 'Open', 1)]" ] && ok "but listed, with its tickets counted" || bad "but listed" "$(pick "$T/jl" "d['hidden']")"
+[ "$(jl '{"op":"move","status":"in progress","dir":-1}')" = 200 ] && [ "$(cols)" = "in progress,in review,closed" ] && ok "a hidden column isn't stepped onto" || bad "a hidden column isn't stepped onto" "$(cols)"
+[ "$(jl '{"op":"show","status":"open"}')" = 200 ] && [ "$(cols)" = "open,in progress,in review,closed" ] && ok "shown again, where it was" || bad "shown again, where it was" "$(cols)"
+[ "$(jl '{"op":"hide","status":"In  Review"}')" = 200 ] && [ "$(cols)" = "open,in progress,closed" ] && ok "a status is found by its name, any case" || bad "a status is found by its name" "$(cols)"
+jl '{"op":"show","status":"in review"}' >/dev/null
+[ "$(jl '{"op":"fly"}')" = 400 ] && ok "an op that isn't one is refused" || bad "an op that isn't one is refused"
+[ "$(jl '{"op":"hide","status":"no such"}')" = 400 ] && ok "so is a column there isn't" || bad "so is a column there isn't"
+[ "$(jl '{"op":"move","status":"open","dir":2}')" = 400 ] && ok "and a step of two" || bad "and a step of two"
+[ "$(jl '{"op":"order","order":["closed","open","nope"]}')" = 200 ] && [ "$(cols)" = "closed,open,in progress,in review" ] && ok "the whole order can be set (the unknown is ignored, the rest keep their order)" || bad "the whole order can be set" "$(cols)"
+jl '{"op":"order","order":["open","in progress","in review","closed"]}' >/dev/null
+# a new status, a status with odd characters, a second ticket in a column
+cat >"$T/jira-board.out" <<'EOJ'
+{"is_error":false,"total_cost_usd":0.02,"usage":{"input_tokens":10},
+ "structured_output":{"site":"https://example.atlassian.net/","cloudId":"c-1","issues":[
+  {"key":"ABC-1","summary":"Fix the thing","type":"Bug","status":"Open","statusCategory":"todo"},
+  {"key":"ABC-2","summary":"Under way","type":"Story","status":"QA","statusCategory":"inprogress"},
+  {"key":"ABC-3","summary":"Done one","type":"Task","status":"Closed","statusCategory":"done"},
+  {"key":"ABC-4","summary":"Another","type":"Task","status":"Closed","statusCategory":"done"},
+  {"key":"ABC-5","summary":"Odd","type":"Task","status":"Won't Fix/../x <b>","statusCategory":"done"}]}}
+EOJ
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "open,in progress,in review,closed,qa,won't fix/../x <b>" ] && ok "a status seen for the first time comes after the ones placed, by category; one nobody is in now stays" || bad "a new status comes last" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
+[ "$(jl "{\"op\":\"hide\",\"status\":\"Won't Fix/../x <b>\"}")" = 200 ] && [ "$(pick "$T/jl" "[h['id'] for h in d['hidden']]")" = "[\"won't fix/../x <b>\"]" ] && ok "a status of odd characters is only a name" || bad "an odd status" "$(pick "$T/jl" "d['hidden']")"
+[ ! -e "$TATTY_HOME/jira/x <b>" ] && [ ! -e "$TATTY_HOME/x <b>" ] && ok "never a path" || bad "never a path"
+# cards: where one is dropped is kept
+[ "$(pick "$T/jb" "[t['key'] for t in [c for c in d['columns'] if c['id'] == 'closed'][0]['tasks']]")" = "['ABC-3', 'ABC-4']" ] && ok "a column's cards are in Jira's order" || bad "a column's cards are in Jira's order"
+rjl() { curl -s -o "$T/jl" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/jira/reorder"; }
+ccards() { pick "$T/jl" "[t['key'] for t in [c for c in d['columns'] if c['id'] == '$1'][0]['tasks']]"; }
+[ "$(rjl '{"key":"ABC-4","to":"closed","before":"ABC-3"}')" = 200 ] && [ "$(ccards closed)" = "['ABC-4', 'ABC-3']" ] && ok "a card dropped before another" || bad "a card dropped before another" "$(ccards closed)"
+[ "$(rjl '{"key":"ABC-4","to":"closed","before":null}')" = 200 ] && [ "$(ccards closed)" = "['ABC-3', 'ABC-4']" ] && ok "or last" || bad "or last" "$(ccards closed)"
+rjl '{"key":"ABC-4","to":"closed","before":"ABC-3"}' >/dev/null
+post /api/jira/refresh '{}' >/dev/null; jira_wait
+[ "$(pick "$T/jb" "[t['key'] for t in [c for c in d['columns'] if c['id'] == 'closed'][0]['tasks']]")" = "['ABC-4', 'ABC-3']" ] && ok "kept across a refresh" || bad "kept across a refresh"
+[ "$(pick "$T/jb" "[h['id'] for h in d['hidden']]")" = "[\"won't fix/../x <b>\"]" ] && ok "as is what was hidden" || bad "hidden across a refresh" "$(pick "$T/jb" "d['hidden']")"
+[ "$(rjl '{"key":"ABC-1","to":"qa","before":null}')" = 200 ] && [ "$(pick "$T/jl" "d['layout']['cards']['qa']")" = "['ABC-2', 'ABC-1']" ] && ok "a card dropped in another column takes its place there for when it gets there" || bad "a card dropped in another column" "$(pick "$T/jl" "d['layout']['cards']")"
+[ "$(rjl '{"key":"ZZZ-1","to":"qa","before":null}')" = 400 ] && ok "only a ticket of the board is placed" || bad "only a ticket of the board is placed"
+[ "$(rjl '{"key":"ABC-1","to":"nowhere","before":null}')" = 400 ] && ok "only in a column of the board" || bad "only in a column of the board"
+[ "$(rjl '{"key":"ABC-1","to":"qa","before":"x"}')" = 400 ] && ok "before is a ticket or null" || bad "before is a ticket or null"
+# a card dropped on a status nobody is in: the ticket's own move to it
+rm -f "$T/jira-move.args"
+post /api/jira/move '{"key":"ABC-1","to":"In Progress"}' >/dev/null; jira_wait
+has "goes by the move the ticket offers" "$T/jira-move.args" "transition id 7"
+[ "$(pick "$T/jb" "[c['id'] for c in d['columns'] if 'ABC-1' in [t['key'] for t in c['tasks']]]")" = "['in progress']" ] && ok "and the card is in that column" || bad "and the card is in that column" "$(pick "$T/jb" "[(c['id'], [t['key'] for t in c['tasks']]) for c in d['columns']]")"
+# a layout file that won't read is ignored
+printf '{ nope' >"$TATTY_HOME/jira/layout.json"
+[ "$(code -H "X-TT-Token: $K" "$U/api/jira")" = 200 ] && ok "a layout file that won't read doesn't break the board" || bad "a broken layout file breaks the board"
+get /api/jira >"$T/jb"
+[ "$(pick "$T/jb" "','.join(c['id'] for c in d['columns'])")" = "in progress,qa,closed,won't fix/../x <b>" ] && ok "the columns are then the tickets' own, by category" || bad "the tickets' own columns" "$(pick "$T/jb" "[c['id'] for c in d['columns']]")"
+rm -f "$TATTY_HOME/jira/layout.json"
+
+fi
+if section tasks; then
+echo "# task boards"
+[ "$(code "$U/static/tasks.js")" = 200 ] && ok "tasks.js served" || bad "tasks.js served"
+[ "$(code "$U/static/tasks.css")" = 200 ] && ok "tasks.css served" || bad "tasks.css served"
+# wbc <what> <body>: POST /api/<what> (a whiteboard's); the answer in $T/wb, the HTTP code printed
+# tk <what> <body>: POST /api/tasks/<what>; the answer in $T/tk, the HTTP code printed
+# taskfile <ID>: the task's file on the Game board
+get /api/tasks >"$T/j"
+has "boards live in the root's tasks folder" "$T/j" "fxroot/tasks"
+[ "$(pick "$T/j" "[(b['name'], b['board'], b['backlog'], b['completed']) for b in d['boards']]")" = "[('Sample', 4, 2, 1)]" ] &&
+	ok "the fixture's board, counted" || bad "the fixture's board, counted" "$(head -c 300 "$T/j")"
+[ "$(tk new-board '{"name":"a/b"}')" = 400 ] && ok "a board's name is a folder's" || bad "a board's name is a folder's"
+[ "$(tk new-board '{"name":"Sample"}')" = 409 ] && ok "a board isn't made over another" || bad "a board isn't made over another"
+[ "$(tk new-board '{"name":"Game","columns":["To Do","backlog"]}')" = 400 ] && ok "Backlog isn't a column's name" || bad "Backlog isn't a column's name"
+# each board numbers its tasks with a prefix of its own: a workflow started from a task is named by its ID
+[ "$(tk new-board '{"name":"Game","prefix":"T"}')" = 400 ] && has "a prefix another board has is refused" "$T/tk" "The Sample board numbers its tasks T- already" || bad "a prefix another board has is refused" "$(cat "$T/tk")"
+[ "$(tk new-board '{"name":"Game","prefix":"t-0"}')" = 400 ] && ok "a prefix is capitals and digits" || bad "a prefix is capitals and digits" "$(cat "$T/tk")"
+[ "$(tk prefix '{"name":"Sample","prefix":"s"}')" = 200 ] && [ "$(pick "$T/tk" "d['prefix']")" = S ] && ok "a board's prefix is changed" || bad "a board's prefix is changed" "$(cat "$T/tk")"
+[ "$(tk new-board '{"name":"Game","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "a new board" || bad "a new board" "$(cat "$T/tk")"
+[ "$(pick "$T/tk" "d['prefix']")" = T ] && ok "given T when no board has it" || bad "given T when no board has it" "$(cat "$T/tk")"
+[ "$(tk prefix '{"name":"Sample","prefix":"T"}')" = 400 ] && ok "a prefix change to another board's is refused" || bad "a prefix change to another board's is refused" "$(cat "$T/tk")"
+GB="$FX/tasks/Game"
+[ -f "$GB/board.json" ] && [ -d "$GB/items" ] && ok "a board.json and an items folder" || bad "a board.json and an items folder"
+for i in 1 2 3 4 5; do post /api/tasks/create "{\"name\":\"Game\",\"title\":\"Task $i\",\"labels\":\"ui, UI , input\"}" >"$T/c$i" & done; wait
+[ "$($PY -c "import json, sys; print(sorted(json.load(open(f))['task']['id'] for f in sys.argv[1:]))" "$T"/c[1-5])" = "['T-0001', 'T-0002', 'T-0003', 'T-0004', 'T-0005']" ] &&
+	ok "five made at once have five IDs" || bad "five made at once have five IDs" "$(cat "$T"/c[1-5])"
+[ "$(ls "$GB/items" | wc -l | tr -d ' ')" = 5 ] && ok "and five files" || bad "and five files" "$(ls "$GB/items")"
+[ "$(tk create '{"name":"Game","title":"  "}')" = 400 ] && ok "a task needs a title" || bad "a task needs a title"
+[ "$(tk create '{"name":"Game","title":"Pause: menu?","priority":"High","description":"Esc opens it."}')" = 200 ] && ok "a task with a description" || bad "a task with a description"
+[ "$(pick "$T/tk" "d['task']['file']")" = "T-0006 - Pause menu.md" ] && ok "named for its ID and title" || bad "named for its ID and title" "$(cat "$T/tk")"
+printf '# T-0006: Pause: menu?\n\n- **Status:** Backlog\n- **Priority:** High\n- **Type:** Task\n- **Labels:**\n- **Created:** %s\n- **Done:**\n\n## Description\n\nEsc opens it.\n' "$(date +%F)" >"$T/want"
+cmp -s "$T/want" "$(taskfile T-0006)" && ok "the file is the task's template" || bad "the file is the task's template" "$(cat "$(taskfile T-0006)")"
+has "labels once each" "$(taskfile T-0001)" "- **Labels:** ui, input"
+get "/api/tasks/board?name=Game" >"$T/j"
+C1=$(pick "$T/j" "d['columns'][0]['id']"); CD=$(pick "$T/j" "d['done']")
+[ "$(pick "$T/j" "(d['backlog']['total'], [c['name'] for c in d['columns']], d['options']['startColumn'] == d['columns'][1]['id'])")" = "(6, ['To Do', 'Doing', 'Done'], True)" ] &&
+	ok "new tasks wait in the backlog; the start column sounds under way" || bad "new tasks wait in the backlog; the start column sounds under way" "$(head -c 400 "$T/j")"
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$C1\"}" >/dev/null
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0002\",\"to\":\"$C1\",\"before\":\"T-0001\"}" >/dev/null
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "[t['id'] for t in d['columns'][0]['tasks']]")" = "['T-0002', 'T-0001']" ] && ok "a move lands before the card it was dropped on" || bad "a move lands before the card it was dropped on" "$(head -c 400 "$T/j")"
+has "the file says its column" "$(taskfile T-0001)" "- **Status:** To Do"
+sum=$(sha1sum <"$(taskfile T-0001)")
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$C1\",\"before\":\"T-0002\"}" >/dev/null
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "[t['id'] for t in d['columns'][0]['tasks']]")" = "['T-0001', 'T-0002']" ] && ok "a reorder" || bad "a reorder"
+[ "$(sha1sum <"$(taskfile T-0001)")" = "$sum" ] && ok "writes board.json only" || bad "writes board.json only"
+[ "$(tk move '{"name":"Game","id":"T-0001","to":"nowhere"}')" = 400 ] && ok "only to a list there is" || bad "only to a list there is"
+[ "$(tk move '{"name":"Game","id":"T-0099","to":"backlog"}')" = 404 ] && ok "only a task there is" || bad "only a task there is"
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$CD\"}" >/dev/null
+has "into the done column stamps Done" "$(taskfile T-0001)" "- **Done:** $(date +%F)"
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0001\",\"to\":\"$C1\"}" >/dev/null
+grep -qxF -- '- **Done:**' "$(taskfile T-0001)" && ok "out of it clears it" || bad "out of it clears it" "$(cat "$(taskfile T-0001)")"
+# a save is made over the file the page read, or refused
+get "/api/tasks/task?name=Game&id=T-0003" >"$T/j"
+REV=$(pick "$T/j" "d['rev']")
+printf 'by hand\n' >>"$(taskfile T-0003)"
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0003\",\"rev\":\"$REV\",\"title\":\"Nope\"}")" = 409 ] && ok "a save over a changed file is refused" || bad "a save over a changed file is refused"
+has "with the task as it is now" "$T/tk" "by hand"
+hasnt "and the file left alone" "$(taskfile T-0003)" "Nope"
+get "/api/tasks/task?name=Game&id=T-0005" >"$T/j"
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0005\",\"rev\":\"$(pick "$T/j" "d['rev']")\",\"title\":\"Renamed five\",\"labels\":\"x\",\"description\":\"New words\"}")" = 200 ] &&
+	ok "a save" || bad "a save" "$(cat "$T/tk")"
+[ "$(basename "$(taskfile T-0005)")" = "T-0005 - Renamed five.md" ] && ok "a new title renames the file" || bad "a new title renames the file" "$(ls "$GB/items")"
+has "its H1" "$(taskfile T-0005)" "# T-0005: Renamed five"
+has "its description" "$(taskfile T-0005)" "New words"
+$PY -c "import sys; p=sys.argv[1]; d=open(p,'rb').read(); open(p,'wb').write(d.replace(b'\r\n',b'\n').replace(b'\n',b'\r\n'))" "$(taskfile T-0004)"
+get "/api/tasks/task?name=Game&id=T-0004" >"$T/j"
+REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$REV\",\"text\":\"# T-0005: Not mine\\n\"}")" = 400 ] && ok "the whole file, but not its ID" || bad "the whole file, but not its ID"
+[ "$(tk save "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$REV\",\"text\":\"# T-0004: Task 4\\n\\n- **Status:** Backlog\\n\\n## Description\\n\\nRaw.\\n\"}")" = 200 ] &&
+	ok "the whole file saved" || bad "the whole file saved" "$(cat "$T/tk")"
+$PY -c "import sys; d=open(sys.argv[1],'rb').read(); sys.exit(not (b'Raw.\r\n' in d and d.count(b'\r\n') == d.count(b'\n')))" "$(taskfile T-0004)" &&
+	ok "with the file's own line ends" || bad "with the file's own line ends"
+# columns: a rename rewrites its tasks' Status; a delete sends them somewhere
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"rename\",\"id\":\"$C1\",\"value\":\"Doing\"}")" = 400 ] && ok "no two columns of a name" || bad "no two columns of a name"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"rename\",\"id\":\"$C1\",\"value\":\"Ready\"}")" = 200 ] && ok "a column renamed" || bad "a column renamed"
+has "its tasks say so" "$(taskfile T-0002)" "- **Status:** Ready"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"add\",\"value\":\"QA\",\"index\":2}")" = 200 ] && ok "a column added" || bad "a column added"
+[ "$(pick "$T/tk" "[c['name'] for c in d['columns']]")" = "['Ready', 'Doing', 'QA', 'Done']" ] && ok "where it was put" || bad "where it was put" "$(head -c 300 "$T/tk")"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"remove\",\"id\":\"$C1\",\"to\":\"completed\"}")" = 400 ] && ok "a column's tasks don't go to Completed by a delete" || bad "a column's tasks don't go to Completed by a delete"
+[ "$(tk columns "{\"name\":\"Game\",\"op\":\"remove\",\"id\":\"$C1\"}")" = 200 ] && ok "a column deleted" || bad "a column deleted"
+has "its tasks back in the backlog" "$(taskfile T-0002)" "- **Status:** Backlog"
+# Clear done: the done column's tasks go to Completed, and Tatty celebrates
+get /api/events >"$T/ev0"; n0=$(pick "$T/ev0" "len(d)")
+post /api/tasks/move "{\"name\":\"Game\",\"id\":\"T-0003\",\"to\":\"$CD\"}" >/dev/null
+[ "$(tk clear '{"name":"Game"}')" = 200 ] && [ "$(pick "$T/tk" "d['cleared']")" = 1 ] && ok "Clear done" || bad "Clear done" "$(head -c 300 "$T/tk")"
+has "the task is Completed" "$(taskfile T-0003)" "- **Status:** Completed"
+get "/api/tasks/list?name=Game&in=completed" >"$T/j"
+[ "$(pick "$T/j" "([t['id'] for t in d['items']], d['stats']['total'], d['stats']['thisWeek'])")" = "(['T-0003'], 1, 1)" ] && ok "on the Completed list, counted" || bad "on the Completed list, counted" "$(head -c 300 "$T/j")"
+get "/api/events?since=$n0" >"$T/ev"
+has "a milestone for the move into Done" "$T/ev" '"label": "Task done"'
+has "and one for the clear" "$T/ev" '"label": "1 task completed"'
+has "which Tatty celebrates" "$T/ev" '"event": "tasks.done"'
+has "and which opens the board" "$T/ev" '"link": "#tasks/Game"'
+# a hand edit, and a file without an ID, reach the board
+get /api/events >"$T/ev0"; n0=$(pick "$T/ev0" "len(d)")
+sleep 1.6; printf 'more by hand\n' >>"$(taskfile T-0006)"
+for _ in $(seq 1 40); do get "/api/events?since=$n0" >"$T/ev"; grep -q '"disk": true' "$T/ev" && break; sleep 0.25; done
+has "a change on disk is an event" "$T/ev" '"disk": true'
+has "naming the task" "$T/ev" '"T-0006"'
+printf '# Some idea\n' >"$GB/items/Untitled.md"
+get "/api/tasks/board?name=Game" >"$T/j"
+has "a file without an ID is a problem" "$T/j" '"file": "Untitled.md"'
+[ "$(tk adopt '{"name":"Game","file":"../board.json"}')" = 404 ] && ok "only a file of the board's items is adopted" || bad "only a file of the board's items is adopted"
+[ "$(tk adopt '{"name":"Game","file":"Untitled.md"}')" = 200 ] && ok "adopted" || bad "adopted" "$(cat "$T/tk")"
+[ -f "$GB/items/T-0007 - Some idea.md" ] && ok "named for its new ID" || bad "named for its new ID" "$(ls "$GB/items")"
+has "which its title says too" "$GB/items/T-0007 - Some idea.md" "# T-0007: Some idea"
+[ "$(code -H "X-TT-Token: $K" "$U/api/tasks/task?name=Game&id=..%2Fboard")" = 404 ] && ok "a task's ID is only an ID" || bad "a task's ID is only an ID"
+[ "$(code -H "X-TT-Token: $K" "$U/api/tasks/board?name=..%2Ffeatures")" = 404 ] && ok "a board's name is only a name" || bad "a board's name is only a name"
+# delete: out of the way, never gone
+get "/api/tasks/task?name=Game&id=T-0004" >"$T/j"
+[ "$(tk delete "{\"name\":\"Game\",\"id\":\"T-0004\",\"rev\":\"$(pick "$T/j" "d['rev']")\"}")" = 200 ] && ok "a task deleted" || bad "a task deleted"
+[ -z "$(taskfile T-0004)" ] && ls "$GB/.deleted/T-0004 - Task "*.md >/dev/null 2>&1 && ok "into the board's .deleted folder" || bad "into the board's .deleted folder" "$(ls -a "$GB" "$GB/.deleted")"
+# Start workflow, as from a Jira ticket
+[ "$(tk start '{"name":"Game","id":"T-0006"}')" = 400 ] && ok "a workflow needs a project" || bad "a workflow needs a project"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from a task" || bad "a workflow starts from a task" "$(cat "$T/tk")"
+has "as a feature named for it" "$T/tk" '"feature": "T-0006"'
+TK="$FX/features/T-0006/T-0006 - Ticket.md"
+[ -f "$TK" ] && ok "the task is written into its folder" || bad "the task is written into its folder"
+has "the session is named by the ID, with the title" "$T/tk" "Name: T-0006 \u00b7 Pause: menu? : Start"
+get "/api/feature?name=T-0006" >"$T/j"
+[ "$(pick "$T/j" "d['title']")" = "Pause: menu?" ] && ok "the feature's title is the task's" || bad "the feature's title is the task's" "$(pick "$T/j" "d.get('title')")"
+has "as its ticket" "$TK" "# T-0006: Pause: menu?"
+has "with where it came from" "$TK" '- **Task:** T-0006 on the Tasks board "Game"'
+has "type: the ticket carries the task's type" "$TK" "- **Type:** Task"
+has "the workflow's own first step, on the task" "$T/tk" "Prompt: /tt-adversarial-plan the task T-0006 in"
+has "the task moves on" "$T/tk" '"moved": "Doing"'
+has "its file says so" "$(taskfile T-0006)" "- **Status:** Doing"
+has "and names its feature" "$(taskfile T-0006)" "- **Feature:** T-0006"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0006\",\"project\":\"$HERE\"}")" = 409 ] && ok "not started twice" || bad "not started twice"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "(d['started'].get('T-0006'), d['options']['project'])")" = "('T-0006', '$HERE')" ] && ok "the board remembers the feature and the project" || bad "the board remembers the feature and the project" "$(pick "$T/j" "(d['started'], d['options'])")"
+hasnt "no work folder: the session isn't widened" "$T/tk" "--add-dir"
+hasnt "and the ticket has no work-folder section" "$TK" "## Working folder"
+# the linked project is where the session runs; the work folder is added to it
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0005\",\"project\":\"$HERE\",\"workdir\":\"$FX/nope\"}")" = 400 ] && ok "a work folder must exist" || bad "a work folder must exist"
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0005\",\"project\":\"$HERE\",\"workdir\":\"$FX\"}")" = 200 ] && ok "a workflow starts with a work folder" || bad "a workflow starts with a work folder" "$(cat "$T/tk")"
+has "the session adds the work folder" "$T/tk" "--add-dir $FX"
+has "and still runs in the project" "$T/tk" "cd $HERE &&"
+has "the planning command is the full one" "$T/tk" "Prompt: /tt-adversarial-plan the task T-0005 in"
+has "and says where the work is done" "$T/tk" "Never read, build or verify against $HERE"
+TW=$(ls "$FX/features/T-0005"*/*Ticket.md | head -1)
+has "the ticket says it too" "$TW" "## Working folder"
+has "and which repo to write in its documents" "$TW" "Write **Repo:** $FX in every document"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "d['options']['workdir']")" = "$FX" ] && ok "the board remembers the work folder" || bad "the board remembers the work folder" "$(pick "$T/j" "d['options']")"
+# the lite button
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"workdir\":\"$FX\",\"mode\":\"lite\"}")" = 200 ] && ok "a lite workflow starts from a task" || bad "a lite workflow starts from a task" "$(cat "$T/tk")"
+has "with the lite route's own command" "$T/tk" "Prompt: /tt-workflow-lite \\\""
+has "on the task" "$T/tk" "the task T-0007 in"
+has "named as lite" "$T/tk" "Name: T-0007 \u00b7 Some idea : Lite"
+has "with the work folder added" "$T/tk" "--add-dir $FX"
+has "and the task moves on" "$T/tk" '"moved": "Doing"'
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 409 ] && ok "lite isn't started twice either" || bad "lite isn't started twice either"
+# what the board says of a started task's workflow
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "(d['workflows']['T-0005']['route'], d['workflows']['T-0007']['route'])")" = "('full', 'lite')" ] && ok "a card knows the route: full, or lite before its documents say" || bad "a card knows the route" "$(pick "$T/j" "d['workflows']")"
+[ "$(pick "$T/j" "d['workflows']['T-0007']['session']['status']")" = "starting" ] && ok "and its session" || bad "and its session" "$(pick "$T/j" "d['workflows']['T-0007']")"
+has "and where it stands" "$T/j" '"phase": "empty"'
+[ "$(pick "$T/j" "d['begun']['T-0007']['from']")" = "backlog" ] && ok "the board remembers where the task came from" || bad "the board remembers where the task came from" "$(pick "$T/j" "d['begun']")"
+get "/api/feature?name=T-0007" >"$T/j"
+[ "$(pick "$T/j" "(d['task'], d['ticketOnly'])")" = "({'board': 'Game', 'id': 'T-0007'}, True)" ] && ok "a feature knows its task, and that it holds only the ticket" || bad "a feature knows its task" "$(pick "$T/j" "(d['task'], d['ticketOnly'])")"
+# cancel: sessions ended, the start undone, a ticket-only folder moved out of the way
+wcancel() { curl -s -o "$T/wc" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/workflow/cancel"; }
+[ "$(wcancel '{"name":"No such feature"}')" = 404 ] && ok "cancelling a feature there isn't is a 404" || bad "cancelling a feature there isn't is a 404"
+[ "$(wcancel '{"name":"T-0007"}')" = 200 ] && ok "a workflow is cancelled" || bad "a workflow is cancelled" "$(cat "$T/wc")"
+has "its session ended" "$T/wc" '"stopped": 1'
+has "the task went back" "$T/wc" '"movedTo": "Backlog"'
+has "its ticket-only folder was removed" "$T/wc" '"folder": "removed"'
+[ ! -e "$FX/features/T-0007" ] && ls "$FX/features/.deleted/T-0007/"*Ticket.md >/dev/null 2>&1 && ok "into features/.deleted, not gone" || bad "into features/.deleted, not gone" "$(ls -a "$FX/features" "$FX/features/.deleted")"
+hasnt "the task names no feature" "$(taskfile T-0007)" "- **Feature:** T-0007"
+has "and is in the backlog again" "$(taskfile T-0007)" "- **Status:** Backlog"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "('T-0007' in d['started'], 'T-0007' in d['begun'], 'T-0007' in d['workflows'])")" = "(False, False, False)" ] && ok "the board forgets the start" || bad "the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
+get /api/sessions >"$T/j"
+hasnt "and no tab is left for it" "$T/j" '"feature": "T-0007"'
+[ "$(tk start "{\"name\":\"Game\",\"id\":\"T-0007\",\"project\":\"$HERE\",\"mode\":\"lite\"}")" = 200 ] && ok "the task can be started again" || bad "the task can be started again" "$(cat "$T/tk")"
+# a folder with documents in it stays
+F5=$(ls -d "$FX/features/T-0005"* | head -1)
+printf '# Notes\n' >"$F5/Notes.md"
+[ "$(wcancel '{"name":"T-0005"}')" = 200 ] && ok "a workflow with documents is cancelled too" || bad "a workflow with documents is cancelled too" "$(cat "$T/wc")"
+has "its folder was kept" "$T/wc" '"folder": "kept"'
+[ -f "$F5/Notes.md" ] && ok "with its documents" || bad "with its documents"
+hasnt "but the task is no longer linked to it" "$(taskfile T-0005)" "- **Feature:** T-0005"
+# an archived feature's workflow can be cancelled too: the task is freed, the feature stays archived
+post /api/feature/archive '{"name":"T-0006"}' >/dev/null
+[ -d "$FX/archive/T-0006" ] && has "the task still names its archived feature" "$(taskfile T-0006)" "- **Feature:** T-0006" || bad "an archived feature keeps its task link"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "(d['workflows']['T-0006']['missing'], d['workflows']['T-0006']['archived'])")" = "(True, True)" ] && ok "the board says its feature is archived" || bad "the board says its feature is archived" "$(pick "$T/j" "d['workflows']")"
+[ "$(wcancel '{"name":"T-0006"}')" = 200 ] && ok "an archived feature's workflow is cancelled" || bad "an archived feature's workflow is cancelled" "$(cat "$T/wc")"
+has "its folder is reported as archived" "$T/wc" '"folder": "archived"'
+has "and the task went back" "$T/wc" '"movedTo": "Backlog"'
+[ -f "$FX/archive/T-0006/T-0006 - Ticket.md" ] && ok "the feature stays in the archive, ticket and all" || bad "the feature stays in the archive"
+hasnt "the task is no longer linked to it" "$(taskfile T-0006)" "- **Feature:** T-0006"
+get "/api/tasks/board?name=Game" >"$T/j"
+[ "$(pick "$T/j" "('T-0006' in d['started'], 'T-0006' in d['begun'])")" = "(False, False)" ] && ok "and the board forgets the start" || bad "and the board forgets the start" "$(pick "$T/j" "(d['started'], d['begun'])")"
+rm -rf "$FX/archive/T-0006"  # the archive tests below expect only theirs
+# a task's type: kept in its file, a missing or unknown one reads as a task (a board of its own, so the counts above stand)
+[ "$(tk new-board '{"name":"Kinds","prefix":"K","columns":["To Do","Doing","Done"]}')" = 200 ] && ok "type: a board to try types on" || bad "type: a board to try types on" "$(cat "$T/tk")"
+KB="$FX/tasks/Kinds"
+kfile() { ls "$KB/items/$1"*.md 2>/dev/null | head -1; }
+kget() { get "/api/tasks/task?name=Kinds&id=$1" >"$T/j"; }
+[ "$(tk create '{"name":"Kinds","title":"Crash on pause","type":"Bug"}')" = 200 ] && [ "$(pick "$T/tk" "d['task']['type']")" = Bug ] &&
+	grep -qxF -- '- **Type:** Bug' "$(kfile K-0001)" && ok "type: a bug is created with its line" || bad "type: a bug is created with its line" "$(cat "$T/tk")"
+[ "$(tk create '{"name":"Kinds","title":"No type given"}')" = 200 ] && [ "$(pick "$T/tk" "d['task']['type']")" = Task ] &&
+	grep -qxF -- '- **Type:** Task' "$(kfile K-0002)" && ok "type: a task made with none is a task" || bad "type: a task made with none is a task" "$(cat "$T/tk")"
+kn=$(ls "$KB/items" | wc -l | tr -d ' ')
+[ "$(tk create '{"name":"Kinds","title":"Odd one","type":"nonsense"}')" = 400 ] && [ "$(ls "$KB/items" | wc -l | tr -d ' ')" = "$kn" ] &&
+	ok "type: a name that isn't a type is refused and makes no file" || bad "type: a name that isn't a type is refused and makes no file" "$(cat "$T/tk")"
+kget K-0001; REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"K-0001\",\"rev\":\"$REV\",\"type\":\"Story\"}")" = 200 ] &&
+	[ "$(grep -c -- '- \*\*Type:\*\*' "$(kfile K-0001)")" = 1 ] && has "type: a save changes the one Type line" "$(kfile K-0001)" "- **Type:** Story" || bad "type: a save changes the one Type line" "$(cat "$(kfile K-0001)")"
+kget K-0001
+[ "$(pick "$T/j" "d['type']")" = Story ] && ok "type: and the task reads as that type" || bad "type: and the task reads as that type" "$(head -c 300 "$T/j")"
+REV=$(pick "$T/j" "d['rev']")
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"K-0001\",\"rev\":\"$REV\",\"type\":\"nonsense\"}")" = 400 ] && has "type: a save with an unknown type is refused, the file left alone" "$(kfile K-0001)" "- **Type:** Story" || bad "type: a save with an unknown type is refused, the file left alone"
+printf '# T-0050: By hand\n\n- **Status:** Backlog\n- **Priority:** Low\n\n## Description\n\nBy hand.\n' >"$KB/items/T-0050 - By hand.md"
+kget T-0050
+[ "$(pick "$T/j" "d['type']")" = Task ] && ok "type: a file with no Type line reads as a task" || bad "type: a file with no Type line reads as a task" "$(head -c 300 "$T/j")"
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0050\",\"rev\":\"$(pick "$T/j" "d['rev']")\",\"priority\":\"High\"}")" = 200 ] &&
+	printf '# T-0050: By hand\n\n- **Status:** Backlog\n- **Priority:** High\n\n## Description\n\nBy hand.\n' >"$T/want" && cmp -s "$T/want" "$(kfile T-0050)" &&
+	ok "type: saving another field changes only that line and adds no Type line" || bad "type: saving another field changes only that line and adds no Type line" "$(cat "$(kfile T-0050)")"
+printf '# T-0051: Odd type\n\n- **Status:** Backlog\n- **Type:** Defect\n\n## Description\n\nBy hand.\n' >"$KB/items/T-0051 - Odd type.md"
+kget T-0051
+[ "$(pick "$T/j" "d['type']")" = Task ] && ok "type: a name that isn't one of the four reads as a task" || bad "type: a name that isn't one of the four reads as a task" "$(head -c 300 "$T/j")"
+[ "$(tk save "{\"name\":\"Kinds\",\"id\":\"T-0051\",\"rev\":\"$(pick "$T/j" "d['rev']")\",\"type\":\"Bug\"}")" = 200 ] &&
+	[ "$(grep -c -- '- \*\*Type:\*\*' "$(kfile T-0051)")" = 1 ] && has "type: saving a type over an unknown one leaves one Type line" "$(kfile T-0051)" "- **Type:** Bug" || bad "type: saving a type over an unknown one leaves one Type line" "$(cat "$(kfile T-0051)")"
+# a board.json that won't read is never written over
+cp "$GB/board.json" "$T/board.json"; printf '{ nope' >"$GB/board.json"
+[ "$(tk create '{"name":"Game","title":"x"}')" = 409 ] && ok "a broken board.json refuses changes" || bad "a broken board.json refuses changes"
+get "/api/tasks/board?name=Game" >"$T/j"
+has "and says so" "$T/j" '"broken": true'
+[ "$(cat "$GB/board.json")" = "{ nope" ] && ok "leaving it as it is" || bad "leaving it as it is"
+cp "$T/board.json" "$GB/board.json"
+ls "$TATTY_HOME/tasks-index/"*.json >/dev/null 2>&1 && ok "the index is kept in Tatty's home" || bad "the index is kept in Tatty's home"
+# a board that is a junction to a folder elsewhere (Windows)
+if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/elsewhere/Linked/items" && cp "$T/board.json" "$T/elsewhere/Linked/" &&
+	MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$FX/tasks/Linked")" "$(cygpath -w "$T/elsewhere/Linked")" >/dev/null 2>&1; then
+	[ "$(tk create '{"name":"Linked","title":"Through a junction"}')" = 200 ] && ls "$T/elsewhere/Linked/items/"*"Through a junction.md" >/dev/null 2>&1 &&
+		ok "a board through a junction" || bad "a board through a junction" "$(cat "$T/tk")"
+else
+	echo "skip  a board through a junction: no mklink here"
+fi
+fi
+if section taskwrite; then
+echo "# task boards: write it for me"
+# The stand-in model keeps its arguments (one a line) and the prompt it was given, and answers with a fenced
+# description and criteria. tw-fail: the model errors; tw-empty: it writes nothing; tw-slow: it takes a while.
+cat >"$T/claude-tw.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+printf '%s\n' "$@" >"$d/tw-args"
+cat >"$d/tw-prompt"
+[ -f "$d/tw-slow" ] && sleep 20 >/dev/null
+if [ -f "$d/tw-fail" ]; then echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model is down"}'; exit 0; fi
+case "$*" in *Read,Glob,Grep*) echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/Inventory.cs"}}]}}' ;; esac
+if [ -f "$d/tw-empty" ]; then echo '{"type":"result","subtype":"success","is_error":false,"result":"  ","total_cost_usd":0.002}'; exit 0; fi
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"```markdown\nA fuller description.\n\n### Acceptance criteria\n- [ ] It works\n```","total_cost_usd":0.0123}'
+EOS
+tw() { curl -s -o "$T/tw" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/tasks/write"; }
+twc() { curl -s -o "$T/tw" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/tasks/write-cancel"; }
+# tw_done <n>: wait for the n-th finished run; twlast <expr>: a part of the latest finished one
+tw_done() {
+	for _ in $(seq 1 100); do
+		get /api/events >"$T/ev"
+		[ "$(pick "$T/ev" "sum(1 for e in d if e['type'] == 'taskwrite' and e.get('done'))")" -ge "$1" ] && return 0
+		sleep 0.2
+	done
+	return 1
+}
+twlast() { pick "$T/ev" "(lambda e: ${1:-e})([e for e in d if e['type'] == 'taskwrite' and e.get('done')][-1])"; }
+[ "$(tw '{"name":"Game","runId":"run-empty-1","title":" ","note":""}')" = 400 ] && ok "write: nothing typed is refused" || bad "write: nothing typed is refused" "$(cat "$T/tw")"
+[ "$(tw '{"name":"Game","runId":"x","title":"A"}')" = 400 ] && ok "write: a run id of 6 to 40 characters" || bad "write: a run id of 6 to 40 characters"
+[ "$(tw '{"name":"Game","runId":"run-shape-1","title":"A","shape":"long"}')" = 400 ] && ok "write: an unknown shape is refused" || bad "write: an unknown shape is refused"
+[ "$(tw '{"name":"Game","runId":"run-ctx-1","title":"A","context":"web"}')" = 400 ] && ok "write: an unknown context is refused" || bad "write: an unknown context is refused"
+[ "$(tw '{"name":"Game","runId":"run-proj-1","title":"A","context":"project"}')" = 400 ] && ok "write: reading the project needs a folder" || bad "write: reading the project needs a folder"
+[ "$(tw '{"name":"Game","runId":"run-proj-2","title":"A","context":"project","folder":"/no/such/folder"}')" = 400 ] && ok "write: and one that exists" || bad "write: and one that exists"
+[ "$(tw '{"name":"Nope","runId":"run-none-1","title":"A"}')" = 404 ] && ok "write: no such board" || bad "write: no such board"
+cp "$(taskfile T-0003)" "$T/t3.before"
+[ "$(tw '{"name":"Game","runId":"run-aaaa-1","id":"T-0003","title":"Task 3","type":"Bug","note":"rough line","shape":"both","context":"board"}')" = 202 ] &&
+	ok "write: a run starts" || bad "write: a run starts" "$(cat "$T/tw")"
+tw_done 1 && ok "write: it finishes" || bad "write: it finishes"
+[ "$(twlast "(e['ok'], e['text'].startswith('A fuller description.'), e['text'].endswith('It works'), e['cost'])")" = "(True, True, True, 0.0123)" ] &&
+	ok "write: the answer comes as an event, its fence taken off, with the cost" || bad "write: the answer comes as an event, its fence taken off, with the cost" "$(twlast "")"
+has "write: the prompt names the task" "$T/tw-prompt" "Task title: Task 3"
+has "write: and carries the person's line" "$T/tw-prompt" "rough line"
+has "type: write: the prompt names the type the page sends" "$T/tw-prompt" "Type: Bug"
+has "write: and the other tasks' titles" "$T/tw-prompt" "- T-0001: Task 1"
+hasnt "write: but not the task itself" "$T/tw-prompt" "T-0003:"
+has "write: and asks for the criteria" "$T/tw-prompt" "### Acceptance criteria"
+has "write: no tools without the project" "$T/tw-args" "--tools"
+hasnt "write: no folder is added" "$T/tw-args" "--add-dir"
+has "write: a small model by default" "$T/tw-args" "haiku"
+cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: the task's file is not touched" || bad "write: the task's file is not touched"
+[ "$(tw "{\"name\":\"Game\",\"runId\":\"run-proj-3\",\"title\":\"Task 3\",\"shape\":\"detail\",\"context\":\"project\",\"folder\":\"$GRW\"}")" = 202 ] &&
+	ok "write: a run that reads the project starts" || bad "write: a run that reads the project starts" "$(cat "$T/tw")"
+tw_done 2 && ok "write: and finishes" || bad "write: and finishes"
+has "write: it may only read" "$T/tw-args" "Read,Glob,Grep"
+has "write: in the folder given" "$T/tw-args" "--add-dir"
+hasnt "write: shape detail doesn't ask for criteria" "$T/tw-prompt" "3 to 8 items"
+[ "$(pick "$T/ev" "any(e['type'] == 'taskwrite' and e.get('run', {}).get('step') == 'Reading Inventory.cs' for e in d)")" = True ] &&
+	ok "write: its steps are reported" || bad "write: its steps are reported"
+touch "$T/tw-fail"
+tw '{"name":"Game","runId":"run-fail-1","title":"Task 3"}' >/dev/null
+tw_done 3 && [ "$(twlast "(e['ok'], e['error'], e['text'])")" = "(False, 'model is down', '')" ] && ok "write: a model error is reported" || bad "write: a model error is reported" "$(twlast "")"
+rm -f "$T/tw-fail"
+touch "$T/tw-empty"
+tw '{"name":"Game","runId":"run-empty-2","title":"Task 3"}' >/dev/null
+tw_done 4 && [ "$(twlast "(e['ok'], e['error'])")" = "(False, 'The model wrote nothing.')" ] && ok "write: an empty answer is an error" || bad "write: an empty answer is an error" "$(twlast "")"
+rm -f "$T/tw-empty"
+# a slow run: the same run id twice is refused, and two at once is the most
+touch "$T/tw-slow"
+[ "$(tw '{"name":"Game","runId":"run-slow-1","title":"Task 3"}')" = 202 ] && ok "write: a slow run starts" || bad "write: a slow run starts"
+[ "$(tw '{"name":"Game","runId":"run-slow-1","title":"Task 3"}')" = 409 ] && ok "write: the same run twice is refused" || bad "write: the same run twice is refused"
+[ "$(tw '{"name":"Game","runId":"run-slow-2","title":"Task 3"}')" = 202 ] && ok "write: a second at once" || bad "write: a second at once"
+[ "$(tw '{"name":"Game","runId":"run-slow-3","title":"Task 3"}')" = 409 ] && ok "write: a third is refused" || bad "write: a third is refused" "$(cat "$T/tw")"
+[ "$(twc '{"name":"Game","runId":"run-slow-1"}')" = 200 ] && has "write: stopping one" "$T/tw" '"ok": true'
+twc '{"name":"Game","runId":"run-slow-2"}' >/dev/null
+tw_done 6 && [ "$(twlast "e['error']")" = "Stopped." ] && ok "write: a stopped run says so" || bad "write: a stopped run says so" "$(twlast "")"
+rm -f "$T/tw-slow"
+[ "$(twc '{"name":"Game","runId":"run-gone-1"}')" = 200 ] && has "write: stopping one that isn't running is harmless" "$T/tw" '"ok": false'
+cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: still no task file touched" || bad "write: still no task file touched"
+
+fi
+if section taskmerge; then
+echo "# merging: the task board"
+[ "$(tk new-board '{"name":"Rev","prefix":"R"}')" = 200 ] && ok "a board with the default columns" || bad "a board with the default columns" "$(cat "$T/tk")"
+get "/api/tasks/board?name=Rev" >"$T/j"
+[ "$(pick "$T/j" "','.join(c['name'] for c in d['columns'])")" = "To Do,In Progress,In Review,QA Ready,Done" ] && ok "they include In Review and QA Ready" || bad "they include In Review and QA Ready" "$(pick "$T/j" "d['columns']")"
+[ "$(tk create '{"name":"Rev","title":"Ship it"}')" = 200 ] && ok "a task" || bad "a task"
+[ "$(tk start "{\"name\":\"Rev\",\"id\":\"R-0001\",\"project\":\"$GRW\"}")" = 200 ] && ok "its workflow starts" || bad "its workflow starts" "$(cat "$T/tk")"
+has "moved to In Progress" "$T/tk" '"moved": "In Progress"'
+RF=$(ls "$FX/tasks/Rev/items/R-0001"*.md | head -1)
+post /api/merge '{"name":"R-0001","action":"opened","url":"https://git.example/mr/9"}' >"$T/j"
+has "an opened request is recorded" "$T/j" '"state": "opened"'
+has "its task is in review" "$RF" "- **Status:** In Review"
+get "/api/tasks/board?name=Rev" >"$T/j"
+QA=$(pick "$T/j" "[c['id'] for c in d['columns'] if c['name'] == 'QA Ready'][0]")
+post /api/tasks/move "{\"name\":\"Rev\",\"id\":\"R-0001\",\"to\":\"$QA\"}" >/dev/null
+post /api/merge '{"name":"R-0001","action":"merged"}' >"$T/j"
+has "merged" "$T/j" '"state": "merged"'
+has "a card you moved on stays where you put it" "$RF" "- **Status:** QA Ready"
+
+fi
+if section qa; then
+echo "# QA mode"
+if [ ! -f "${TATTY_TOOLBOX:-/none}/plugins/qa/skills/tt-qa-bug/scripts/bug.sh" ]; then
+	echo "skip  QA mode: the toolbox has no qa plugin"
+else
+post /api/root "{\"path\":\"$FX\"}" >/dev/null # (the features section does this too: this one needs the fixture root only)
+[ "$(code "$U/static/qa.js")" = 200 ] && ok "qa.js served" || bad "qa.js served"
+[ "$(code "$U/static/qa.css")" = 200 ] && ok "qa.css served" || bad "qa.css served"
+# qb <what> <body>: POST /api/qa/<what>; the answer in $T/qa, the HTTP code printed
+qb() { curl -s -o "$T/qa" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/qa/$1"; }
+# the stand-in for the model's drafts and Jira's answer (the main stand-in hands these prompts to it)
+cat >"$T/claude-qa.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+echo "$*" >>"$d/claude-qa.log"
+case "$*" in
+*"You turn a tester"*) cat "$d/qa-bug.out" ;;
+*"You break a feature"*) cat "$d/qa-plan.out" ;;
+*) if [ -f "$d/qa-jira-fail" ]; then
+	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"ok":false,"message":"Project ABC does not exist"}}'
+else
+	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"ok":true,"key":"ABC-77","url":"https://x.atlassian.net/browse/ABC-77"}}'
+fi ;;
+esac
+EOS
+cat >"$T/qa-bug.out" <<'EOS'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"result":"{\"title\":\"Login does nothing on retry\",\"severity\":\"Critical\",\"summary\":\"Second tap does nothing.\",\"steps\":[\"Open the app\",\"Enter a wrong password\",\"Tap Login twice\"],\"expected\":\"The login is retried.\",\"actual\":\"Nothing happens.\",\"environment\":\"\",\"evidence\":\"\",\"notStated\":[\"the build\"]}"}
+EOS
+cat >"$T/qa-plan.out" <<'EOS'
+{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.05,"result":"```json\n{\"areas\":[{\"title\":\"Login\",\"why\":\"The entry path.\",\"items\":[{\"title\":\"Wrong password\",\"how\":[\"Open the app\",\"Enter a wrong password\"],\"expect\":\"An error shows.\"},{\"title\":\"Retry\",\"how\":[\"Tap Login twice\"],\"expect\":\"The login retries.\"}]},{\"title\":\"Profile\",\"why\":\"\",\"items\":[{\"title\":\"Avatar\",\"how\":[\"Open the profile\"],\"expect\":\"The avatar shows.\"}]}],\"notSpecified\":[\"the lockout limit\"]}\n```"}
+EOS
+# an event of a kind has arrived (the drafts and Jira answer on a thread)
+qaev() { local i; for i in $(seq 1 60); do get "/api/events?since=0" >"$T/ev"; grep -q "$1" "$T/ev" && return 0; sleep 0.3; done; return 1; }
+get /api/qa >"$T/j"
+[ "$(pick "$T/j" "(d['available'], d['bugs'], d['plans'])")" = "(True, [], [])" ] && ok "nothing under test yet" || bad "nothing under test yet" "$(head -c 300 "$T/j")"
+get /api/root >"$T/j"; has "the root says where QA lives" "$T/j" '"qa":'
+
+# bugs
+[ "$(qb bug/save '{"title":"x"}')" = 400 ] && has "a bug needs its facts" "$T/qa" "summary is required" || bad "a bug needs its facts" "$(cat "$T/qa")"
+[ "$(qb bug/save '{"title":"a/b","summary":"s","steps":"a","expected":"e","actual":"x"}')" = 400 ] && ok "a title can't hold a path character" || bad "a title can't hold a path character" "$(cat "$T/qa")"
+[ "$(qb bug/save '{"title":"Login does nothing","severity":"Major","feature":"Demo","summary":"s","steps":"Open\n- Tap","expected":"e","actual":"x"}')" = 200 ] && ok "a bug is saved" || bad "a bug is saved" "$(cat "$T/qa")"
+[ "$(pick "$T/qa" "(d['id'], d['status'], d['steps'])")" = "('BUG-01', 'New', '1. Open\n2. Tap')" ] && ok "it is BUG-01, New, with numbered steps" || bad "it is BUG-01, New, with numbered steps" "$(cat "$T/qa")"
+[ -f "$FX/qa/Bugs/BUG-01 - Login does nothing.md" ] && ok "in the root's qa/Bugs folder" || bad "in the root's qa/Bugs folder" "$(ls -R "$FX/qa" 2>&1 | head)"
+[ "$(qb bug/save '{"title":"Second","severity":"Minor","summary":"s","steps":"a","expected":"e","actual":"x"}')" = 200 ] && [ "$(pick "$T/qa" "d['id']")" = BUG-02 ] && ok "the next bug is BUG-02" || bad "the next bug is BUG-02" "$(cat "$T/qa")"
+get /api/qa >"$T/j"
+[ "$(pick "$T/j" "[b['id'] for b in d['bugs']]")" = "['BUG-02', 'BUG-01']" ] && ok "the newest bug is listed first" || bad "the newest bug is listed first" "$(head -c 300 "$T/j")"
+H=$(pick "$T/j" "d['bugs'][1]['hash']")
+[ "$(qb bug/set "{\"id\":\"BUG-01\",\"field\":\"jira\",\"value\":\"ABC-5\",\"hash\":\"$H\"}")" = 200 ] && ok "a field is set when the bug is as it was read" || bad "a field is set when the bug is as it was read" "$(cat "$T/qa")"
+[ "$(qb bug/set "{\"id\":\"BUG-01\",\"field\":\"status\",\"value\":\"Fixed\",\"hash\":\"$H\"}")" = 409 ] && ok "a bug that moved since is refused (409)" || bad "a bug that moved since is refused (409)" "$(cat "$T/qa")"
+[ "$(qb bug/set '{"id":"BUG-01","field":"title","value":"x"}')" = 400 ] && ok "only header fields are set" || bad "only header fields are set"
+[ "$(qb bug/set '{"id":"BUG-01","field":"status","value":"Done"}')" = 400 ] && ok "a status is one of the list" || bad "a status is one of the list" "$(cat "$T/qa")"
+[ "$(qb bug/save '{"id":"BUG-01","title":"Login does nothing on retry","actual":"still nothing"}')" = 200 ] && ok "a bug is changed" || bad "a bug is changed" "$(cat "$T/qa")"
+[ "$(pick "$T/qa" "(d['title'], d['actual'], d['steps'], d['jira'])")" = "('Login does nothing on retry', 'still nothing', '1. Open\n2. Tap', 'ABC-5')" ] && ok "only what was sent changed" || bad "only what was sent changed" "$(cat "$T/qa")"
+get "/api/qa/bug?id=BUG-9" >"$T/j"; has "an unknown bug is said so" "$T/j" "no such bug"
+[ "$(code -H "X-TT-Token: $K" "$U/api/qa/bug?id=..%2Fx")" = 400 ] && ok "a bug ID is checked" || bad "a bug ID is checked"
+
+# a bug drafted from plain words: the fields come back in an event, nothing is saved
+[ "$(qb bug/draft '{"runId":"bugdraft01","description":"login retry does nothing","client":"t"}')" = 202 ] && ok "a draft starts" || bad "a draft starts" "$(cat "$T/qa")"
+qaev '"kind": "bugdraft"' && ok "the draft answers" || bad "the draft answers"
+$PY -c "
+import json, sys
+e = [x for x in json.load(open(sys.argv[1], encoding='utf-8')) if x.get('kind') == 'bugdraft'][0]
+r = e['result']
+sys.exit(0 if e['ok'] and r['fields']['title'] == 'Login does nothing on retry' and r['fields']['severity'] == 'Critical' and r['fields']['steps'].count('\n') == 2 and r['notStated'] == ['the build'] else 1)" "$T/ev" && ok "as fields, with what the description left out" || bad "as fields, with what the description left out" "$(grep -o '"kind": "bugdraft".*' "$T/ev" | head -c 300)"
+[ "$(qb bug/draft '{"runId":"bugdraft02","description":"  "}')" = 400 ] && ok "a draft needs words" || bad "a draft needs words"
+[ "$(qb bug/draft '{"runId":"bad id","description":"x"}')" = 400 ] && ok "a run id is checked" || bad "a run id is checked"
+[ "$(ls "$FX/qa/Bugs" | wc -l | tr -d ' ')" = 2 ] && ok "and nothing was saved" || bad "and nothing was saved" "$(ls "$FX/qa/Bugs")"
+[ "$(qb run-cancel '{"runId":"nothing12"}')" = 404 ] && ok "a run that isn't going can't be stopped" || bad "a run that isn't going can't be stopped"
+
+# creating a bug in Jira (the stand-in answers ABC-77)
+[ "$(qb bug/jira '{"id":"BUG-01","project":"ABC"}')" = 409 ] && has "a bug that has a ticket already is refused" "$T/qa" "ABC-5" || bad "a bug that has a ticket already is refused" "$(cat "$T/qa")"
+[ "$(qb bug/jira '{"id":"BUG-02","project":"abc!"}')" = 400 ] && ok "the project is a key" || bad "the project is a key" "$(cat "$T/qa")"
+: >"$T/qa-jira-fail"
+[ "$(qb bug/jira '{"id":"BUG-02","project":"ABC"}')" = 202 ] && ok "Create in Jira starts" || bad "Create in Jira starts" "$(cat "$T/qa")"
+qaev "Project ABC does not exist" && ok "Jira answers, and a refusal is passed on" || bad "Jira answers, and a refusal is passed on"
+get "/api/qa/bug?id=BUG-02" >"$T/j"; [ "$(pick "$T/j" "d['jira']")" = "" ] && ok "and the bug has no key" || bad "and the bug has no key"
+rm -f "$T/qa-jira-fail"
+[ "$(qb bug/jira '{"id":"BUG-02","project":"abc","issueType":"Bug"}')" = 202 ] && ok "tried again" || bad "tried again" "$(cat "$T/qa")"
+for _ in $(seq 1 60); do get "/api/qa/bug?id=BUG-02" >"$T/j"; [ "$(pick "$T/j" "d['jira']")" = ABC-77 ] && break; sleep 0.3; done
+[ "$(pick "$T/j" "d['jira']")" = ABC-77 ] && ok "the ticket's key is kept on the bug" || bad "the ticket's key is kept on the bug" "$(head -c 300 "$T/j")"
+has "the model is told what to create and where" "$T/claude-qa.log" "createJiraIssue in project ABC with issue type \"Bug\""
+has "and may use only the create tools" "$T/claude-qa.log" "mcp__atlassian__createJiraIssue"
+
+# a feature's test plan
+[ "$(qb plan '{"feature":"../x","op":"start"}')" = 404 ] && ok "a plan is for a feature that exists" || bad "a plan is for a feature that exists"
+[ "$(qb plan '{"feature":"Demo","op":"area-add","title":"x"}')" = 404 ] && ok "no plan, no areas" || bad "no plan, no areas" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"start"}')" = 200 ] && ok "a plan is started" || bad "a plan is started" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"start"}')" = 409 ] && ok "once" || bad "once"
+[ "$(qb plan '{"feature":"Demo","op":"area-add","title":"Login","why":"The entry path."}')" = 200 ] && [ "$(pick "$T/qa" "d['made']")" = A1 ] && ok "an area is added" || bad "an area is added" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A1","title":"Wrong password","how":"Open the app\nEnter a wrong password","expect":"An error shows."}')" = 200 ] && [ "$(pick "$T/qa" "d['made']")" = A1.1 ] && ok "an item is added" || bad "an item is added" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A1","title":"Retry","how":"Tap twice","expect":"It retries."}')" = 200 ] && ok "another" || bad "another"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A1","title":"No steps"}')" = 400 ] && ok "an item needs its steps and expectation" || bad "an item needs its steps and expectation" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"item-add","id":"A9","title":"x","how":"y","expect":"z"}')" = 400 ] && ok "in an area that exists" || bad "in an area that exists" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.1","result":"fail","note":"no error shown"}')" = 200 ] && ok "a result is recorded" || bad "a result is recorded" "$(cat "$T/qa")"
+[ "$(pick "$T/qa" "d['counts']")" = "{'items': 2, 'pass': 0, 'fail': 1, 'blocked': 0, 'skip': 0, 'untested': 1}" ] && ok "and counted" || bad "and counted" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.2","result":"great"}')" = 400 ] && ok "a result is one of the five" || bad "a result is one of the five"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.1","result":"fail","note":"no error shown","bug":"BUG-01"}')" = 200 ] && ok "a failed item takes its bug" || bad "a failed item takes its bug" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"check","id":"A1.1","result":"fail","bug":"nope"}')" = 400 ] && ok "a bug is an ID" || bad "a bug is an ID"
+get "/api/qa/plan?feature=Demo" >"$T/j"
+[ "$(pick "$T/j" "[(i['id'], i['result'], i['bug'], i['note']) for a in d['areas'] for i in a['items']]")" = "[('A1.1', 'fail', 'BUG-01', 'no error shown'), ('A1.2', 'untested', '', '')]" ] && ok "the plan reads back with its results" || bad "the plan reads back with its results" "$(head -c 500 "$T/j")"
+[ "$(qb plan '{"feature":"Demo","op":"remove","id":"A1.1"}')" = 400 ] && has "an item with results is kept" "$T/qa" "has results" || bad "an item with results is kept" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"edit","id":"A1.2","expect":"It retries and shows a spinner."}')" = 200 ] && ok "an item is edited" || bad "an item is edited" "$(cat "$T/qa")"
+[ "$(qb plan '{"feature":"Demo","op":"status","status":"Ready"}')" = 200 ] && [ "$(pick "$T/qa" "d['meta']['status']")" = Ready ] && ok "the plan is marked ready" || bad "the plan is marked ready" "$(cat "$T/qa")"
+get /api/qa >"$T/j"
+[ "$(pick "$T/j" "[(p['feature'], p['status'], p['counts']['items'], p['counts']['fail']) for p in d['plans']]")" = "[('Demo', 'Ready', 2, 1)]" ] && ok "the home lists it with its counts" || bad "the home lists it with its counts" "$(head -c 400 "$T/j")"
+[ "$(qb plan/draft '{"runId":"plandraft1","feature":"Demo"}')" = 409 ] && ok "a plan with areas isn't drafted over" || bad "a plan with areas isn't drafted over" "$(cat "$T/qa")"
+
+# areas drafted from the feature's own documents
+[ "$(qb plan '{"feature":"Lite","op":"start"}')" = 200 ] && ok "a second feature's plan" || bad "a second feature's plan"
+[ "$(qb plan/draft '{"runId":"plandraft2","feature":"Lite","client":"t"}')" = 202 ] && ok "its areas are drafted" || bad "its areas are drafted" "$(cat "$T/qa")"
+qaev '"kind": "plandraft"' && ok "the draft answers" || bad "the draft answers"
+$PY -c "
+import json, sys
+e = [x for x in json.load(open(sys.argv[1], encoding='utf-8')) if x.get('kind') == 'plandraft'][0]
+r = e['result']
+sys.exit(0 if e['ok'] and r['areas'] == 2 and r['items'] == 3 and r['notSpecified'] == ['the lockout limit'] else 1)" "$T/ev" && ok "two areas and three items, and what the documents don't say" || bad "two areas and three items, and what the documents don't say" "$(grep -o '"kind": "plandraft".*' "$T/ev" | head -c 300)"
+get "/api/qa/plan?feature=Lite" >"$T/j"
+[ "$(pick "$T/j" "(d['meta']['status'], [(a['id'], a['title'], len(a['items'])) for a in d['areas']])")" = "('Draft', [('A1', 'Login', 2), ('A2', 'Profile', 1)])" ] && ok "written through the script, as a draft" || bad "written through the script, as a draft" "$(head -c 500 "$T/j")"
+has "the model was told to read, not write" "$T/claude-qa.log" "--tools Read,Glob,Grep"
+
+# the same work in a Claude session (a dry run: nothing is opened)
+[ "$(qb session '{"kind":"bug","description":"it crashed"}')" = 200 ] && ok "a bug session" || bad "a bug session" "$(cat "$T/qa")"
+has "runs tt-qa-bug on the bugs folder" "$T/qa" '/tt-qa-bug'
+[ "$(qb session '{"kind":"run","feature":"Demo"}')" = 200 ] && has "a testing session runs tt-qa-test-run on the plan" "$T/qa" '/tt-qa-test-run' || bad "a testing session" "$(cat "$T/qa")"
+[ "$(qb session '{"kind":"plan"}')" = 400 ] && ok "a plan session needs a feature" || bad "a plan session needs a feature"
+[ "$(qb session '{"kind":"run","feature":"Empty"}')" = 404 ] && ok "and a plan to test" || bad "and a plan to test" "$(cat "$T/qa")"
+[ "$(qb session '{"kind":"jump"}')" = 400 ] && ok "of a kind it knows" || bad "of a kind it knows"
+fi
+fi
+if section stories; then
+echo "# user stories"
+if [ ! -f "$TATTY_TOOLBOX/plugins/design/skills/tt-user-stories/scripts/stories.sh" ] && [ ! -f "$TATTY_TOOLBOX/../design/skills/tt-user-stories/scripts/stories.sh" ]; then
+	echo "skip  the User Stories board: the toolbox has no design plugin with tt-user-stories"
+else
+[ "$(code "$U/static/stories.js")" = 200 ] && ok "stories.js served" || bad "stories.js served"
+[ "$(code "$U/static/stories.css")" = 200 ] && ok "stories.css served" || bad "stories.css served"
+get /api/designs >"$T/j"
+has "no boards yet" "$T/j" '"designs": []'
+has "the design plugin is found" "$T/j" '"plugin": true'
+has "boards live in the root's design folder" "$T/j" "fxroot/design"
+# the intake: picked in the file dialog (the stand-in), then copied into the board
+mkdir -p "$T/designs"
+printf '# Bag\n\n## Pickup\n\nWalking over an item puts it in the bag.\n' >"$T/designs/Bag - Design.md"
+INTAKE=$(cd "$T/designs" && { pwd -W 2>/dev/null || pwd; })/"Bag - Design.md"
+printf '%s' "$INTAKE" >"$T/pick-answer"
+post /api/pick-file '{"start":""}' >"$T/j"
+has "the file dialog chose the design document" "$T/j" "Bag - Design.md"
+has "it was the file dialog" "$T/picker.log" "--pick-file"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"a/b\",\"intake\":\"$INTAKE\"}" "$U/api/new-design")" = 400 ] &&
+	ok "new board: a bad name is refused" || bad "new board: a bad name is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"X\",\"intake\":\"$T/none.txt\"}" "$U/api/new-design")" = 400 ] &&
+	ok "new board: only a markdown document" || bad "new board: only a markdown document"
+post /api/new-design "{\"name\":\"Inventory\",\"intake\":\"$INTAKE\"}" >"$T/j"
+has "new board made" "$T/j" '"doc": "Inventory - User Stories.md"'
+BD="$FX/design/Inventory"
+[ -f "$BD/Bag - Design.md" ] && ok "the design document is copied in" || bad "the design document is copied in"
+has "the stories document is started by stories.sh" "$BD/Inventory - User Stories.md" "- **Source:** [[Bag - Design]]"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "{\"name\":\"Inventory\",\"intake\":\"$INTAKE\"}" "$U/api/new-design")" = 409 ] &&
+	ok "new board: one that exists is refused" || bad "new board: one that exists is refused"
+# the headless run: a stand-in claude that writes stories through stories.sh,
+# as the skill does, and says so in stream-json
+US_SCRIPT=""
+for c in "$TATTY_TOOLBOX/plugins/design" "$TATTY_TOOLBOX/../design"; do
+	[ -f "$c/skills/tt-user-stories/scripts/stories.sh" ] && { US_SCRIPT="$c/skills/tt-user-stories/scripts/stories.sh"; break; }
+done
+printf '%s' "$US_SCRIPT" >"$T/stories-script"
+cat >"$T/claude-p.sh" <<'EOS'
+#!/usr/bin/env bash
+here=$(dirname "$0"); US=$(cat "$here/stories-script")
+prompt=$(cat)
+printf '%s\n' "$prompt" >"$here/claude-prompt"; printf '%s\n' "$*" >"$here/claude-p-args"
+printf '%s\n' "${TATTY_SESSION:-none}" >"$here/claude-p-session"
+say() { printf '%s\n' "$1"; }
+tool() { say "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"bash stories.sh $1\"}}]}}"; }
+say '{"type":"system","subtype":"init"}'
+[ -f "$here/claude-slow" ] && sleep 20
+case "$prompt" in
+*" draft "*)
+	doc=$(printf '%s' "$prompt" | sed 's/^.*" "\([^"]*\)"[[:space:]]*$/\1/')
+	tool "group add"; bash "$US" group add "$doc" Bag "Carrying things" >/dev/null
+	printf 'title: Pick up an item\ngroup: Bag\nas: player\nwant: to pick up items\nso_that: I can use them\ncriteria:\n  - Given a free slot, when I walk over an item, then it goes in my bag\n' >"$here/s1"
+	tool add; bash "$US" add "$doc" "$here/s1" >/dev/null
+	printf 'title: Grab items\ngroup: Bag\norigin: Suggested\nas: player\nwant: to grab items\nso_that: I keep them\ncriteria:\n  - Given an item, when I grab it, then it is mine\n' >"$here/s2"
+	tool add; bash "$US" add "$doc" "$here/s2" --proposed >/dev/null
+	printf 'title: Sort the bag\norigin: Suggested\nas: player\nwant: to sort my bag\nso_that: I find things\ncriteria:\n  - Given a bag, when I sort it, then it is in order\n' >"$here/s3"
+	tool add; bash "$US" add "$doc" "$here/s3" --proposed >/dev/null ;;
+*" alter "*)
+	doc=$(printf '%s' "$prompt" | sed 's/^[^"]*"\([^"]*\)".*$/\1/')
+	id=$(printf '%s' "$prompt" | grep -o 'US-[0-9]*' | head -1)
+	note=$(printf '%s' "$prompt" | sed 's/^.*US-[0-9]* "\([^"]*\)".*$/\1/')
+	cp "$note" "$here/claude-note" 2>/dev/null
+	printf 'title: Grab items from the floor\n' >"$here/s4"
+	tool edit; bash "$US" edit "$doc" "$id" "$here/s4" --altered >/dev/null ;;
+esac
+say '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0123,"result":"done"}'
+EOS
+# runs_done <n>: wait for the n-th finished run's event
+runs_done() {
+	for _ in $(seq 1 100); do
+		get /api/events >"$T/ev"
+		[ "$(pick "$T/ev" "sum(1 for e in d if e['type'] == 'stories' and e.get('done'))")" -ge "$1" ] && return 0
+		sleep 0.2
+	done
+	return 1
+}
+post /api/stories/run '{"name":"Inventory","mode":"draft"}' >"$T/j"
+has "a draft run starts" "$T/j" '"status": "running"'
+runs_done 1 && ok "the run finishes" || bad "the run finishes"
+has "the run is the skill's draft mode" "$T/claude-prompt" '/design:tt-user-stories draft "Bag - Design.md" "Inventory - User Stories.md"'
+has "headless, streaming" "$T/claude-p-args" "-p --output-format stream-json --verbose"
+has "only stories.sh may run" "$T/claude-p-args" "Bash(bash *stories.sh*)"
+has "nothing prompts" "$T/claude-p-args" "--permission-mode dontAsk"
+has "the run isn't one of Tatty's sessions" "$T/claude-p-session" "none"
+pick "$T/ev" "'\n'.join(e.get('run', {}).get('step', '') for e in d if e['type'] == 'stories' and e.get('run'))" >"$T/f"
+has "each tool call is a step on the page" "$T/f" "Writing a story"
+pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
+has "the new stories are named" "$T/f" "'new': ['US-01', 'US-02', 'US-03']"
+has "and what it cost" "$T/f" "'cost': 0.0123"
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "len(d['stories'])")" = 3 ] && ok "the board has the stories" || bad "the board has the stories" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['groups'][0]['name'] + ':' + str(d['groups'][0]['count']) + ':' + str(d['groups'][0]['colour'])")" = "Bag:2:0" ] &&
+	ok "groups with their counts and a colour" || bad "groups with their counts and a colour" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['stories'][1]['status'] + ' ' + d['stories'][1]['soThat']")" = "Proposed I keep them" ] &&
+	ok "stories read through stories.sh" || bad "stories read through stories.sh"
+[ "$(pick "$T/j" "d['problems']")" = "[]" ] && ok "no problems" || bad "no problems"
+[ "$(pick "$T/j" "d['intake']")" = "Bag - Design.md" ] && ok "the design document is known" || bad "the design document is known"
+get /api/designs >"$T/j"
+[ "$(pick "$T/j" "' '.join(str(d['designs'][0][k]) for k in ('name', 'stories', 'proposed', 'groups'))")" = "Inventory 3 2 1" ] &&
+	ok "the boards list counts them" || bad "the boards list counts them" "$(head -c 300 "$T/j")"
+# alter a proposed story: the note reaches the skill as a file
+post /api/stories/run '{"name":"Inventory","mode":"alter","id":"US-01","note":"x"}' >"$T/j"
+has "only a proposed story is altered" "$T/j" "Only a Proposed story"
+post /api/stories/run '{"name":"Inventory","mode":"alter","id":"US-02","note":"Say it is from the floor"}' >"$T/j"
+runs_done 2 && ok "the alter run finishes" || bad "the alter run finishes"
+has "the note reached the skill" "$T/claude-note" "Say it is from the floor"
+has "the story was rewritten" "$BD/Inventory - User Stories.md" "### US-02: Grab items from the floor"
+has "and counted as altered" "$BD/Inventory - User Stories.md" "- **Altered:** 1"
+pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
+has "the page hears which was rewritten" "$T/f" "'altered': ['US-02']"
+ls "$TATTY_HOME/runs" 2>/dev/null | grep -q . && bad "the run's note is cleaned up" || ok "the run's note is cleaned up"
+# changes a person makes on the board
+get "/api/design?name=Inventory" >"$T/j"
+H1=$(pick "$T/j" "d['stories'][0]['hash']")
+st_post() { curl -s -o "$T/j" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/stories"; }
+[ "$(st_post '{"name":"Inventory","action":"edit","id":"US-01","hash":"1","title":"Stale"}')" = 409 ] &&
+	ok "an edit to a story that changed is refused" || bad "an edit to a story that changed is refused"
+[ "$(st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-01\",\"hash\":\"$H1\",\"title\":\"Pick up an item from the floor\",\"details\":\"Items glow.\\n\\nA full bag refuses.\",\"criteria\":[\"Given a free slot, when I walk over it, then it is mine\",\"Given a full bag, when I walk over it, then it stays\"]}")" = 200 ] &&
+	ok "edit a story" || bad "edit a story" "$(head -c 300 "$T/j")"
+has "the edit is in the document" "$BD/Inventory - User Stories.md" "### US-01: Pick up an item from the floor"
+has "details as written" "$BD/Inventory - User Stories.md" "A full bag refuses."
+has "criteria as written" "$BD/Inventory - User Stories.md" "- Given a full bag, when I walk over it, then it stays"
+has "the answer is the board again" "$T/j" '"title": "Pick up an item from the floor"'
+[ "$(st_post '{"name":"Inventory","action":"edit","id":"US-01","title":"a\nb"}')" = 400 ] &&
+	ok "a title is one line" || bad "a title is one line"
+[ "$(st_post '{"name":"Inventory","action":"edit","id":"US-01","criteria":[]}')" = 400 ] &&
+	ok "a story keeps at least one criterion" || bad "a story keeps at least one criterion"
+has "with stories.sh's reason" "$T/j" "criterion"
+[ "$(st_post '{"name":"Inventory","action":"accept","id":"US-02"}')" = 200 ] && ok "accept" || bad "accept" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "[s['status'] for s in d['stories'] if s['id'] == 'US-02'][0]")" = Accepted ] && ok "accepted" || bad "accepted"
+[ "$(st_post '{"name":"Inventory","action":"reject","id":"US-03","reason":"Not for now"}')" = 200 ] && ok "reject" || bad "reject"
+has "rejected stories are retired" "$BD/Inventory - User Stories.md" "| US-03 | Sort the bag | Rejected: Not for now |"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"add","group":"Tools"}')" = 200 ] && ok "add a group" || bad "add a group"
+[ "$(pick "$T/j" "[g['colour'] for g in d['groups'] if g['name'] == 'Tools'][0]")" = 1 ] && ok "a new group gets the next colour" || bad "a new group gets the next colour"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"add","group":"bag"}')" = 400 ] && ok "group names are unique" || bad "group names are unique"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"rename","group":"Bag","value":"Inventory"}')" = 200 ] && ok "rename a group" || bad "rename a group"
+has "its stories follow" "$BD/Inventory - User Stories.md" "- **Group:** Inventory"
+[ "$(pick "$T/j" "[g['colour'] for g in d['groups'] if g['name'] == 'Inventory'][0]")" = 0 ] && ok "and so does its colour" || bad "and so does its colour"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"remove","group":"Inventory"}')" = 200 ] && ok "remove a group" || bad "remove a group"
+has "its stories are ungrouped" "$BD/Inventory - User Stories.md" "- **Group:** Ungrouped"
+[ "$(pick "$T/j" "[g['colour'] for g in d['groups'] if g['name'] == 'Tools'][0]")" = 1 ] && ok "the others keep their colours" || bad "the others keep their colours"
+[ "$(st_post '{"name":"Nope","action":"accept","id":"US-01"}')" = 404 ] && ok "an unknown board" || bad "an unknown board"
+# where the cards sit is Tatty's own
+post /api/stories/layout '{"name":"Inventory","cards":{"US-01":[10,20],"x":[1,1]},"view":{"x":5,"y":6,"z":0.8}}' >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "d['layout']['cards']['US-01']")" = "[10.0, 20.0]" ] && ok "a card's place is kept" || bad "a card's place is kept" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "d['layout']['view']['z']")" = 0.8 ] && ok "and the view" || bad "and the view"
+[ "$(pick "$T/j" "'x' in d['layout']['cards']")" = False ] && ok "only story IDs are kept" || bad "only story IDs are kept"
+ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in Tatty's home" || bad "in Tatty's home"
+hasnt "never in the document" "$BD/Inventory - User Stories.md" "10.0"
+# one run at a time; Stop ends it; edits wait for it
+touch "$T/claude-slow"
+post /api/stories/run '{"name":"Inventory","mode":"draft"}' >/dev/null
+sleep 0.5
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Inventory","mode":"draft"}' "$U/api/stories/run")" = 409 ] &&
+	ok "one run at a time" || bad "one run at a time"
+[ "$(st_post '{"name":"Inventory","action":"group","op":"add","group":"Later"}')" = 409 ] && ok "no edits while it writes" || bad "no edits while it writes"
+post /api/stories/cancel '{}' >"$T/j"
+has "stop" "$T/j" '"ok": true'
+runs_done 3 && ok "a stopped run ends" || bad "a stopped run ends"
+pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
+has "and says so" "$T/f" "'error': 'Stopped.'"
+rm -f "$T/claude-slow"
+# a hand edit (in Obsidian, say) reaches the page
+n0=$(pick "$T/ev" "len(d)")
+sleep 1.6; printf '\n' >>"$BD/Inventory - User Stories.md"
+for _ in $(seq 1 30); do get "/api/events?since=$n0" >"$T/ev2"; grep -q '"changed": true' "$T/ev2" && break; sleep 0.2; done
+has "a change on disk is an event" "$T/ev2" '"changed": true'
+# export to Tasks: accepted stories into a Tasks board's backlog, by Tatty's own writes
+ex_post() { curl -s -o "$T/j" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/stories/export"; }
+hash_of() { get "/api/design?name=Inventory" >"$T/h"; pick "$T/h" "[s['hash'] for s in d['stories'] if s['id'] == '$1'][0]"; }
+st_post '{"name":"Inventory","action":"group","op":"add","group":"Pickup"}' >/dev/null
+st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-02\",\"hash\":\"$(hash_of US-02)\",\"group\":\"Pickup\"}" >/dev/null
+printf 'title: Drop an item\nas: player\nwant: to drop items\nso_that: I make room\ncriteria:\n  - Given an item, when I drop it, then it is on the floor\n' >"$T/s5"
+bash "$US_SCRIPT" add "$BD/Inventory - User Stories.md" "$T/s5" --proposed >/dev/null
+IB="$FX/tasks/Inventory"
+[ "$(ex_post '{"name":"Inventory","ids":{"US-04":""},"board":"Inventory","newBoard":true}')" = 409 ] &&
+	ok "a Proposed story isn't exported" || bad "a Proposed story isn't exported" "$(head -c 300 "$T/j")"
+has "it says to accept it first" "$T/j" "accept it first"
+[ ! -d "$IB" ] && ok "and no board is made for it" || bad "and no board is made for it"
+[ "$(ex_post '{"name":"Inventory","ids":{"US-01":"1"},"board":"Inventory","newBoard":true}')" = 409 ] &&
+	ok "a story changed since the page read it isn't exported" || bad "a story changed since the page read it isn't exported"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Nope\"}")" = 404 ] &&
+	ok "an unknown Tasks board" || bad "an unknown Tasks board"
+[ "$(ex_post '{"name":"Inventory","ids":{},"board":"Inventory"}')" = 400 ] && ok "stories to export are named" || bad "stories to export are named"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-02\":\"$(hash_of US-02)\",\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\",\"newBoard\":true}")" = 200 ] &&
+	ok "export to a new board" || bad "export to a new board" "$(head -c 300 "$T/j")"
+[ "$(pick "$T/j" "[(c['story'], c['task']) for c in d['export']['created']]")" = "[('US-01', 'INVE-0001'), ('US-02', 'INVE-0002')]" ] &&
+	ok "a task each, in the stories' order" || bad "a task each, in the stories' order" "$(pick "$T/j" "d.get('export')")"
+[ -f "$IB/board.json" ] && ok "the board is made" || bad "the board is made"
+[ "$(pick "$IB/board.json" "d['prefix']")" = INVE ] && ok "numbering its tasks with a prefix of its own" || bad "numbering its tasks with a prefix of its own" "$(cat "$IB/board.json")"
+[ "$(pick "$IB/board.json" "d['order']['backlog']")" = "['INVE-0001', 'INVE-0002']" ] && ok "at the end of the backlog" || bad "at the end of the backlog"
+TF1="$IB/items/INVE-0001 - Pick up an item from the floor.md"
+TF2="$IB/items/INVE-0002 - Grab items from the floor.md"
+[ -f "$TF1" ] && [ -f "$TF2" ] && ok "named by ID and title" || bad "named by ID and title" "$(ls "$IB/items")"
+has "in the backlog" "$TF1" "- **Status:** Backlog"
+has "the story sentence is the description" "$TF1" "**As a** player, **I want** to pick up items, **so that** I can use them."
+has "its details under it" "$TF1" "### Details"
+has "the details as written" "$TF1" "A full bag refuses."
+has "the acceptance criteria are a section" "$TF1" "## Acceptance criteria"
+has "each criterion" "$TF1" "- Given a full bag, when I walk over it, then it stays"
+has "which story it was" "$TF1" '- **Story:** US-01 on the design board "Inventory"'
+hasnt "Ungrouped isn't a label" "$TF1" "Ungrouped"
+has "the group is the label" "$TF2" "- **Labels:** Pickup"
+[ "$(pick "$T/j" "(d['exported']['US-01']['task'], d['exported']['US-01']['changed'], 'US-04' in d['exported'])")" = "('INVE-0001', False, False)" ] &&
+	ok "the board knows which task each became" || bad "the board knows which task each became" "$(pick "$T/j" "d.get('exported')")"
+hasnt "never in the stories document" "$BD/Inventory - User Stories.md" "INVE-0001"
+get "/api/tasks/task?name=Inventory&id=INVE-0001" >"$T/t1"
+[ "$(pick "$T/t1" "[x for x in d['extra'] if x[0] == 'Story'][0][1]")" = 'US-01 on the design board "Inventory"' ] &&
+	ok "the Tasks board reads the Story field" || bad "the Tasks board reads the Story field" "$(head -c 300 "$T/t1")"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\"}")" = 200 ] &&
+	[ "$(pick "$T/j" "(d['export']['created'], d['export']['skipped'])")" = "([], ['US-01'])" ] &&
+	ok "a story already exported is skipped" || bad "a story already exported is skipped" "$(pick "$T/j" "d.get('export')")"
+[ "$(ls "$IB/items" | wc -l | tr -d ' ')" = 2 ] && ok "so no second task" || bad "so no second task"
+post /api/stories/layout '{"name":"Inventory","cards":{"US-02":[30,40]}}' >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "sorted(d['exported'])")" = "['US-01', 'US-02']" ] && ok "moving a card keeps the record" || bad "moving a card keeps the record"
+st_post "{\"name\":\"Inventory\",\"action\":\"edit\",\"id\":\"US-01\",\"hash\":\"$(hash_of US-01)\",\"title\":\"Pick up an item\"}" >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "d['exported']['US-01']['changed']")" = True ] && ok "a story edited after it went says so" || bad "a story edited after it went says so"
+[ "$(tk delete "{\"name\":\"Inventory\",\"id\":\"INVE-0001\",\"rev\":\"$(pick "$T/t1" "d['rev']")\"}")" = 200 ] && ok "its task deleted" || bad "its task deleted" "$(cat "$T/tk")"
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "'US-01' in d['exported']")" = False ] && ok "frees the story to go again" || bad "frees the story to go again"
+[ "$(ex_post "{\"name\":\"Inventory\",\"ids\":{\"US-01\":\"$(hash_of US-01)\"},\"board\":\"Inventory\"}")" = 200 ] &&
+	[ "$(pick "$T/j" "d['export']['created']")" = "[{'story': 'US-01', 'task': 'INVE-0003'}]" ] &&
+	ok "and it goes again, as a new task" || bad "and it goes again, as a new task" "$(pick "$T/j" "d.get('export')")"
+[ "$(tk start "{\"name\":\"Inventory\",\"id\":\"INVE-0002\",\"project\":\"$HERE\"}")" = 200 ] && ok "a workflow starts from an exported story" || bad "a workflow starts from an exported story" "$(cat "$T/tk")"
+ITK="$FX/features/INVE-0002/INVE-0002 - Ticket.md"
+has "its Ticket has the story" "$ITK" "- **Story:** US-02 on the design board"
+has "and its acceptance criteria" "$ITK" "## Acceptance criteria"
+# the whiteboard under the notes: what's added is kept with the cards, and so is the rest
+[ "$(wbc whiteboard '{"kind":"design","ref":"Inventory","items":{"upsert":[{"id":"nt1","type":"text","x":1,"y":2,"text":"Note"}]}}')" = 200 ] &&
+	ok "a text on a stories board" || bad "a text on a stories board" "$(cat "$T/wb")"
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "d['layout']['items']['nt1']['text']")" = Note ] && ok "the board's view has it" || bad "the board's view has it"
+[ "$(pick "$T/j" "'US-02' in d['exported'] and len(d['groups']) > 0")" = True ] && ok "the exports are kept beside it" || bad "the exports are kept beside it"
+post /api/stories/layout '{"name":"Inventory","cards":{"US-02":[31,41]}}' >/dev/null
+get "/api/design?name=Inventory" >"$T/j"
+[ "$(pick "$T/j" "('nt1' in d['layout']['items'], d['layout']['cards']['US-02'], 'US-02' in d['exported'])")" = "(True, [31.0, 41.0], True)" ] &&
+	ok "the older layout call keeps the rest" || bad "the older layout call keeps the rest" "$(pick "$T/j" "d['layout']")"
+# a story added where the Story tool was clicked (stories.sh add, no run)
+[ "$(st_post '{"name":"Inventory","action":"add","title":"Throw an item","as":"player","want":"to throw items","soThat":"I can hit things","criteria":["Given an item, when I throw it, then it flies"],"at":[400,500]}')" = 200 ] &&
+	ok "add a story" || bad "add a story" "$(head -c 300 "$T/j")"
+NEW=$(pick "$T/j" "d['added']")
+has "it is in the document" "$BD/Inventory - User Stories.md" "### $NEW: Throw an item"
+[ "$(pick "$T/j" "([s['status'] for s in d['stories'] if s['id'] == '$NEW'][0], d['layout']['cards']['$NEW'])")" = "('Accepted', [400.0, 500.0])" ] &&
+	ok "accepted, where it was clicked" || bad "accepted, where it was clicked" "$(head -c 300 "$T/j")"
+[ "$(st_post '{"name":"Inventory","action":"add","title":"No criteria","as":"player","want":"x","soThat":"y","criteria":[]}')" = 400 ] &&
+	ok "a new story needs its fields" || bad "a new story needs its fields"
+# Write it for me: a Proposed story from the line, then the skill's alter run on it
+[ "$(st_post '{"name":"Inventory","action":"add","note":"players can juggle items","at":[10,10]}')" = 200 ] &&
+	ok "a story from a line" || bad "a story from a line" "$(head -c 300 "$T/j")"
+JUG=$(pick "$T/j" "d['added']")
+[ "$(pick "$T/j" "[s['status'] for s in d['stories'] if s['id'] == '$JUG'][0]")" = Proposed ] && ok "it waits as Proposed" || bad "it waits as Proposed"
+runs_done 4 && ok "the alter run ends" || bad "the alter run ends"
+has "the skill rewrites it" "$T/claude-prompt" "/design:tt-user-stories alter \"Inventory - User Stories.md\" $JUG"
+has "from the person's line" "$T/claude-note" "Write this story properly from the designer's note: players can juggle items"
+fi
+
+fi
+if section whiteboards; then
+echo "# whiteboards"
+for f in whiteboard.js whiteboard.css whiteboards.js; do [ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"; done
+get /api/whiteboards >"$T/j"
+has "no whiteboards yet" "$T/j" '"boards": []'
+[ "$(wbc whiteboards/new '{"name":"a/b"}')" = 400 ] && ok "a whiteboard's name is a file's" || bad "a whiteboard's name is a file's"
+[ "$(wbc whiteboards/new '{"name":"Plan"}')" = 200 ] && ok "a new whiteboard" || bad "a new whiteboard" "$(cat "$T/wb")"
+[ "$(wbc whiteboards/new '{"name":"Plan"}')" = 409 ] && ok "not made twice" || bad "not made twice"
+[ -f "$TATTY_HOME/whiteboards/Plan.json" ] && ok "kept in Tatty's home" || bad "kept in Tatty's home"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"na1","type":"text","x":10,"y":20,"text":"Hello"},{"id":"nb2","type":"comment","x":0,"y":0,"text":"Why?","pin":"na1"},{"id":"nc3","type":"text","x":300,"y":20,"text":"Two","colour":3}]},"lines":{"upsert":[{"id":"nl1","from":"na1","to":"nc3","label":"then"}]}}')" = 200 ] &&
+	ok "texts, a comment and a line" || bad "texts, a comment and a line" "$(cat "$T/wb")"
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "(len(d['items']), d['items']['nb2']['pin'], d['items']['nc3']['colour'], d['lines']['nl1']['arrow'], d['lines']['nl1']['label'])")" = "(3, 'na1', 3, True, 'then')" ] &&
+	ok "read back" || bad "read back" "$(head -c 400 "$T/j")"
+wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"na1","x":50}]}}' >/dev/null
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "(d['items']['na1']['x'], d['items']['na1']['text'])")" = "(50.0, 'Hello')" ] && ok "a change keeps the rest of the item" || bad "a change keeps the rest of the item"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"x1","type":"text","x":0,"y":0}]}}')" = 400 ] && ok "item ids are the page's own form" || bad "item ids are the page's own form"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"nz9","type":"box","x":0,"y":0}]}}')" = 400 ] && ok "only texts and comments" || bad "only texts and comments"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"nz9","type":"text","x":"a","y":0}]}}')" = 400 ] && ok "a place is numbers" || bad "a place is numbers"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","lines":{"upsert":[{"id":"nl2","from":"na1","to":"na1"}]}}')" = 400 ] && ok "a line joins two things" || bad "a line joins two things"
+[ "$(wbc whiteboard '{"kind":"nope","ref":"Plan"}')" = 400 ] && ok "a known kind of board" || bad "a known kind of board"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Nope"}')" = 404 ] && ok "an unknown whiteboard" || bad "an unknown whiteboard"
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/before"
+[ "$(wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"upsert":[{"id":"nq1","type":"text","x":0,"y":0,"text":"fine"},{"id":"bad","type":"text","x":0,"y":0}]}}')" = 400 ] &&
+	get "/api/whiteboard?kind=blank&ref=Plan" >"$T/after" && cmp -s "$T/before" "$T/after" && ok "a refused batch changes nothing" || bad "a refused batch changes nothing"
+$PY -c "import json; print(json.dumps({'kind': 'blank', 'ref': 'Plan', 'items': {'upsert': [{'id': 'nlong', 'type': 'text', 'x': 0, 'y': 0, 'text': 'x' * 5000}]}}))" >"$T/long.json"
+curl -s -o /dev/null -H "X-TT-Token: $K" -H 'Content-Type: application/json' --data-binary @"$T/long.json" "$U/api/whiteboard"
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "len(d['items']['nlong']['text'])")" = 4000 ] && ok "a text is cut at 4000 characters" || bad "a text is cut at 4000 characters"
+wbc whiteboard '{"kind":"blank","ref":"Plan","items":{"remove":["na1","nlong"]}}' >/dev/null
+get "/api/whiteboard?kind=blank&ref=Plan" >"$T/j"
+[ "$(pick "$T/j" "(sorted(d['items']), d['lines'], d['items']['nb2']['pin'])")" = "(['nb2', 'nc3'], {}, None)" ] &&
+	ok "a removed item takes its lines and lets go of its comments" || bad "a removed item takes its lines and lets go of its comments" "$(head -c 300 "$T/j")"
+get /api/events >"$T/ev"
+has "a change is an event" "$T/ev" '"type": "whiteboard"'
+get /api/whiteboards >"$T/j"
+[ "$(pick "$T/j" "[(b['name'], b['items'], b['lines']) for b in d['boards']]")" = "[('Plan', 2, 0)]" ] && ok "listed, counted" || bad "listed, counted" "$(head -c 300 "$T/j")"
+[ "$(wbc whiteboards/delete '{"name":"Plan"}')" = 200 ] && ok "a whiteboard deleted" || bad "a whiteboard deleted"
+[ -f "$TATTY_HOME/whiteboards/.deleted/Plan.json" ] && [ ! -f "$TATTY_HOME/whiteboards/Plan.json" ] && ok "out of the way, not gone" || bad "out of the way, not gone"
+[ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=blank&ref=Plan")" = 404 ] && ok "and no longer there" || bad "and no longer there"
+# a feature's whiteboard: its documents are the cards
+[ "$(wbc whiteboard '{"kind":"feature","ref":"Demo","cards":{"Demo - Task Status.md":[5,6]}}')" = 200 ] && ok "a feature's whiteboard" || bad "a feature's whiteboard" "$(cat "$T/wb")"
+get "/api/whiteboard?kind=feature&ref=Demo" >"$T/j"
+[ "$(pick "$T/j" "('Demo - Task Status.md' in [x['file'] for x in d['docs']], d['cards']['Demo - Task Status.md'])")" = "(True, [5.0, 6.0])" ] &&
+	ok "its documents, and where they sit" || bad "its documents, and where they sit" "$(head -c 300 "$T/j")"
+ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in <home>/boards" || bad "in <home>/boards"
+[ "$(code -H "X-TT-Token: $K" "$U/api/whiteboard?kind=feature&ref=Nope")" = 404 ] && ok "an unknown feature" || bad "an unknown feature"
+
+
+fi
+if section models; then
+echo "# model and effort at start"
+post /api/start '{"name":"Demo","row":0}' >"$T/j"
+hasnt "nothing is forced when nothing is chosen" "$T/j" "--model"
+if [ -n "$HAVE_LLMS" ]; then
+	post /api/start '{"name":"Demo","row":0,"model":"opus","effort":"high"}' >"$T/j"
+	has "started on the chosen model and effort" "$T/j" "--model opus --effort high"
+	has "the answer says which" "$T/j" '"model": "opus"'
+	[ "$(pick "$T/j" "d['said'].index('--model') < d['said'].index(' -n ')")" = True ] && ok "the flags go before the session's name" || bad "the flags go before the session's name"
+	post /api/start '{"name":"Demo","row":0,"model":"sonnet","effort":""}' >"$T/j"
+	has "a model alone" "$T/j" "--model sonnet"
+	hasnt "with no effort flag" "$T/j" "--effort"
+	post /api/start '{"name":"Demo","row":0,"model":"","effort":"low"}' >"$T/j"
+	has "an effort alone" "$T/j" "--effort low"
+	hasnt "with no model flag" "$T/j" "--model"
+	[ "$(scode '{"name":"Demo","row":0,"model":"gpt-9"}')" = 400 ] && ok "an unknown model is refused" || bad "an unknown model is refused"
+	[ "$(scode '{"name":"Demo","row":0,"model":"opus","effort":"loud"}')" = 400 ] && ok "an unknown effort is refused" || bad "an unknown effort is refused"
+	[ "$(scode '{"name":"Demo","row":0,"model":"opus; rm -rf /"}')" = 400 ] && ok "a model is a single word" || bad "a model is a single word"
+	post /api/model-config '{"action":"set","role":"session","model":"sonnet","effort":"-"}' >"$T/j"
+	has "the session setting is kept by the toolbox" "$T/j" '"mode": "recommended"'
+	post /api/start '{"name":"Demo","row":0}' >"$T/j"
+	has "a Start that chooses nothing uses the session setting" "$T/j" "--model sonnet"
+	post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >"$T/j"
+	hasnt "choosing Claude Code's own beats the setting" "$T/j" "--model"
+	post /api/start '{"name":"Demo","row":0,"model":"claude-sonnet-5-5","effort":"high"}' >"$T/j"
+	has "a Start can choose a specific version" "$T/j" "--model claude-sonnet-5-5 --effort high"
+	post /api/model-config '{"action":"set","role":"session","model":"claude-sonnet-5","effort":"-"}' >"$T/j"
+	has "the session setting can hold a version" "$T/j" '"mode": "recommended"'
+	post /api/start '{"name":"Demo","row":0}' >"$T/j"
+	has "and a Start that chooses nothing uses it" "$T/j" "--model claude-sonnet-5"
+	get /api/model-config >"$T/j"
+	[ "$(pick "$T/j" "any(m['scope'] == 'session' for m in d['models'])")" = False ] && ok "the step table is offered the aliases only" || bad "the step table is offered the aliases only"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"set","role":"coder","model":"claude-sonnet-5-5","effort":"-"}' "$U/api/model-config")" = 400 ] && ok "a step refuses a version" || bad "a step refuses a version"
+	post /api/model-config '{"action":"set","role":"coder","model":"claude-sonnet-5-5","effort":"-"}' >"$T/j"
+	has "and says only the session can use it" "$T/j" "only the session can use"
+	post /api/model-config '{"action":"set","role":"session","model":"-","effort":"-"}' >/dev/null
+	post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >/dev/null # what the chats below expect the feature to be on
+	has "what a feature was started on is remembered for its chats" "$TATTY_HOME/session-models.json" '"Demo"'
+fi
+[ "$(code "$U/static/models.js")" = 200 ] && ok "models.js served" || bad "models.js served"
+
+fi
+if section llms; then
+echo "# LLM connections and step models"
+if [ -n "$HAVE_LLMS" ]; then
+	get /api/llms >"$T/j"
+	[ "$(pick "$T/j" "[p['provider'] + ':' + p['state'] for p in d['providers']]")" = "['claude:connected', 'copilot:available', 'codex:available']" ] &&
+		ok "claude is connected; copilot and codex are installed but not" || bad "connections" "$(head -c 400 "$T/j")"
+	[ "$(pick "$T/j" "sorted(m['id'] for m in d['models'] if m['runnable'] and m['scope'] == 'any')")" = "['fable', 'haiku', 'opus', 'sonnet']" ] && ok "claude's aliases are runnable" || bad "claude's models" "$(head -c 400 "$T/j")"
+		[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'claude'][:3]")" = "['sonnet', 'claude-sonnet-5-5', 'claude-sonnet-5']" ] && ok "an alias comes first, then its versions" || bad "an alias comes first, then its versions" "$(head -c 400 "$T/j")"
+		[ "$(pick "$T/j" "all(m['runnable'] and m['scope'] == 'session' for m in d['models'] if m['id'].startswith('claude-'))")" = True ] && ok "a version is runnable, for a session" || bad "a version is runnable, for a session"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"connect","provider":"gemini"}' "$U/api/llms")" = 400 ] && ok "an unknown tool is refused" || bad "an unknown tool is refused"
+	post /api/llms '{"action":"connect","provider":"copilot"}' >"$T/j"
+	[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'copilot']")" = "['gpt-5', 'claude-sonnet-4.5', 'o4-mini']" ] && ok "connecting lists the tool's models" || bad "connect copilot" "$(head -c 400 "$T/j")"
+	[ "$(pick "$T/j" "any(m['runnable'] for m in d['models'] if m['provider'] == 'copilot')")" = False ] && ok "which can't run yet" || bad "copilot models are not runnable"
+	[ "$(scode '{"name":"Demo","row":0,"model":"gpt-5"}')" = 400 ] && ok "a session can't start on a model that can't run yet" || bad "a session can't start on a model that can't run yet"
+	post /api/start '{"name":"Demo","row":0,"model":"gpt-5"}' >"$T/j"
+	has "and says why" "$T/j" "can't run a workflow session yet"
+	post /api/llms '{"action":"disconnect","provider":"copilot"}' >"$T/j"
+	hasnt "disconnecting forgets its models" "$T/j" "gpt-5"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"disconnect","provider":"claude"}' "$U/api/llms")" = 409 ] && ok "claude stays connected" || bad "claude stays connected"
+	get /api/model-config >"$T/j"
+	[ "$(pick "$T/j" "any(r['role'] == 'coder' and r['kind'] == 'sub' for r in d['roles'])")" = True ] && ok "the steps are listed" || bad "the steps are listed" "$(head -c 300 "$T/j")"
+	[ "$(pick "$T/j" "d['mode']")" = recommended ] && ok "in the active mode" || bad "in the active mode"
+	post /api/model-config '{"action":"set","role":"coder","model":"haiku","effort":"-"}' >"$T/j"
+	[ "$(pick "$T/j" "[r['model'] for r in d['roles'] if r['role'] == 'coder'][0]")" = haiku ] && ok "a step's model is changed" || bad "a step's model is changed"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"set","role":"nope","model":"haiku","effort":"-"}' "$U/api/model-config")" = 400 ] && ok "an unknown step is refused" || bad "an unknown step is refused"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"set","role":"coder","model":"gpt-5","effort":"-"}' "$U/api/model-config")" = 400 ] && ok "so is a model that can't run" || bad "so is a model that can't run"
+	post /api/model-config '{"action":"save","name":"mine"}' >"$T/j"
+	[ "$(pick "$T/j" "d['mode']")" = mine ] && ok "a mode is saved" || bad "a mode is saved" "$(head -c 300 "$T/j")"
+	post /api/model-config '{"action":"use","mode":"economy"}' >"$T/j"
+	[ "$(pick "$T/j" "[r['model'] for r in d['roles'] if r['role'] == 'adversary'][0]")" = sonnet ] && ok "a mode is switched" || bad "a mode is switched"
+	post /api/model-config '{"action":"delete","mode":"mine"}' >"$T/j"
+	[ "$(pick "$T/j" "[m['name'] for m in d['modes']]")" = "['economy', 'recommended', 'thorough']" ] && ok "a saved mode is deleted" || bad "a saved mode is deleted" "$(head -c 300 "$T/j")"
+	post /api/model-config '{"action":"use","mode":"recommended"}' >/dev/null
+	# The version each family name means: a subagent is given the name (sonnet), and the session it runs in is
+	# started with the version, or Claude Code falls back to an older model.
+	get /api/model-config >"$T/j"
+	if [ "$(pick "$T/j" "d.get('families') is not None")" = True ]; then
+		[ "$(pick "$T/j" "[f['family'] for f in d['families']]")" = "['sonnet', 'opus', 'haiku', 'fable']" ] && ok "each family is listed" || bad "each family is listed" "$(head -c 300 "$T/j")"
+		[ "$(pick "$T/j" "all(f['versions'] and f['effective'] for f in d['families'])")" = True ] && ok "with its versions and the one it means" || bad "with its versions and the one it means"
+		OLDEST=$(pick "$T/j" "d['families'][0]['versions'][-1]['id']")
+		post /api/model-config "{\"action\":\"family\",\"family\":\"sonnet\",\"model\":\"$OLDEST\"}" >"$T/j"
+		[ "$(pick "$T/j" "d['families'][0]['chosen']")" = "$OLDEST" ] && ok "a family is pinned to a version" || bad "a family is pinned to a version" "$(head -c 300 "$T/j")"
+		[ "$(pick "$T/j" "d['families'][0]['source']")" = chosen ] && ok "and says it was chosen" || bad "and says it was chosen"
+		post /api/start '{"name":"Demo","row":0}' >"$T/j"
+		has "a started session is given the pinned version" "$T/j" "ANTHROPIC_DEFAULT_SONNET_MODEL=$OLDEST"
+		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"cat","model":"-"}' "$U/api/model-config")" = 400 ] && ok "an unknown family is refused" || bad "an unknown family is refused"
+		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"sonnet","model":"claude-nonsense-9"}' "$U/api/model-config")" = 400 ] && ok "so is a version it doesn't have" || bad "so is a version it doesn't have"
+		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"sonnet","model":"x; rm -rf /"}' "$U/api/model-config")" = 400 ] && ok "a version is a single word" || bad "a version is a single word"
+		post /api/model-config '{"action":"family","family":"sonnet","model":"-"}' >"$T/j"
+		[ "$(pick "$T/j" "d['families'][0]['chosen']")" = "" ] && ok "a pin is cleared" || bad "a pin is cleared" "$(head -c 300 "$T/j")"
+	else
+		ok "this toolbox can't say which version a family means (skipped)"
+	fi
+else
+	ok "the LLM connection checks need a toolbox checkout (TATTY_TOOLBOX) with llms.sh (skipped)"
+fi
+fi
+if section chats; then
+echo "# chats"
+# A chat is a headless claude of its own, one run a turn: the first names its
+# conversation (--session-id), the rest go on with it (--resume). It only reads.
+cat >"$T/claude-chat.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+printf '%s\n' "$@" >"$d/chat.args"
+cat >"$d/chat.prompt"
+echo "${TATTY_SESSION:-none}" >"$d/chat.session"
+pwd >"$d/chat.cwd"
+sid=""; prev=""
+for a in "$@"; do [ "$prev" = --session-id ] && sid=$a; prev=$a; done
+# Claude Code keeps a conversation once there is a message in it
+[ -n "$sid" ] && mkdir -p "$CLAUDE_CONFIG_DIR/projects/chat" && : >"$CLAUDE_CONFIG_DIR/projects/chat/$sid.jsonl"
+echo '{"type":"system","subtype":"init"}'
+# an intake chat's turn (the "intake" section): the stream-json lines it should answer with
+[ -f "$d/intake-out" ] && { cat "$d/intake-out"; exit 0; }
+# (its output elsewhere: a stopped turn ends when the claude it stands in for does, not when the sleep would)
+[ -f "$d/chat-slow" ] && sleep 20 >/dev/null 2>&1
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/README.md"}}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It reads the README."}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"It reads the README.","total_cost_usd":0.02}'
+EOS
+mkdir -p "$T/chatproj"
+CP=$(cd "$T/chatproj" && { pwd -W 2>/dev/null || pwd; })
+cpost() { curl -s -o "$T/j" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U$1"; }
+# chat_done <id> <n>: the chat has finished n turns (or summaries) within ten seconds
+chat_done() {
+	for _ in $(seq 1 50); do
+		get /api/events >"$T/ev"
+		[ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'chat' and e.get('id') == '$1' and e.get('done')])")" -ge "$2" ] && return 0
+		sleep 0.2
+	done
+	return 1
+}
+# after <flag>: what the last turn was given after that flag
+[ "$(cpost /api/chat/new '{"kind":"main"}')" = 400 ] && ok "a chat needs a folder to work in" || bad "a chat needs a folder to work in" "$(cat "$T/j")"
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\"}")" = 400 ] && ok "a side chat needs what it is about" || bad "a side chat needs what it is about"
+[ "$(cpost /api/chat/new '{"kind":"other"}')" = 400 ] && ok "main or side" || bad "main or side"
+[ "$(cpost /api/chat/new "{\"kind\":\"main\",\"project\":\"$CP\",\"feature\":\"Demo\"}")" = 200 ] && ok "a main chat" || bad "a main chat" "$(cat "$T/j")"
+C1=$(pick "$T/j" "d['id']")
+[ -f "$TATTY_HOME/chats/$C1.json" ] && ok "kept in Tatty's home" || bad "kept in Tatty's home"
+SID=$(pick "$T/j" "d['claudeSession']")
+get /api/chats >"$T/c"
+[ "$(pick "$T/c" "[(c['id'], c['kind'], 'messages' in c) for c in d]")" = "[('$C1', 'main', False)]" ] && ok "listed, without its messages" || bad "listed, without its messages" "$(head -c 300 "$T/c")"
+get /api/chat/projects >"$T/c"
+has "its folder is one a new chat can work in" "$T/c" "chatproj"
+[ "$(code -H "X-TT-Token: $K" "$U/api/chat?id=c-00000000")" = 404 ] && ok "an unknown chat" || bad "an unknown chat"
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"\"}")" = 400 ] && ok "an empty message isn't sent" || bad "an empty message isn't sent"
+# a workflow running beside it: nothing of the chat reaches it
+post /api/hello '{"tag":"s-chatwf","session":"wf-1"}' >/dev/null
+get /api/events >"$T/ev"
+n_wf=$(pick "$T/ev" "len([e for e in d if e.get('tag') == 's-chatwf'])")
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"What is this?\"}")" = 202 ] && ok "a message starts a turn" || bad "a message starts a turn" "$(cat "$T/j")"
+chat_done "$C1" 1 && ok "the turn ends" || bad "the turn ends"
+get "/api/chat?id=$C1" >"$T/c"
+[ "$(pick "$T/c" "[(m['role'], m['text']) for m in d['messages']]")" = "[('you', 'What is this?'), ('claude', 'It reads the README.')]" ] &&
+	ok "the message and the answer are kept" || bad "the message and the answer are kept" "$(head -c 400 "$T/c")"
+[ "$(pick "$T/c" "(d['messages'][1]['steps'], d['cost'], d['busy'])")" = "(['Reading README.md'], 0.02, False)" ] &&
+	ok "with its steps and what it cost" || bad "with its steps and what it cost" "$(head -c 400 "$T/c")"
+[ "$(after --session-id)" = "$SID" ] && ok "the first turn names its conversation" || bad "the first turn names its conversation" "$(cat "$T/chat.args")"
+hasnt "a feature started on Claude Code's own model forces none" "$T/chat.args" "--model"
+[ "$(after --tools)" = "Read,Glob,Grep,Skill" ] && ok "it may only read, and use skills" || bad "it may only read, and use skills" "$(after --tools)"
+[ "$(after --permission-mode)" = dontAsk ] && ok "and asks nobody" || bad "and asks nobody"
+hasnt "nothing that writes" "$T/chat.args" "Write"
+hasnt "nothing that edits" "$T/chat.args" "Edit"
+hasnt "no commands" "$T/chat.args" "Bash"
+hasnt "its conversation is kept" "$T/chat.args" "--no-session-persistence"
+has "it isn't one of Tatty's sessions" "$T/chat.session" "none"
+has "it works in its folder" "$T/chat.cwd" "chatproj"
+has "a main chat's message goes as it is" "$T/chat.prompt" "What is this?"
+hasnt "with no side-chat skill" "$T/chat.prompt" "/tatty:side-chat"
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"And then?\"}")" = 202 ] && chat_done "$C1" 2 && ok "a second turn" || bad "a second turn"
+[ "$(after --resume)" = "$SID" ] && ok "goes on with the same conversation" || bad "goes on with the same conversation" "$(cat "$T/chat.args")"
+hasnt "rather than naming a new one" "$T/chat.args" "--session-id"
+# a chat of a feature whose workflow was started on a model answers on that model
+if [ -n "$HAVE_LLMS" ]; then
+	printf '{"Demo":{"model":"opus","effort":"high"}}' >"$TATTY_HOME/session-models.json"
+	cpost /api/chat/new "{\"kind\":\"main\",\"project\":\"$CP\",\"feature\":\"Demo\"}" >/dev/null
+	C4=$(pick "$T/j" "d['id']")
+	cpost /api/chat/say "{\"id\":\"$C4\",\"text\":\"Hi\"}" >/dev/null && chat_done "$C4" 1
+	[ "$(after --model)" = opus ] && ok "a chat uses its feature's model" || bad "a chat uses its feature's model" "$(cat "$T/chat.args")"
+	[ "$(after --effort)" = high ] && ok "and its effort" || bad "and its effort"
+	rm -f "$TATTY_HOME/session-models.json"
+fi
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'chat' and 'tag' in e])")" = 0 ] && ok "a chat's events carry no tag" || bad "a chat's events carry no tag"
+[ "$(pick "$T/ev" "len([e for e in d if e.get('tag') == 's-chatwf'])")" = "$n_wf" ] && ok "the workflow beside it hears nothing of it" || bad "the workflow beside it hears nothing of it"
+get "/api/inbox?tag=s-chatwf" >"$T/c"
+has "and nothing is put in front of it" "$T/c" '"status": "empty"'
+# a side chat: what it is about goes in front of the first message
+CTX='{"source":{"from":"selection","feature":"Demo","tag":"s-chatwf","session":"Demo : Workflow","ts":1700000000},"selected":"retry the upload","around":"First it saves. Then it can retry the upload."}'
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\",\"context\":$CTX}")" = 200 ] && ok "a side chat" || bad "a side chat" "$(cat "$T/j")"
+C2=$(pick "$T/j" "d['id']")
+[ "$(pick "$T/j" "d['title']")" = "About: retry the upload" ] && ok "named by what it is about" || bad "named by what it is about" "$(pick "$T/j" "d['title']")"
+pick "$T/j" "d['context']['summary']" >"$T/c"
+has "Tatty's summary says where it came from" "$T/c" "Selected text from a reply in the workflow Demo : Workflow at"
+has "and which feature" "$T/c" "in the feature Demo"
+[ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"Why retry?\"}")" = 202 ] && chat_done "$C2" 1 && ok "its first message" || bad "its first message"
+[ "$(head -n 1 "$T/chat.prompt")" = "/tatty:side-chat" ] && ok "goes to the side-chat skill" || bad "goes to the side-chat skill" "$(head -n 3 "$T/chat.prompt")"
+has "after the context" "$T/chat.prompt" "<context>"
+has "with the summary" "$T/chat.prompt" "Summary: Selected text from a reply"
+has "what was picked out" "$T/chat.prompt" "retry the upload"
+has "and what is around it" "$T/chat.prompt" "First it saves."
+[ "$(tail -n 1 "$T/chat.prompt")" = "Why retry?" ] && ok "then the message" || bad "then the message" "$(tail -n 2 "$T/chat.prompt")"
+[ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"More?\"}")" = 202 ] && chat_done "$C2" 2 && ok "a follow-up" || bad "a follow-up"
+hasnt "goes alone" "$T/chat.prompt" "<context>"
+get "/api/chat?id=$C2" >"$T/c"
+[ "$(pick "$T/c" "[m.get('withContext') for m in d['messages'] if m['role'] == 'you']")" = "[True, False]" ] && ok "the chat says which message had it" || bad "the chat says which message had it"
+CODE='{"source":{"from":"code","feature":"Demo","file":"Demo - Plan.md","doc":"Plan","heading":"Steps","lang":"python"},"selected":"print(1)","around":"## Steps\nprint(1)"}'
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\",\"context\":$CODE}")" = 200 ] && ok "a side chat about a code block" || bad "a side chat about a code block" "$(cat "$T/j")"
+pick "$T/j" "d['context']['summary']" >"$T/c"
+has "says what and where" "$T/c" 'A python code block from the document Plan, section "Steps"'
+# the summary a small model writes, when chosen in Settings
+post /api/settings '{"chatSummary":"nonsense"}' >"$T/c"
+[ "$(pick "$T/c" "d['chatSummary']")" = tatty ] && ok "the summary setting is tatty or model" || bad "the summary setting is tatty or model"
+post /api/settings '{"chatSummary":"model"}' >/dev/null
+[ "$(cpost /api/chat/new "{\"kind\":\"side\",\"project\":\"$CP\",\"context\":$CTX}")" = 200 ] && ok "a side chat summarised by a model" || bad "a side chat summarised by a model"
+C3=$(pick "$T/j" "d['id']")
+chat_done "$C3" 1 && ok "the summary is written" || bad "the summary is written"
+get "/api/chat?id=$C3" >"$T/c"
+[ "$(pick "$T/c" "(d['context']['summary'], d['context']['summaryBy'])")" = "('A summary by the model.', 'model')" ] && ok "by the model" || bad "by the model" "$(head -c 400 "$T/c")"
+has "a small one" "$T/summary.args" "haiku"
+has "with nothing to do but write" "$T/summary.args" "--no-session-persistence"
+post /api/settings '{"chatSummary":"tatty"}' >/dev/null
+# one turn at a time; Stop ends it
+touch "$T/chat-slow"
+cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Slowly\"}" >/dev/null
+sleep 0.5
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Again\"}")" = 409 ] && ok "one turn at a time" || bad "one turn at a time"
+[ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"Meanwhile\"}")" = 202 ] && ok "but another chat may answer meanwhile" || bad "but another chat may answer meanwhile"
+post /api/chat/stop "{\"id\":\"$C1\"}" >"$T/c"
+has "stop" "$T/c" '"ok": true'
+chat_done "$C1" 3 && ok "a stopped turn ends" || bad "a stopped turn ends"
+get "/api/chat?id=$C1" >"$T/c"
+[ "$(pick "$T/c" "(d['messages'][-1]['role'], d['messages'][-1]['text'])")" = "('error', 'Stopped.')" ] && ok "and says so" || bad "and says so" "$(head -c 400 "$T/c")"
+post /api/chat/stop "{\"id\":\"$C2\"}" >/dev/null
+chat_done "$C2" 3
+rm -f "$T/chat-slow"
+# closing a chat's tab
+[ "$(cpost /api/chat/close "{\"id\":\"$C1\"}")" = 200 ] && ok "close a chat" || bad "close a chat"
+get /api/chats >"$T/c"
+hasnt "it leaves the tabs" "$T/c" "$C1"
+[ -f "$TATTY_HOME/chats/$C1.json" ] && ok "its file is kept" || bad "its file is kept"
+[ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Hello?\"}")" = 404 ] && ok "a closed chat takes no message" || bad "a closed chat takes no message"
+post /api/bye '{"tag":"s-chatwf"}' >/dev/null
+
+fi
+if section intake; then
+echo "# starting a task by typing (the Engineering home's box)"
+if [ "$TOOLBOX" != 1 ]; then
+	echo "skip  the TT toolbox isn't here: a typed task is started with its workflow"
+else
+# A repository of its own: every Start here makes a branch in it.
+IGIT="-c user.name=t -c user.email=t@example.com"
+mkdir -p "$T/intakerepo/src" && git -C "$T/intakerepo" init -q -b main && : >"$T/intakerepo/src/x" &&
+	git -C "$T/intakerepo" add -A && git -C "$T/intakerepo" $IGIT commit -q -m first
+IR=$(cd "$T/intakerepo" && { pwd -W 2>/dev/null || pwd; })
+HAVE_QUICK=0; [ -f "${TATTY_TOOLBOX:-/none}/plugins/engineering/skills/tt-workflow-quick/SKILL.md" ] && HAVE_QUICK=1
+# What the stand-in claude answers an intake chat's next turn with (the claude-chat.sh of the chats section reads it).
+intake_reply() {
+	$PY -c "import json, sys
+t = sys.argv[1]
+print(json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': t}]}}))
+print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': t, 'total_cost_usd': 0.01}))" "$1" >"$T/intake-out"
+}
+newchat() { cpost /api/chat/new "{\"kind\":\"intake\",\"project\":\"$IR\"}" >/dev/null; pick "$T/j" "d['id']"; }
+# istart <chat> <level> [more JSON fields]: confirm the card; prints the HTTP status, the answer is in $T/j
+istart() { cpost /api/intake/start "{\"chat\":\"$1\",\"title\":\"Retry button\",\"summary\":\"Show Retry.\",\"acceptance\":[\"The dialog shows Retry\"],\"kind\":\"feature\",\"level\":\"$2\",\"project\":\"$IR\"${3:+,$3}}"; }
+nfeat() { ls "$FX/features" | wc -l; }
+qs() { $PY -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"; }
+TASK_JSON='{"title":"Retry button on the upload dialog","summary":"Show Retry when an upload fails.","acceptance":["The dialog shows Retry","Retry uploads again"],"kind":"feature","level":"low","why":"One dialog and a retry to copy.","unknowns":[]}'
+[ "$(code "$U/static/intake.js")" = 200 ] && ok "intake.js served" || bad "intake.js served"
+[ "$(code "$U/static/intake.css")" = 200 ] && ok "intake.css served" || bad "intake.css served"
+get /api/intake/info >"$T/c"
+[ "$(pick "$T/c" "sorted(d)")" = "['nextId', 'project', 'projects', 'quick', 'toolbox']" ] && ok "the box asks what it needs" || bad "the box asks what it needs" "$(head -c 300 "$T/c")"
+[ "$(pick "$T/c" "d['quick']")" = "$([ $HAVE_QUICK = 1 ] && echo True || echo False)" ] && ok "and whether the toolbox has the quick route" || bad "and whether the toolbox has the quick route" "$(head -c 300 "$T/c")"
+case "$(pick "$T/c" "d['nextId']")" in *-[0-9][0-9][0-9][0-9]) ok "and the ID a task would get" ;; *) bad "and the ID a task would get" "$(pick "$T/c" "d['nextId']")" ;; esac
+# the chat
+[ "$(cpost /api/chat/new "{\"kind\":\"intake\",\"project\":\"$IR\"}")" = 200 ] && ok "an intake chat" || bad "an intake chat" "$(cat "$T/j")"
+I1=$(pick "$T/j" "d['id']")
+[ "$(pick "$T/j" "(d['kind'], d['title'], d['task'])")" = "('intake', 'New task', None)" ] && ok "named New task, with nothing understood yet" || bad "named New task, with nothing understood yet" "$(head -c 300 "$T/j")"
+get /api/chats >"$T/c"
+hasnt "it has no tab" "$T/c" "$I1"
+intake_reply "Which dialog do you mean? 1. Where does it live?"
+[ "$(cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"add a Retry button to the upload failed dialog\"}")" = 202 ] && chat_done "$I1" 1 && ok "the first message starts a turn" || bad "the first message starts a turn" "$(cat "$T/j")"
+[ "$(head -n 1 "$T/chat.prompt")" = "/tatty:intake" ] && ok "it goes to the intake skill" || bad "it goes to the intake skill" "$(head -n 3 "$T/chat.prompt")"
+has "after the facts" "$T/chat.prompt" "<facts>"
+has "which say where it works" "$T/chat.prompt" "Repository: "
+has "and the ID the task would get" "$T/chat.prompt" "Next feature ID: "
+[ "$(tail -n 1 "$T/chat.prompt")" = "add a Retry button to the upload failed dialog" ] && ok "then what was typed" || bad "then what was typed" "$(tail -n 2 "$T/chat.prompt")"
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']")" = None ] && ok "a question is not yet a task" || bad "a question is not yet a task" "$(head -c 300 "$T/c")"
+# the summary: a fenced tatty-task block ends the reply
+BLOCK=$(printf 'So you want a Retry button when an upload fails. Is that right?\n\n%s\n%s\n%s' '```tatty-task' "$TASK_JSON" '```')
+intake_reply "$BLOCK"
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"the one in UploadFailedPopup\"}" >/dev/null; chat_done "$I1" 2
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']['title']")" = "Retry button on the upload dialog" ] && ok "the block becomes the chat's task" || bad "the block becomes the chat's task" "$(head -c 400 "$T/c")"
+[ "$(pick "$T/c" "(d['task']['level'], d['task']['kind'], d['task']['acceptance'])")" = "('low', 'feature', ['The dialog shows Retry', 'Retry uploads again'])" ] && ok "with its level, kind and what done looks like" || bad "with its level, kind and what done looks like"
+pick "$T/c" "d['messages'][-1]['text']" >"$T/f"
+hasnt "the block is not text to read" "$T/f" "tatty-task"
+has "the question stays" "$T/f" "Is that right?"
+# a reply to it clears it: the person said it isn't right
+intake_reply "Noted, a blue one."
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"and make it blue\"}" >/dev/null; chat_done "$I1" 3
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']")" = None ] && ok "a reply to it clears the task until it is understood again" || bad "a reply to it clears the task until it is understood again"
+# a block that isn't JSON is no task, and the page shows what was said as it is
+intake_reply "$(printf 'Here it is:\n%s\n{not json}\n%s' '```tatty-task' '```')"
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"again\"}" >/dev/null; chat_done "$I1" 4
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "d['task']")" = None ] && ok "a block that isn't JSON is no task" || bad "a block that isn't JSON is no task"
+pick "$T/c" "d['messages'][-1]['text']" >"$T/f"
+has "and is left in the text, not hidden" "$T/f" "{not json}"
+LONG=$(printf 'x%.0s' $(seq 1 120))
+intake_reply "$(printf 'Ok.\n%s\n{"title":"%s","summary":"s","kind":"nonsense","level":"extreme","acceptance":"one\\ntwo","unknowns":[]}\n%s' '```tatty-task' "$LONG" '```')"
+cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"once more\"}" >/dev/null; chat_done "$I1" 5
+get "/api/chat?id=$I1" >"$T/c"
+[ "$(pick "$T/c" "(len(d['task']['title']), d['task']['kind'], d['task']['level'], d['task']['acceptance'])")" = "(80, 'feature', 'medium', ['one', 'two'])" ] && ok "the title is cut, an unknown kind or level falls back, lines are lines" || bad "the title is cut, an unknown kind or level falls back, lines are lines" "$(head -c 400 "$T/c")"
+# the branch the card proposes
+get "/api/intake/branch?project=$(qs "$IR")&title=Retry%20button" >"$T/c"
+case "$(pick "$T/c" "d['branch']")" in feature/*-[0-9][0-9][0-9][0-9]-retry-button) ok "the card proposes a branch: the ID and the title's words" ;; *) bad "the card proposes a branch: the ID and the title's words" "$(head -c 300 "$T/c")" ;; esac
+[ "$(pick "$T/c" "d['base']")" = main ] && ok "from the branch the repo is on" || bad "from the branch the repo is on"
+get "/api/intake/branch?project=$(qs "$T")&title=x" >"$T/c"
+[ "$(pick "$T/c" "d['repo']")" = "" ] && ok "no repository, no branch to propose" || bad "no repository, no branch to propose" "$(head -c 300 "$T/c")"
+# confirming the card
+[ "$(cpost /api/intake/start '{"chat":"c-00000000"}')" = 404 ] && ok "start: no such task" || bad "start: no such task"
+[ "$(cpost /api/intake/start "{\"chat\":\"$I1\",\"title\":\" \",\"summary\":\"x\",\"level\":\"low\",\"project\":\"$IR\"}")" = 400 ] && ok "start: it needs a title" || bad "start: it needs a title"
+[ "$(cpost /api/intake/start "{\"chat\":\"$I1\",\"title\":\"T\",\"summary\":\"x\",\"level\":\"extreme\",\"project\":\"$IR\"}")" = 400 ] && ok "start: a level is low, medium or high" || bad "start: a level is low, medium or high"
+[ "$(cpost /api/intake/start "{\"chat\":\"$I1\",\"title\":\"T\",\"summary\":\"x\",\"level\":\"low\",\"project\":\"C:/no/such/place\"}")" = 400 ] && ok "start: the project must be there" || bad "start: the project must be there"
+N0=$(nfeat)
+if [ $HAVE_QUICK = 1 ]; then
+	[ "$(istart "$I1" low)" = 200 ] && ok "low starts the quick route" || bad "low starts the quick route" "$(cat "$T/j")"
+	IF1=$(pick "$T/j" "d['feature']")
+	pick "$T/j" "d['command']" >"$T/f"
+	has "through tt-workflow-quick" "$T/f" '/tt-workflow-quick "'
+	has "on the new feature's folder" "$T/f" "/features/$IF1\" the task $IF1 in \""
+	has "naming its Ticket" "$T/f" " - Ticket.md\". Folder: "
+	has "and its prefix" "$T/f" ". Prefix: $IF1"
+	has "the session is named for it" "$T/j" '\u00b7 Retry button : Quick'
+	TK="$FX/features/$IF1/$IF1 - Ticket.md"
+	[ -f "$TK" ] && ok "its Ticket is written" || bad "its Ticket is written"
+	has "headed by the ID and the title as the card left them" "$TK" "# $IF1: Retry button"
+	has "with the summary" "$TK" "Show Retry."
+	has "and what done looks like" "$TK" "- The dialog shows Retry"
+	has "and the person's own words" "$TK" "> add a Retry button to the upload failed dialog"
+	has "and the level" "$TK" "**Effort:** Low (quick)"
+	[ "$(git -C "$IR" branch --show-current)" = "feature/$IF1-retry-button" ] && ok "the branch is made in the repo" || bad "the branch is made in the repo" "$(git -C "$IR" branch --show-current)"
+	get "/api/chat?id=$I1" >"$T/c"
+	[ "$(pick "$T/c" "(d['closed'], d['started'] == '$IF1')")" = "(True, True)" ] && ok "the box's chat is closed, and says what it became" || bad "the box's chat is closed, and says what it became" "$(head -c 200 "$T/c")"
+	[ "$(istart "$I1" low)" = 404 ] && ok "a task starts once" || bad "a task starts once"
+	# its documents are the lite route's: Tatty labels it Quick because it started it that way
+	mkdir -p "$FX/features/$IF1/.tt/$IF1 - Familiarisation"
+	printf -- '- **Mode:** lite\n- **Status:** Exploring\n' >"$FX/features/$IF1/.tt/$IF1 - Familiarisation/focus-log.md"
+	get "/api/feature?name=$IF1" >"$T/j"
+	[ "$(pick "$T/j" "d['route']")" = quick ] && ok "a feature started quick is labelled Quick while its focus isn't confirmed (the state says exploring, as a full feature's does)" || bad "a feature started quick is labelled Quick while its focus isn't confirmed" "$(pick "$T/j" "d['route']")"
+	printf -- '- **Mode:** lite\n- **Pace:** quick\n- **Status:** Focus confirmed 2026-11-12\n' >"$FX/features/$IF1/.tt/$IF1 - Familiarisation/focus-log.md"
+	get "/api/feature?name=$IF1" >"$T/j"
+	[ "$(pick "$T/j" "d['route']")" = quick ] && ok "and once the go-ahead is given" || bad "and once the go-ahead is given" "$(pick "$T/j" "d['route']")"
+	if [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/workflow-state.sh" ] && grep -q "tt-workflow-quick" "$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/workflow-state.sh"; then
+		[ "$(pick "$T/j" "d['rows'][0]['skill']")" = tt-workflow-quick ] && ok "Continue is the toolbox's own: tt-workflow-quick" || bad "Continue is the toolbox's own: tt-workflow-quick" "$(pick "$T/j" "d['rows'][0]")"
+	fi
+	: >"$FX/features/$IF1/$IF1 - Comprehensive Tech Plan.md"
+	get "/api/feature?name=$IF1" >"$T/j"
+	[ "$(pick "$T/j" "d['route']")" != quick ] && ok "but not once it has moved on to a plan" || bad "but not once it has moved on to a plan"
+else
+	[ "$(istart "$I1" low)" = 409 ] && ok "low is refused when the toolbox has no quick route" || bad "low is refused when the toolbox has no quick route" "$(cat "$T/j")"
+	has "and says what to do" "$T/j" "update its engineering plugin"
+	[ "$(nfeat)" = "$N0" ] && ok "and makes nothing" || bad "and makes nothing"
+fi
+I2=$(newchat)
+[ "$(istart "$I2" medium)" = 200 ] && ok "medium starts a small change" || bad "medium starts a small change" "$(cat "$T/j")"
+IF2=$(pick "$T/j" "d['feature']")
+pick "$T/j" "d['command']" >"$T/f"
+has "through tt-workflow-lite" "$T/f" '/tt-workflow-lite "'
+has "with the task named" "$T/f" "the task $IF2 in \""
+mkdir -p "$FX/features/$IF2/.tt/$IF2 - Familiarisation"
+printf -- '- **Mode:** lite\n- **Status:** Focus confirmed 2026-11-12\n' >"$FX/features/$IF2/.tt/$IF2 - Familiarisation/focus-log.md"
+get "/api/feature?name=$IF2" >"$T/j"
+[ "$(pick "$T/j" "d['route']")" = lite ] && ok "and is a small change, not Quick" || bad "and is a small change, not Quick"
+I3=$(newchat)
+[ "$(istart "$I3" high)" = 200 ] && ok "high starts the full workflow" || bad "high starts the full workflow" "$(cat "$T/j")"
+IF3=$(pick "$T/j" "d['feature']")
+pick "$T/j" "d['command']" >"$T/f"
+has "with the task handed to planning" "$T/f" "/tt-adversarial-plan the task $IF3 in \""
+I4=$(newchat)
+[ "$(cpost /api/intake/start "{\"chat\":\"$I4\",\"title\":\"It crashes\",\"summary\":\"The app crashes on save.\",\"kind\":\"bug\",\"level\":\"low\",\"project\":\"$IR\"}")" = 200 ] && ok "a bug starts the debugger, whatever the level" || bad "a bug starts the debugger, whatever the level" "$(cat "$T/j")"
+pick "$T/j" "d['command']" >"$T/f"
+has "tt-debug, with the task" "$T/f" "/tt-debug the task "
+# the branch the card shows is the one made; a bad one makes nothing
+I5=$(newchat)
+[ "$(istart "$I5" medium '"branchName":"feature/my-own-name"')" = 200 ] && ok "a branch name typed on the card is the one made" || bad "a branch name typed on the card is the one made" "$(cat "$T/j")"
+[ "$(git -C "$IR" branch --show-current)" = "feature/my-own-name" ] && ok "in the repo" || bad "in the repo" "$(git -C "$IR" branch --show-current)"
+I6=$(newchat); N1=$(nfeat)
+[ "$(istart "$I6" medium '"branchName":"has space"')" = 400 ] && ok "a name git refuses is refused" || bad "a name git refuses is refused" "$(cat "$T/j")"
+[ "$(istart "$I6" medium '"branchName":"main"')" = 400 ] && ok "so is a branch that exists" || bad "so is a branch that exists" "$(cat "$T/j")"
+[ "$(nfeat)" = "$N1" ] && ok "and nothing is left behind" || bad "and nothing is left behind" "$(nfeat) features, was $N1"
+# a Start that fails after the feature was made takes it back, so the card can try again
+[ "$(istart "$I6" medium '"isolate":true,"base":"no-such-branch"')" = 400 ] && ok "a Start that fails is refused" || bad "a Start that fails is refused" "$(cat "$T/j")"
+has "saying why" "$T/j" "no-such-branch"
+[ "$(nfeat)" = "$N1" ] && ok "and the feature it made is taken back" || bad "and the feature it made is taken back" "$(nfeat) features, was $N1"
+get "/api/chat?id=$I6" >"$T/c"
+[ "$(pick "$T/c" "(d['closed'], d['started'])")" = "(False, '')" ] && ok "the card is still open to try again" || bad "the card is still open to try again" "$(head -c 200 "$T/c")"
+[ "$(istart "$I6" medium)" = 200 ] && ok "and it works the next time" || bad "and it works the next time" "$(cat "$T/j")"
+rm -f "$T/intake-out" # (the stand-in claude answers every chat turn with it while it is there: the sections after this one use the stand-in too)
+fi
+fi
+if section compactchat; then
+echo "# the compact chat and its questions"
+# tools/test-compact-chat.py prints a line a check in this script's own format; they are counted here.
+$PY "$root/tools/test-compact-chat.py" --project "$CP" >"$T/cc.out" 2>&1; cc_rc=$?
+while IFS= read -r line; do
+	case "$line" in
+	"ok "*) pass=$((pass + 1)) ;;
+	FAIL*) fail=$((fail + 1)) ;;
+	esac
+	case "$line" in *" passed, "*) ;; *) printf '%s\n' "$line" ;; esac
+done <"$T/cc.out"
+[ "$cc_rc" = 0 ] && ok "the compact chat's tests ran to the end" || bad "the compact chat's tests ran to the end" "exit $cc_rc: $(tail -n 3 "$T/cc.out")"
+
+fi
+if section archive; then
+echo "# archiving and deleting a feature"
+[ "$(code "$U/static/archive.js")" = 200 ] && ok "archive.js served" || bad "archive.js served"
+[ "$(code "$U/static/archive.css")" = 200 ] && ok "archive.css served" || bad "archive.css served"
+afp() { curl -s -o "$T/fa" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U/api/feature/$1"; }
+mkdir -p "$FX/features/Arch One" "$FX/features/Arch Two"
+printf '# One\n' >"$FX/features/Arch One/Notes.md"
+printf '# Two\n' >"$FX/features/Arch Two/Notes.md"
+NB=$(ls "$TATTY_HOME/boards" 2>/dev/null | wc -l)
+post /api/project "{\"name\":\"Arch One\",\"path\":\"$HERE\"}" >/dev/null
+post /api/whiteboard '{"kind":"feature","ref":"Arch One","items":{"upsert":[{"id":"nq1","type":"text","x":0,"y":0,"text":"kept"}]}}' >/dev/null
+[ "$(afp archive '{"name":"No such feature"}')" = 404 ] && ok "archiving a feature there isn't is a 404" || bad "archiving a feature there isn't is a 404"
+for n in '../features' '.deleted' 'a/b'; do
+	[ "$(afp archive "{\"name\":\"$n\"}")" = 404 ] && ok "archive refuses the name $n" || bad "archive refuses the name $n"
+done
+[ "$(afp archive '{"name":"Arch One"}')" = 200 ] && ok "a feature is archived" || bad "a feature is archived" "$(cat "$T/fa")"
+has "and says where" "$T/fa" '"archived": "Arch One"'
+[ ! -e "$FX/features/Arch One" ] && [ -f "$FX/archive/Arch One/Notes.md" ] && ok "into <root>/archive, documents and all" || bad "into <root>/archive, documents and all"
+get /api/features >"$T/j"
+[ "$(pick "$T/j" "[f['name'] for f in d['features'] if f['name'].startswith('Arch')]")" = "['Arch Two']" ] && ok "it leaves the features list" || bad "it leaves the features list"
+[ "$(pick "$T/j" "[a['name'] for a in d['archived']]")" = "['Arch One']" ] && ok "and is listed as archived" || bad "and is listed as archived"
+[ "$(afp archive '{"name":"Arch One"}')" = 404 ] && ok "archiving it again is a 404" || bad "archiving it again is a 404"
+[ "$(code -H "X-TT-Token: $K" "$U/api/feature?name=Arch%20One")" = 404 ] && ok "and it has no page among the features" || bad "and it has no page among the features"
+mkdir -p "$FX/features/Arch One"; printf '# Again\n' >"$FX/features/Arch One/Notes.md"
+[ "$(afp archive '{"name":"Arch One"}')" = 200 ] && has "a second of the same name gets a number" "$T/fa" '"archived": "Arch One (2)"' || bad "a second of the same name is archived"
+# restore
+[ "$(afp restore '{"name":"No such feature"}')" = 404 ] && ok "restoring one that isn't archived is a 404" || bad "restoring one that isn't archived is a 404"
+[ "$(afp restore '{"name":"Arch One (2)"}')" = 200 ] && [ -f "$FX/features/Arch One (2)/Notes.md" ] && ok "an archived feature is restored" || bad "an archived feature is restored" "$(cat "$T/fa")"
+mkdir -p "$FX/features/Arch One"
+[ "$(afp restore '{"name":"Arch One"}')" = 409 ] && [ -f "$FX/archive/Arch One/Notes.md" ] && ok "a name that is taken is a 409, and nothing moves" || bad "a name that is taken is a 409" "$(cat "$T/fa")"
+rm -rf "$FX/features/Arch One"
+[ "$(afp restore '{"name":"Arch One"}')" = 200 ] && ok "restored when the name is free" || bad "restored when the name is free" "$(cat "$T/fa")"
+get "/api/feature?name=Arch%20One" >"$T/j"
+has "its project choice came back with it" "$T/j" '"projectFrom": "chosen"'
+get "/api/whiteboard?kind=feature&ref=Arch%20One" >"$T/j"
+has "and its whiteboard" "$T/j" '"nq1"'
+# delete
+[ "$(afp delete '{"name":"Arch Two"}')" = 400 ] && ok "delete wants I understand typed" || bad "delete wants I understand typed"
+[ "$(afp delete '{"name":"Arch Two","confirm":"Arch Two"}')" = 400 ] && ok "the feature's name is not enough" || bad "the feature's name is not enough"
+[ -f "$FX/features/Arch Two/Notes.md" ] && ok "and nothing is deleted without it" || bad "and nothing is deleted without it"
+[ "$(afp delete '{"name":"Nope","confirm":"Nope"}')" = 404 ] && ok "deleting a feature there isn't is a 404" || bad "deleting a feature there isn't is a 404"
+get "/api/feature/delete-preview?name=Arch%20Two" >"$T/j"
+has "the preview counts the files" "$T/j" '"files": 1'
+has "and says it is not a link" "$T/j" '"link": false'
+$PY -c "import json,os,sys; h=sys.argv[1]; [json.dump(dict(json.load(open(p)) if os.path.exists(p) else {}, **{k: v}), open(p, 'w')) for p, k, v in ((h + '/session-models.json', 'Arch Two', {'model': 'm', 'effort': 'e'}), (h + '/branches.json', 'arch two', {'repo': 'r', 'branch': 'b'}))]" "$TATTY_HOME"
+[ "$(afp delete '{"name":"Arch Two","confirm":"  i UNDERSTAND "}')" = 200 ] && [ ! -e "$FX/features/Arch Two" ] && ok "a feature is deleted for good" || bad "a feature is deleted for good" "$(cat "$T/fa")"
+has "and says how many files" "$T/fa" '"removed": 1'
+[ ! -e "$FX/features/.deleted/Arch Two" ] && ok "not moved to .deleted" || bad "not moved to .deleted"
+[ "$($PY -c "import json,sys; print('Arch Two' in json.load(open(sys.argv[1])))" "$TATTY_HOME/session-models.json")" = False ] && ok "its model and effort are forgotten" || bad "its model and effort are forgotten"
+[ "$($PY -c "import json,sys; print('arch two' in json.load(open(sys.argv[1])))" "$TATTY_HOME/branches.json")" = False ] && ok "and its branch record" || bad "and its branch record"
+[ "$(afp archive '{"name":"Arch One"}')" = 200 ] && ok "archived again" || bad "archived again"
+[ "$(afp delete '{"name":"Arch One","archived":true,"confirm":"I understand"}')" = 200 ] && [ ! -e "$FX/archive/Arch One" ] && ok "an archived feature is deleted" || bad "an archived feature is deleted" "$(cat "$T/fa")"
+get /api/features >"$T/j"
+[ "$(pick "$T/j" "[a['name'] for a in d['archived']]")" = "[]" ] && ok "and leaves the Archived section" || bad "and leaves the Archived section"
+hasnt "its project choice is forgotten" "$TATTY_HOME/projects.tsv" "arch one"
+[ "$(ls "$TATTY_HOME/boards" 2>/dev/null | wc -l)" = "$NB" ] && ok "and its whiteboard file is gone" || bad "and its whiteboard file is gone"
+rm -rf "$FX/features/Arch One (2)"
+# a feature started from a task: deleting it undoes the start
+[ -d "$FX/features/T-0007" ] && {
+	[ "$(afp delete '{"name":"T-0007","confirm":"I understand"}')" = 200 ] && ok "a feature started from a task is deleted" || bad "a feature started from a task is deleted" "$(cat "$T/fa")"
+	has "the task is named" "$T/fa" '"id": "T-0007"'
+	[ ! -e "$FX/features/T-0007" ] && ok "its folder is gone" || bad "its folder is gone"
+	hasnt "the task names no feature" "$(taskfile T-0007)" "- **Feature:** T-0007"
+	has "and is back in the backlog" "$(taskfile T-0007)" "- **Status:** Backlog"
+}
+# links (Windows junctions): the real folder goes, what else the folder links to does not
+if command -v cmd >/dev/null 2>&1 && mkdir -p "$T/vault/Arch Link/sub" "$T/decoy" &&
+	printf 'a\n' >"$T/vault/Arch Link/a.md" && printf 'b\n' >"$T/vault/Arch Link/sub/b.md" && printf 'keep\n' >"$T/decoy/keep.txt" &&
+	MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$T/vault/Arch Link/nested")" "$(cygpath -w "$T/decoy")" >/dev/null 2>&1 &&
+	MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$FX/features/Arch Link")" "$(cygpath -w "$T/vault/Arch Link")" >/dev/null 2>&1; then
+	get "/api/feature/delete-preview?name=Arch%20Link" >"$T/j"
+	has "a link is said to be one" "$T/j" '"link": true'
+	has "and counts what is in the folder it points at, not the link inside it" "$T/j" '"files": 2'
+	[ "$(afp archive '{"name":"Arch Link"}')" = 200 ] && [ ! -e "$FX/features/Arch Link" ] && [ -f "$FX/archive/Arch Link/a.md" ] && ok "a link is archived" || bad "a link is archived" "$(cat "$T/fa")"
+	[ -f "$T/vault/Arch Link/a.md" ] && [ -f "$T/vault/Arch Link/sub/b.md" ] && ok "and the folder it points at stays where it is" || bad "and the folder it points at stays where it is"
+	[ "$(afp restore '{"name":"Arch Link"}')" = 200 ] && [ -f "$FX/features/Arch Link/a.md" ] && ok "and is restored" || bad "and is restored" "$(cat "$T/fa")"
+	[ "$(afp delete '{"name":"Arch Link","confirm":"I understand"}')" = 200 ] && ok "a link is deleted" || bad "a link is deleted" "$(cat "$T/fa")"
+	has "with the files of the real folder" "$T/fa" '"removed": 2'
+	[ ! -e "$T/vault/Arch Link" ] && [ ! -e "$FX/features/Arch Link" ] && ok "the real folder and the link are both gone" || bad "the real folder and the link are both gone"
+	[ -f "$T/decoy/keep.txt" ] && [ -d "$T/vault" ] && ok "but not what a link inside it points at, or the folder around it" || bad "but not what a link inside it points at, or the folder around it"
+	# never a folder Tatty or the person depends on: the root itself, or a folder holding it
+	for target in "$FX" "$T"; do
+		MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(cygpath -w "$FX/features/Arch Root")" "$(cygpath -w "$target")" >/dev/null 2>&1
+		[ "$(afp delete '{"name":"Arch Root","confirm":"I understand"}')" = 409 ] && ok "delete refuses a link to $(basename "$target")" || bad "delete refuses a link to $(basename "$target")" "$(cat "$T/fa")"
+		MSYS_NO_PATHCONV=1 cmd /c rmdir "$(cygpath -w "$FX/features/Arch Root")" >/dev/null 2>&1
+	done
+	[ -d "$FX/features" ] && [ -d "$T/decoy" ] && ok "and nothing was removed" || bad "and nothing was removed"
+else
+	echo "skip  features that are junctions: no mklink here"
+fi
+fi
+if section restart; then
+echo "# restarting after an update, keeping the sessions"
+# (a question another section left open would count below: close them first, so this section stands on its own)
+$PY - "$U" "$K" <<'PYEOF'
+import json, sys, urllib.request
+u, k = sys.argv[1:3]
+def call(path, body=None):
+    r = urllib.request.Request(u + path, data=None if body is None else json.dumps(body).encode(),
+                               headers={"X-TT-Token": k, "Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(r, timeout=10))
+for e in call("/api/events"):
+    if e["type"] == "ask":
+        try:
+            call("/api/reply", {"id": e["id"], "declined": True})
+        except Exception:
+            pass
+PYEOF
+# A session Start opened, heard from: the one a restart has to keep.
+post /api/start '{"name":"Demo","row":0,"model":"","effort":""}' >"$T/j"
+RT=$(pick "$T/j" "d['tag']")
+RN=$(pick "$T/j" "d['name']")
+post /api/hello "{\"tag\":\"$RT\",\"session\":\"claude-keep\"}" >/dev/null
+# the marketplace offers 99.0.0 again; installing it leaves this server older than what is installed
+write_installed
+post /api/update '{"action":"apply"}' >/dev/null; upd_wait
+[ "$(pick "$T/set" "d['update']['status']")" = ready ] && ok "an update is installed" || bad "an update is installed" "$(head -c 300 "$T/set")"
+[ "$(pick "$T/set" "d['update']['restart']['server']")" = True ] && ok "the checker says the server needs restarting" || bad "the checker says the server needs restarting" "$(head -c 400 "$T/set")"
+[ "$(pick "$T/set" "'$RT' in [s['tag'] for s in d['update']['restart']['sessions']]")" = True ] && ok "and lists the session going" || bad "and lists the session going" "$(head -c 600 "$T/set")"
+[ "$(pick "$T/set" "[s['stale'] for s in d['update']['restart']['sessions'] if s['tag'] == '$RT'][0]")" = True ] && ok "which started before the update, so is on the old one" || bad "stale session"
+[ "$(pick "$T/set" "d['update']['restart']['openQuestions']")" = 0 ] && ok "no question would be lost" || bad "no question would be lost"
+[ -f "$TATTY_HOME/sessions-cache.json" ] && ok "the sessions going are cached at once" || bad "the sessions going are cached at once"
+has "with its name" "$TATTY_HOME/sessions-cache.json" "$RN"
+has "and its feature" "$TATTY_HOME/sessions-cache.json" '"feature": "Demo"'
+[ "$(pick "$T/set" "d['update']['restart']['cached']")" = True ] && ok "the page is told they are cached" || bad "the page is told they are cached"
+get /api/events >"$T/ev"
+has "the page hears of what needs restarting" "$T/ev" '"restart"'
+# restart
+OLDPID=$(json x 'd["pid"]'); OLDPORT=$P
+post /api/restart '{}' >"$T/j"
+has "the restart starts" "$T/j" '"ok": true'
+[ "$(pick "$T/j" "d['kept'] >= 1")" = True ] && ok "and says how many sessions it keeps" || bad "and says how many sessions it keeps" "$(cat "$T/j")"
+NEWPID=$OLDPID
+for _ in $(seq 1 100); do NEWPID=$(json x 'd["pid"]' 2>/dev/null || echo "$OLDPID"); [ "$NEWPID" != "$OLDPID" ] && break; sleep 0.2; done
+[ "$NEWPID" != "$OLDPID" ] && ok "a new server takes over" || bad "a new server takes over"
+P=$(json x 'd["port"]'); K=$(json x 'd["token"]'); U="http://127.0.0.1:$P"
+for _ in $(seq 1 50); do [ -n "$(get /api/status)" ] && break; sleep 0.2; done
+[ "$P" != "$OLDPORT" ] && ok "on a port of its own" || bad "on a port of its own"
+for _ in $(seq 1 50); do [ "$(code "http://127.0.0.1:$OLDPORT/api/status")" = 000 ] && break; sleep 0.2; done
+[ "$(code "http://127.0.0.1:$OLDPORT/api/status")" = 000 ] && ok "and the old one has stopped" || bad "and the old one has stopped"
+get /api/sessions >"$T/j"
+[ "$(pick "$T/j" "[s['name'] for s in d if s['tag'] == '$RT']")" = "['$RN']" ] && ok "the session is back, with its name" || bad "the session is back, with its name" "$(head -c 600 "$T/j")"
+[ "$(pick "$T/j" "[s['feature'] for s in d if s['tag'] == '$RT']")" = "['Demo']" ] && ok "and its feature" || bad "and its feature"
+[ "$(pick "$T/j" "[s['status'] for s in d if s['tag'] == '$RT']")" = "['running']" ] && ok "running until it says otherwise" || bad "running until it says otherwise"
+[ ! -f "$TATTY_HOME/sessions-cache.json" ] && ok "the cache is used once" || bad "the cache is used once"
+post /api/hello "{\"tag\":\"$RT\",\"session\":\"claude-keep\"}" >/dev/null
+get /api/sessions >"$T/j"
+[ "$(pick "$T/j" "[s['name'] for s in d if s['tag'] == '$RT']")" = "['$RN']" ] && ok "its mod saying hello again keeps what was restored" || bad "hello again keeps what was restored"
+get /api/settings >"$T/set"
+[ "$(pick "$T/set" "d['update']['restart']['server']")" = False ] && ok "nothing is left to restart" || bad "nothing is left to restart" "$(head -c 400 "$T/set")"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{}' "$U/api/restart")" = 409 ] && ok "so a restart is refused" || bad "so a restart is refused"
+[ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served by the new server" || bad "settings.js served by the new server"
+
+fi
+if section stages; then
+echo "# choosing a feature's stages"
+[ "$(code "$U/static/stages.js")" = 200 ] && ok "stages.js served" || bad "stages.js served"
+STAGES_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/stages.sh"
+if [ -f "$STAGES_SH" ]; then
+	scode() { curl -s -o "$T/sj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/stages"; }
+	mkdir -p "$FX/features/Stage One"; cp -r "$FX/features/Draft" "$FX/features/Stage Draft"
+	get "/api/feature?name=Stage%20One" >"$T/j"
+	pick "$T/j" "d['profile']['route'] + ' ' + str(len(d['profile']['stages']))" >"$T/f"
+	has "a new feature includes every stage" "$T/f" "full 11"
+	pick "$T/j" "[s['why'] for s in d['profile']['stages'] if s['key'] == 'requirements'][0]" >"$T/f"
+	has "requirements say why they stay" "$T/f" "Always included"
+	[ "$(scode '{"name":"Stage One","stage":"scope","on":false}')" = 200 ] && ok "scope left out" || bad "scope left out" "$(cat "$T/sj")"
+	pick "$T/sj" "[s['on'] for s in d['profile']['stages'] if s['key'] == 'scope'][0]" >"$T/f"
+	has "and the answer shows it" "$T/f" False
+	[ -f "$FX/features/Stage One/.tt/workflow-stages.tsv" ] && ok "the choice is in the feature's folder" || bad "the choice is in the feature's folder"
+	[ "$(scode '{"name":"Stage One","stage":"requirements","on":false}')" = 409 ] && ok "requirements can't be left out" || bad "requirements can't be left out"
+	has "with the toolbox's reason" "$T/sj" "Always included"
+	[ "$(scode '{"name":"Stage One","stage":"nonsense","on":false}')" = 409 ] && ok "an unknown stage is refused" || bad "an unknown stage is refused"
+	[ "$(scode '{"name":"Stage One","stage":"Scope; rm","on":false}')" = 400 ] && ok "a stage name is checked" || bad "a stage name is checked"
+	[ "$(scode '{"name":"Stage One","stage":"scope","on":"no"}')" = 400 ] && ok "on must be true or false" || bad "on must be true or false"
+	[ "$(scode '{"name":"No Such","stage":"scope","on":true}')" = 404 ] && ok "no such feature" || bad "no such feature"
+	[ "$(scode '{"name":"Stage One","stage":"scope","on":true}')" = 200 ] && ok "scope back in" || bad "scope back in"
+	[ "$(scode '{"name":"Stage One","stage":"plan","on":false}')" = 200 ] && ok "plan left out" || bad "plan left out"
+	get "/api/feature?name=Stage%20One" >"$T/j"
+	pick "$T/j" "d['profile']['route'] + ' ' + str(d['liteFirst']) + ' ' + str(d['action']['modes'])" >"$T/f"
+	has "a new feature without Plan is a small change, lite first" "$T/f" "lite True ['lite']"
+	has "its lite step says why" "$T/j" "leave out Plan"
+	pick "$T/j" "[s['on'] for s in d['profile']['stages'] if s['key'] == 'breakdown'][0]" >"$T/f"
+	has "the breakdown goes with Plan" "$T/f" False
+	# a draft plan: a stage left out shows as skipped in the plan's stages
+	[ "$(scode '{"name":"Stage Draft","stage":"approach","on":false}')" = 200 ] && ok "approach left out of a draft" || bad "approach left out of a draft" "$(cat "$T/sj")"
+	get "/api/feature?name=Stage%20Draft" >"$T/j"
+	pick "$T/j" "' '.join(s['stage'] + '=' + s['status'] for s in d['stages'])" >"$T/f"
+	has "the plan's table follows" "$T/f" "Approach=Skipped: not selected"
+	[ "$(scode '{"name":"Stage Draft","stage":"scope","on":false}')" = 409 ] && ok "a stage in progress can't be left out" || bad "a stage in progress can't be left out"
+else
+	echo "skip  choosing stages: the toolbox checkout has no stages.sh"
+fi
+
+fi
+if section decide; then
+echo "# deciding a workflow's questions in Tatty"
+[ "$(code "$U/static/decide-page.js")" = 200 ] && ok "decide-page.js served" || bad "decide-page.js served"
+[ "$(code "$U/static/validate-page.js")" = 200 ] && ok "validate-page.js served" || bad "validate-page.js served"
+DECIDE_SH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/decide.sh"
+if [ -f "$DECIDE_SH" ]; then
+	dpost() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/decide"; }
+	DDIR="$FX/features/Decide Draft"; cp -r "$FX/features/Draft" "$DDIR"
+	for f in "$DDIR"/"Draft - "*; do mv "$f" "$DDIR/Decide Draft - ${f##*/Draft - }"; done
+	get "/api/feature?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "(d['decide']['open'], d['decide']['apply'], d['decide']['kinds'])" >"$T/f"
+	has "the feature says a challenge waits" "$T/f" "(1, 0, ['challenge'])"
+	get "/api/decide?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "[(i['id'], i['state'], i['group'], i['doc']) for i in d['items']]" >"$T/f"
+	has "the waiting challenge, with its stage and document" "$T/f" "[('CH3', 'open', 'Scope & Constraints', 'Decide Draft - Challenges.md')]"
+	get "/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Challenges.md&id=CH3" >"$T/j"
+	pick "$T/j" "[o['key'] for o in d['options']]" >"$T/f"
+	has "its options" "$T/f" "['accept', 'rebut', 'defer']"
+	pick "$T/j" "[o['needsNote'] for o in d['options'] if o['key'] == 'rebut'][0]" >"$T/f"
+	has "a rebuttal needs a reason" "$T/f" "True"
+	has "and its question" "$T/j" "Does the tray app need a build?"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=..%2FDemo%2FDemo%20-%20Task%20Status.md&id=CH3")" = 404 ] && ok "only a decision document in the feature's folder" || bad "only a decision document in the feature's folder"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Challenges.md&id=CH3%3Brm")" = 400 ] && ok "an id is checked" || bad "an id is checked"
+	[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Challenges.md&id=CH9")" = 404 ] && ok "no such challenge" || bad "no such challenge"
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"rebut"}')" = 409 ] && ok "a rebuttal without a reason is refused" || bad "a rebuttal without a reason is refused" "$(cat "$T/dj")"
+	has "with the toolbox's reason" "$T/dj" "rebut needs --note"
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"dismiss"}')" = 409 ] && ok "a significant one can't be dismissed" || bad "a significant one can't be dismissed"
+	[ "$(dpost '{"name":"No Such","doc":"x - Challenges.md","id":"CH3","choice":"accept"}')" = 404 ] && ok "no such feature" || bad "no such feature"
+	# a session open for the feature is told to carry on once the last one is decided
+	post /api/project "{\"name\":\"Decide Draft\",\"path\":\"$HERE\"}" >/dev/null
+	post /api/start '{"name":"Decide Draft","row":0}' >"$T/j"
+	DTAG=$(pick "$T/j" "d['tag']")
+	has "the session records its questions for Tatty" "$T/j" "TT_DECIDE=elsewhere"
+	get "/api/inbox?wait=0&tag=$DTAG&client=claude-mod" >/dev/null
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"accept","note":"build the tray app too"}')" = 200 ] && ok "accept" || bad "accept" "$(cat "$T/dj")"
+	pick "$T/dj" "(d['open'], d['apply'], d['nudged']['tag'] if d['nudged'] else None)" >"$T/f"
+	has "none left; the session is told" "$T/f" "(0, 1, '$DTAG')"
+	has "the document records it, to apply" "$DDIR/Decide Draft - Challenges.md" "- **Resolution:** To apply: build the tray app too"
+	get "/api/inbox?wait=1&tag=$DTAG&client=claude-mod" >"$T/j"
+	has "the session's inbox has the nudge" "$T/j" "I've decided the challenges in Tatty"
+	get "/api/feature?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "(d['decide']['open'], d['decide']['apply'])" >"$T/f"
+	has "the feature now waits for the session" "$T/f" "(0, 1)"
+	[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Challenges.md","id":"CH3","choice":"defer"}')" = 200 ] && ok "a decision can change until it is applied" || bad "a decision can change until it is applied" "$(cat "$T/dj")"
+	# a proposal, decided by its letter
+	PRSH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/proposals.sh"
+	if [ -f "$PRSH" ]; then
+		cp "$TATTY_TOOLBOX/tools/fixtures/proposals/Pr - Tech Proposals.md" "$DDIR/Decide Draft - Tech Proposals.md"
+		bash "$PRSH" add "$DDIR/Decide Draft - Tech Proposals.md" "$TATTY_TOOLBOX/tools/fixtures/proposals/P2.md" >/dev/null
+		get "/api/decide?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "[(i['kind'], i['id'], i['state'], i['severity']) for i in d['items'] if i['kind'] == 'proposal']" >"$T/f"
+		has "a proposal waits too" "$T/f" "[('proposal', 'P2', 'open', 'blocking')]"
+		get "/api/decide/item?name=Decide%20Draft&doc=Decide%20Draft%20-%20Tech%20Proposals.md&id=P2" >"$T/j"
+		pick "$T/j" "[o['key'] for o in d['options']]" >"$T/f"
+		has "its options are its letters, and something else" "$T/f" "['A', 'B', 'C', 'other']"
+		[ "$(dpost '{"name":"Decide Draft","doc":"Decide Draft - Tech Proposals.md","id":"P2","choice":"B","note":"less noise"}')" = 200 ] && ok "decide a proposal" || bad "decide a proposal" "$(cat "$T/dj")"
+		has "the proposal records it" "$DDIR/Decide Draft - Tech Proposals.md" "- **Chosen:** Option B: Retry quietly"
+	fi
+	# a question list, in the feature's .tt folder
+	QSH="$TATTY_TOOLBOX/plugins/core/skills/tt-common/scripts/questions.sh"
+	if [ -f "$QSH" ]; then
+		QLIST="$DDIR/.tt/Decide Draft - Questions/validation-WU1.md"
+		bash "$QSH" init "$QLIST" --title "Decide Draft: WU1 engineer checks" >/dev/null
+		printf 'title: The toast shows\nref: WU1 check 1\ncontext: Save on a full disk.\n  You should see a toast.\noption: passed | Passed | It showed | recommended\noption: failed | Failed | Say what you saw | note\n' | bash "$QSH" add "$QLIST" >/dev/null
+		get "/api/decide?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "[(i['doc'], i['id'], i['severity'], i['group']) for i in d['items'] if i['kind'] == 'question']" >"$T/f"
+		has "a question list's question, by its path in the folder" "$T/f" "[('.tt/Decide Draft - Questions/validation-WU1.md', 'Q1', 'WU1 check 1', 'Decide Draft: WU1 engineer checks')]"
+		QDOC=$($PY -c "import urllib.parse; print(urllib.parse.quote('.tt/Decide Draft - Questions/validation-WU1.md'))")
+		get "/api/decide/item?name=Decide%20Draft&doc=$QDOC&id=Q1" >"$T/j"
+		pick "$T/j" "(d['fields']['context'], [o['key'] for o in d['options']])" >"$T/f"
+		has "its context and options" "$T/f" "('Save on a full disk. / You should see a toast.', ['passed', 'failed'])"
+		# a validation-<WU> list is the Validation page's, not the Decide page's
+		get "/api/decide?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "{i['id']: i['scope'] for i in d['items'] if i['kind'] == 'question'}" >"$T/f"
+		has "a validation list's checks are scoped to the Validation page" "$T/f" "{'Q1': 'validate'}"
+		get "/api/decide?name=Decide%20Draft&scope=decide" >"$T/j"
+		pick "$T/j" "[i['id'] for i in d['items'] if i['kind'] == 'question']" >"$T/f"
+		has "the Decide page's list leaves them out" "$T/f" "[]"
+		get "/api/decide?name=Decide%20Draft&scope=validate" >"$T/j"
+		pick "$T/j" "[i['id'] for i in d['items']]" >"$T/f"
+		has "the Validation page's list is only them" "$T/f" "['Q1']"
+		get "/api/feature?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "(d['validate'] or {}).get('open') == 1 and 'question' not in ((d['decide'] or {}).get('kinds') or [])" >"$T/f"
+		has "the feature counts validation apart from decisions" "$T/f" "True"
+		BADQ=$($PY -c "import urllib.parse; print(urllib.parse.quote('.tt/../../Demo/Demo - Task Status.md'))")
+		[ "$(code -H "X-TT-Token: $K" "$U/api/decide/item?name=Decide%20Draft&doc=$BADQ&id=Q1")" = 404 ] && ok "a path out of the folder is refused" || bad "a path out of the folder is refused"
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed"}')" = 409 ] && ok "an option that needs words, without them" || bad "an option that needs words, without them" "$(cat "$T/dj")"
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q1","choice":"failed","note":"a beep"}')" = 200 ] && ok "answer a question" || bad "answer a question" "$(cat "$T/dj")"
+		has "the list records it" "$QLIST" "- **Note:** a beep"
+		# a list's option keys are letters, digits and -: A1 and No-2 are as good as a word (they were refused before)
+		printf 'title: Which toast wording\nref: WU1 check 2\noption: A1 | Short | One line | recommended\noption: opt-2 | Long | Two lines\n---\ntitle: A third\nref: WU1 check 3\noption: Yes-1 | Yes | y | recommended\noption: No-2 | No | n\n' | bash "$QSH" add "$QLIST" >/dev/null
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"A1"}')" = 200 ] && ok "an option key with a digit" || bad "an option key with a digit" "$(cat "$T/dj")"
+		[ "$(dpost '{"name":"Decide Draft","doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"-A1"}')" = 400 ] && ok "a key can't start with a dash" || bad "a key can't start with a dash"
+		has "and the refusal names the key" "$T/dj" "choice (an option key"
+		# a page's decisions arrive together: one request, each recorded, one that is refused doesn't stop the others
+		BODY='{"name":"Decide Draft","batch":"tb1","answers":[{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q2","choice":"opt-2"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q3","choice":"No-2","note":"too long"},{"doc":".tt/Decide Draft - Questions/validation-WU1.md","id":"Q9","choice":"A1"}]}'
+		[ "$(dpost "$BODY")" = 200 ] && ok "a batch of decisions" || bad "a batch of decisions" "$(cat "$T/dj")"
+		pick "$T/dj" "([(r['id'], bool(r.get('ok'))) for r in d['results']], d['open'])" >"$T/f"
+		has "each is recorded and the unknown one refused" "$T/f" "([('Q2', True), ('Q3', True), ('Q9', False)], 0)"
+		has "a later choice replaces an earlier one" "$QLIST" "opt-2"
+		# the page draws how far a send has got from a "decided" event per choice (its batch is the page's own id for the
+		# send), and the coins of a new decision come after its event, so the bar moves and then the coins arrive
+		get /api/events >"$T/ev"
+		pick "$T/ev" "[(e['n'], e['total'], e['ok'], e['id']) for e in d if e['type'] == 'decided' and e['batch'] == 'tb1']" >"$T/f"
+		has "each choice of a send is said as it is recorded" "$T/f" "[(1, 3, True, 'Q2'), (2, 3, True, 'Q3'), (3, 3, False, 'Q9')]"
+		[ "$(pick "$T/ev" "next(e['seq'] for e in d if e['type'] == 'decided' and e['batch'] == 'tb1' and e['id'] == 'Q3') < next(e['seq'] for e in d if e['type'] == 'coins' and e['key'].endswith(':Q3'))")" = True ] &&
+			ok "and its coins come after" || bad "and its coins come after"
+		[ "$(dpost '{"name":"Decide Draft","answers":[]}')" = 400 ] && ok "a batch needs answers" || bad "a batch needs answers"
+	fi
+	# a work unit's checks: sending some tells the session at once and the rest stay open (unlike decisions, which
+	# wait for the last one)
+	if [ -f "$QSH" ]; then
+		VLIST="$DDIR/.tt/Decide Draft - Questions/validation-WU2.md"
+		bash "$QSH" init "$VLIST" --title "Decide Draft: WU2 engineer checks" >/dev/null
+		printf 'title: One\nref: WU2 check 1\noption: passed | Passed | ok | recommended\noption: failed | Failed | no | note\n---\ntitle: Two\nref: WU2 check 2\noption: passed | Passed | ok | recommended\noption: failed | Failed | no | note\n' | bash "$QSH" add "$VLIST" >/dev/null
+		for _ in 1 2 3 4 5 6 7 8 9 10; do get "/api/inbox?wait=0&tag=$DTAG&client=claude-mod" >/dev/null; done # (the earlier nudges)
+		[ "$(dpost "{\"name\":\"Decide Draft\",\"batch\":\"vb1\",\"answers\":[{\"doc\":\".tt/Decide Draft - Questions/validation-WU2.md\",\"id\":\"Q1\",\"choice\":\"passed\"}]}")" = 200 ] && ok "send one of two checks" || bad "send one of two checks" "$(cat "$T/dj")"
+		pick "$T/dj" "(d['open'], d['nudged']['tag'] if d['nudged'] else None)" >"$T/f"
+		has "the session is told with a check still open" "$T/f" "(1, '$DTAG')"
+		get "/api/inbox?wait=1&tag=$DTAG&client=claude-mod" >"$T/j"
+		has "and told which are left" "$T/j" "recorded 1 validation result in Tatty (1 check still open)"
+		get "/api/feature?name=Decide%20Draft" >"$T/j"
+		pick "$T/j" "(d['validate'] or {}).get('open')" >"$T/f"
+		has "the feature still waits on the other check" "$T/f" "1"
+	fi
+	# choices left on the Decide page (a draft) are kept in Tatty's home, so they outlive a reload and a restart
+	drpost() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/decide/draft"; }
+	[ "$(drpost '{"name":"Decide Draft","entries":{"Decide Draft - Challenges.md#CH3":{"key":"accept","note":"yes","label":"Accept","decided":true,"at":5},"x#Q1":{"key":"-bad","note":"","at":1},"y#Q2":{"key":"A1","note":"n","decided":false,"at":2}}}')" = 200 ] && ok "a draft is kept" || bad "a draft is kept" "$(cat "$T/dj")"
+	has "an option key that could read as a flag is dropped" "$T/dj" '"kept": 2'
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "sorted((k, v['key'], v['decided']) for k, v in d['drafts'].items())" >"$T/f"
+	has "the page gets its draft back" "$T/f" "[('Decide Draft - Challenges.md#CH3', 'accept', True), ('y#Q2', 'A1', False)]"
+	get "/api/decide?name=Decide%20Draft" >"$T/j"
+	pick "$T/j" "'drafts' in d" >"$T/f"
+	has "the poll doesn't carry it" "$T/f" "False"
+	[ "$(drpost '{"name":"No Such","entries":{}}')" = 404 ] && ok "a draft needs a feature" || bad "a draft needs a feature"
+	# what is sent is no longer a draft
+	[ "$(dpost '{"name":"Decide Draft","answers":[{"doc":"Decide Draft - Challenges.md","id":"CH3","choice":"accept"}]}')" = 200 ] && ok "send the drafted choice" || bad "send the drafted choice" "$(cat "$T/dj")"
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "sorted(d['drafts'])" >"$T/f"
+	has "it leaves the draft" "$T/f" "['y#Q2']"
+	[ "$(drpost '{"name":"Decide Draft","entries":{}}')" = 200 ] && ok "an empty draft" || bad "an empty draft"
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "d['drafts']" >"$T/f"
+	has "clears it" "$T/f" "{}"
+	# the Validation page's draft and the Decide page's are kept apart: one page saving doesn't drop the other's
+	drpost '{"name":"Decide Draft","scope":"validate","entries":{".tt/Decide Draft - Questions/validation-WU2.md#Q2":{"key":"passed","note":"","decided":false,"at":7}}}' >/dev/null
+	drpost '{"name":"Decide Draft","scope":"decide","entries":{"Decide Draft - Challenges.md#CH3":{"key":"accept","note":"","decided":false,"at":8}}}' >/dev/null
+	drpost '{"name":"Decide Draft","scope":"decide","entries":{}}' >/dev/null
+	get "/api/decide?name=Decide%20Draft&drafts=1" >"$T/j"
+	pick "$T/j" "sorted(d['drafts'])" >"$T/f"
+	has "a page's draft is not dropped by the other page saving" "$T/f" "['.tt/Decide Draft - Questions/validation-WU2.md#Q2']"
+	post /api/bye "{\"tag\":\"$DTAG\"}" >/dev/null
+	rm -rf "$DDIR"
+else
+	echo "skip  deciding in Tatty: the toolbox checkout has no decide.sh"
+fi
+
+fi
+if section cache; then
+echo "# the server's caches: the processes it starts"
+# tools/test-tatty-cache.py counts the processes the server starts for a call, the second time; like the compact chat's
+# tests it prints a line a check in this script's own format, counted here. It keeps its own folders, and needs a toolbox.
+for cache_args in "" "--changes"; do
+	# shellcheck disable=SC2086
+	$PY -I "$root/tools/test-tatty-cache.py" $cache_args >"$T/cache.out" 2>&1; cache_rc=$?
+	while IFS= read -r line; do
+		case "$line" in
+		"ok "*) pass=$((pass + 1)) ;;
+		FAIL*) fail=$((fail + 1)) ;;
+		esac
+		case "$line" in *" passed, "*) ;; *) printf '%s\n' "$line" ;; esac
+	done <"$T/cache.out"
+	[ "$cache_rc" = 0 ] && ok "the cache checks ran to the end${cache_args:+ ($cache_args)}" ||
+		bad "the cache checks ran to the end${cache_args:+ ($cache_args)}" "exit $cache_rc: $(tail -n 3 "$T/cache.out")"
+done
+fi
+if section diagrams; then
+echo "# generated diagrams"
+# diagram.py's own checks (C# files read, linked, cached by blob; a review and a plan graph), a line a check
+$PY -I "$root/tools/test-tatty-diagram.py" >"$T/dg.out" 2>&1; dg_rc=$?
+while IFS= read -r line; do
+	case "$line" in
+	"ok "*) pass=$((pass + 1)) ;;
+	FAIL*) fail=$((fail + 1)) ;;
+	esac
+	case "$line" in "ok "* | *" passed, "*) ;; *) printf '%s\n' "$line" ;; esac
+done <"$T/dg.out"
+[ "$dg_rc" = 0 ] && ok "the diagram checks ran to the end" || bad "the diagram checks ran to the end" "exit $dg_rc: $(tail -n 3 "$T/dg.out")"
+# The model's runs: a stand-in that answers a summary run with a summary for every id it is given, and a plan
+# run with a small diagram (dg-slow: it takes a while, so it can be stopped).
+cat >"$T/claude-dg.py" <<'EOS'
+import json, re, sys, time, os
+d = os.path.dirname(os.path.abspath(__file__))
+args = " ".join(sys.argv[1:])
+text = sys.stdin.read()
+open(os.path.join(d, "dg.args"), "w", encoding="utf-8").write("\n".join(sys.argv[1:]) + "\n---\n" + text)
+if os.path.exists(os.path.join(d, "dg-slow")):
+    time.sleep(20)
+if "You draw the class diagram" in args:
+    out = {"nodes": [{"name": "Planner", "namespace": "G.Plan", "assembly": "Game", "kind": "class", "change": "new",
+                      "steps": ["§2"], "members": ["public void Plan()"], "summary": "Plans the work."},
+                     {"name": "Core", "namespace": "G", "change": "changed", "steps": ["§1"]}],
+           "edges": [{"from": "Planner", "to": "Core", "kind": "dataflow", "label": "the plan", "steps": ["§2"]}]}
+else:
+    out = {i: f"What {i} is for." for i in re.findall(r"^id: (.+)$", text, re.M)}
+print(json.dumps({"type": "result", "is_error": False, "result": json.dumps(out), "total_cost_usd": 0.002}))
+EOS
+printf '#!/usr/bin/env bash\nexec %s "%s" "$@"\n' "$PY" "$T/claude-dg.py" >"$T/claude-dg.sh"
+DGR="$T/dgrepo"
+mkdir -p "$DGR/Assets/Game" && git -C "$DGR" init -q -b main && git -C "$DGR" config core.autocrlf false
+printf 'namespace G { public class Core { public int A; } public class Old { } }\n' >"$DGR/Assets/Game/Core.cs"
+printf 'namespace G { public class Lib { } }\n' >"$DGR/Assets/Game/Lib.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m base
+DGRW=$(cd "$DGR" && { pwd -W 2>/dev/null || pwd; })
+# wait for a diagram run to end: its last "diagram" event, in $T/j
+dg_wait() {
+	local n=0
+	while [ $n -lt 60 ]; do
+		get /api/events >"$T/dgev"
+		$PY -c "import json,sys
+d=json.load(open(sys.argv[1])); ev=d if isinstance(d,list) else d.get('events',[])
+e=[x for x in ev if x.get('type')=='diagram' and x.get('runId')==sys.argv[2] and x.get('done')]
+e and open(sys.argv[3],'w').write(json.dumps(e[-1]))
+sys.exit(0 if e else 1)" "$T/dgev" "$1" "$T/j" && return 0
+		sleep 0.5; n=$((n + 1))
+	done
+	return 1
+}
+get "/api/diagram?scope=project" >"$T/j"
+has "no Project diagram yet" "$T/j" '"exists": false'
+post /api/diagram/settings '{"repo":"'"$T"'/none-such"}' >"$T/j"
+has "a folder outside git is refused" "$T/j" "isn't in a git repository"
+post /api/diagram/settings "{\"repo\":\"$DGRW\",\"exclude\":[\"Library/\"]}" >"$T/j"
+has "the repository is kept" "$T/j" "dgrepo"
+post /api/diagram/generate '{"scope":"project","runId":"bad id!"}' >"$T/j"
+has "a run id is checked" "$T/j" "runId"
+post /api/diagram/generate '{"scope":"project","runId":"dgproj1"}' >"$T/j"
+has "a Project diagram starts" "$T/j" '"runId": "dgproj1"'
+dg_wait dgproj1 && has "and is made" "$T/j" '"ok": true' || bad "and is made" "no end event"
+get "/api/diagram?scope=project" >"$T/j"
+[ "$(pick "$T/j" "d['nodeCount']")" = 3 ] && ok "every type is in it" || bad "every type is in it" "$(pick "$T/j" "d.get('nodeCount')")"
+has "with its groups" "$T/j" '"n:Assembly-CSharp/G"'
+hasnt "and not yet stale" "$T/j" '"stale": "There are'
+get "/api/diagram?scope=project&group=a:Assembly-CSharp" >"$T/j"
+[ "$(pick "$T/j" "len(d['nodes'])")" = 3 ] && ok "an opened group sends its classes" || bad "an opened group sends its classes" "$(head -c 300 "$T/j")"
+[ -n "$(find "$TATTY_HOME" -name 'index-*.json' -path '*diagrams*' 2>/dev/null)" ] && ok "the parsed files are cached" || bad "the parsed files are cached"
+printf 'namespace G { public class Extra { } }\n' >"$DGR/Assets/Game/Extra.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m extra
+get "/api/diagram?scope=project" >"$T/j"
+has "a new commit makes it stale" "$T/j" '"stale": "There are new commits'
+git -C "$DGR" reset -q --hard HEAD~1
+# a feature's branch, two work units (named in the commits), against main
+post /api/new-feature '{"name":"Diagrammed"}' >/dev/null
+post /api/start "{\"name\":\"Diagrammed\",\"row\":0,\"project\":\"$DGRW\",\"isolate\":false,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "the feature has its branch" "$T/j" '"branch": "feature/Diagrammed"'
+printf 'namespace G { public class Core { public int A; public Lib L; } }\n' >"$DGR/Assets/Game/Core.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "core uses lib (WU1)"
+printf 'namespace G { public class Added : Core { } }\n' >"$DGR/Assets/Game/New.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "a new type (WU2)"
+# work on develop merged into the branch is develop's, not the feature's, though the recorded base (main) is behind
+git -C "$DGR" switch -qc develop main
+printf 'namespace G { public class FromMain { } }\n' >"$DGR/Assets/Game/FromMain.cs"
+git -C "$DGR" add -A && git -C "$DGR" $GITID commit -q -m "develop moves on"
+git -C "$DGR" switch -q feature/Diagrammed
+git -C "$DGR" $GITID merge -q --no-edit develop
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
+has "a review knows the branch" "$T/j" '"branch": "feature/Diagrammed"'
+has "and its base" "$T/j" '"base": "main"'
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"review","runId":"dgrev01"}' >/dev/null
+dg_wait dgrev01 && has "the Review diagram is made" "$T/j" '"ok": true' || bad "the Review diagram is made" "no end event"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
+[ "$(pick "$T/j" "sorted((n['label'], n['state']) for n in d['nodes'])")" = "[('Added', 'added'), ('Core', 'changed'), ('Lib', 'unchanged'), ('Old', 'removed')]" ] &&
+	ok "added, changed, removed, and the unchanged type it links to" || bad "added, changed, removed, and the unchanged type it links to" "$(pick "$T/j" "[(n['label'], n['state']) for n in d['nodes']]")"
+hasnt "what develop brought in by a merge isn't the feature's" "$T/j" "FromMain"
+[ "$(pick "$T/j" "{n['label']: n['units'] for n in d['nodes']}['Added']")" = "['WU2']" ] && ok "each change knows its work unit" || bad "each change knows its work unit" "$(pick "$T/j" "{n['label']: n['units'] for n in d['nodes']}")"
+[ "$(pick "$T/j" "[u['id'] for u in d['units']]")" = "['WU1', 'WU2']" ] && ok "the units to turn on and off" || bad "the units to turn on and off"
+# hover summaries: written once, kept by each type's signature
+post /api/diagram/summarise '{"scope":"feature","feature":"Diagrammed","kind":"review","runId":"dgsum01"}' >"$T/j"
+has "summaries start" "$T/j" '"types": 3'
+dg_wait dgsum01 && has "and are written" "$T/j" '"wrote": ' || bad "and are written" "no end event"
+grep -q 'haiku' "$T/dg.args" && ok "by a small model" || bad "by a small model" "$(head -c 300 "$T/dg.args")"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=review" >"$T/j"
+has "the hover card has them" "$T/j" 'What G.Added is for.'
+post /api/diagram/summarise '{"scope":"feature","feature":"Diagrammed","kind":"review","runId":"dgsum02"}' >"$T/j"
+has "a type with a summary isn't asked about again" "$T/j" "has a summary already"
+# the Plan diagram: a model's drawing, joined to the code
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=plan" >"$T/j"
+has "no plan, no Plan diagram" "$T/j" '"plan": false'
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan1"}' >"$T/j"
+has "and none is started" "$T/j" "no plan to draw"
+DGF=$(get "/api/feature?name=Diagrammed" | $PY -c "import json,sys; print(json.load(sys.stdin)['folder'])")
+printf '# Plan\n\n## Implementation Plan\n\n### \302\2471. Change the core\n\nIt changes Core.\n\n**Files:**\n- change `Assets/Game/Core.cs`\n\n### \302\2472. Add the planner\n\nA planner.\n\n**Files:**\n- new `Assets/Game/Planner.cs`\n\n```csharp\npublic sealed class Planner : IPlanner\n{\n}\n```\n\n## Affected Files\n| File | Status |\n|---|---|\n| `Assets/Game/Core.cs` | changed |\n' >"$DGF/Diagrammed - Comprehensive Tech Plan.md"
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan2"}' >/dev/null
+dg_wait dgplan2 && has "the Plan diagram is made" "$T/j" '"ok": true' || bad "the Plan diagram is made" "$(cat "$T/j" 2>/dev/null)"
+grep -q 'Declarations shown' "$T/dg.args" && grep -q 'sealed class Planner' "$T/dg.args" && ok "the model is shown the plan's declarations" || bad "the model is shown the plan's declarations"
+grep -q -- '--add-dir' "$T/dg.args" && grep -q 'Read,Glob,Grep' "$T/dg.args" && ok "and may only read the repository" || bad "and may only read the repository"
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=plan" >"$T/j"
+[ "$(pick "$T/j" "{n['label']: n['state'] for n in d['nodes']}.get('Planner')")" = planned ] && ok "a new type is planned" || bad "a new type is planned" "$(pick "$T/j" "[(n['label'], n['state']) for n in d['nodes']]")"
+has "an existing one takes the code's members" "$T/j" '"sig": "public Lib L"'
+has "the plan's steps are its units" "$T/j" '"label": "Add the planner"'
+has "data flow, with what flows" "$T/j" '"label": "the plan"'
+printf '\nmore\n' >>"$DGF/Diagrammed - Comprehensive Tech Plan.md"
+touch -d '+5 seconds' "$DGF/Diagrammed - Comprehensive Tech Plan.md" 2>/dev/null
+get "/api/diagram?scope=feature&feature=Diagrammed&kind=plan" >"$T/j"
+has "a changed plan makes it stale" "$T/j" '"stale": "The plan has changed'
+# a run can be stopped
+: >"$T/dg-slow"
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan3"}' >/dev/null
+post /api/diagram/generate '{"scope":"feature","feature":"Diagrammed","kind":"plan","runId":"dgplan4"}' >"$T/j"
+has "one run a diagram" "$T/j" "being made already"
+sleep 1
+post /api/diagram/cancel '{"runId":"dgplan3"}' >"$T/j"
+has "Stop" "$T/j" '"ok": true'
+dg_wait dgplan3 && has "and it stops" "$T/j" '"error": "Stopped."' || bad "and it stops" "no end event"
+rm -f "$T/dg-slow"
+# where a box was dragged: a whiteboard of kind diagram
+post /api/whiteboard '{"kind":"diagram","ref":"review:Diagrammed","cards":{"c:G.Core":[10,20]}}' >"$T/j"
+has "a dragged box is kept" "$T/j" '"ok": true'
+get "/api/whiteboard?kind=diagram&ref=review:Diagrammed" >"$T/j"
+has "and read back" "$T/j" '"c:G.Core": ['
+post /api/whiteboard '{"kind":"diagram","ref":"review:No Such","cards":{}}' >"$T/j"
+has "not for a feature that isn't there" "$T/j" "no such whiteboard"
+for f in diagram.js diagram-layout.js diagram.css; do
+	[ "$(code -H "X-TT-Token: $K" "$U/static/$f")" = 200 ] && ok "serves $f" || bad "serves $f"
+done
+git -C "$DGR" switch -q main
+fi
+section end # (a mark for TATTY_TIMES)
+echo "# close"
+expect "close" 0 bash "$W" close
+sleep 1
+expect "status after close" 1 bash "$W" status
+
+finish

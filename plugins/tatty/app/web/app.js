@@ -1,0 +1,1008 @@
+// Tatty's page: shows what the agent sends, answers its questions, reads the
+// toolbox's status/connections/docs through the server's read-only views, and
+// keeps the headless chats (chat.js). No libraries, no network beyond the server.
+"use strict";
+
+const token = (() => {
+  const m = location.hash.match(/token=([^&]+)/);
+  if (m) {
+    sessionStorage.setItem("tt-token", m[1]);
+    history.replaceState(null, "", location.pathname + location.search); // keeps ?mode=companion
+  }
+  return sessionStorage.getItem("tt-token") || "";
+})();
+
+// A fresh id on every load, counted in sessionStorage (which survives a reload
+// in the same window), so a test can prove the host changed the window's shape
+// without reloading the page underneath it.
+window.ttLoad = (() => {
+  const n = Number(sessionStorage.getItem("tt-loads") || 0) + 1;
+  sessionStorage.setItem("tt-loads", String(n));
+  return n + ":" + Date.now();
+})();
+
+const $ = sel => document.querySelector(sel);
+const el = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) n.append(k.nodeType ? k : String(k));
+  return n;
+};
+
+// Props for a tab: a middle click closes it, as in a browser, instead of opening
+// the tab's link in a new window (and not starting the autoscroll).
+const closeOnMiddle = close => ({
+  onmousedown: e => { if (e.button === 1) e.preventDefault(); },
+  onauxclick: e => { if (e.button === 1) { e.preventDefault(); close(); } },
+});
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-TT-Token": token, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const e = new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+
+// ------------------------------------------------------------- markdown
+
+const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function inline(s) {
+  const codes = [];
+  s = esc(s).replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+  // Links to another document, or a part of one: a .doclink, which a feature
+  // page opens in place, at the heading or block (features.js).
+  //   [[Doc]] [[Doc|label]] [[Doc#Heading]] [[Doc#H1#H2]] [[Doc#^block]] [[#Heading]] ![[Doc]] (Obsidian)
+  //   [label](Doc.md) [label](Doc.md#heading) [label](#heading) (Markdown)
+  const doclink = (doc, at, label) => {
+    // a `code` span inside the target (a heading such as "Does `X` split?") is just its text there
+    const plain = v => v.replace(/\u0000(\d+)\u0000/g, (_, n) => codes[n]);
+    doc = plain(doc); at = plain(at);
+    const where = at ? (at.startsWith("^") ? at : at.split("#").pop()) : "";
+    const shown = label || [doc, where].filter(Boolean).join(" › ");
+    return `<a href="#" class="doclink" data-doc="${doc}" data-at="${at}" title="${[doc || "this document", where].filter(Boolean).join(" › ")}">${shown}</a>`;
+  };
+  // (In a table Obsidian writes [[Doc\|label]]; the cell splitter has already
+  // made that a plain |, and any \ left before the | is dropped here too.)
+  s = s.replace(/!?\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]+))?\]\]/g, (_, t, a, label) =>
+    doclink(t.trim().replace(/\\$/, "").trim().replace(/\.md$/i, "").split("/").pop(), (a || "").slice(1).replace(/\\$/, "").trim(), label));
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => {
+    if (/^https?:\/\//.test(u)) return `<a href="${u}" target="_blank" rel="noopener">${t}</a>`;
+    if (/^#|\.md(#.*)?$/i.test(u)) {
+      const hash = u.indexOf("#");
+      let doc = (hash < 0 ? u : u.slice(0, hash)).replace(/\.md$/i, "").split("/").pop();
+      let at = hash < 0 ? "" : u.slice(hash + 1);
+      try { doc = decodeURIComponent(doc); at = decodeURIComponent(at).replace(/-/g, " "); } catch { /* keep it as written */ }
+      return doclink(doc, at, t);
+    }
+    return `<span title="${u}">${t}</span>`;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>");
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
+}
+
+// An Obsidian block id: " ^r12" at the end of an item, paragraph or table row
+// (what [[Doc#^r12]] links to). block(text) -> [text without it, the id or ""].
+const BLOCK = /\s\^([A-Za-z0-9-]+)\s*$/;
+const block = text => { const m = text.match(BLOCK); return m ? [text.slice(0, m.index), m[1]] : [text, ""]; };
+const blockAttr = id => (id ? ` data-block="${esc(id)}"` : "");
+
+const isTable = l => /^\s*\|.*\|\s*$/.test(l);
+// a cell may hold an escaped pipe (`a \| b`), which stays in the cell
+const cells = l => l.trim().replace(/^\||(?<!\\)\|$/g, "").split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
+
+function markdown(src) {
+  const lines = src.replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) {
+      const lang = l.slice(3).trim().split(/\s/)[0] || "";
+      const buf = [];
+      for (i++; i < lines.length && !/^```/.test(lines[i]); i++) buf.push(lines[i]);
+      i++;
+      out.push(`<pre${lang ? ` data-lang="${esc(lang)}"` : ""}><code>${esc(buf.join("\n"))}</code></pre>`);
+    } else if (/^\s*\^[A-Za-z0-9-]+\s*$/.test(l)) {
+      // a block id on its own line names the block just before it
+      const id = l.trim().slice(1);
+      if (out.length) out[out.length - 1] = out[out.length - 1].replace(/^<(\w+)/, `<$1${blockAttr(id)}`);
+      i++;
+    } else if (/^#{1,6}\s/.test(l)) {
+      const n = l.match(/^#+/)[0].length, text = l.replace(/^#+\s*/, "");
+      const id = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      out.push(`<h${n} id="h-${id}">${inline(text)}</h${n}>`);
+      i++;
+    } else if (isTable(l) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
+      const head = cells(l);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && isTable(lines[i])) rows.push(cells(lines[i++]));
+      const row = r => {
+        const [last, id] = block(r[r.length - 1] || "");
+        const cs = [...r.slice(0, -1), last];
+        return `<tr${blockAttr(id)}>` + cs.map(c => `<td>${inline(c)}</td>`).join("") + "</tr>";
+      };
+      out.push("<table><thead><tr>" + head.map(c => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>" +
+        rows.map(row).join("") + "</tbody></table>");
+    } else if (/^\s*([-*]|\d+\.)\s/.test(l)) {
+      const ordered = /^\s*\d+\./.test(l);
+      const items = [];
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s/.test(lines[i])) {
+        let item = lines[i++].replace(/^\s*([-*]|\d+\.)\s/, "");
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*]|\d+\.)\s/.test(lines[i])) item += " " + lines[i++].trim();
+        const [text, id] = block(item);
+        items.push(`<li${blockAttr(id)}>${inline(text)}</li>`);
+      }
+      out.push(ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`);
+    } else if (/^>\s?/.test(l)) {
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
+      const [text, id] = block(buf.join(" "));
+      out.push(`<blockquote${blockAttr(id)}>${inline(text)}</blockquote>`);
+    } else if (!l.trim()) {
+      i++;
+    } else {
+      const buf = [];
+      while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|```|>|\s*([-*]|\d+\.)\s|\s*\^[A-Za-z0-9-]+\s*$)/.test(lines[i]) && !isTable(lines[i])) buf.push(lines[i++]);
+      const [text, id] = block(buf.join(" "));
+      out.push(`<p${blockAttr(id)}>${inline(text)}</p>`);
+    }
+  }
+  return out.join("\n");
+}
+
+// The markdown each .md was drawn from, for a side chat about a piece of it (chat.js).
+const mdSource = new WeakMap();
+const mdNode = src => {
+  const d = el("div", { class: "md" });
+  d.innerHTML = markdown(src);
+  mdSource.set(d, src);
+  codeActions(d);
+  return d;
+};
+
+// Each code block gets a bar of its own: Copy, and Ask about it in a side chat
+// (chat.js's openSideChat, with the block and what is around it). Safe to call
+// again on the same nodes.
+function codeActions(root) {
+  for (const pre of root.querySelectorAll("pre")) {
+    if (pre.parentElement && pre.parentElement.classList.contains("codeblock")) continue;
+    const wrap = el("div", { class: "codeblock" });
+    pre.replaceWith(wrap);
+    const copy = el("button", { type: "button", class: "code-copy", title: "Copy the code" }, "Copy");
+    copy.addEventListener("click", () => navigator.clipboard.writeText(pre.textContent));
+    const ask = el("button", { type: "button", class: "code-ask", title: "Open a side chat about this code block" },
+      "Ask about it in a side chat");
+    ask.addEventListener("click", () => openSideChat(pieceContext(wrap, pre.textContent, "code", pre.dataset.lang || "")));
+    wrap.append(el("div", { class: "code-actions" }, copy, ask), pre);
+  }
+}
+
+// ------------------------------------------------------------- questions
+//
+// A challenge from tt-adversarial-plan arrives as one paragraph: a tag ("CH22
+// (significant):"), what is wrong, labelled evidence ("Editor: ... Runtime: ..."),
+// "My take: ...", then the closing ask. parseQuestion picks those apart for
+// display only. What it does not recognise is shown as it was written, and an
+// answer is still keyed by the raw text.
+
+// "Editor: ..." at the start of a sentence: a label of up to three words
+const LABEL = /^([A-Z][\w/&-]*(?: [\w/&-]+){0,2}):\s+/;
+const NOT_AN_END = /(?:^|[\s(])(?:e\.g|i\.e|vs|etc)$/i;
+
+// The sentences of s. A full stop inside `code` or (brackets) does not end one.
+function sentences(s) {
+  const out = [];
+  let from = 0, depth = 0, tick = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "`") tick = !tick;
+    else if (tick) continue;
+    else if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === "." || c === "?" || c === "!")) {
+      const end = s.slice(i).match(/^[.?!]["')”*]*(?=\s|$)/);
+      if (!end || NOT_AN_END.test(s.slice(0, i))) continue;
+      out.push(s.slice(from, i + end[0].length).trim());
+      from = i + end[0].length;
+      i = from - 1;
+    }
+  }
+  if (s.slice(from).trim()) out.push(s.slice(from).trim());
+  return out;
+}
+
+function parseQuestion(text) {
+  const out = { tag: null, desc: [], evidence: [], take: "", ask: "", md: "", plain: false };
+  let s = String(text || "").trim();
+  const t = s.match(/^((?:CH|[A-Z]{1,3})\d+)\s*\(([^)]+)\)\s*:\s*/);
+  if (t) { out.tag = { id: t[1], sev: t[2].trim() }; s = s.slice(t[0].length); }
+  const m = s.match(/\*{0,2}\bMy take\s*:\s*\*{0,2}/i);
+  const body = m ? s.slice(0, m.index).trim() : s;
+  const multiline = body.includes("\n");
+  const tk = m ? sentences(s.slice(m.index + m[0].length).trim()) : [];
+  const bs = multiline ? [] : sentences(body);
+  // the closing ask is the last sentence, if it is a question
+  const last = tk.length ? tk : bs;
+  if (last.length && /\?["')”*]*$/.test(last[last.length - 1])) out.ask = last.pop();
+  out.take = tk.join(" ");
+  if (multiline) out.md = body;
+  else {
+    // description up to the first labelled sentence; from there on, evidence.
+    // Without labels, a long run of sentences keeps its first two as the description.
+    const labels = bs.map(x => x.match(LABEL));
+    const first = labels.findIndex(Boolean);
+    const cut = first >= 0 ? first : (bs.length >= 4 ? 2 : bs.length);
+    out.desc = bs.slice(0, cut);
+    out.evidence = bs.slice(cut).map((x, i) => {
+      const l = labels[cut + i];
+      return l ? { label: l[1], text: x.slice(l[0].length) } : { label: "", text: x };
+    });
+  }
+  out.plain = !out.tag && !out.take && !out.evidence.length && !out.md;
+  return out;
+}
+
+// One line saying what a question is about: the alert bar's title and an answered card's text.
+function questionHeadline(text) {
+  const p = parseQuestion(text);
+  if (p.plain) return firstLine(text);
+  const lead = p.desc[0] || (p.md && firstLine(p.md)) || p.ask || firstLine(text);
+  const h = (p.tag ? p.tag.id + ": " : "") + lead;
+  return h.length > 200 ? h.slice(0, 197) + "…" : h;
+}
+
+// The question as the card shows it: tag chips, the description, the evidence as a
+// list, "My take" in italics at the bottom, then the closing ask in bold.
+function questionNode(text) {
+  const p = parseQuestion(text);
+  const html = (tag, cls, s) => { const n = el(tag, cls ? { class: cls } : {}); n.innerHTML = s; return n; };
+  if (p.plain) return html("div", "text", inline(String(text)));
+  const box = el("div", { class: "qfmt" });
+  if (p.tag) {
+    const sev = p.tag.sev.toLowerCase();
+    box.append(el("div", { class: "qchips" }, el("span", { class: "qchip id" }, p.tag.id),
+      el("span", { class: "qchip sev sev-" + sev.replace(/[^a-z]/g, "") }, p.tag.sev)));
+  }
+  if (p.md) { const d = mdNode(p.md); d.classList.add("qdesc"); box.append(d); }
+  else if (p.desc.length) box.append(html("p", "qdesc", inline(p.desc.join(" "))));
+  if (p.evidence.length) {
+    box.append(el("ul", { class: "qevidence" }, p.evidence.map(e =>
+      html("li", "", (e.label ? `<strong>${esc(e.label)}:</strong> ` : "") + inline(e.text)))));
+  }
+  if (p.take) box.append(html("div", "take", `<em><strong>My take:</strong> ${inline(p.take)}</em>`));
+  if (p.ask) box.append(html("div", "ask-line", inline(p.ask)));
+  return box;
+}
+
+// ------------------------------------------------------------- views
+
+const COLS = ["prefix", "kind", "phase", "skill", "verb", "arg", "text", "hint", "stage"];
+
+function command(r) {
+  if (r.skill === "-" || !r.skill) return "";
+  let c = "/" + r.skill;
+  if (r.verb) c += " " + r.verb;
+  if (r.arg) c += ` "${r.arg}"`;
+  if (r.hint) c += " " + r.hint;
+  return c;
+}
+
+function cmdCell(cmd, about) {
+  if (!cmd) return el("span", { class: "dim" }, "nothing left to run");
+  return el("div", { class: "cmd" },
+    el("code", {}, cmd),
+    el("button", { title: "Copy the command", onclick: () => navigator.clipboard.writeText(cmd) }, "Copy"),
+    el("button", { title: "Ask about this step in a side chat", onclick: () => openSideChat({
+      source: { from: "selection" }, selected: cmd,
+      around: `The next step${about ? ` for ${about}` : ""} in the workflow is the command ${cmd}`,
+    }, $("#dir").value.trim() || $("#cwd").textContent) }, "Ask"));
+}
+
+function statusTable(tsv) {
+  const rows = tsv.split("\n").filter(Boolean).map(l => Object.fromEntries(l.split("\t").map((v, i) => [COLS[i], v])));
+  if (!rows.length) return el("p", { class: "dim" }, "No tt documents in this folder.");
+  return el("table", {},
+    el("thead", {}, el("tr", {}, el("th", {}, "Feature"), el("th", {}, "Where it stands"), el("th", {}, "Next"))),
+    el("tbody", {}, rows.map(r => el("tr", { class: "kind-" + r.kind },
+      el("td", {}, r.kind === "primary" ? el("strong", {}, r.prefix || "—") : ""),
+      el("td", {}, r.kind === "warn" ? "⚠ " : r.kind === "alt" ? "or: " : "", r.text, r.stage ? el("div", { class: "dim small" }, "stage: " + r.stage) : ""),
+      el("td", {}, cmdCell(command(r), r.prefix))))));
+}
+
+async function loadStatus() {
+  const body = $("#status-body");
+  body.replaceChildren(el("p", { class: "dim" }, "Looking…"));
+  const dir = $("#dir").value.trim();
+  const q = dir ? "?dir=" + encodeURIComponent(dir) : "";
+  try {
+    const [hello, where] = await Promise.all([api("/api/view/hello"), api("/api/view/where" + q)]);
+    body.replaceChildren(
+      el("pre", { class: "banner" }, hello.stdout),
+      where.exit === 2 ? el("p", { class: "st missing" }, where.stderr || "Couldn't read that folder.") : statusTable(where.stdout),
+      el("p", { class: "dim small" }, "Docs in a vault or another folder? Put its path above."));
+  } catch (e) { body.replaceChildren(el("p", { class: "st missing" }, String(e))); }
+}
+
+const TAGS = [["NEEDS AUTH", "auth", "needs sign-in"], ["NOT CONNECTED", "down", "not connected"], ["MISSING", "missing", "missing"], ["ok", "ok", "ok"]];
+
+async function loadConnections() {
+  const body = $("#connections-body");
+  body.replaceChildren(el("p", { class: "dim" }, "Checking…"));
+  try {
+    const r = await api("/api/view/connections");
+    const lines = r.stdout.replace(/\r/g, "").split("\n");
+    if (!/^Pack:/.test(lines[0] || "")) {
+      body.replaceChildren(el("p", {}, r.stdout.trim() || "No connection pack for this project."),
+        el("p", { class: "dim small" }, "Describe your connections with the TT toolbox: /tt-guide connections."));
+      return;
+    }
+    const rows = [];
+    let summary = "";
+    for (const l of lines.slice(1)) {
+      const t = TAGS.find(([tag]) => l.startsWith("  " + tag));
+      if (t) {
+        const rest = l.slice(2 + t[0].length).trim().split(/\s+/);
+        rows.push(el("tr", {}, el("td", {}, el("span", { class: "st " + t[1] }, t[2])), el("td", { class: "mono" }, rest[0]), el("td", {}, rest.slice(1).join(" "))));
+      } else if (l.trim()) summary = l.trim();
+    }
+    body.replaceChildren(el("p", { class: "dim small" }, lines[0]), el("table", {}, el("tbody", {}, rows)), el("p", {}, summary),
+      r.exit === 1 ? el("div", { class: "cmd" }, "Set up the rest: ", cmdCell("/tt-connections setup")) : "");
+  } catch (e) { body.replaceChildren(el("p", { class: "st missing" }, String(e))); }
+}
+
+async function loadDocs(view, name) {
+  const body = $("#docs-body");
+  body.replaceChildren(el("p", { class: "dim" }, "Reading…"));
+  try {
+    const r = await api(`/api/view/${view}` + (name ? "?name=" + encodeURIComponent(name) : ""));
+    const text = r.stdout || r.stderr || "Nothing there.";
+    if (view === "about" && !name) {
+      const topics = text.split("\n").filter(l => /^\s{2}\S/.test(l)).map(l => l.trim());
+      body.replaceChildren(el("p", {}, "Pick a topic, or type a skill name above:"),
+        el("ul", {}, topics.map(t => el("li", {}, el("a", { href: "#", onclick: ev => { ev.preventDefault(); $("#about").value = t; loadDocs("about", t); } }, t)))));
+    } else body.replaceChildren(mdNode(text));
+  } catch (e) { body.replaceChildren(el("p", { class: "st missing" }, String(e))); }
+}
+
+// ------------------------------------------------------------- feed
+
+const feed = $("#feed");
+const asks = new Map();
+
+function scrollFeed() { feed.scrollTop = feed.scrollHeight; }
+
+function askCard(ev) {
+  const picks = ev.questions.map(() => new Set());
+  const others = [];
+  const send = el("button", { class: "primary", type: "button", disabled: true }, "Send answer");
+  const ready = () => { send.disabled = !ev.questions.every((q, i) => picks[i].size || others[i].value.trim()); };
+  const qs = ev.questions.map((q, i) => {
+    const opts = q.options.map(o => {
+      const row = el("div", { class: "opt", role: q.multiSelect ? "checkbox" : "radio", tabindex: 0 },
+        el("span", {}, q.multiSelect ? "☐" : "○"),
+        el("div", {}, el("div", {}, o.label), o.description ? el("div", { class: "desc" }, o.description) : "", o.preview ? el("pre", {}, o.preview) : ""));
+      const pick = () => {
+        if (q.multiSelect) picks[i].has(o.label) ? picks[i].delete(o.label) : picks[i].add(o.label);
+        else { picks[i].clear(); picks[i].add(o.label); others[i].value = ""; }
+        for (const [n, r] of opts) { const on = picks[i].has(n); r.classList.toggle("picked", on); r.firstChild.textContent = q.multiSelect ? (on ? "☑" : "☐") : (on ? "●" : "○"); }
+        ready();
+      };
+      row.addEventListener("click", pick);
+      row.addEventListener("keydown", e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); pick(); } });
+      return [o.label, row];
+    });
+    others[i] = el("input", { class: "other", placeholder: "Other: type your own answer" });
+    others[i].addEventListener("input", () => {
+      if (!q.multiSelect && others[i].value.trim()) { picks[i].clear(); for (const [, r] of opts) { r.classList.remove("picked"); r.firstChild.textContent = "○"; } }
+      ready();
+    });
+    return el("div", { class: "q" }, q.header ? el("div", { class: "head" }, q.header) : "", questionNode(q.question), opts.map(([, r]) => r), others[i]);
+  });
+  const terminal = el("button", { type: "button", title: "Have the question asked in the terminal instead" }, "Answer in terminal instead");
+  const status = el("div", { class: "dim small" });
+  const node = el("div", { class: "card ask" }, el("h4", {}, ev.source ? `Question from ${ev.source}` : "Question"), qs,
+    el("div", { class: "actions" }, terminal, send), status);
+  send.addEventListener("click", async () => {
+    const answers = {};
+    ev.questions.forEach((q, i) => {
+      const chosen = [...picks[i]];
+      const other = others[i].value.trim();
+      if (other) chosen.push(other);
+      answers[q.question] = chosen.join(", ");
+    });
+    try { await api("/api/reply", { id: ev.id, answers }); } catch (e) { status.textContent = String(e); }
+  });
+  terminal.addEventListener("click", async () => {
+    try { await api("/api/reply", { id: ev.id, declined: true }); } catch (e) { status.textContent = String(e); }
+  });
+  // The IDs the question cites (R12, CH5, …) become links to their items (ids.js).
+  // Only the text on screen changes: an answer is still keyed by q.question.
+  linkIds(node, ev.feature);
+  // The same question can be on screen twice (the feed and a feature's session
+  // panel); answering either answers both.
+  if (!asks.has(ev.id)) asks.set(ev.id, { nodes: [], ev });
+  asks.get(ev.id).nodes.push(node);
+  return node;
+}
+
+const answers = new Map(); // ask id -> its "answered" event, for cards drawn after it
+
+function answeredCard(a, ev) {
+  const node = el("div", { class: "card ask done" }, el("h4", {}, "Answered"),
+    ev.declined ? el("p", { class: "dim" }, "Asked in the terminal instead.") :
+      a.questions.map(q => el("div", { class: "q" }, el("div", { class: "text", title: q.question }, questionHeadline(q.question)), el("div", { class: "answer" }, ev.answers[q.question] || "—"))));
+  linkIds(node, a.feature); // ids.js
+  return node;
+}
+
+// An answered question as a small box in a session panel's "Previously answered"
+// section: the question's headline for a title, the question and its answer when opened.
+function answeredBox(a, ev) {
+  const more = a.questions.length > 1 ? ` (+${a.questions.length - 1})` : "";
+  const head = el("button", { type: "button", class: "abox-head", "aria-expanded": "false" },
+    el("span", { class: "chev", "aria-hidden": "true" }, "▸"),
+    el("span", { class: "abox-title" }, questionHeadline(a.questions[0] && a.questions[0].question) + more));
+  const body = el("div", { class: "abox-body" },
+    ev.declined ? el("p", { class: "dim" }, "Asked in the terminal instead.") :
+      a.questions.map(q => el("div", { class: "q" }, questionNode(q.question), el("div", { class: "answer" }, ev.answers[q.question] || "—"))));
+  linkIds(body, a.feature); // ids.js
+  const node = el("div", { class: "card ask done abox" }, head, body);
+  head.addEventListener("click", () => head.setAttribute("aria-expanded", String(node.classList.toggle("open"))));
+  return node;
+}
+
+function answered(ev) {
+  answers.set(ev.id, ev);
+  const a = asks.get(ev.id);
+  if (!a) return;
+  // a session panel's card settles itself (it flies to its answered section)
+  for (const n of a.nodes) if (n.isConnected) n._answered ? n._answered(a.ev, ev) : n.replaceWith(answeredCard(a.ev, ev));
+  asks.delete(ev.id);
+}
+
+// A question's card, or its answer if it has been answered already.
+function questionCard(ev) {
+  return answers.has(ev.id) ? answeredCard(ev, answers.get(ev.id)) : askCard(ev);
+}
+
+// Whether a terminal of the person's works with Tatty (/tatty open or attach in it).
+function setMod(on) {
+  const b = $("#mod");
+  b.textContent = on ? "Claude session attached" : "no session";
+  b.className = "badge " + (on ? "ok" : "");
+}
+
+// The feed is the compact bubble: every question (wherever it comes from) and
+// every milestone. In the full panel it only comes out while a question waits
+// (style.css). A started session's activity, replies and messages are its
+// workflow tab's (features.js, through "tt-event"); a chat's are its own (chat.js).
+function onEvent(ev) {
+  feedEvent(ev);
+  // after the feed, so an answer is already recorded when a session panel hears of it
+  document.dispatchEvent(new CustomEvent("tt-event", { detail: ev }));
+}
+
+// ------------------------------------------------------- what is calling
+//
+// The bubble says what is calling for the person, above the feed: the question,
+// or what finished. Each alert carries the page it is about (the server's
+// `link`), and opening one takes the person there. A question stays until it is
+// answered; a finished milestone or a reply goes once it has been opened.
+const alerts = []; // oldest first; the banner shows the newest
+const alertBar = $("#alert");
+
+function pushAlert(a) {
+  const at = alerts.findIndex(x => x.key === a.key);
+  if (at >= 0) alerts.splice(at, 1);
+  alerts.push(a);
+  drawAlert();
+}
+
+function dropAlert(key) {
+  const at = alerts.findIndex(x => x.key === key);
+  if (at < 0) return;
+  alerts.splice(at, 1);
+  drawAlert();
+}
+
+function drawAlert() {
+  const a = alerts[alerts.length - 1];
+  alertBar.hidden = !a;
+  if (!a) { alertBar.replaceChildren(); return; }
+  const more = alerts.length - 1;
+  alertBar.replaceChildren(
+    el("div", { class: "what" },
+      el("div", { class: "kind" }, a.kind === "ask" ? "Question" : a.kind === "reply" ? "Reply" : "Finished", more ? ` · +${more} more` : ""),
+      el("div", { class: "title" }, a.title),
+      a.sub ? el("div", { class: "sub" }, a.sub) : ""),
+    a.kind === "ask" ? "" : el("button", { type: "button", class: "dismiss", title: "Dismiss", "aria-label": "Dismiss" }, "×"));
+  alertBar.dataset.link = a.link || "";
+  alertBar.title = a.link ? "Open the page this is about" : "Open Tatty's full panel";
+}
+
+const firstLine = s => String(s || "").split("\n").map(l => l.trim()).find(Boolean) || "";
+
+// Only what happens from now on is news; a question that is still waiting is
+// news whenever it was asked, and its answer, replayed after it, takes it away.
+function alertFrom(ev) {
+  if (!companion) return;
+  const fresh = ev.ts * 1000 >= pageOpened - 5000;
+  if (ev.type === "ask") {
+    if (compactQuestions && compactQuestions.dismissed(ev.id)) return; // sent away from the bubble until it is answered
+    pushAlert({ kind: "ask", key: ev.id, title: questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer",
+               sub: [ev.source, ev.feature].filter(Boolean).join(" · "), link: ev.link || "" });
+  } else if (fresh && ev.type === "milestone") {
+    pushAlert({ kind: "milestone", key: "m" + ev.seq, title: ev.label || "Finished",
+               sub: [ev.skill, ev.feature || ev.prefix, ev.qualifier].filter(Boolean).join(" · "), link: ev.link || "" });
+  } else if (fresh && ev.type === "card" && ev.kind === "reply" && !ev.tag) {
+    pushAlert({ kind: "reply", key: "r" + ev.seq, title: ev.title || "Claude replied",
+               sub: firstLine(ev.body).slice(0, 200), link: ev.link || "" });
+  }
+}
+
+// ------------------------------------------------------- the bubble's questions
+//
+// The compact bubble's Questions view: every question still waiting, from any
+// session, the newest first and answered in place. The answer goes through
+// /api/reply, by the question's id, so it reaches the session that asked. The X
+// hides a question from the bubble without answering it; its id is kept (in
+// localStorage, across restarts, for every project alike) until its "answered"
+// event arrives. The full panel and the feed are not touched by any of this.
+const DISMISSED_KEY = "tt-compact-dismissed";
+let compactQuestions = null;
+
+function compactQuestionQueue(mount, { changed, arrived }) {
+  const open = new Map(); // ask id -> its "ask" event, while it is unanswered
+  const drafts = new Map(); // ask id -> what has been typed for each of its questions
+  const fresh = new Set(); // asked a moment ago and not answered since
+  let selected = "", shown = "", freshTimer = 0;
+  const dismissed = (() => {
+    try { return new Set((JSON.parse(localStorage.getItem(DISMISSED_KEY)) || []).map(String)); } catch { return new Set(); }
+  })();
+  const save = () => { try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed].slice(-500))); } catch { /* not remembered */ } };
+  const visible = () => [...open.values()].filter(ev => !dismissed.has(ev.id)).sort((a, b) => b.seq - a.seq);
+
+  const forget = id => {
+    open.delete(id);
+    drafts.delete(id);
+    fresh.delete(id);
+    if (selected === id) selected = "";
+  };
+
+  const dismiss = id => {
+    dismissed.add(id);
+    save();
+    forget(id);
+    dropAlert(id);
+    if (!alerts.length) tell("alert-cleared");
+    draw();
+  };
+
+  const xButton = ev => el("button", { type: "button", class: "cq-x", title: "Dismiss without answering",
+    "aria-label": "Dismiss this question without answering it",
+    onclick: e => { e.stopPropagation(); dismiss(ev.id); } }, "×");
+
+  const origin = ev => [ev.source, ev.feature].filter(Boolean).join(" · ");
+
+  const card = (ev, latest) => {
+    if (!drafts.has(ev.id)) drafts.set(ev.id, ev.questions.map(() => ""));
+    const draft = drafts.get(ev.id);
+    const status = el("div", { class: "cq-status dim small" });
+    const send = el("button", { type: "button", class: "primary", disabled: true }, "Send answer");
+    const ready = () => { send.disabled = !draft.every(t => t.trim()); };
+    const fields = ev.questions.map((q, i) => {
+      const input = el("input", { class: "cq-input", "aria-label": "Your answer", placeholder: "Type your answer…" });
+      input.value = draft[i];
+      input.addEventListener("input", () => { draft[i] = input.value; ready(); });
+      input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); if (!send.disabled) send.click(); } });
+      const pick = o => {
+        if (q.multiSelect) {
+          const have = input.value.split(",").map(s => s.trim()).filter(Boolean);
+          input.value = (have.includes(o.label) ? have.filter(s => s !== o.label) : [...have, o.label]).join(", ");
+        } else input.value = o.label;
+        draft[i] = input.value;
+        ready();
+      };
+      return el("div", { class: "cq-q" },
+        q.header ? el("div", { class: "head" }, q.header) : "",
+        el("div", { class: "cq-text" }, questionNode(q.question)),
+        q.options.length ? el("div", { class: "cq-opts" }, q.options.map(o =>
+          el("button", { type: "button", class: "cq-opt", title: o.description || "", onclick: () => pick(o) }, o.label))) : "",
+        input);
+    });
+    ready();
+    send.addEventListener("click", async () => {
+      const answers = {};
+      ev.questions.forEach((q, i) => { answers[q.question] = draft[i].trim(); });
+      send.disabled = true;
+      status.textContent = "";
+      try {
+        await api("/api/reply", { id: ev.id, answers });
+        forget(ev.id);
+        draw();
+      } catch (e) { status.textContent = String(e.message || e); ready(); }
+    });
+    return el("div", { class: "cq-card" },
+      el("div", { class: "cq-top" },
+        el("div", { class: "cq-who" }, el("span", { class: "cq-kind" }, latest ? "Latest" : "Selected"), origin(ev) ? el("span", { class: "dim small" }, " " + origin(ev)) : ""),
+        xButton(ev)),
+      fields, el("div", { class: "actions" }, status, send));
+  };
+
+  const row = ev => el("li", { class: "cq-row" },
+    el("button", { type: "button", class: "cq-pick", onclick: () => { selected = ev.id; draw(); } },
+      el("span", { class: "cq-title" }, questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer"),
+      origin(ev) ? el("span", { class: "dim small" }, origin(ev)) : ""),
+    xButton(ev));
+
+  function draw() {
+    const list = visible();
+    const current = list.find(ev => ev.id === selected) || list[0];
+    changed(list.length);
+    const key = list.map(ev => ev.id).join(",") + "|" + (current ? current.id : "");
+    if (key === shown) return;
+    shown = key;
+    if (!current) {
+      mount.replaceChildren(el("div", { class: "cq-empty" },
+        el("div", { class: "cq-empty-title" }, "No questions waiting"),
+        el("div", { class: "dim small" }, "When a session asks something, it comes up here.")));
+      return;
+    }
+    const rest = list.filter(ev => ev !== current);
+    mount.replaceChildren(card(current, current === list[0]),
+      rest.length ? el("div", { class: "cq-more dim small" }, `Also waiting (${rest.length})`) : "",
+      rest.length ? el("ol", { class: "cq-backlog" }, rest.map(row)) : "");
+  }
+
+  // Whether to bring the questions up is decided a moment after they arrive: when the
+  // page connects, the stream replays old questions with their answers close behind.
+  const settle = () => {
+    const waiting = [...fresh].some(id => open.has(id) && !dismissed.has(id));
+    fresh.clear();
+    if (waiting) arrived();
+  };
+
+  draw();
+  return {
+    count: () => visible().length,
+    dismissed: id => dismissed.has(id),
+    ask(ev) {
+      if (open.has(ev.id)) return;
+      open.set(ev.id, ev);
+      if (dismissed.has(ev.id)) return;
+      selected = "";
+      fresh.add(ev.id);
+      clearTimeout(freshTimer);
+      freshTimer = setTimeout(settle, 150);
+      draw();
+    },
+    answered(id) {
+      forget(id);
+      if (dismissed.delete(id)) save();
+      draw();
+    },
+  };
+}
+
+// ------------------------------------------------------- toasts
+//
+// A new question also comes up over the top of the full panel or a browser page,
+// saying what needs the person and with a Go straight to it (the compact bubble has
+// its banner for that, above). It stays until the question is answered, its page is
+// opened, or it is dismissed. Only what is asked from now on: a reload replays the
+// backlog, and a toast for each old question would be noise.
+const toasts = new Map(); // ask id -> { ev, node }, oldest first
+const toastBox = $("#toasts");
+const TOASTS_SHOWN = 3;
+
+function drawToasts() {
+  const all = [...toasts.values()].reverse(); // newest on top
+  toastBox.replaceChildren(...all.slice(0, TOASTS_SHOWN).map(t => t.node),
+    all.length > TOASTS_SHOWN ? el("div", { class: "toasts-more" }, `+${all.length - TOASTS_SHOWN} more`) : "");
+}
+
+function dropToast(id) {
+  if (toasts.delete(id)) drawToasts();
+}
+
+// Take the person to the question: its page (the session's tab, scrolled to the card), or
+// where it is answered in the feed when nothing links it to a page.
+function goToAsk(ev) {
+  dropToast(ev.id);
+  if (ev.link && location.hash !== ev.link) { location.hash = ev.link; return; }
+  if (ev.link) { focusAsk(ev.id); return; } // already there: the hash won't change (features.js)
+  const node = asks.get(ev.id) && asks.get(ev.id).nodes.find(n => n.isConnected);
+  if (node) node.scrollIntoView({ block: "center" });
+}
+
+function toastAsk(ev) {
+  if (ev.ts * 1000 < pageOpened - 5000 || toasts.has(ev.id)) return;
+  const r = typeof parseRoute === "function" ? parseRoute() : {};
+  if (ev.tag && r.page === "home" && r.tag === ev.tag) return; // it is on screen already
+  const go = el("button", { type: "button", class: "go-btn" }, "Go");
+  go.addEventListener("click", () => goToAsk(ev));
+  const sub = [ev.source, ev.feature].filter(Boolean).join(" · ");
+  const x = el("button", { type: "button", class: "dismiss", title: "Dismiss", "aria-label": "Dismiss" }, "×");
+  x.addEventListener("click", () => dropToast(ev.id));
+  const node = el("div", { class: "toast", role: "alert" },
+    el("div", { class: "what" },
+      el("div", { class: "kind" }, "Needs you"),
+      el("div", { class: "title" }, questionHeadline(ev.questions[0] && ev.questions[0].question) || "Waiting for your answer"),
+      sub ? el("div", { class: "sub" }, sub) : ""),
+    go, x);
+  toasts.set(ev.id, { ev, node });
+  drawToasts();
+}
+
+// Its page was opened (by any means): the toast has done its job.
+function toastsSeen() {
+  if (!toasts.size || typeof parseRoute !== "function") return;
+  const r = parseRoute();
+  if (r.page !== "home" || !r.tag) return;
+  for (const [id, t] of [...toasts]) if (t.ev.tag === r.tag) toasts.delete(id);
+  drawToasts();
+}
+window.addEventListener("hashchange", toastsSeen);
+document.addEventListener("tt-expanded", toastsSeen);
+
+function feedEvent(ev) {
+  alertFrom(ev);
+  if (ev.type === "ask") { feed.append(questionCard(ev)); ring(); toastAsk(ev); if (compactQuestions) compactQuestions.ask(ev); }
+  else if (ev.type === "answered") {
+    answered(ev);
+    if (compactQuestions) compactQuestions.answered(ev.id);
+    dropAlert(ev.id);
+    dropToast(ev.id);
+    if (companion && !alerts.length) tell("alert-cleared"); // nothing is calling any more
+  }
+  // A milestone belongs to the feature, not to a session, so it is shown
+  // wherever Tatty is.
+  // (The stream replays every event when the page connects: only what happens
+  // from now on throws confetti, or each reload would be a party for old news.)
+  else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); if (ev.ts * 1000 >= pageOpened - 5000) confetti(ev.tier); }
+  else if (ev.type === "status") setMod(!!ev.mod);
+  scrollFeed();
+}
+
+// ------------------------------------------------------- finishing something
+
+// A milestone the toolbox recorded (server.py's MILESTONES): what was finished,
+// and which feature's work unit it was.
+function milestoneCard(ev) {
+  const whose = [ev.prefix, ev.qualifier].filter(Boolean).join(" · ");
+  return el("div", { class: "card milestone" + (ev.tier === "big" ? " big" : "") },
+            el("h4", {}, ev.label || "Finished"),
+            el("p", {}, whose || "That's another one done."));
+}
+
+const pageOpened = Date.now();
+let hubPending = false; // the Hub is up, waiting for a project to be picked (hub.js; the server's say)
+const FESTIVE = ["#E5A32B", "#4CAF50", "#E05263", "#7D5BBD", "#3B9BD6", "#F2C94C"];
+
+// Confetti over the page, in step with Tatty's own (Effects.cs). Each piece is a
+// span with a CSS animation and its own drift and spin; the layer takes itself
+// away when the last one has fallen. Nothing moves for a person who has asked
+// for less motion -- the card says it just as well.
+function confetti(tier) {
+  if (calm()) return;
+  const count = tier === "big" ? 34 : 18;
+  const layer = el("div", { class: "burst" });
+  for (let i = 0; i < count; i++) {
+    const bit = el("span", {});
+    bit.style.left = Math.random() * 100 + "%";
+    bit.style.background = FESTIVE[i % FESTIVE.length];
+    bit.style.setProperty("--drift", Math.round((Math.random() * 2 - 1) * 90) + "px");
+    bit.style.setProperty("--spin", Math.round((Math.random() * 2 - 1) * 720) + "deg");
+    bit.style.animationDuration = (1.2 + Math.random() * (tier === "big" ? 1 : 0.5)).toFixed(2) + "s";
+    bit.style.animationDelay = (Math.random() * 0.25).toFixed(2) + "s";
+    layer.append(bit);
+  }
+  let falling = count;
+  layer.addEventListener("animationend", () => { if (--falling <= 0) layer.remove(); });
+  document.body.append(layer);
+}
+
+// Something waits for an answer: the page flashes its edge, for the times the
+// bubble is in the corner of an eye.
+function ring() {
+  if (calm()) return;
+  document.body.classList.remove("asking");
+  void document.body.offsetWidth; // so a second question restarts the animation
+  document.body.classList.add("asking");
+  setTimeout(() => document.body.classList.remove("asking"), 2400);
+}
+
+function calm() { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+
+function connect() {
+  const es = new EventSource("/events?token=" + encodeURIComponent(token));
+  const badge = $("#conn");
+  es.onopen = () => { badge.textContent = "connected"; badge.className = "badge ok"; };
+  es.onerror = () => { badge.textContent = "server gone"; badge.className = "badge bad"; };
+  es.onmessage = m => onEvent(JSON.parse(m.data));
+}
+
+// ------------------------------------------------------------- tabs
+
+const loaded = new Set();
+const loaders = { status: loadStatus, connections: loadConnections, docs: () => loadDocs("start") };
+for (const b of document.querySelectorAll(".tabs button")) {
+  b.addEventListener("click", () => {
+    for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
+    for (const p of document.querySelectorAll(".pane")) p.classList.toggle("on", p.id === "tab-" + b.dataset.tab);
+    if (!loaded.has(b.dataset.tab)) { loaded.add(b.dataset.tab); loaders[b.dataset.tab](); }
+  });
+}
+$("#dir-form").addEventListener("submit", e => { e.preventDefault(); loadStatus(); });
+$("#conn-refresh").addEventListener("click", loadConnections);
+$("#docs-start").addEventListener("click", () => loadDocs("start"));
+$("#docs-topics").addEventListener("click", () => loadDocs("about"));
+$("#about-form").addEventListener("submit", e => { e.preventDefault(); loadDocs("about", $("#about").value.trim()); });
+
+// ------------------------------------------------------------- companion
+
+// In Tatty's speech bubble (the tray companion's WebView2), the page asks the
+// host to expand, collapse or hide; in a browser none of this is shown or sent.
+const companion = new URLSearchParams(location.search).get("mode") === "companion";
+const host = window.chrome && window.chrome.webview;
+const tell = (type, arg) => { if (host) host.postMessage(arg === undefined ? { type } : { type, arg }); };
+
+if (companion) {
+  document.body.classList.add("companion");
+  // The bubble shows the chat or the questions waiting, one at a time. Questions
+  // take over: when one arrives, or is already waiting as the page opens.
+  const compactTabs = $("#compact-tabs");
+  let compactMode = "chat";
+  let waiting = 0;
+  const drawCompactTabs = () => {
+    compactTabs.replaceChildren(el("div", { class: "modeswitch", role: "radiogroup", "aria-label": "What the bubble shows" },
+      [["chat", "Chat"], ["questions", waiting ? `Questions (${waiting})` : "Questions"]].map(([id, label]) => el("button", {
+        type: "button", class: "mode-seg" + (id === compactMode ? " on" : ""), role: "radio",
+        "aria-checked": id === compactMode ? "true" : "false",
+        onclick: () => { setCompactMode(id); compactTabs.querySelector(".mode-seg.on").focus(); },
+      }, label))));
+  };
+  const setCompactMode = mode => {
+    compactMode = mode;
+    document.body.dataset.compact = mode;
+    drawCompactTabs();
+    document.dispatchEvent(new CustomEvent("tt-compact-mode", { detail: mode })); // chat.js
+  };
+  const compactQueue = el("div", { id: "compact-queue", "aria-label": "Questions waiting", "aria-live": "polite" });
+  feed.parentElement.prepend(compactQueue);
+  compactQuestions = compactQuestionQueue(compactQueue, {
+    changed: n => { if (n !== waiting) { waiting = n; drawCompactTabs(); } },
+    arrived: () => { if (compactMode !== "questions") setCompactMode("questions"); },
+  });
+  setCompactMode("chat");
+  const expand = on => {
+    document.body.classList.toggle("expanded", on);
+    if (on) document.dispatchEvent(new Event("tt-expanded")); // features.js shows the page
+    scrollFeed();
+  };
+  // Take the person to what is calling: the full panel, on the page it is about.
+  // A question with no page of its own (nothing links its session to a feature)
+  // is answered in the feed, so the feed is brought to it. `fromHost` is when the
+  // avatar was clicked: the host has already made the window big.
+  const openAlert = fromHost => {
+    const a = alerts[alerts.length - 1];
+    const wasExpanded = document.body.classList.contains("expanded");
+    if (a && a.link) {
+      // Quietly, when expanding is about to route anyway: once, not twice.
+      if (wasExpanded) location.hash = a.link; else history.replaceState(null, "", location.pathname + location.search + a.link);
+    }
+    expand(true);
+    if (!fromHost) tell("expand");
+    tell("alert-cleared");
+    if (!a) return;
+    if (a.kind !== "ask") dropAlert(a.key);
+    else if (!a.link) {
+      document.body.classList.remove("nochat");
+      const node = asks.get(a.key) && asks.get(a.key).nodes.find(n => n.isConnected);
+      if (node) node.scrollIntoView({ block: "center" });
+    }
+  };
+  alertBar.addEventListener("click", e => {
+    if (e.target.closest(".dismiss")) {
+      const a = alerts[alerts.length - 1];
+      if (a) dropAlert(a.key);
+      if (!alerts.length) tell("alert-cleared");
+      return;
+    }
+    openAlert(false);
+  });
+  alertBar.tabIndex = 0;
+  alertBar.setAttribute("role", "button");
+  alertBar.addEventListener("keydown", e => {
+    if ((e.key === "Enter" || e.key === " ") && e.target === alertBar) { e.preventDefault(); openAlert(false); }
+  });
+  $("#expand").addEventListener("click", () => { expand(true); tell("expand"); });
+  $("#collapse").addEventListener("click", () => { expand(false); tell("collapse"); });
+  $("#hide").addEventListener("click", () => tell("hide"));
+  $("#max").addEventListener("click", () => tell("maximise"));
+  $("#min").addEventListener("click", () => tell("minimise"));
+  // In the full panel the bar is the title bar: drag it to move, double-click
+  // to maximise. The host runs Windows' own move loop, so snapping works too.
+  const bar = $("#companion-bar");
+  bar.addEventListener("mousedown", e => {
+    if (e.button !== 0 || e.detail > 1 || e.target.closest("button") || !document.body.classList.contains("expanded")) return;
+    e.preventDefault();
+    tell("drag");
+  });
+  bar.addEventListener("dblclick", e => {
+    if (!e.target.closest("button") && document.body.classList.contains("expanded")) tell("maximise");
+  });
+  const maximised = on => {
+    document.body.classList.toggle("maximised", on);
+    $("#max").textContent = on ? "Restore" : "Maximise";
+    $("#max").title = on ? "Back to the size it was" : "Fill the screen";
+  };
+  if (host) host.addEventListener("message", m => {
+    if (m.data === "expanded") expand(true);
+    else if (m.data === "compact") { expand(false); maximised(false); }
+    else if (m.data === "maximised") maximised(true);
+    else if (m.data === "restored") maximised(false);
+    else if (m.data === "shown") scrollFeed();
+    else if (m.data === "open-alert") openAlert(true);
+  });
+}
+
+// ------------------------------------------------------------- start
+
+// The pages wait for this: which page a bare #mode (or no hash at all) means
+// depends on the modes installed, which the server says here. features.js
+// routes once it resolves, however it went.
+// Each project has a window of its own: say which one this is, in the header and the title.
+// (The Hub's window has no project.)
+function setProject(project) {
+  const chip = $("#project-chip");
+  if (chip) {
+    chip.hidden = !project;
+    chip.textContent = project ? `${project.number} · ${project.name}` : "";
+    chip.title = project ? `Project ${project.number}: its Tatty wears that number` : "";
+  }
+  document.title = project ? `Tatty — ${project.name} (${project.number})` : "Tatty";
+}
+
+const booted = (async () => {
+  if (!token) {
+    feed.append(el("div", { class: "card notice" }, "No token: open Tatty with /tatty open (or scripts/tatty.sh open)."));
+    return;
+  }
+  try {
+    const st = await api("/api/status");
+    $("#cwd").textContent = st.cwd;
+    setProject(st.project);
+    setMod(st.mod);
+    setInstalledModes(st.modes); // which discipline plugins there are (modes.js)
+    if (window.TattyWallet) TattyWallet.sync(st.coins, st.look); // the purse beside the gear, and the tray app's Tatty (wallet.js)
+    if (window.TattyLooks) TattyLooks.follow(st.theme); // the theme the app wears (looks.js)
+    // A launch from the shortcut opens on the Hub (hub.js): the full panel, not the bubble.
+    hubPending = !!(st.hub && st.hub.pending);
+    if (hubPending && companion) $("#expand").click();
+  } catch (e) { feed.append(el("div", { class: "card notice" }, "Can't reach the window server: " + e)); }
+  connect();
+  setInterval(async () => {
+    try {
+      const st = await api("/api/status");
+      setProject(st.project); // renamed, or renumbered by a project forgotten before it
+      setMod(st.mod);
+      setInstalledModes(st.modes); // a plugin installed meanwhile turns up here
+      if (window.TattyWallet) TattyWallet.sync(st.coins, st.look); // coins earned or spent, or a new look, in another window
+      if (window.TattyLooks) TattyLooks.follow(st.theme); // or a theme put on there
+    } catch { /* the SSE badge says so */ }
+  }, 15000);
+})();

@@ -1,0 +1,40 @@
+/* The QA mode's pages (qa.js). Colours are the page's own variables, so the mode's accent shows. */
+.qa-home, .qa-bug, .qa-plan-page { max-width: 1040px; }
+.qa-h { margin: 18px 0 8px; font-size: 15px; }
+.qa-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.qa-row .spacer { flex: 1; }
+.qa-step { margin: 14px 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.qa-step textarea, .qa-step > input, .qa-field textarea, .qa-field input { width: 100%; box-sizing: border-box; font: inherit; }
+.qa-step textarea { margin: 6px 0; }
+.qa-field { display: flex; flex-direction: column; gap: 3px; margin: 8px 0; }
+.qa-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.qa-cols .qa-field input, .qa-cols .qa-field select { width: 100%; }
+.qa-notstated { margin-top: 6px; }
+.qa-notstated .chip { margin-right: 4px; }
+.qa-addrow input { flex: 1; min-width: 180px; }
+
+.qa-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.qa-table th { text-align: left; font-weight: 600; color: var(--dim); padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.qa-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.qa-table tr:hover td { background: var(--accent-soft); }
+
+.qa-plan .bar { margin: 8px 0 4px; }
+.qa-areas { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.qa-area { display: block; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: inherit; text-decoration: none; }
+.qa-area:hover { border-color: var(--accent); background: var(--accent-soft); }
+.qa-fails { padding-left: 18px; }
+.qa-fails li { margin: 4px 0; }
+
+.qa-items { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.qa-item { padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; }
+.qa-item.done { border-left-color: var(--ok); }
+.qa-item.bad { border-left-color: var(--bad); }
+.qa-item.now { border-left-color: var(--warn); }
+.qa-item.skip { opacity: .75; }
+.qa-item-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.qa-item ol { margin: 6px 0 6px 20px; padding: 0; }
+.qa-item .qa-note { flex: 1; min-width: 200px; }
+.qa-res.on { outline: 2px solid var(--accent); outline-offset: 1px; font-weight: 600; }
+.qa-res-pass.on { background: var(--ok); color: var(--on-accent); }
+.qa-res-fail.on { background: var(--bad); color: var(--on-accent); }
+.qa-quiet { background: transparent; border: 0; color: var(--dim); text-decoration: underline; cursor: pointer; }

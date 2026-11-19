@@ -1,0 +1,57 @@
+/* The Review page: one suggestion at a time (review-page.js). */
+.rv-page { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; max-width: 900px; }
+.rv-page h2 { margin: 0; font-size: 19px; }
+.rv-progress { display: flex; align-items: center; gap: 10px; }
+.rv-progress .bar { flex: 1; max-width: 320px; }
+.rv-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.rv-dot { min-width: 26px; padding: 1px 6px; font-size: 12px; border-radius: 12px; }
+.rv-dot.done { border-color: var(--ok); color: var(--ok); }
+.rv-dot.now { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.rv-item h3 { margin: 6px 0 4px; font-size: 16px; }
+.rv-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rv-finding { margin: 6px 0 10px; }
+.rv-opts { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.rv-opt { display: flex; align-items: flex-start; gap: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.rv-opt:hover { border-color: var(--accent); }
+.rv-opt.picked { border-color: var(--accent); background: var(--accent-soft); }
+.rv-opt .chip { margin-left: 8px; }
+#rv-other, #rv-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
+.rv-row { padding: 5px 0; border-top: 1px solid var(--line); }
+.rv-row:first-child { border-top: none; }
+/* The Decide page reuses the Review page's layout (decide-page.js). */
+.dc-page .rv-item { line-height: 1.5; max-width: 76ch; }
+.dc-title { font-size: 17px; margin: 8px 0 10px; }
+.dc-context { margin: 6px 0 10px; color: var(--dim); }
+.dc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 8px 0 12px; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.dc-facts dt { color: var(--dim); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding-top: 2px; }
+.dc-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dc-more summary { cursor: pointer; }
+.dc-more[open] summary { color: var(--dim); }
+.dc-more > div { margin-top: 4px; }
+.dc-take { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 6px 6px 0; }
+.dc-take-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--accent); margin-bottom: 2px; }
+.dc-ask { margin: 14px 0 6px; font-size: 15px; }
+.dc-page .rv-opt { padding: 9px 11px; }
+.dc-page .rv-opt.rec { border-left: 3px solid var(--accent); }
+.dc-page .rv-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dc-actions { position: sticky; bottom: 0; padding: 8px 0; background: var(--card-bg, var(--bg)); border-top: 1px solid var(--line); margin-top: 8px; }
+#dc-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
+/* The Validation page: a work unit's checks as one checklist (validate-page.js). */
+.vl-page { max-width: 900px; }
+.vl-group { margin: 14px 0 0; font-size: 15px; }
+.vl-check { margin: 8px 0; line-height: 1.5; border-left: 3px solid var(--line); }
+.vl-check.vl-done { border-left-color: var(--ok); }
+.vl-check.vl-bad { border-left-color: var(--bad); }
+.vl-steps { margin: 6px 0 10px; padding-left: 22px; }
+.vl-steps li { margin: 3px 0; }
+.vl-seg { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.vl-opt { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; }
+.vl-opt:hover { border-color: var(--accent); }
+.vl-opt.picked { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.vl-opt.vl-passed.picked { border-color: var(--ok); color: var(--ok); }
+.vl-opt.vl-failed.picked { border-color: var(--bad); color: var(--bad); }
+.vl-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vl-note { width: 100%; box-sizing: border-box; margin-top: 4px; font: inherit; }
+.vl-foot { position: sticky; bottom: 0; align-items: center; padding: 10px 0; background: var(--card-bg, var(--bg)); border-top: 1px solid var(--line); margin-top: 10px; }
+.vl-sent { margin: 8px 0; }

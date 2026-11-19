@@ -1,0 +1,301 @@
+// The Decide page (#feature/<name>/decide): the questions a workflow session wrote down and left for the
+// person (an adversary's challenges, the plan's proposals), put to them one at a time, each with the planner's
+// take or the proposal's recommendation, and the options it can take. Every answer is recorded as it is given, by the toolbox's decide.sh (the server's
+// decide_set), so the page can be left and come back to. With the last one, the feature's open session is
+// told to carry on and apply them; with none open, the feature's Start picks them up.
+
+// What shows under the bar while the decisions go, one after another.
+const SEND_PHRASES = [
+  "Scribbling away at the decision log…", "Making words be more gooder…", "Turning the heavy, heavy cogs…",
+  "Sharpening the pencil…", "Dotting the i's and crossing the t's…", "Filing it under “decided”…",
+  "Persuading the paperwork to behave…", "Blowing the dust off the ledger…", "Stamping everything with great ceremony…",
+  "Teaching the commas where to sit…", "Oiling the hinges of the filing cabinet…", "Straightening the stack of notes…",
+  "Whispering the choices to the session…", "Tucking each answer in neatly…", "Polishing the full stops…",
+];
+
+const featureDecideHref =name => "#feature/" + encodeURIComponent(name) + "/decide";
+const DECIDE_SEV = { blocking: "bad", significant: "now", minor: "todo", open: "now", "default applied": "todo" };
+// a challenge's fields, and a proposal's, in the order they are shown
+const DECIDE_FIELDS = [["target", "Targets"], ["assumption", "Assumption attacked"], ["why", "Why it may be wrong"], ["evidence", "Evidence"]];
+const DECIDE_PROPOSAL_FIELDS = [["decides", "Decides"]];
+
+// A field as the document wrote it: inline markdown, with its links to other documents as the feature
+// page's .doclinks (app.js's inline); plain words if that isn't loaded.
+const decidePlain = s => (s || "").replace(/\[([^\]]+)\]\((?:<[^>]*>|[^)]*)\)/g, "$1")
+  .replace(/\[\[[^\]|]*\|([^\]]+)\]\]/g, "$1").replace(/\[\[([^\]#|]+)(?:#[^\]]*)?\]\]/g, "$1");
+const decideText = s => {
+  if (typeof inline !== "function") return decidePlain(s);
+  const span = el("span", {});
+  // ids.sh links a cite as [R2](<Doc.md#heading>): inline reads the same link written Obsidian's way
+  span.innerHTML = inline((s || "").replace(/\[([^\]]+)\]\(<([^>#]+?)(?:\.md)?(#[^>]*)?>\)/g, (_, t, d, at) => `[[${d}${at || ""}|${t}]]`));
+  return span;
+};
+
+async function decidePage(f, main) {
+  const enc = encodeURIComponent;
+  const put = (...nodes) => main.replaceChildren(el("div", { class: "rv-page dc-page" }, ...nodes));
+  const head = el("h2", {}, "Decisions");
+  const back = el("a", { href: featureHref(f.name) }, "← Overview");
+  let items, kept = {};
+  put(head, waitNode());
+  try { const got = await api("/api/decide?drafts=1&scope=decide&name=" + enc(f.name)); items = got.items; kept = got.drafts || {}; }
+  catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
+  if (!items.length) { put(head, el("p", { class: "dim" }, "Nothing is waiting for a decision."), back); return; }
+  const keyOf = x => x.doc + "#" + x.id; // two question lists can both have a Q1
+  const shown = new Map(); // item -> {fields, options} once read
+  const loading = new Map(); // item -> the read in flight (or done)
+  // item -> {key, note, label, sent, at}: what was decided on this page (Decide pressed). It is kept here until the
+  // last one is decided; then all are sent together.
+  const decided = new Map();
+  // item -> {key, note, at}: picked on its question, but Decide not pressed yet.
+  const held = new Map();
+  const errs = new Map(); // item -> why the toolbox refused it when they were sent
+  const isDone = i => i.state !== "open" || decided.has(keyOf(i));
+  // Neither is lost by leaving: every pick and every Decide is written down at once in this browser (it answers
+  // nothing, so the page stays instant) and a moment later in Tatty's home, which outlives a restart of Tatty
+  // (the browser's own storage belongs to the server's port, and that is new each start).
+  const draftKey = "tatty.decide." + f.name;
+  const entries = () => {
+    const d = {};
+    held.forEach((v, k) => { d[k] = { key: v.key, note: v.note, label: "", decided: false, at: v.at }; });
+    decided.forEach((v, k) => { if (!v.sent) d[k] = { key: v.key, note: v.note, label: v.label, decided: true, at: v.at }; });
+    return d;
+  };
+  let draftTimer = null;
+  const flushDraft = hiding => {
+    clearTimeout(draftTimer); draftTimer = null;
+    const body = { name: f.name, scope: "decide", entries: entries() };
+    if (hiding) fetch("/api/decide/draft", { method: "POST", keepalive: true, headers: { "X-TT-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
+    else api("/api/decide/draft", body).catch(() => { /* the browser still has it */ });
+  };
+  const saveDraft = () => {
+    try {
+      const d = entries();
+      if (Object.keys(d).length) localStorage.setItem(draftKey, JSON.stringify(d)); else localStorage.removeItem(draftKey);
+    } catch (e) { /* no storage: Tatty's home still has it */ }
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => flushDraft(false), 400);
+  };
+  const leaving = () => { if (draftTimer) flushDraft(true); }; // a reload or a closed window must not drop the last pick
+  window.addEventListener("pagehide", leaving);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) leaving(); });
+  let local = {};
+  try { local = JSON.parse(localStorage.getItem(draftKey) || "{}") || {}; } catch (e) { /* an unreadable draft is no draft */ }
+  const both = { ...kept };
+  for (const k of Object.keys(local)) if (!both[k] || (+local[k].at || 0) >= (+both[k].at || 0)) both[k] = local[k]; // the newer copy wins
+  items.forEach(i => { // the choices an earlier visit left, for the items still waiting
+    const v = both[keyOf(i)];
+    if (i.state !== "open" || !v || typeof v.key !== "string") return;
+    const base = { key: v.key, note: String(v.note || ""), at: +v.at || Date.now() };
+    if (v.decided === false) held.set(keyOf(i), base);
+    else decided.set(keyOf(i), { ...base, label: String(v.label || v.key), sent: false });
+  });
+  if (Object.keys(both).length !== decided.size + held.size) saveDraft(); // (some belonged to items no longer waiting)
+  let at = Math.max(0, items.findIndex(i => !isDone(i)));
+  // Reading an item runs a script on the server, so the rest are read in the background, one at a time,
+  // and the next question is on screen the moment Decide is pressed.
+  const load = i => {
+    const k = keyOf(i);
+    if (!loading.has(k)) loading.set(k, api(`/api/decide/item?name=${enc(f.name)}&doc=${enc(i.doc)}&id=${enc(i.id)}`)
+      .then(v => { shown.set(k, v); return v; }, e => { loading.delete(k); throw e; }));
+    return loading.get(k);
+  };
+  const prefetch = async () => {
+    for (const x of items.slice(at).concat(items.slice(0, at))) if (x.state === "open" && !shown.has(keyOf(x))) await load(x).catch(() => {});
+  };
+
+  // All the choices not yet sent go in one request. A refused one is put back to its person with the reason;
+  // a request that fails altogether leaves every choice kept, and the last item's button tries again.
+  const send = async () => {
+    const todo = items.filter(x => decided.has(keyOf(x)) && !decided.get(keyOf(x)).sent);
+    // How far it has got: the server says "decided" as it records each one (its batch is this send's own id), and
+    // pays that decision's coins straight after, which fly from the bar's leading edge into the purse: so the bar
+    // and the coins go together. The answer to the request completes the bar if an event was missed.
+    const total = todo.length, batch = "b" + Math.random().toString(36).slice(2, 12);
+    const meter = bar(0, total, "");
+    meter.id = "dc-bar"; meter.classList.add("send-bar");
+    const fill = meter.firstChild, words = meter.querySelector("em");
+    // Tatty rides the bar's leading edge, writing, and now and then looks down at the bar; a phrase under it
+    // changes every few seconds. Both are decoration (the status line and the bar's label say the real thing).
+    const rider = el("div", { class: "send-tatty", "aria-hidden": "true", hidden: "" });
+    const phrase = el("p", { class: "send-phrase dim", "aria-hidden": "true" }, "");
+    const stage = el("div", { class: "send-stage" }, rider, meter, phrase);
+    let sentN = 0, refused = 0, card = null, glanceTimer = 0, phraseTimer = 0, over = false;
+    const paint = () => {
+      const share = sentN / total;
+      fill.style.width = `${Math.round(100 * share)}%`;
+      rider.style.left = `${Math.round(1000 * share) / 10}%`;
+      words.textContent = `${sentN} of ${total} sent` + (refused ? ` (${refused} refused)` : "") + ` · ${total - sentN} to go`;
+    };
+    paint();
+    const glanceSoon = () => {
+      glanceTimer = setTimeout(() => { if (card) card.play("glance", 1.2, "writing"); glanceSoon(); }, 3000 + Math.random() * 2000);
+    };
+    const order = SEND_PHRASES.slice().sort(() => Math.random() - .5);
+    let said = 0;
+    const nextPhrase = () => {
+      phrase.classList.add("fading");
+      phraseTimer = setTimeout(() => { phrase.textContent = order[said++ % order.length]; phrase.classList.remove("fading"); phraseTimer = setTimeout(nextPhrase, 2500); }, 250);
+    };
+    nextPhrase();
+    if (window.TattyAvatar) {
+      api("/api/wallet").then(w => {
+        if (over || !w || !w.avatar || !stage.isConnected) return;
+        rider.innerHTML = TattyAvatar.svg(w.avatar, { scale: .55, box: "icon", outfit: w.outfit });
+        rider.hidden = false;
+        card = TattyAvatar.animate([rider.querySelector("svg")], w.avatar, "writing");
+        glanceSoon();
+      }).catch(() => {}); // no avatar is no loss
+    }
+    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${total} decision${total === 1 ? "" : "s"}…`), stage);
+    const onProgress = e => {
+      const ev = e.detail;
+      if (ev.type !== "decided" || ev.batch !== batch) return;
+      sentN = Math.max(sentN, ev.n);
+      if (!ev.ok) refused++;
+      paint();
+      if (card) card.play("glance", 1, "writing");
+    };
+    const was = window.TattyWallet && TattyWallet.source;
+    if (window.TattyWallet) TattyWallet.source = ev => {
+      if (ev.kind === "decision" && meter.isConnected) { const t = meter.getBoundingClientRect(); return { x: t.left + t.width * sentN / total, y: t.top + t.height / 2 }; }
+      return was ? was(ev) : null;
+    };
+    document.addEventListener("tt-event", onProgress);
+    const done = () => {
+      over = true; clearTimeout(glanceTimer); clearTimeout(phraseTimer);
+      document.removeEventListener("tt-event", onProgress); if (window.TattyWallet) TattyWallet.source = was || null; };
+    let r;
+    try {
+      r = await api("/api/decide", { name: f.name, batch, answers: todo.map(x => { const v = decided.get(keyOf(x)); return { doc: x.doc, id: x.id, choice: v.key, note: v.note }; }) });
+    } catch (e) {
+      done();
+      const last = todo[todo.length - 1] || items[items.length - 1];
+      errs.set(keyOf(last), "Your decisions are kept, but they could not be sent: " + String(e.message || e) + ". Press the button to try again.");
+      at = items.indexOf(last); draw(); return;
+    }
+    // the bar fills if events were missed, and holds a moment so the last decision's coins leave from it
+    sentN = total; paint();
+    if (card) card.play("celebrate", .5);
+    // The feature as read before these decisions says they still wait: nothing is drawn from it again (a workflow
+    // tab opened next draws its rail once the feature is read anew), and the Decisions Needed buttons on screen
+    // take the count the server has just given (features.js).
+    featureCache.delete(f.name);
+    paintDecisions({ name: f.name, decide: { open: r.open || 0, apply: r.apply || 0 } });
+    refreshFeature(f.name); // (features.js: the rail's count and the overview are read again behind this page)
+    await new Promise(res => setTimeout(res, 500));
+    done();
+    const bad = new Map((r.results || []).filter(x => !x.ok).map(x => [x.doc + "#" + x.id, x.error]));
+    todo.forEach(x => { const k = keyOf(x); if (bad.has(k)) { decided.delete(k); errs.set(k, bad.get(k)); } else decided.get(k).sent = true; });
+    saveDraft();
+    if (bad.size) { at = items.findIndex(x => bad.has(keyOf(x))); draw(); return; }
+    finished(r);
+  };
+
+  const finished = r => {
+    const said = r && r.nudged
+      ? el("p", {}, "Every one is decided. ", el("a", { href: "#workflows/" + enc(r.nudged.tag) }, r.nudged.name || "The session"),
+        " has been told to carry on, and applies them now.")
+      : el("p", {}, "Every one is decided. No session is open for this feature: ",
+        el("a", { href: featureHref(f.name) }, "start it again"), " and it applies them first.");
+    put(head, said, el("div", { class: "card rv-results" }, items.map(i => el("div", { class: "rv-row" },
+      i.kind === "question" ? "" : el("span", { class: "chip " + (DECIDE_SEV[i.severity] || "todo") }, i.severity), " ", el("strong", {}, i.id), " ", i.title,
+      el("div", { class: "small dim" }, decided.has(keyOf(i)) ? "You chose: " + decided.get(keyOf(i)).label : i.state === "apply" ? "Decided earlier: waiting to be applied" : "")))), back);
+  };
+
+  const draw = async () => {
+    const i = items[at];
+    if (!shown.has(keyOf(i))) {
+      put(head, waitNode()); // (read by a script: a few seconds when it was not read ahead)
+      try { await load(i); }
+      catch (e) { put(head, el("p", { class: "st missing" }, String(e.message || e)), back); return; }
+    }
+    const { fields, options } = shown.get(keyOf(i));
+    // a stale draft (an option the item no longer has)
+    if (decided.has(keyOf(i)) && !options.some(o => o.key === decided.get(keyOf(i)).key)) decided.delete(keyOf(i));
+    if (held.has(keyOf(i)) && !options.some(o => o.key === held.get(keyOf(i)).key)) held.delete(keyOf(i));
+    // decided earlier and waiting to be applied: show what was chosen (a challenge's accept, a proposal's option)
+    const before = fields.state !== "apply" ? "" : i.kind === "proposal"
+      ? ((fields.chosen || "").match(/^Option ([A-Z]):/) || [])[1] || ((fields.chosen || "").startsWith("Other:") ? "other" : "")
+      : i.kind === "question" ? fields.decision || "" : "accept";
+    // what the person last did here: a pick not yet decided, else the decision, else what the document says
+    const mine = held.get(keyOf(i)) || decided.get(keyOf(i));
+    let choice = mine ? mine.key : before;
+    const note = el("textarea", { id: "dc-note", rows: 2, "aria-label": "note" });
+    note.value = mine ? mine.note : "";
+    const go = el("button", { type: "button", class: "primary", id: "dc-go" });
+    const msg = el("div", { class: "small st missing", id: "dc-msg" }, errs.get(keyOf(i)) || "");
+    const opts = [];
+    const needsNote = () => { const o = options.find(x => x.key === choice); return !!(o && o.needsNote); };
+    const sync = () => {
+      const o = options.find(x => x.key === choice);
+      note.placeholder = needsNote() ? "Your words, needed for this one" + (o.detail ? ` (${o.detail.replace(/\.$/, "")})` : "") : "A note to go with it (optional)";
+      go.disabled = !choice || (needsNote() && !note.value.trim());
+      const left = items.filter(x => !isDone(x) && x !== i).length;
+      go.textContent = left ? "Decide" : "Decide, and carry on";
+    };
+    const show = k => { choice = k; opts.forEach(o => o.node.classList.toggle("picked", o.key === k)); sync(); };
+    // the person's pick: shown, held and written down (not sent: Decide does that), all without waiting for anything
+    const hold = () => { if (choice) { held.set(keyOf(i), { key: choice, note: note.value, at: Date.now() }); saveDraft(); } };
+    const pick = k => { show(k); hold(); if (needsNote()) note.focus(); };
+    const option = o => {
+      const radio = el("input", { type: "radio", name: "dc-choice", value: o.key, "aria-label": o.title });
+      radio.checked = choice === o.key;
+      radio.addEventListener("change", () => pick(o.key));
+      const node = el("label", { class: "rv-opt" + (choice === o.key ? " picked" : "") + (o.recommended ? " rec" : ""), "data-key": o.key }, radio,
+        el("span", {}, el("strong", {}, /^[A-Z]$/.test(o.key) ? `${o.key} — ${o.title}` : o.title), o.recommended ? el("span", { class: "chip done" }, "recommended") : "",
+          o.detail ? el("div", { class: "small dim" }, o.detail) : ""));
+      opts.push({ key: o.key, node });
+      return node;
+    };
+    note.addEventListener("input", () => { sync(); hold(); });
+    const move = to => { at = Math.max(0, Math.min(items.length - 1, to)); draw(); };
+    go.addEventListener("click", () => {
+      const o = options.find(x => x.key === choice), words = note.value.trim();
+      errs.delete(keyOf(i));
+      decided.set(keyOf(i), { key: choice, note: words, label: (o ? o.title : choice) + (words ? ` (${words})` : ""), sent: false, at: Date.now() });
+      held.delete(keyOf(i));
+      saveDraft();
+      if (!items.some(x => !isDone(x))) { send(); return; } // the last one: everything goes now
+      const nextOne = items.findIndex((x, n) => n > at && !isDone(x));
+      move(nextOne >= 0 ? nextOne : items.findIndex(x => !isDone(x)));
+    });
+    const done = items.filter(isDone).length;
+    const list = el("div", { class: "rv-list", role: "list" }, items.map((x, n) => el("button", {
+      type: "button", class: "rv-dot" + (isDone(x) ? " done" : "") + (n === at ? " now" : ""),
+      title: `${x.id}: ${x.title}`, "aria-label": `${x.id}: ${x.title}`, onclick: () => move(n) }, isDone(x) ? "✓" : String(n + 1))));
+    const proposal = i.kind === "proposal", question = i.kind === "question";
+    // label column and value column; a long Evidence folds away (its first words stay as the summary)
+    const facts = question ? [] : (proposal ? DECIDE_PROPOSAL_FIELDS : DECIDE_FIELDS).filter(([k]) => fields[k])
+      .flatMap(([k, label]) => [el("dt", {}, label),
+        el("dd", {}, k === "evidence" && fields[k].length > 260
+          ? el("details", { class: "dc-more" }, el("summary", {}, decidePlain(fields[k]).slice(0, 110).trim() + "…"), el("div", {}, decideText(fields[k])))
+          : decideText(fields[k]))]);
+    const take = proposal ? fields.recommendation : fields.take;
+    // a question list's context keeps its lines (show joins them with " / ")
+    const context = question && fields.context ? el("div", { class: "dc-context" },
+      fields.context.split(" / ").map(l => el("div", {}, decideText(l)))) : proposal && fields.context ? el("p", { class: "dc-context" }, decideText(fields.context)) : "";
+    const card = el("section", { class: "card rv-item", id: "dc-item", "data-id": i.id },
+      el("div", { class: "rv-chips" }, el("span", { class: "qchip id" }, i.id),
+        question ? (i.severity ? el("code", {}, i.severity) : "") : el("span", { class: "chip " + (DECIDE_SEV[i.severity] || "todo") }, i.severity),
+        i.group ? el("span", { class: "dim small" }, i.group) : "", fields.state === "apply" ? el("span", { class: "chip done" }, "decided: waiting to be applied") : ""),
+      el("h3", { class: "dc-title" }, decideText(i.title)),
+      context,
+      facts.length ? el("dl", { class: "dc-facts" }, facts) : "",
+      take ? el("div", { class: "dc-take" }, el("div", { class: "dc-take-label" }, proposal ? "Recommendation" : "The planner's take"), el("div", {}, decideText(take))) : "",
+      proposal ? el("p", { class: "small" }, el("a", { href: featureHref(f.name, i.doc), id: "dc-doc" }, "The full comparison, in " + i.doc)) : "",
+      !proposal && fields.question ? el("p", { class: "ask-line dc-ask" }, decideText(fields.question)) : "",
+      el("div", { class: "rv-opts" }, options.map(option)),
+      note, msg,
+      el("div", { class: "start-actions dc-actions" }, go,
+        el("button", { type: "button", id: "dc-prev", disabled: at === 0, onclick: () => move(at - 1) }, "Back"),
+        el("button", { type: "button", id: "dc-skip", disabled: at === items.length - 1, onclick: () => move(at + 1) }, "Next")));
+    put(head, el("div", { class: "small dim" }, "Written down by the workflow for you to decide here, instead of one at a time in the terminal. Your choices are kept in this browser and sent together with the last one. ", back),
+      el("div", { class: "rv-progress" }, bar(done, items.length, `${done} of ${items.length} decided`)), list, card);
+    // the page only quotes IDs (never defines them), so a bold opening ID is linked too, and so is the title
+    if (typeof linkIds === "function") linkIds(card, f.name, { allowDefining: true, headings: true });
+    show(choice); // (drawing is not a pick: nothing is held until the person picks)
+    if (needsNote()) note.focus();
+  };
+  draw().then(prefetch);
+}

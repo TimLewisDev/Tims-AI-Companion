@@ -1,0 +1,1892 @@
+# How Tatty is built
+
+Tatty is a user interface over the TT toolbox's workflow, kept separate from the
+toolbox. See [toolbox-contract.md](toolbox-contract.md) for what Tatty takes
+from the toolbox, and [history.md](history.md) for how it was worked out.
+
+```
+ Claude Code session (joined)                        Tatty's window
+   tatty mod ──── HTTP, token ────▶  app/server.py  ◀──── SSE / HTTP ────  app/web (the page)
+     · AskUserQuestion → Tatty       127.0.0.1 only       shown in the tray app (app/companion,
+     · typed text → the prompt       state in              Windows: WPF + WebView2) or a browser tab
+     · replies, activity → Tatty     ~/.claude/tatty
+                                          │
+                                          ├── reads: feature folders, the toolbox's ledger and links
+                                          ├── follows: the ledger as it is written → milestone events
+                                          ├── runs (read-only): the toolbox's workflow-state.sh, …
+                                          └── opens: new Claude sessions (Start), with TATTY_SESSION
+```
+
+## The pieces
+
+- **`app/server.py`:** the hub, standard-library Python.
+  - It listens only on 127.0.0.1, behind a random token and a Host check.
+  - It keeps the conversation, questions, sessions and inboxes in memory.
+  - It streams events to the page over SSE.
+  - It serves the read-only views: features, documents, link resolution,
+    toolbox status.
+  - It owns Tatty's root folder and launches sessions.
+- **`app/web`:** the page, with no libraries and no network beyond the server.
+  - **Companion mode** is a compact speech bubble: the questions waiting and
+    the milestones (the feed).
+  - **The full panel** has the modes, mode home, Features, feature and Toolbox
+    pages. The feed comes out as a right-hand column only while a question
+    waits; the chats are tabs (see [Chats](#chats) below).
+  - It has its own small markdown renderer, which handles Obsidian links and
+    block ids.
+- **`app/companion`:** the Windows tray app (.NET 9 WPF and WebView2).
+  - Tatty himself is a transparent, topmost, non-activating window drawn in
+    XAML. He moves, celebrates and makes a noise: see
+    [Tatty's own life](#tattys-own-life) below.
+  - The bubble is an opaque WebView2 window with Windows 11's rounded corners,
+    because WebView2 can't draw in a transparent window.
+  - The full panel moves, resizes, maximises, minimises and remembers its place.
+    Only Tatty and the compact bubble stay on top, and they say so again whenever
+    another window comes to the front -- though never over the shell, over a
+    window with a whole monitor to itself, or while the full panel is out. The
+    full and maximised panel are ordinary windows that other windows can cover. A
+    click on Tatty raises a covered full panel, and tucks it away when it is
+    already in front -- unless something is calling for you, when it opens the
+    full panel on the page that is about.
+  - **Tatty is an application on the taskbar**, and only the full and maximised
+    panel is in Alt-Tab. Those are the same style bit, so they are kept apart by
+    two windows: the panel asks for `WS_EX_APPWINDOW` while it is out, which puts
+    it in both; and `TaskbarProxy` -- one pixel, off every screen, minimised for
+    good, never able to come forward -- holds the button the rest of the time, so
+    there is always exactly one and it works even while nothing is on screen.
+    `BubbleWindow.Apply()` decides all of this in one place, and the window is
+    never recreated, because the page and its WebView2 would go down with it.
+  - There is a tray icon and menu.
+  - It watches the server's events to pop up and tuck away, and follows a
+    reopened server.
+  - It is built from a copy of its sources into `%LOCALAPPDATA%\Tatty`, never
+    inside the plugin's folder.
+- **`app/launcher` and `assets/`:** Tatty as a desktop program (Windows).
+  - `Tatty.exe` is a thin WinExe, built by `/tatty install` (or the installer's prebuilt one, used when there is no .NET SDK) into
+    `%LOCALAPPDATA%\Tatty\launcher`, that the Desktop and Start menu shortcuts run. It
+    finds the plugin and runs `tatty.sh boot` hidden, so a plugin update never
+    breaks the shortcut. The plugin is the one Claude Code has installed
+    (`installed_plugins.json`: from the marketplace, which is GitHub) unless
+    `boot.json` names a folder outside Claude Code's plugin cache, which only a
+    pin does: `tatty.sh install --pin` for working on Tatty from a checkout
+    (`write_boot_json`: `{bash, pluginRoot, pin}`). A boot never repoints it at the
+    checkout it happens to run from (a test run once did, and the launcher then
+    ran a worktree): unpinned, it names the installed Tatty, and pinned it is
+    left alone. A cache folder is never taken from `boot.json`: an update leaves
+    the old version's folder in the cache. The choice is `ChoosePlugin`. The exe
+    is rebuilt by `/tatty install`, which does it when the sources are newer than
+    the exe. The
+    shortcuts carry the AppUserModelID the tray app names itself with
+    (`TimsAICompanion.Tatty`), so a taskbar pin and the running window are one button.
+  - `server.py boot` starts the server and shows the tray app (or rings the
+    running one's `Local\tatty-companion-show` event, which brings it forward).
+    Tatty no longer keeps a Claude session of its own in a minimised terminal:
+    what that session was for is now the headless chats (see [Chats](#chats)).
+    `--no-claude` is still taken and does nothing; an old `claude-link.json` is
+    left where it is.
+  - **Every launch looks for an update** (unless pinned). With no server up,
+    `update_at_launch` runs the same look as Settings' (`update_work`: refresh
+    the marketplace, then `claude plugin update` for what is newer, when
+    auto-update is on) before starting anything, waiting at most
+    `TATTY_LAUNCH_UPDATE_WAIT` (45 s) for it; if a newer Tatty was installed, `boot`
+    runs that copy's `boot` instead (`TATTY_LAUNCH_UPDATED=1` stops it looping), so
+    the server and the tray app of the launch are the new version's. Offline or
+    failing, it starts as it is. With the server already up, `boot` posts
+    `/api/update {launch: true}`: the server looks (and installs, with auto-update
+    on) and then restarts onto the new Tatty if that cuts nothing off
+    (`relaunch_restart_ok`: no open question, no chat or Jira run going; the
+    sessions are kept as for any restart), else Settings says to restart.
+    `TATTY_NO_LAUNCH_UPDATE=1` turns the look off.
+  - The icon is `assets/tatty.ico`, drawn natively at each size by
+    `tools/make-icon` (which also writes the plugin's `icon.png`) from the same
+    geometry as `TattyWindow.xaml`'s head. It is built into both exes as their file
+    icon and as the resource the tray and windows load.
+- **`hooks/register.tsx`:** the mod. It acts only in **joined** sessions: one
+  Tatty started (it carries `TATTY_SESSION`), one carrying `TATTY_JOIN=1`, or one
+  where `/tatty open` or `/tatty attach` was run. In a joined session it:
+  - routes AskUserQuestion to Tatty, falling back to the terminal dialog (the
+    page lays a challenge question out for reading: tag chips, the description,
+    the evidence as a list, "My take" in italics at the bottom and the closing
+    ask in bold above the options; text it does not recognise shows as written,
+    and the answer is still keyed by the raw question — `parseQuestion` in
+    `app/web/app.js`);
+  - submits text typed in Tatty;
+  - mirrors replies.
+
+  A session Tatty started also reports each tool call, prompt and reply for its
+  feature page. Every other session is untouched.
+- **`scripts/tatty.sh`:** the command line (open, close, boot, install, uninstall,
+  status, show, ask, answer, listen). Any agent that can run a shell command can use it.
+  **`scripts/tatty-root.sh`:** the root setting. It never accepts a root
+  inside the Claude folder, whichever way the path is spelled.
+
+## The Hub and projects
+
+A **project** is a Tatty root folder (`features`, `design`, `tasks`, `archive`) and an
+optional default code repo. The registry is `<home>/hub.json`
+(`{version, projects: [{id, name, root, repo, created, lastOpened, legacy?}]}`), kept by
+`hub_load` and changed through `hub_change` (`/api/hub`, and `tatty.sh hub`).
+
+- **Every project has a window of its own.** Opening a project (`hub_open` →
+  `open_project_window`) starts a server for it with `TATTY_PROJECT=<id>`, which writes
+  `<home>/servers/<id>.json` (the Hub's keeps `<home>/server.json`), and a tray app with
+  `--project <id>` (its own mutex `Local\tatty-companion-<id>`, wake event, panel bounds
+  `companion-<id>.json`). That server answers for its project only, so everything that
+  was process-global (`tatty_root()`, `project_home()`, `state.cwd`, the watchers, the one
+  event list) is right without a project id on every request: `tatty_root()` is the
+  entry's root (`instance_project()`), and what the server runs gets
+  `TATTY_PROJECT_ROOT`, which `tatty-root.sh` honours. Sessions Start opens export
+  `TATTY_PROJECT` and `TATTY_ROOT`, so they keep their project however many others are
+  opened, and the mod finds its window by `TATTY_PROJECT`. `<home>/root` is only the
+  project opened last, for the toolbox's skills; `TATTY_ROOT` still fixes the root, skips
+  the Hub and opens no windows (the tests, development). `hub_load` registers whatever
+  `root` already names, as `legacy` when `hub.json` didn't exist yet.
+- **The Hub is a window too, and it is the launcher**: shown at launch (`boot`) and by
+  **Projects…** in a project's tray menu (`hub_window`). Picking a project there opens its
+  window (or brings it forward) and the Hub stays exactly as it was, still pending and still
+  showing the projects, so several can be opened one after another. It goes only when it is
+  closed, or when a caller asks for `closeHub` (the CLI; the page no longer does). The Hub's
+  tray app has no Tatty: no avatar window is shown or placed (`HasAvatar` in `App.xaml.cs`),
+  its panel sits in the corner, and his items are left off its menu. A project's window has him.
+  `tatty.sh status --all` and `close --all` list and stop every
+  window; `--project <id|name>` picks one; `open` in a folder inside a project is that
+  project's window.
+- **A project's number** is its place in `hub.json` (`hub_number`, the order added, shown
+  on its Hub card and in `/api/status.project`). Its Tatty wears that number as a little
+  badge where it suits the avatar: a serial plate low on Polished Tatty's face, a channel
+  number on Screen face's screen, on Pebble's tummy, a jersey number on the Dino's belly,
+  the Cat's collar tag, a pin on the Owl's chest (each avatar's `numtag`;
+  `TattyWindow.xaml` `NumTag` and `NumberText`, placed by `TattyWindow.Apply` and set by
+  `SetNumber`). It used to be a flag his raised arm held, which took over his left arm
+  and stopped it moving with everything else. The tray app reads the number from
+  `hub.json` so it is right from the first frame, and again every few seconds.
+- **One server looks for updates**: `update_leader()` takes `<home>/update.lock` and
+  refreshes it every 30 s; another takes over only when it goes stale.
+- **Records are per project** (`project_home()`): the legacy project keeps its
+  session models, branches and archive records in `<home>`, so nothing is lost on
+  upgrade; the others use `<home>/projects/<id>/`. Stores keyed by a full-path hash
+  (boards, diffs, the tasks index, `projects.tsv`) were per folder already; chats are
+  global, keyed by the project folder.
+- **Forgetting** a project removes its entry, never its files, and is refused (409)
+  while it is open in a window. `hub_root_refused` rejects relative roots and any inside
+  Claude's config folder.
+- **The page** (`web/hub.js`, `hub.css`): `boot` posts `/api/hub {action: "show"}` to the
+  Hub's server, which makes the Hub *pending*; the page then opens on it instead of the
+  mode chooser, and **Open** opens the project's window and leaves the Hub as the launcher.
+  Windows are opened and closed on their own, so while the Hub is on show it looks which are
+  open every 5 s (`hubWatch` in `hub.js`) and draws the cards again only if that changed,
+  not while a side panel is open or the New project form has something typed in it. In a project's
+  window the header names the project and its number (`setProject` in `app.js`). The tray
+  menu's **Projects…** (`App.xaml.cs`) posts `show` to its own server, which opens the
+  Hub's window. The page ignores stale SSE replays. `--no-hub` and `--project` skip it.
+
+## The installer
+
+`installer/Tatty.iss` (Inno Setup, per user, no wizard pages) copies Tatty's plugin folder to
+`%LOCALAPPDATA%\Tatty\plugin` and the prebuilt exes to `%LOCALAPPDATA%\Tatty\prebuilt`, and
+runs `installer/bootstrap.ps1`, which installs the prerequisites, clones the toolbox to
+`%LOCALAPPDATA%\Tatty\toolbox` and runs `tatty.sh install --pin` (the launcher is pinned
+to the bundled plugin); see
+[install.md](install.md). No LLM tool is installed: `managed_toolbox()` makes the clone a
+toolbox location (after `TATTY_TOOLBOX` and the pointers), `managed_plugin_dirs()` loads its
+`core` and disciplines into sessions with `--plugin-dir` (unless Claude Code has them
+installed), and `update_managed_toolbox` fetches and fast-forwards it when no Claude plugin
+installs exist. `update_standalone` updates Tatty itself: the newest GitHub release's
+`Tatty-Setup-<version>.exe` is downloaded, checked, and run with `/VERYSILENT` (hiding
+bootstrap's console); the server writes down its sessions (`cache_sessions`) and stops, and the
+installer's bootstrap starts Tatty again. LLM tools are set up in the Hub (`llm_setup_view` / `llm_setup_change`,
+`/api/llm-setup`): winget install on a thread, sign-in in a terminal window through the tool's
+own login, then `llms.sh connect`. The exes are self-contained single-file `win-x64` publishes
+(`tools/build-installer.ps1`), so the machine needs no .NET. `server.py` takes them
+only when it can't build: `build_or_prebuilt` runs `build_exe` first (a present SDK
+rebuilds from the plugin's own, possibly newer, sources) and falls back to
+`use_prebuilt`, which copies the exe to where the version's build would be.
+
+## Tatty's own life
+
+Tatty is meant to be noticed when it matters and good company when it doesn't.
+Three files do that, and the drawing stays out of all of them:
+`TattyWindow.xaml` is a drawing with every moving part named, `Avatar.cs`
+animates those parts, `Effects.cs` throws things about him and `Sounds.cs` makes
+the noise.
+
+- **The rig.** He is 104x120 of drawing in a 104x156 window: a window clips
+  whatever leaves it, so there are strips above and below him to jump and to sit
+  down into (`TattyWindow.TopInset` and `BottomInset`). Anything placed against
+  him measures from those, not from the window's edges, or the bubble would float
+  over an empty strip. The root transforms move all of him, `Body`'s move
+  everything above the knees, and each leg has a lift and a fold of its own, so
+  he can shift his weight from foot to foot and fold them under to sit. The mouth
+  is three shapes with one shown at a time, which is steadier than animating a
+  shape, and the eyes' one blink transform doubles as his eyelids: nearly shut
+  asleep.
+- **The ladder** (`Avatar.cs`). While the project's sessions work and nothing
+  new arrives for 45 seconds he starts to fidget -- a look about, a dance from
+  foot to foot, a stretch, a sit down for a minute. **Asleep means the project
+  is idle**: `Follow(state)` gets App.xaml.cs's `Doing()`, and once that is
+  `idle` (no session in a turn, with subagents, or with a background command
+  running) he sits down with Z's drifting off him a few seconds later, and
+  wakes with a start when work begins again. A hover, click or drag
+  (`Poke()`) wakes him for a few seconds; server news (`Stir()`) only restarts
+  the fidget clock, so it doesn't keep waking him while nothing runs. **A
+  question outranks everything**: while one is open (`needs`) he stands, and
+  no fidget, sit, sleep, celebration or menu preview plays over the alert; a
+  milestone that arrives then gets its confetti but not his jump.
+  `TATTY_ANIM_FAST=1` divides every one of those waits by nine. Two properties are owned outright so the clocks can't fight over them:
+  the bob owns `BodyShift.Y` and the blink owns `Blink.ScaleY`, which is why a
+  performance uses the root transforms, the legs and the pupils instead. One
+  performance runs at a time; a fidget that misses its turn is dropped, and the
+  two that are the whole point -- a question, a milestone -- cut in.
+- **The stage** (`Effects.cs`) is a window of its own, nearly three times his
+  size, holding the confetti, the rings and sparks that pulse while a question
+  waits, and the Z's. It is **click-through** (`Native.MakeClickThrough`), which
+  is both why it can be that big -- Tatty's own window is clickable all over,
+  since that is how he is dragged, so a stage that size would take the corner of
+  the desktop out of use -- and how the shell tells the two apart, which
+  `tools/window-check.py` relies on. It shows itself for the first particle and
+  hides after the last, and everything on it is drawn in Tatty's own coordinates
+  plus the offset to the middle of the stage, so its numbers line up with the
+  XAML's.
+- **The noise** (`Sounds.cs`) is worked out rather than shipped, for the same
+  reason the icon is drawn in code: a cue is a handful of bell-ish notes mixed
+  into a few kilobytes of PCM and played from memory. There is a chime for a
+  question and a flourish for a milestone, one at a time and never two on top of
+  each other.
+- **Milestones.** The toolbox writes a feature's progress into its ledger as it
+  happens; `watch_ledger` in `server.py` follows that file and emits a
+  `milestone` event for each row in `MILESTONES`, with a tier: *big* for a plan
+  signed off or a build complete, *mid* for a piece of work done, *small* for a
+  step taken. It starts from the end of the ledger as it stands, so a window that
+  has just opened doesn't celebrate last week's work, and it remembers the keys
+  it has announced, so a re-read can't celebrate twice. The companion jumps,
+  throws confetti and plays the flourish; the page adds a card and confetti of
+  its own (`milestoneCard` and `confetti` in `app.js`). `tatty.sh cheer [<event>]`
+  does the lot on demand, which is how it is tried out and tested.
+- **What is calling, and where it goes.** A question, a finished milestone and a
+  Claude reply each carry a `link`: the page route they are about (`#feature/<name>`,
+  or `#tasks/<board>` for a task board's milestone), empty when nothing links
+  them to a page. The server works it out (`feature_link`; `folder_feature` for a
+  milestone, whose ledger row names a folder, not a feature), and a milestone also
+  carries the ledger row's `skill` and the `feature`. The compact bubble shows the
+  newest of these in a banner above the feed (`#alert`, `alerts` in `app.js`):
+  the question's text, or what finished and by which skill, with "+N more" when
+  others wait. A question stays until it is answered; a milestone or a reply
+  goes when opened or dismissed. Clicking the banner, or Tatty himself while
+  something is calling (`alertWaiting`, `OpenAlert` in `App.xaml.cs`), opens the
+  full panel on that page: the host expands the window and posts `open-alert`,
+  and the page sets the route. A question with no page of its own is answered in
+  the feed, which is brought to it. Replies from started (tagged) sessions are
+  not alerts: they stay in their feature page's session panel.
+  A question from a session Start opened is about its *card*, not the feature:
+  the questions are answered on the session's workflow tab, so its `link` is
+  `#workflows/<tag>/ask/<id>` (`ask_link`), and the tab scrolls to that card and
+  flashes it (`focusAsk`). Clicking the avatar or the banner therefore lands on the
+  question. The same question also comes up as a **toast** at the top of the full
+  panel or a browser page (`toastAsk` in `app.js`; the compact bubble has its
+  banner instead): "Needs you", what is asked, and a **Go** that follows the
+  link. It stays until the question is answered, its tab is opened or it is
+  dismissed, and is not raised for what a reloaded page replays, nor when the
+  person is already on that tab. On the feature page, a live session's button
+  (`.go-btn`) is solid in the accent colour, reads "Go to the question" and
+  rings and wipes while one is open, and is a quiet "Open its tab" otherwise.
+  Like the status bar, that motion is not gated on `prefers-reduced-motion`.
+- **His menu** (`MakeMenu`) is one `ContextMenuStrip` shown in both the places a
+  person reaches for it: the tray icon, and a right-click on Tatty himself. Its
+  **Preview** submenu (`PreviewMenu`) is the catalogue of his whole repertoire --
+  every performance, every pose he holds, the stage's confetti and pulses, each
+  sound on its own, and the two whole reactions exactly as they arrive -- so any
+  of it can be watched on purpose rather than waited for. A preview cuts in and
+  winds the fidget clock back, so what was picked is what is seen
+  (`Avatar.Preview`); a pose stays until something really happens. Items whose
+  toggle is off are shown disabled, which says more than doing nothing would.
+  Bringing the menu up must not be mistaken for choosing something in it, so the
+  `telling` flag is up while the items are brought up to date (setting `Checked`
+  raises the same event a click does).
+- **What the person chooses** (`Settings.cs`, `%LOCALAPPDATA%\Tatty\avatar.json`,
+  beside the panel's bounds but in a file of its own, and nothing to do with the
+  server's settings): **Animations**, **Sound**, **Effects** and **Keep Tatty on
+  the desktop**. The last one is what makes the fidgeting worth having: without
+  it Tatty tucks himself away ten seconds after nothing is pending, and his own
+  day is never seen. The x, the tray's "hide" and the taskbar's close are a
+  person saying "away with all of it", and outrank it.
+- **Less motion.** Whether Tatty moves at all is `Motion.On`, in one place
+  because the avatar and the stage have to agree. The OS's own answer
+  (`SystemParameters.ClientAreaAnimation`, Settings ▸ Accessibility ▸ Visual
+  effects) is the **default and not a veto**: with it off he bobs and blinks and
+  nothing else, until the person ticks **Animations** in his menu, which is
+  theirs for good either way. `TATTY_ANIMATE=1` overrides both, for the tests,
+  which have to be able to see the confetti on a machine that has animation
+  turned off. The page does the same thing for `prefers-reduced-motion`, where
+  the card says it just as well.
+
+## Coins and the shop
+
+Tatty pays for work done. **Tatty coins** are earned for finishing things and, a
+few at a time, for deciding them, and spent in the **shop** on avatars for him to
+be and accessories for him to wear. It is meant to be a small pleasure on the way
+through a feature, so most of it is in how it looks and sounds.
+
+- **What pays, and how much** is `app/shop.json`'s `rewards`, read each time it is
+  wanted. A milestone pays by its tier (big 50, mid 20, small 8: `MILESTONES`), a
+  merge request opened 15 and merged 40, a task done on a task board 4 (a batch 10,
+  a big round number 50, whether or not the board celebrates), and a decision
+  made: a question answered (2; declined, nothing), a challenge, proposal or
+  question decided (3), a review suggestion decided (3), a story accepted or
+  rejected (2). `/api/milestone` and `tatty.sh cheer` pay nothing, or they would be
+  a tap to fill the purse from.
+- **A wallet per project**, so open projects can have different Tattys:
+  `wallet_path()` is `project_home()/wallet.json`. The project that was Tatty's root
+  before the Hub (the legacy one) keeps `<home>/wallet.json`, so nothing is lost; the
+  others have `<home>/projects/<id>/wallet.json`. It holds the balance, what is owned
+  and worn, the avatar chosen, the last forty transactions and every reward key paid.
+  A new one holds the welcome gift (`welcome`, 100) and Polished Tatty, who is free.
+  The shop says whose it is (`project` in `/api/wallet`), and the Hub window, which
+  has no Tatty, hides the purse. A milestone in the ledger, which every project's
+  server follows, pays only the server whose root holds the row's feature
+  (`watch_ledger`); every other reward comes from a request to the project's own
+  server. Each window of a project's server writes its wallet,
+  so every change is a read-change-write under the cross-process lock
+  `reviewdoc.Lock` already keeps for the Review Suggestions document
+  (`wallet_change`). A wallet edited by hand is read safely: a balance that isn't a
+  number is nothing, and nothing that isn't owned can be worn or chosen.
+- **Once only.** Every reward has a key (`ledger:<row key>`, `answer:<id>`,
+  `decide:<doc>:<id>`, `review:<doc>:<id>`, `story:<board>:<id>`, `task:...`,
+  `merge:<feature>:<state>`), and the wallet remembers each one it has paid
+  (`reward`). That is what makes a reward once-only across restarts, across a
+  decision changed (the first one paid), and across the several servers running at
+  once, which all follow the one ledger and so all see the same milestone. The
+  server that pays says so with a `coins` event (`amount`, `reason`, `kind`,
+  `balance`, `paid: true`, and `milestone`: the seq of the milestone event it was
+  for); one that finds the key paid in the last thirty seconds says so too
+  (`paid: false`), so every open window shows the coins arriving and none pays them
+  twice. `/api/status` carries the balance as well, so a window catches up on what
+  another spent within its fifteen-second poll.
+- **The shop's API.** `GET /api/wallet` is the wallet with the catalogue;
+  `POST /api/shop` buys (`{action: "buy", id}`: an avatar or an accessory, once,
+  if the coins are there; refused with how many more are `need`ed), wears
+  (`{action: "wear", slot, id}`, an accessory owned, in its own spot; `id: ""`
+  takes it off) and chooses an avatar unlocked (`{action: "choose", id}`). Each
+  change is a `wallet` event, for the other windows.
+- **Themes** dress the whole app. `shop.json`'s `themes` lists them, each with its own
+  `rarity` (themes don't follow the price bands): Minimal, free and everyone's; Star
+  Chart and Expedition Map (rare, 900); Chronograph and Night Drive (epic, 1,200);
+  Kintsugi and Aurora (legendary, 1,500). They were chosen on the boards in
+  `docs/overview/` (`themes.html`, round two; `themes-round3.html`, round three: M1
+  Hairline as the free one, A and B kept, E to H new). A theme is bought like anything
+  else and put on with `{action: "theme", id}` (404 for no such theme, 409 until it is
+  bought); buying wears it at once. The wallet keeps `theme` (checked like the avatar:
+  one not owned, or no longer sold, is Minimal), `/api/status` and the `wallet` event
+  carry it, and every window follows (`TattyLooks.follow`). A theme's id may not be an
+  avatar's or an accessory's (what is owned is one list), and `shop_catalogue` drops one
+  that is. A theme is two things:
+  - **The whole app** (`web/looks.css`): a palette, theme.css's layer-2 neutrals (`--bg`,
+    `--panel`, `--ink`, `--dim`, `--line`), for light and for dark, and a backdrop behind
+    the page, keyed on `data-look` on `<html>`. `data-shade` says which of light and dark
+    shows (theme-init.js before the first paint, theme.js as the choice or Windows
+    changes). theme-init.js puts the worn theme on before the first paint from a copy in
+    localStorage (`tattyLook`). On top of the palette, every theme has a **skin**
+    (looks.css 1b): tokens (card shape, edge and its style, shadow, an ornament such as
+    Kintsugi's gold seam, Star Chart's stars, the Map's contour rings, Chronograph's minute
+    track, Aurora's lit top edge, Night Drive's street glow; heading and label type; button
+    and chip shapes; the big button; code and command blocks; the bars) laid by one set of
+    rules on the parts every page is made of (`.card`, `.hcard`, `.tcard`, task columns,
+    settings sections, the shop's side panels, chat and QA items, menus and toasts, the
+    whiteboard's cards and toolbars: shape and edge only there, so panning rasters
+    nothing new), so a page needs nothing of its own to be themed. A card's edge is set
+    through `--line`, so a state's own border (live, ask, hover) still wins. The **accent**
+    is the theme's (`--look-acc`, `--look-on`), mixed a fifth of the way to the mode's, so
+    Engineering, Design and Production still read apart; the mode switch and Tatty himself
+    (`.tatty`, as the tray app draws him) keep the mode's own colour. Tokens that name the
+    accent are resolved where they are used, never in the token blocks (a custom property
+    resolves where it is declared, and the mixed accent lives on `body`).
+  - **The Overview is a stage** (`overview`, features.js; proposed on
+    `docs/overview/stage-view.html`): one scene in the theme worn, filling the page's main
+    area, so the workflow is the only thing on it. From the top: the feature's line (id,
+    title, chips, Cancel workflow, Stages, Refresh, Archive: the old head, so its buttons
+    keep their ids), the hero (where the feature is, what is next), the journey across the
+    full width in the free height, then over its ground the **gate**, the one place to act
+    (what "Where it stands" held: the unit gate and commit cards, the action bar, warnings,
+    the Review step's chips, a line per live session with Open session, More options, the
+    project line), and the **dock**, whose pills open the other cards in a drawer over the
+    stage (Documents with the folder, Branch & merge, Last session, Build, Timeline, Usage;
+    each is built with the page and hidden, so the page's selectors still find them, and the
+    one open stays open across redraws; Esc closes it). Inside a stage the neutrals follow
+    the scene (glass in its colours; Minimal keeps the page's own) and the big button takes
+    the theme's colour. The stage scrolls only when the gate grows (a Start panel open). On
+    the Overview the rail is collapsed by default to a strip of the pages' icons, with what
+    waits as a badge (`tt-rail-overview`, apart from the other pages' `tt-rail`). A server
+    without looks.js gets the old cards (`overviewCards`). The journey: `journeyModel(f)` turns the feature into stages and states for any
+    route (a full route's Plan opened up into the plan's own stages; done, now, next at a
+    gate, todo, skipped, left out) and a mode (running while a session is live, decide when
+    something waits on you, gate until you continue, complete once merged). The Review
+    step's chips stay under it, and Continue takes the theme's words ("Gild through to
+    Approach"; Minimal's is plain Continue). `web/looks.js` holds the registry, the drawing
+    kit and Minimal (Hairline) built in; each other theme is a module, `look-<id>.js`,
+    loaded only when it is worn or shown in the shop. When the same feature's journey is
+    drawn again changed (a stage closed, the route moved on, a skip, a decision, the merge)
+    the change is played. Everything goes through the DOM, the CSSOM and the Web Animations
+    API (the CSP refuses style attributes), gated on the shop's Motion switch; a journey
+    ticks only while it is on screen and the window is visible.
+  The shop's **Themes** tab has a big preview of the journey above the shelf; a hand over
+  a card puts that theme on the whole app to try, and the shelf's thumbnails stand still
+  (only the preview moves), to keep the paint cost down over Remote Desktop.
+- **The drawings** are `web/avatar.js`, made from the concept board where the look
+  was chosen (`docs/avatar/concepts.html`: the board is the design record, and
+  `tools/make-avatar-js.py` makes avatar.js from it, leaving out the directions
+  not chosen; change a drawing on the board, then run it). Each avatar is an
+  SVG whose groups are named after `TattyWindow.xaml`'s moving parts, moved by
+  keyframe tracks the way `Avatar.cs` moves them, so the tray app can take the same
+  avatars on later. What is worn is a class on the drawing's `.dress` group; the
+  rules (which item shows, which of the avatar's own bits it takes off -- the cat's
+  collar for anything at the neck, the owl's beak to a tip under a moustache -- and
+  what a hat does to an antenna) are generated from the wardrobe and go in through
+  the CSSOM, because the page's CSP refuses style attributes and `<style>`.
+- **The purse** (`web/wallet.js`) sits beside the gear with the balance, and opens
+  the shop. A `coins` event that is news (not a replay on connect) flies that many
+  coins (up to fourteen) into it, from where the person just clicked for a
+  decision or from the middle of the page for a milestone, each clinking as it
+  lands, the count rolling up and a "+N" rising off the purse; forty or more gets a
+  fanfare. The motion is the Web Animations API, which the CSP allows.
+- **The shop** (`#shop`, `web/shop.js` and `shop.css`) is a striped awning, a spinning
+  coin with the balance, a stage where Tatty stands in what he wears, and shelves:
+  Avatars, then one per spot. A hand over a card puts it on him to try (the stage
+  says so); buying pours coins from the balance into the card with a till's
+  ka-ching, the card pops and sparkles, and he puts it on and celebrates; a thing
+  too dear shakes, bonks and says how many more it needs, and he goes "oops". The
+  rarer a thing (by price: common, rare, epic, legendary; a theme names its own), the more its card shines.
+  The side shows what he wears (a chip takes each off), what pays and how much, and
+  the last few transactions.
+- **Sound and motion.** The sounds (`web/sfx.js`) are worked out rather than shipped,
+  like `Sounds.cs`: tones and filtered noise through Web Audio. A browser plays
+  nothing before the page has been clicked, so coins earned on a page nobody has
+  touched yet land silently. The shop has a **Sound** and a **Motion** switch
+  (`tt-sound`, `tt-juice` in localStorage). Like the status bar, the shop's motion
+  is not gated on `prefers-reduced-motion`: a default, not a veto, and this
+  switch is the person's say. With it off the coins just count and the shelves
+  stand still.
+- **On the desktop.** The tray app's Tatty wears the same: the page in its bubble
+  draws the chosen avatar in what he wears out of sight (avatar.js's `bake`, in the
+  mode's colour as the tray app has it, `TtAccent`), reads every colour, stroke and
+  visibility back from the browser, which has the cascade, and sends it to the
+  window as a small description (`tell("avatar", …)`) laid out in the window's own
+  moving parts: the legs, the body and what rides behind it, the eyes and pupils,
+  the mouths, the project number's badge (`numtag`: its shapes, and where, how big
+  and in what colour the number goes) and the "!" badge. `AvatarArt.cs` makes WPF
+  paths of it, and `TattyWindow.Apply` puts them into the canvases `TattyWindow.xaml`
+  names and moves every pivot to the avatar's own, so `Avatar.cs` performs exactly as
+  before (its mouths are `MouthN/H/F`, whichever drawing is on); the eyes, the number
+  badge (whose number the window writes, `SetNumber`) and the "!" badge stay the
+  window's own elements, placed where the avatar has them, so both arms always move
+  with him. The parts
+  of an avatar's own that move (a tail, wings, a propeller, a jetpack's flames) get
+  a small idle motion there (`AvatarArt.Idle`, only with Animations on).
+- **What he does while a session works, on the desktop.** The description also
+  carries the page's working states (thinking, reading, writing, running a command,
+  delegating, waiting on a command, needs you, oops): each one's props (`<prop
+  states=…>`: the thought bubble, the magnifier, the notepad, the terminal, the
+  helper bots, the alarm clock with its hands going round, the ? bubble, the sweat
+  drop) and, as JSON (`<motion>`, avatar.js's `motionFor`), its loop,
+  mouth, lids and tracks. `Activity.cs` plays them with the page's own sums, on a
+  layer of its own under each transform `Avatar.cs` animates (`TattyWindow.Layer`),
+  so his bob, blink, hops and celebrations carry on through it; a change eases over a
+  third of a second, and with Animations off it shows the props and the mouth, still.
+  `App.xaml.cs` works out the state from the events (`Doing`): a question waiting,
+  then a tool that failed in the last few seconds (`tool-done` with `ok: false`),
+  then subagents running (a `session` event's `agents` still pending, running or
+  waiting), then the tool in hand (Read, Grep, Glob and the web are reading; Edit and
+  Write, writing; Bash, running; Task, delegating), then a turn with no tool
+  (`turn`), then a turn over while a command it started runs in the background
+  (waiting: the `session` event's `shells`), else nothing. A session quiet for ten minutes, or a tool for ninety
+  seconds, is let go, so one that stopped telling doesn't leave him working. Asking
+  keeps still on the desktop (the window hops once when a question arrives), and
+  celebrating and sleeping stay `Avatar.cs`'s and `Effects.cs`'s. The page sends again when the look changes: here (a
+  `wallet` event), in another window (the status poll's `look`), or with the mode.
+  The last description is kept (`%LOCALAPPDATA%\Tatty\avatar-art.xml`), so he is
+  right from the first frame; one that doesn't read changes nothing. A look arrives
+  at least twice (the kept one at start, then the page's), and the window's own
+  elements may sit deep in the last drawing (the number badge inside a wrapper), so
+  `Apply` takes each out wherever it is before putting it into the new one: WPF
+  refuses an element that still has a parent, and the throw left him with no mouth
+  and no flag (0.34.0).
+- **Waiting on a command, not on you.** A session often starts a shell command in
+  the background (a Bash call run in the background, or moved there with Ctrl+B or
+  by its timeout) and ends its turn; it carries on when the command's notification
+  arrives. That is not idle, and "waiting for you" was wrong. The engine lists no
+  background shells to a mod, so the mod counts them itself (`register.tsx`'s
+  `shells`): in when a Bash call answers with a `backgroundTaskId`, out when a
+  prompt whose origin is `task-notification` names the task, or a TaskStop stops it.
+  It reports the list as `activity` `shells` (like `agents`, not a row in the feed;
+  kept by `clean_shells`, each with the time it was first seen), and after every
+  notification sends it whole, so a mod reloaded since a command started puts the
+  list right. The page then says "Waiting on a command · <description>" (a blue chip
+  and one slow, steady comet on the bar), and the desktop Tatty acts out
+  waiting: he taps his foot and keeps glancing at a little alarm clock beside him,
+  its minute hand going round every four seconds. The rest of the page's words
+  follow what he acts out: Thinking, Reading, Writing, Running, Delegating to a
+  subagent (a tool outside those is "Working").
+- **Debug coins and unlocks.** Settings ends with a **Debug** section, locked: with the
+  password it awards coins (+10, +100, +1000 or any amount) or takes them away (−10,
+  −100, −1000, any amount, or all), in this project's wallet. Awards arrive like any
+  reward, flying from the button into the purse
+  (`POST /api/debug/coins {password, amount}`, `debug_coins`; a negative amount takes
+  coins away, and amount 0 only checks the password). It also lists what is unlocked in
+  this project and **Lock**s one, or all, so they can be bought again
+  (`POST /api/debug/lock {password, id | "all"}`, `debug_lock`): a free avatar can't be
+  locked, it is taken off Tatty if worn, a chosen avatar falls back to a free one, and
+  the price is not given back. The server keeps only the password's SHA-256 (`DEBUG_KEY`;
+  `TATTY_DEBUG_KEY` replaces it, which is how the tests use a password of their
+  own), and the page remembers an accepted one for the window's life
+  (sessionStorage) until **Lock**.
+
+## The Validation page
+
+`#feature/<name>/validate` (`web/validate-page.js`) shows a work unit's engineer checks as one checklist. They are
+the question lists the toolbox writes as `.tt/<Prefix> - Questions/validation-<WU>.md` (`decide_scope` /
+`VALIDATE_LIST` in `server.py` give them scope `validate`; the Decide page asks for `scope=decide` and leaves them
+out). Every check is on the page with its list's own options (passed, failed, waived); **Validate** sends the
+checks that have a result (failed and waived need words) and the rest stay open. Unlike decisions, which wait
+for the last one, the running session is told as soon as some are sent, and told how many are still open. Drafts
+are kept per page (`scope` on `/api/decide/draft`). One pulsing button (`waitingOn` in `features.js`: the
+overview action, the session panel button, the rail item) goes to Decisions, else Validation.
+
+## The Decide page
+
+`#feature/<name>/decide` (`web/decide-page.js`) puts the questions a workflow session wrote down (challenges,
+proposals, question lists) to the person one at a time. Deciding is instant: **Decide** only keeps the choice,
+the next question is already read (`prefetch`), and the choices are sent together after the last.
+
+- **Drafts.** Every pick, note keystroke and Decide is written at once to the browser and, 0.4 s later, to
+  `<home>/decide-drafts/` (`POST /api/decide/draft`; a closing window flushes it with `keepalive`), so a reload or
+  a restart of Tatty loses nothing. The page asks for it with `GET /api/decide?drafts=1` and takes the newer copy.
+- **The send** is one `POST /api/decide {answers, batch}` (`decide_batch`): each choice goes through
+  `decide.sh set`; one that is refused doesn't stop the rest and comes back to its question with the reason.
+- **Progress.** The page makes up a `batch` id for the send. As the server records each choice it says so with a
+  `decided` event (`batch`, `n` of `total`, `ok`, `doc`, `id`) and then pays that decision's coins (`decide_pay`,
+  once per decision), so the order is always the bar, then the coins. The page draws a bar of how many are sent and
+  how many are to go from those events (the answer to the request completes it if one was missed), and sets
+  `TattyWallet.source` (`wallet.js`) so that decision coins fly from the bar's leading edge into the purse. It holds
+  the full bar for half a second so the last coins leave from it.
+
+## Modes and colour
+
+A **mode** is one of the toolbox's discipline plugins: engineering, design, qa or
+production (`installed_modes()` in `server.py`, from the toolbox's pointer
+folders and Claude Code's own install records; see
+[toolbox-contract.md](toolbox-contract.md)).
+
+- **The landing page** (`#modes`) has a card for every discipline the toolbox
+  has, whether or not it is installed. The ones installed are the modes to work
+  in; the rest are greyed, with **Add**, which has Claude Code install that
+  plugin from the toolbox's marketplace (`POST /api/mode/install` →
+  `install_mode`, the same `claude plugin install` a person would run). The card
+  comes to life with the answer, and the page says the plugin's skills reach
+  Claude Code in new sessions. A window opens on the mode's home page when there
+  is one to open on (`parseRoute`), but the modes page stays reachable with a
+  single discipline installed, because it is also where another is added.
+- **The mode** is the page's own choice, remembered in `localStorage`; the
+  server only says which plugins are installed (`/api/status`'s `modes`).
+- **The radio** is one box of segments, the mode on screen pressed into it and
+  in that mode's colour (one segment, pressed, when only one is installed). It
+  lives in the panel's title bar, beside Tatty's name; the header holds the same
+  radio for a browser tab, which has no title bar, and the compact bubble shows
+  neither. `renderSwitcher` fills every `.mode-switch` slot, and style.css
+  decides which is on screen.
+- **A mode's home page** (`#mode`, `renderModeHome`) is its name under an
+  underline in the mode's colour, with a card for each page the mode owns
+  (`MODE_PAGES`) and one for All modes, at the top of the page. The cards'
+  icons are inline SVG built in `modes.js` (`ICONS`): the page's content
+  security policy allows no inline styles.
+- **Mode-scoped pages:** a nav item with a `data-mode` belongs to that mode and
+  is shown only in it (today Features, engineering's). Going to such a page
+  switches to its mode (`PAGE_MODE` and `switchMode` in `features.js`), so a
+  link never shows one mode's pages in another's colours. With no discipline
+  plugin installed, nothing is hidden.
+- **The colour** is all a mode changes: `theme.css` has the palette (every
+  mode's accent), the theme (the neutrals and states, with the dark override)
+  and the mode layer, which is only ever
+  `--accent: var(--accent-<mode>)` under `body[data-mode="…"]`. `style.css`
+  names `--accent`, `--accent-soft` and `--on-accent` and no colour of its own,
+  so a new mode is one block in the mode layer and a new theme (a light/dark
+  toggle of our own, say) one block in the theme layer. The tray app follows:
+  the page sends `mode`, and `App.xaml.cs` swaps the `TtAccent` brush Tatty is
+  drawn with.
+
+## Features and the workflow
+
+- **The root folder:** Tatty's root (default `~/Tatty`, chosen in Windows' own
+  folder dialog) holds `features/<feature>/`. A feature folder may be a junction
+  to a folder elsewhere, a vault say.
+- **The Features page** lists the features, using the toolbox's
+  `workflow-state.sh` for where each stands. It has two sections: Live Features
+  (features with a running session, the same test as the card's Live chip) above
+  the other features.
+- **A feature's page** reads its documents, the toolbox ledger's events for it,
+  and the tables in its Task Status and draft plan.
+- **A document** has a View | Edit toggle above it (`showDoc` in `features.js`),
+  remembered for the session. View picks a viewer by the document's kind from
+  the `VIEWS` registry in `views.js` (today `Challenges`, as cards, and
+  `Task Breakdown`, as work-unit groups of foldable tickets with status read from
+  the Task Status through `ctx.sibling`; other kinds, or a file the viewer can't
+  read, show the plain markdown). A link to a ticket opens the folds around it
+  (`goToTarget`). Edit is a
+  textarea whose Save posts to `/api/doc/save`: the path guard `doc_path`, a
+  modified-time check against the version the page read (409 if it moved on),
+  and an atomic write. To add a viewer, add a parser and a function to `VIEWS`.
+- **Planning IDs** (`ids.js`): `linkIds(node, feature)` turns the IDs the
+  feature defines into links, in questions (`askCard`), replies and documents in
+  View. It runs over the rendered text, so plain text, markdown and the custom
+  viewers all get it; definitions, headings, code and existing links are left
+  alone. The feature's IDs come from `/api/items` (the toolbox's `ids.sh index`,
+  cached on the documents' modified times), an item's card from `/api/item`
+  (`item_of` in `server.py`). A question's feature is `session_feature`'s: the
+  started session's, else the one its project is linked to. Hovering any link
+  that names an ID (an ID link, or a wikilink to `^r12` or `CH3 — …`) shows the
+  card, positioned from JS because the CSP refuses inline styles; `findId`
+  focuses the item when the link is followed.
+- **Feature names are IDs.** A feature is named by an ID: a task's (`T-0047`),
+  a Jira ticket's key (`PROJ-123`), or, for **New feature…**, the next number
+  under the project's short name (`TAT-0001`; the short name is set on the Hub,
+  else made from the project's name; `next_feature_id` never hands a number out
+  twice, `<project home>/feature-ids.json`). The name is the folder, the
+  documents' prefix and the key of every record kept by name, so it stays short.
+  The title (the task's, the ticket's summary, what was typed) is only a
+  subheading, kept in `<project home>/titles.json` (`feature_title`, which falls
+  back to the Ticket document's heading): it shows on the feature's card, its
+  page's head and rail, in Archived and in its session names
+  (`<ID> · <title> : <stage>`), and its first words follow the ID in a new
+  branch's name. Features named before this keep their long names. Each Tasks
+  board numbers its tasks with a prefix of its own (`board_prefixes`; set on the
+  new-board form, changed with the board bar's prefix button for new tasks only).
+- **New feature…** makes the folder. A feature page then offers one thing
+  first, chosen by `primary_action` in `server.py` from where the feature stands,
+  as large buttons: **Start Workflow** and **Start Workflow Lite** while nothing
+  is written (only Lite when the chosen stages leave out Plan); **Decisions
+  Needed** while questions wait on the Decide page or the review's suggestions
+  are to be decided; **Commit** once the review's changes are made; **Open
+  session** while a session for it is going; otherwise **Continue**, which runs
+  the command `workflow-state.sh` names. Everything else (the toolbox's "or …"
+  steps, Continue while a session is going) is folded under **More options**;
+  warnings stay in sight. Tatty does not run `/tt-workflow` or
+  `/tt-workflow-lite`: it reads the state with the same script and is itself the
+  loop that asks again after each step. Start Workflow asks what the feature is
+  and starts the state script's first step with the folder and prefix handed over
+  as `tt-workflow` hands them (`begin_row`); Start Workflow Lite also asks bug or
+  feature and starts `/tt-debug` or `/tt-familiarise lite` the way
+  `tt-workflow-lite` does. Before a Start it runs the toolbox's
+  `tt-event.sh reconcile` in the feature's project, which `tt-workflow` did on
+  every read of the state. Tatty never changes the workflow's records.
+- **Start session:**
+  - It opens a terminal with `claude [--model <m>] [--effort <e>] -n
+    "<Feature> : <Stage>" "<command>"` in the feature's project. The project
+    comes from a choice on the page, a tt-workflow link, the ledger, or a
+    `Repo` path in the documents.
+  - The model and effort come from the picker on the Start panel (also on a
+    Jira ticket's and a task's Start), which starts on the toolbox's `session`
+    setting. A running session can't be switched, so they are forced only at
+    launch. Only models the toolbox marks runnable are accepted (today claude's);
+    the feature's chats then answer on the same model (`session-models.json`).
+    Settings holds the connections (`llms.sh`), the session default and the
+    step models (`model-config.sh`).
+  - It sets `TATTY_SESSION=<tag>` in the launcher script, because a new
+    Windows Terminal tab doesn't inherit environment variables.
+  - From a checkout it also passes `--plugin-dir`, so the new session loads the
+    mod.
+  - Before it opens, the work is put on a branch of its own (`ensure_branch`,
+    "Branches and merging", below).
+  - The page then opens that session's tab (see Workflow tabs, below). The
+    feature page keeps "Where it stands" and adds a line pointing to the tab.
+- **Updates and restarts:** an installed update isn't live until Tatty restarts,
+  so after Check or Update now Settings says what needs it (`restart_needs`):
+  this server, when Tatty itself was updated, and the sessions going, with the
+  ones that started before the update marked as still on the old mod. The server
+  only holds its sessions in memory, so the ones going are written to
+  `sessions-cache.json` as soon as a restart is due, and again when **Restart
+  Tatty** is pressed. That starts the installed Tatty's server beside this one;
+  it takes the cache back (the sessions with their feature, name and model, and
+  their feed), writes `server.json`, and only then does the old one stop, so the
+  tray app (`FollowNewServer`) and each session's mod (which looks up
+  `server.json` and says hello again under the same tag) move over without a
+  gap. A browser tab needs reopening: the token and port are new. Questions
+  still open and background work (chats, Jira, Stories) are lost, and the
+  button asks first when there are any. The tray app that followed is still the
+  old exe, though, so whatever the new one draws (the activity animations, say)
+  wouldn't show. A server that starts therefore looks for its project's tray app
+  (the Hub's, for the Hub's server) running from an older version's folder
+  (`replace_old_companion`: the running `TtCompanion.exe`s, asked of Windows, with
+  the same `--home` and `--project`; a picker, another home's and a newer one are
+  left alone). It builds this version's, asks the old one to leave by its quit
+  event (`Local\tatty-companion-quit-<id>`; one too old to have it is ended), and
+  starts the new one in its place.
+- **Branches and merging:** two workflows in one repository must not trample
+  each other's files, and finished work mustn't sit uncommitted and forgotten.
+  Neither is the toolbox's business (its skills never create a branch or commit),
+  so both are Tatty's, and the toolbox is unchanged.
+  - **A branch per workflow, in a worktree if asked.** `start_session` calls
+    `ensure_branch` before it launches. The first Start of a feature that has no
+    documents yet (New feature, a Jira ticket, a task, a lite start) makes a
+    branch (`<branchPrefix><feature name>`, prefix `feature/` by default, a
+    setting; `-2`, `-3` when the name is taken) in the repo's own checkout with
+    `git switch -c`, which a later Start switches back to. **A worktree is
+    opt-in** (the **Own worktree** box on the Start panel and on the Tasks and
+    Jira Start section sends `isolate: true`), because it is a whole second
+    checkout and a Unity project's is huge. Ticked, the branch is made
+    **in a worktree of its own**,
+    `git worktree add -b <branch> <path> <base>`, from the base picked on the
+    Start panel (default: the branch the repo is on). The worktree is
+    `<repo parent>/<repo name>.worktrees/<branch made safe for a folder>`. The
+    repo's own checkout is not touched (its uncommitted files stay there), so
+    features run side by side without trampling each other, and no branch is
+    ever "already checked out" in the way of a Start. `branches.json` keeps
+    `repo` (the main repo) and `worktree`; `work_repo` is where git work
+    (commit, review, merge, the session's own folder) happens, and `work_project`
+    maps the project folder into it. A later Start finds the worktree again
+    (`attach_worktree`): it re-makes the folder if it was removed, or the branch
+    from its base if that was deleted; a branch that another worktree already
+    holds is used where it is, unless it is a shared branch (`main`, `master`,
+    `develop`, `trunk` or origin's HEAD, `PROTECTED_BRANCHES`) or another
+    feature's. Without the box ticked the branch is made and switched in the
+    repo's checkout (with git's own words if a switch is refused, and a refusal
+    because another folder holds the branch says to tick Own worktree); the box
+    is also how a feature under way (or one recorded on a shared branch) gets a
+    worktree: a new branch from its own. A feature under way with no record adopts the branch the repo
+    is on, and is never moved. A worktree is a full second checkout (a Unity
+    project re-imports its Library there), which the panel says; a worktree
+    stays with its feature once made, whatever the box says later. Archive and
+    Delete remove the feature's worktree with plain `git worktree remove`, only
+    when nothing in it is uncommitted or untracked, and say so when they leave
+    it; the branch is always kept. The repo is the work folder's when a task has
+    one, else the project's; outside a git repository nothing is done. Tatty
+    never stages, commits or pushes here. `GET /api/branch` names what a Start
+    would do, and warns about other workflows only for features that still share
+    a checkout.
+  - **The Review step.** The toolbox's last phase is `complete` (built and
+    validated). Tatty adds one more step after it, Review, on all three routes
+    (the journey reads Explore, the plan's stages, Breakdown, Build, Review, Done), and the
+    feature is Done only when its request is merged. The step has phases, shown
+    as chips under it: **Review, Decide, Apply, Commit, Merge**. They are read from
+    the Review Suggestions document (below); `review_rows` (called by
+    `workflow_rows`) turns the phase into the Tatty row, until the request is merged,
+    and replaces the toolbox's own "review the branch" row. A request that is open
+    already skips the review.
+    - **Review** (`/tatty:review`, plugin skill `review`): the Start panel (review.js)
+      chooses the repo, branch and base; the session runs the toolbox's
+      `tt-branch-review`, reads its `Review.md` and writes the Review Suggestions
+      document, each finding with two to four options, only through `suggestions.sh`.
+    - **Decide** (the Review page, review-page.js, `#feature/<name>/review`): the
+      suggestions one at a time, each with its options, "something else" (the person's own
+      words) and a note; every answer is saved into the document at once
+      (`POST /api/review/decide`), so it can be left and resumed. The last answer
+      starts the next session from the server (`review_apply_start`).
+    - **Apply** (`/tatty:apply-review`, plugin skill `apply-review`): makes only the
+      chosen changes on the reviewed branch (the smallest coherent diff, no review IDs
+      in code, a check at the end), records `Applied`, `Skipped` or `Blocked` against
+      each suggestion and ends with `suggestions.sh finish`. It never stages or commits,
+      and asks in the session when a decision is unclear.
+    - **Commit** (the Commit page, below): offers the review's changes with a message
+      "address review suggestions"; a successful commit marks the review Done
+      (`reviewDone`), or **Mark the review done** does if they were committed another way.
+    - **Merge** (`/tatty:merge`, plugin skill `merge`): looks the change over, then commits
+      (if anything is left), pushes and opens the pull / merge request, asking before
+      each git write and using the project's own commit and request skills and rules when
+      it has them. The facts the skill needs (feature, folder, repository, branch, base,
+      host, existing request) follow the command as plain lines.
+  - **The Review Suggestions document** (`<Feature> - Review Suggestions.md` in the
+    feature's folder; `reviewdoc.py`, run as `scripts/suggestions.sh`). It is Tatty-owned
+    and script-written (no skill or page edits it by hand, so its layout never varies;
+    `check` reports a hand-edit that breaks it, and the step then shows a warning). Header:
+    Repository, Branch, Base, Reviewed (head), Report (the toolbox's `Review.md`), Status
+    (`Open` → `Decided` → `Applied` → `Done`) and "Decided n of N". Then a table and a
+    section per suggestion `RS01…` (ids never reused): Severity, Dimension, Where, Finding,
+    Options (`A — title: detail`, one marked recommended, "Leave as is" always last),
+    Decision (`A`, `Other: <words>` or `—`), Note, Result. The document is the one record
+    of where the step is (`Doc.phase()`), so a restart loses nothing; writes take a lock
+    directory and replace the file whole (CRLF and a BOM are kept). `init --replace` keeps
+    the old document in the feature's `.tt/Review Suggestions history/`. No findings: `done`
+    straight away.
+  - **Seeing the request.** The record keeps `merge: {state, url, number, host,
+    checked, note}`, `state` being empty, `opened` or `merged` and never going
+    back. `merge_check` asks the host's own tool, `glab mr list --source-branch`
+    or `gh pr list --head` (no tokens, no model; at most every 30 s unless the
+    button is pressed), when the page opens at the Merge step and on **Check
+    now**; **I opened the request** and **Mark merged** say it by hand
+    (`POST /api/merge`). When the request is first seen open, the card the
+    feature was started from moves to In Review: a Tasks card to the board's
+    In Review column (forward only, nothing if the board has none), a Jira
+    ticket by its transition to In Review. Moving it on to QA Ready or Done is
+    the person's. `merge.opened` and `merge.merged` are milestones.
+- **Workflow tabs:** the Features page (`#home`) has a strip of tabs along the
+  top (`workflowTabs` in `features.js`): Features, the list of features, then one
+  tab for each session Start opened (`#workflows/<tag>`), each showing that
+  session's live panel (`sessionPanel`) and usage. Every Start is a Claude
+  process of its own, so any number of workflows can run at once, in different
+  features or in one. The live panels and usage widgets are kept per tag
+  (`livePanels`, `usageViews`), and `route()` clears them as the page is redrawn.
+  - **The panel's order** is the question waiting for an answer, the activity
+    log, the box to message the session, then **Previously answered**: the
+    questions answered, as small boxes titled by the question's headline, newest
+    first, each opened and closed by a click (`answeredBox` in `app.js`). The
+    section shows once there is a first answer. When a question is answered the
+    card shrinks into its box and flies down to the top of the section, and the
+    boxes already there are pushed down with a bounce (`settleAnswered`). Like the
+    status bar, that motion is *not* gated on `prefers-reduced-motion`. Questions
+    answered before the panel was drawn go straight into the section. The feed's
+    own answered cards (`answeredCard`) are unchanged.
+  - **What a session is doing** (`sessionStatus` in `features.js`) is a *mode*:
+    starting, thinking, tool, agents, ask, idle, lost or ended. The mod reports
+    the main loop's turns (`turn.start` / `turn.complete`, `kind: "turn"`) and the
+    session's subagents (`$.agent.list()`, every poll and at a subagent's turn
+    start and end, `kind: "agents"`), and the server keeps them on the session
+    (`turn`, `turnSince`, `agents` with a `since` each); neither is a row in the
+    feed. A subagent that is pending, running or waiting makes the mode `agents`
+    even after the main turn has ended: the session is waiting on them, not idle.
+    A session whose mod is older reports neither, and the status falls back to
+    the activity feed alone.
+  - **The status bar** (`.statebar`, `stateBar`/`paintBar`) runs along the top edge
+    of a session's card, inside its border: comets sweep left to right while
+    something is going on. The mode picks the colour and motion: thinking (the
+    accent, one slow comet), a tool (teal, two quick ones), subagents (violet, a
+    comet for each, up to four), waiting for you (amber, breathing), opening
+    (grey), lost (red, dashed, still); nothing when idle or ended. The chip beside
+    the title takes the mode's colour, has dots that move and the time the mode
+    has lasted (a one-second ticker), and the subagents going are listed as chips
+    under the title. The tab's dot follows the mode. The motion is *not* gated on
+    `prefers-reduced-motion` (see "Less motion": that is a default, not a veto,
+    and headless Edge and this author's machine both report "reduce").
+  - **The tabs** are `GET /api/sessions` without a `name`: every started session
+    that hasn't been closed, oldest first. They are rebuilt from that after a
+    reload and kept up to date from `session` events. The server keeps sessions
+    in memory only, so a restart drops the tabs.
+  - **Closing a tab stops its workflow.** × posts `/api/session/stop` (after a
+    `confirm` while the session is going). `stop_session` finds the claude
+    process in Claude's own registry (`<config>/sessions/<pid>.json`), by the
+    Claude session id the mod's hello reported, or by the name the session was
+    started with when it hasn't said hello yet, and ends it and what it started
+    (`kill_pid`). It marks the session ended and closed, so it leaves the tabs
+    (its feature still lists it as the last session). A session that had already
+    ended is only dismissed: nothing is killed, as its process id may belong to
+    something else by now. If no process is found, the tab closes anyway and the
+    page says to close the terminal by hand.
+  - **One thing the tabs don't separate:** tt-workflow's link between a project
+    and a feature folder is kept per git repository, so two workflows started in
+    the same repository share it. Start always names the folder, which is safe for
+    the first command, but a later no-argument `/tt-workflow` in either session
+    follows whichever was linked last. Separate worktrees avoid that.
+- **Documents split:** a document link clicked while a workflow tab is on
+  screen opens beside the workflow instead of taking you to the feature's page
+  (`split.js`, `split.css`). It covers planning-ID links (`openItem` in `ids.js`
+  asks `openInPane` first, which includes the hover card's "Open in …"), and
+  `[[wikilinks]]` (the click handler in `features.js`, which uses the session's
+  feature, or the pane's active document for a link inside the pane).
+  Elsewhere (the feature list, a feature's page) links navigate as before.
+  - **One pane serves every workflow tab.** It has tabs of its own, one per
+    document (never two for the same one; following another link into an open
+    document just scrolls it to the target), each closeable. Closing the last
+    tab closes the pane. The tabs are kept in `sessionStorage` (`tt-docpane`),
+    so a reload keeps them.
+  - **The documents are `showDoc`'s**, drawn into the pane, so View and Edit work
+    there as on the feature's page. An unsaved edit is asked about before its tab
+    closes, before another document replaces it, and before leaving the workflow
+    tabs (`paneLeaveBlocked`, called by `route()`).
+  - **The divider** between the workflow and the pane is dragged with the
+    mouse, moved with the arrow keys (Home and End for the limits) or reset with a
+    double-click. The workflow's share of the width is kept in `localStorage`
+    (`tt-split`), is clamped to 20–80% with 280px at least on each side, and is
+    set through the DOM because the CSP refuses inline styles.
+  - **The documents rail stays beside the workflow.** A workflow tab has the
+    feature's left rail (its overview, whiteboard, documents and working notes;
+    `featureNav` with `side`), and a document chosen there opens in the side
+    panel. The ones open there are marked (`markRail`, called whenever the side
+    panel's tabs change), and the rail is read again every 20 seconds because the
+    workflow writes documents (`refreshRail`). The rail has a button at its top
+    left (`documentsRail`) that collapses it to a narrow strip holding just the
+    button; the choice is kept in `localStorage` (`tt-rail`) and is the same on the
+    feature's page, which has the same rail.
+  - **Right-clicking a link** opens Tatty's own menu instead of the browser's
+    (whose "open in a new window" opens nothing here): **Open** (as a click
+    does), **Open in side panel** (greyed out away from a workflow tab) and
+    **Open in main panel** (the document's page, leaving the workflow). When the
+    document is already open in the side panel, Open reads **Navigate to** and
+    moves that document to the item the link names. `linkTarget` in `features.js`
+    works out where a link points (shared with the click), and the menu is
+    `showLinkMenu` in `split.js`. It takes the arrow keys, Enter and Esc.
+  - **The pane is one element, moved** into each workflow tab's page rather than
+    rebuilt, so its scroll position and an edit in progress survive the workflow
+    side being redrawn. `renderHome` and `renderWorkflowTab` share the Features
+    page's container; a counter (`homeDraw`) stops a slow draw of one landing on
+    the other.
+- **Chats:** see [Chats](#chats) below. A chat has a tab in the workflow strip
+  (`#chats/<id>`, with the documents pane beside it as a workflow tab has) or in
+  the pane's own strip, which is why `splitRoute` (a workflow's tab or a chat's)
+  is what the split asks for, not a workflow tag.
+- **Code Diff:** a feature's rail has a Code Diff item (`#feature/<name>/code-diff`,
+  `diff.js` and `diff.css`) that shows the code the implementation agent changes
+  as it changes it: how far the build is (the Overview's bar and counts, and
+  whether any task is In Progress), then a card for each task that has changed
+  code, with the task's own words (its plain-English line and goal from the Lite
+  Brief or Task Breakdown, and the summary of its result file) and every changed
+  file as a side-by-side before and after, removed lines in red on the left and
+  added lines in green on the right. The mod's hook reports only a subagent's
+  Edit and Write calls (the main session's own edits are not shown), each with
+  the patch the engine gives, to `POST /api/change`. The server keeps them in
+  `<home>/diffs/<key>.json` (keyed as a feature's whiteboard is, the oldest
+  dropped past 2 MiB), each under the task that is In Progress in the Task Status
+  at that moment, or under none when no task, or more than one, is. A file inside
+  the feature's own folder, such as a result file the coder writes, is not a
+  change to show. `GET /api/diffs?name=` gives the page the changes, each task's
+  state and words, and the progress; the page redraws on the `diff` event and
+  every five seconds while it is on screen, because the Task Status changes on
+  disk without an event. **More info** on a task runs a small model (`claude -p`
+  on `haiku`, as the side chat's model summary does) only when asked, and keeps
+  its short explanation of the task's changes beside them, or a note that it
+  couldn't.
+- **Tokens used:** `usageWidget(usage, { compact })` in `usage.js` draws what a
+  session has used (input, output, cache read and write, the context window's
+  fill, the cost) as a card, or as one line with `compact`; it returns
+  `{ node, update }` so any page can hold one. The feature page puts one above
+  the Timeline card, for the live session or else the last one's final total.
+  The numbers come from the mod: after each turn of a started session it posts
+  `kind: "usage"` to `/api/activity` with its running totals (the engine reports
+  tokens per turn, so the mod sums them) and `$.session.usage()`'s context and
+  cost. The server keeps them as `usage` on the session and sends a `session`
+  event, so they reach the page with the session; they are not a row in the
+  activity feed. Nothing is read from the transcript files, and a session
+  Tatty didn't start reports nothing.
+
+## Chats
+
+A chat is a Claude conversation of its own with no terminal: `server.py`'s
+"chats" section, `chat.js` and `chat.css`. The rules it keeps are in the toolbox
+contract's "Chats" section; how it is built:
+
+- **Two kinds.** A **main chat** is opened by the "+" at the end of either strip:
+  the workflow strip's opens it as a tab there (`#chats/<id>`), the pane's opens
+  it in the pane. A **side chat** is about a piece of a workflow and opens in the
+  pane beside it (or, off a workflow, as a tab of its own):
+  - **selected text:** right-clicking a selection in a workflow's reply, a chat's
+    answer or a document offers **Ask about this in a side chat** (the
+    `contextmenu` listener in `split.js`, `selectionPick` and `askItem`; the
+    menu is `showMenu`, shared with the link menu). Inputs keep the browser's own
+    menu.
+  - **a code block:** every code block `mdNode` draws gets a bar of its own
+    (`codeActions` in `app.js`): **Copy**, and **Ask about it in a side chat**.
+    The fence's language is kept as `data-lang`.
+  - The Toolbox page's **Ask** beside a command opens a side chat about it.
+- **What a side chat is about** is `pieceContext` in `chat.js`: the source (the
+  feature, the workflow session and the reply's time, or the document and the
+  heading it sits under), the piece (at most 4000 characters) and what is around
+  it: the reply's markdown, or the document's section down to the next heading as
+  high (`sectionOf`; at most 6000). `mdSource` keeps the markdown each `.md` was
+  drawn from. The chat shows it above the messages (`contextChip`), open until
+  the first message has gone.
+- **The summary** is the `chatSummary` setting (Settings → Chats): `tatty`
+  (`chat_context_summary`, a line saying what and where from, no tokens) or
+  `model` (a one-off `claude -p --model haiku` with no tools, on a thread of its
+  own while the chat says "Summarising"; Tatty's own line stays if it fails).
+- **One turn is one process.** `chat_say` runs `claude -p --output-format
+  stream-json --verbose` in the chat's project with the prompt on stdin:
+  `--session-id <uuid>` until Claude Code has kept the conversation
+  (`conversation_exists`), `--resume <uuid>` after, so it outlives a restart.
+  `--tools Read,Glob,Grep,Skill` with the same allowed and `--permission-mode
+  dontAsk`; `--setting-sources user`, `--strict-mcp-config` (no MCP servers),
+  `--max-budget-usd` (`TATTY_CHAT_BUDGET`, 2), `--model` from `chatModel` when
+  set; `--plugin-dir` for Tatty from a checkout (for `/tatty:side-chat`) and for
+  the toolbox plugins found only in a checkout (`from_checkout`, shared with the
+  stories run). `TATTY_SESSION` and `TATTY_JOIN` are stripped, so the mod there
+  stays out. The first message of a side chat is `/tatty:side-chat`, the context
+  (`context_block`) and then the message; later ones go alone.
+- **The skill** is `plugins/tatty/skills/side-chat`: what the context block is,
+  answer about the piece, read only, suggest rather than change, never carry the
+  workflow on. Without a context block (typed in a terminal) it says side chats
+  come from Tatty.
+- **One turn at a time per chat** (409); any number of chats may answer at once.
+  Stop (`/api/chat/stop`) and the timeout (`TATTY_CHAT_TIMEOUT`, 600 s) kill the
+  turn as a stories run's are. Each turn's steps (`chat_step`), its answer (the
+  result's text) and its cost are added to the chat's file; an error or "Stopped."
+  is a message of its own.
+- **What is kept:** `<home>/chats/<id>.json` (written through `change_chat`, one
+  change at a time): its kind, title, project, feature, the workflow tag it came
+  from, the Claude conversation's id, the context, the messages, the cost, and
+  whether its tab is closed. Closing a tab keeps the file and the conversation.
+- **Events are small:** `chat {id, busy, step, done, new, closed}`, never the
+  text, since the event log is replayed to every page; a view reads the chat with
+  `GET /api/chat`. They carry no `tag`, so nothing of a chat reaches a workflow's
+  panel, the feed or an inbox. Answers come whole (no token streaming).
+- **The tabs:** the workflow strip shows every open chat that isn't in the pane
+  (`GET /api/chats`, loaded with the sessions). The pane's tabs keep a chat as
+  `{kind: "chat", chat}` in `tt-docpane`, drawn by `showPaneChat` (`showPaneTab`
+  chooses), with an unsent message asked about like an unsaved edit. × on either
+  closes the chat, asking first while it answers.
+- **Which folder:** a chat works in its workflow's project, the chat's on a
+  chat's tab, else the feature's (`feature_project`); with none of those, the "+"
+  asks (`pickChatProject`: the folders Tatty knows, `GET /api/chat/projects`, or
+  Explorer).
+
+### The Engineering home's task box (intake)
+
+The Engineering mode home (`#mode`, `renderModeHome` in `modes.js`) starts with a
+box to type a task into (`intake.js`, `intake.css`; server.py's "intake"). It is a
+third kind of chat, `intake`, and everything above applies except that it has no
+tab (`chats_open` leaves it out; `chatView` does not put it in `chatList`) and no
+feature. The contract's "Starting a task by typing" has the rules; how it is built:
+
+- **The box** (`makeIntake`, one instance that `intakeNode()` hands to each draw of
+  the page) is a textarea until the first message. Then `/api/chat/new
+  {kind: "intake"}` makes the chat (in the open project's repo,
+  `intake_project`; the "Choose a folder…" link asks otherwise) and `chatView(id,
+  {bare, empty, placeholder, onDraw})` shows the conversation in place. The chat in
+  progress is kept in `sessionStorage` (`tt-intake-chat`), so a refresh or another
+  page does not lose it; **Start over** closes it.
+- **What it asks and says** is `plugins/tatty/skills/intake` (`/tatty:intake`):
+  the first message goes after it and a `<facts>` block (`intake_facts`). It asks
+  at most three short questions in one message, or plays the task back and ends
+  with the `tatty-task` block. `parse_intake_task` checks the last block (title cut
+  at 80, summary at 1500, at most 8 acceptance lines, `kind` feature|bug, `level`
+  low|medium|high, unknown values falling back) and keeps it as the chat's `task`;
+  a reply from the person clears it. A block that does not parse is left in the
+  text, so a failure shows. With a reply and no task, "Skip the questions:
+  summarise what you have" sends a canned message.
+- **The card** (`taskCard`) shows the task for correction: title, summary, done
+  when, feature or bug, and the **effort slider** (a native range input of three
+  stops, `step=1`, so it snaps; Low / Medium / High under it as buttons, and what
+  each level does below, the chosen one marked). Low is the quick route, Medium a
+  small change, High the full workflow; the level Tatty suggested is shown with
+  its reason. A bug hides the slider (it starts `tt-debug`). Under it: the ID,
+  the branch name Tatty proposes (`GET /api/intake/branch`, the ID and the title's
+  first words; editable), **Own worktree**, the project and the model picker, and
+  what **Create and start** will make. Low is refused when
+  `quick_available()` (the toolbox has `skills/tt-workflow-quick`) says no.
+- **Create and start** (`intake_start`, one at a time per chat): checks, makes the
+  feature (`new_numbered_feature`), writes the Ticket (`intake_ticket_md`), and
+  starts the session through `card_start_session` with the route (`quick_row`
+  beside `lite_row`), the branch name passed on as `branchName` to `ensure_branch`
+  (`branch_pick`: a name git allows and that does not exist). When Start refuses
+  after the feature was made, the feature (the Ticket and its folder) is removed, so
+  the card can try again; the ID is not reused. On success the chat is closed and
+  the page opens the session's tab, as a feature's Start does.
+- **Quick is labelled by Tatty.** `routes.json` (`set_feature_route`) records the
+  features started quick, and `feature_summary` turns the lite route into `quick`
+  for them (`ROUTES`, `pipeline`: Understand, Brief, Build, Review, Done).
+
+## The compact bubble's chat and questions
+
+The compact bubble (380×440) shows one of two things at a time, chosen with a
+**Chat / Questions** radio (the existing `modeswitch` styling, in `app.js`'s
+companion block; the choice is `body[data-compact]`, and `compact-chat.css`
+styles both views for the bubble only). The full panel is not touched by any of
+it.
+
+- **Chat** is `compactChatView` in `chat.js`, backed by `compact_chat.py` and
+  the server's `/api/compact-chat` (`GET`, `say`, `stop`). It is not one of the
+  chats above and shares none of their records, runs or tabs.
+  - **One conversation per project**, kept in
+    `<home>/compact-chats/<key>.json`; the key is a hash of the project's
+    normalised folder, so the same folder is the same chat however it is
+    written. There is never a chat without a project and no global
+    fallback: a folder that isn't there is a 400. The latest 200 messages are
+    kept; restarting Tatty keeps the history and the Claude conversation.
+  - **A turn is one headless `claude -p` run** in the project's folder
+    (`--session-id` then `--resume`, built by `chat_argv`), so the project's
+    documents are read on demand, not handed over. One turn at a time per
+    project (409); Stop kills it and leaves "Stopped.".
+  - **First release: read-only.** The run gets `Read,Glob,Grep,Skill` and
+    nothing else, and `read_only_argv` refuses a turn whose command would allow
+    more (no agent is started). There is no permission dropdown or edit mode.
+  - **Events are small:** `compact-chat {project, busy, step, done, ok, error}`;
+    the page reads the conversation with `GET /api/compact-chat`.
+  - **Unsent text is kept:** the message box is built once and only hidden while
+    Questions shows, so a draft is there when Chat comes back.
+- **Questions** is `compactQuestionQueue` in `app.js`: every open question from
+  any session, built from the `ask` and `answered` events (the stream replays
+  them, so a page that opens late has them all), newest first. The newest is
+  shown in full with an inline reply; the rest are listed under it.
+  - **Taking over:** a question that is not dismissed switches the bubble to
+    Questions, as it arrives or when the page opens with one waiting. The chat
+    draft is left alone. When none is left, Questions stays selected and says
+    "No questions waiting"; with none waiting at the start, the bubble opens on
+    Chat.
+  - **Answering** posts `{ id, answers }` to `/api/reply`, so the answer reaches
+    the session that asked (not `/api/answer/<id>`, which the asking session
+    polls).
+  - **The X** hides a question without answering it: its id goes in the
+    WebView's `localStorage` (`tt-compact-dismissed`), for every project alike,
+    and no answer route is called, so the session keeps waiting. It stays hidden
+    across restarts until its `answered` event arrives, which clears the id. The
+    feed, the toast and the full panel still show it.
+
+Checked by `tools/test-compact-chat.py` (the worker against a stand-in `claude`:
+per-project history, restart, the folder it runs in, read-only; then the
+server's API and answer routing) and by `tools/page-check.py` (the bubble's
+size, its modes and the question flow); see Tests.
+
+## The shared board (`taskboard.js`)
+
+The Tasks and Jira pages draw the same board, as the design pages share
+`whiteboard.js`: `makeTaskBoard(o)` (`taskboard.js` and `taskboard.css`) is a
+factory with its state in a closure, so a page makes one and a new board
+feature is built once. Its header comment lists what a page gives it
+(`load()`, `cardBody(x)`, `move(id, to, before)`, `ops`, `colOp(body)`, and so
+on). It owns:
+
+- the columns and cards, and the filter (`/`);
+- the drag (pointer events, a 4 px threshold, a ghost and a placeholder,
+  edge scrolling, Esc to cancel) and Alt+arrows, with `canDrop` and a refused
+  `move` putting the card back;
+- the ⋯ menu of a column, each entry only if the page's `ops` allow it (Tasks:
+  rename, move, delete, and "+ Add column"; Jira: move and hide, with a "Show
+  <name>" button for each hidden one);
+- the panel's dimmed page behind it (`.tshade`, `.tpanel`), which one page
+  draws at a time and Esc takes away;
+- **the Start section**: the feature's name, the project the session runs in,
+  **Works in** (the folder the work is done in, when that is another),
+  the model, **Start workflow** and **Start lite**, and, once a workflow is
+  going, its route, stage and session with **Cancel workflow**. Both pages'
+  cards show the same workflow line. The ids are `#<item>-feature`,
+  `-start`, `-start-lite`, `-workdir` (`item` is `task` or `jira`), and the
+  board's are `#<id>-board`, `-filter`, `-strip`, `-live` (`id` is `tasks` or
+  `jira`).
+
+The pages keep only what is theirs: Tasks the list of boards, the Backlog and
+Completed pages, Clear done, the problems list and the task form; Jira the
+header, the ticket's panel and what a drop does.
+
+## The Jira board
+
+The production mode's page (`#jira`, `jira.js`, on the shared board above). The
+rules it keeps are in the toolbox contract's "Jira" section; how it is built:
+
+- **Reading Jira costs tokens.** Tatty can only reach the Atlassian MCP server
+  through Claude, so the server runs `claude -p` (`jira_claude`) with a JSON
+  schema for the answer, and keeps what comes back under `<home>/jira`. The
+  page reads that (`GET /api/jira`, free) and asks for a run only on a click:
+  `POST /api/jira/refresh`, `/api/jira/issue`, `/api/jira/move`, each a job on
+  a thread of its own (`jira_job`), one of a kind at a time (409 otherwise),
+  announced as `jira` events when it starts and ends.
+- **Keeping the runs small.** Measured on a real board: loading every MCP
+  server and the default system prompt put about 80k tokens in each turn's
+  context; the one Jira server (`--strict-mcp-config` with its entry from
+  `~/.claude.json`), a one-line system prompt and `--tools ""` put about 16k,
+  most of it cached between runs. A board of six tickets took about 20 s and
+  60k tokens over its turns ($0.04); a ticket about 20 s and 40k ($0.035).
+  `--bare` would be smaller still, but it drops the MCP servers.
+- **The board** is a column per status. The MCP server can't read a board's own
+  column setup, so statuses are the columns: those of the tickets on the board
+  and those a ticket's moves go to (remembered in `<home>/jira/layout.json`,
+  so a status nobody is in yet is still a column to drop on). Unplaced columns
+  go by category (to do, under way, done) and then as first seen, so one never
+  jumps as tickets move. The person's own order and the columns hidden are in
+  the same file (`POST /api/jira/layout`: move, hide, show, order), keyed by
+  the status name lower-cased; add, rename and delete are not offered, since
+  statuses are Jira's. `GET /api/jira` sends `columns`, `hidden` and `layout`
+  beside `issues`.
+- **Dragging a card** to another status asks Jira to make that move
+  (`POST /api/jira/reorder` for the place, then `/api/jira/move` with `to`,
+  which is a headless run of a few seconds): the card stays where it was
+  dropped, dimmed, until the `jira` event says how it went, and goes back with
+  Jira's reason if there is no such move. In the same status a drop only
+  records the place. A move the person picks is made even to In Progress for a
+  ticket already under way; only the automatic one at Start leaves it alone.
+- **A ticket** opens in a panel at the right. Its detail is loaded on its own
+  (description in markdown, sub-tasks, links, and the transitions it offers),
+  and kept. The panel's **Move to** row offers each status those transitions
+  go to (`POST /api/jira/move` with `to`); a status Jira doesn't offer is never
+  asked for.
+- **Start workflow** and **Start lite** (`POST /api/jira/start`, `jira_start`,
+  with the same `card_start_target` and `card_start_session` as a task's Start):
+  1. makes `<KEY>` with `new_feature`, the summary as its title (a second Start is a 409
+     naming the feature);
+  2. writes the ticket into it as `<name> - Ticket.md`, with a `## Working
+     folder` section when `workdir` is another folder than `project` (the
+     session runs in `project` with `--add-dir`, and is told to read, change,
+     run git and verify only in the work folder);
+  3. starts the folder's first step with `start_session`, its placeholder
+     naming the ticket document, or for `mode: "lite"` `/tt-workflow-lite`;
+  4. once the session is open, moves the ticket by the transition to In
+     Progress named in its detail.
+
+  The page then goes to the feature's page, which shows the session live.
+  `started.tsv` remembers the feature and `begun.json` the route, so the card
+  says so, shows the workflow line (`workflows` in `GET /api/jira`, from
+  `feature_workflow`) and the panel links to it; the last project and work
+  folder (`jiraProject`, `jiraWorkdir`) start the next form. **Cancel workflow**
+  ends the sessions and unlinks the ticket (it stays where it is in Jira: moving
+  it back would cost a run), and so does deleting the feature.
+
+## Tasks (the production mode)
+
+The production mode's **Tasks** page (`#tasks`, `tasks.js` and `tasks.css`,
+server.py's "tasks" section) is a tracker of Tatty's own, for a project that
+doesn't use Jira, Trello or the like. The toolbox has no part in it.
+
+- **On disk:** `<root>/tasks/<board>/`, a folder per board:
+  - `board.json`: the columns (an id and a name each, left to right; a new
+    board has To Do, In Progress, In Review, QA Ready and Done, and a request
+    seen open moves the started card to the one called In Review), the order
+    of the cards in the backlog and each column, the next ID, the options
+    (`autoCompleteDays`, `startColumn`, `project`, `celebrate`, `priorities`) and
+    the feature each started task became. Unknown keys are kept.
+  - `items/<ID> - <title>.md`: a markdown file per task, in the bullet style of
+    the toolbox's documents: the H1 (`# T-0042: Title`), a header of
+    `- **Status:**`, `Priority`, `Type` (Task, Bug, Story or Epic; a missing or
+    unknown one reads as a task), `Labels`, `Created` and `Done` (and `Feature`,
+    once a workflow is started), then `## Description` and any other sections.
+    A task exported from a User Stories board also has `- **Story:**` (which
+    story, on which design board) and an `## Acceptance criteria` section.
+  - `.deleted/`: where Delete moves a task's file.
+
+  A file per task keeps each change to one small file, merges in git, and reads
+  and edits in Obsidian; the workflow plans straight from one.
+- **Which list a task is in is its file's say.** Its Status names a column by
+  name (in any case). `Backlog` (or none) is the backlog, `Completed` the
+  Completed page, and a status that names no column puts it under "Not on a
+  column", shown apart and never rewritten. The last column is the done one:
+  moving a task into it stamps `Done:`, moving it out clears it, and **Clear
+  done** sends its tasks to Completed. board.json's order only says where a task
+  sits in its list: the ids it orders that really are there, then the rest by
+  when they were made. So a move between columns writes the task's file and
+  board.json, a reorder board.json alone, and Completed is never in the order
+  (it is sorted by Done), which keeps board.json small however long the history.
+- **Hand edits are kept.** A file is read tolerantly (YAML front matter,
+  `* **status**:` in any case, unknown bullets and sections), and a change
+  rewrites only the value on its own line, or the Description's body, keeping
+  the file's line ends and BOM. A file is renamed only when its title is changed
+  in Tatty, never after a hand edit. A task's ID is the one in its file's name
+  (else its H1's). A file with none, or another file's, or whose name and title
+  disagree, is listed as a problem, and **Give it an ID of its own** fixes it.
+- **IDs** are `<prefix>-<4 digits>` (`T` unless board.json says otherwise).
+  Each is made under the board's lock with an exclusive create, past both
+  board.json's `nextId` and every ID in use, so neither a file copied in nor an
+  old board.json can make two tasks share one. (Two machines sharing a synced
+  folder still could: it shows as a problem.)
+- **Conflicts:** a save names the `rev` it was made from, a hash of the file's
+  bytes rather than its mtime (a junction to a FAT or network drive keeps
+  coarse times). A file changed since is a 409 that carries the task as it is
+  now, and the panel keeps what was typed. A board.json that won't parse
+  refuses every change rather than be written over.
+- **Thousands of tasks:** each board's index (`<home>/tasks-index/`) keeps every
+  file's size, mtime and summary, so a look at the board reads only the files
+  that changed, and only their headers; a cold start costs a directory listing.
+  The board sends its columns in full, the backlog's first 100 and Completed's
+  counts; the Backlog and Completed pages come a page at a time
+  (`/api/tasks/list`), the next as the end of the list comes into view.
+- **Outside edits:** `watch_tasks` looks every 2 s (longer on a slow drive) and
+  sends one `tasks` event per board whose files changed outside Tatty. Tatty's
+  own writes are in the index already, and the page ignores the events that
+  carry its own `client` id. The page reads the board again 250 ms later,
+  keeping its scroll, its focus and a half-typed quick add; during a drag it
+  waits for the drop, and an open task with changes typed in it asks before
+  taking the new one. Once an hour the watcher also applies each board's
+  `autoCompleteDays` (off by default).
+- **The board:** a column per column, the backlog as a rail at the left (hidden
+  with a click, remembered), "+ Add a task" at each foot, each column's ⋯ menu
+  (rename, move, and delete with where its tasks go), and "+ Add column", which
+  goes in before the done column. A card is dragged with pointer events, as the
+  User Stories notes are, with a 4 px threshold so that a click opens it. A
+  ghost follows the pointer, a placeholder shows where it will land, a list
+  scrolls when the pointer nears its edge, and Esc cancels. The drop tells the
+  server the list and the card it goes before (`/api/tasks/move`), so a second
+  window's stale list still lands right. Alt+←/→ moves a focused card a list
+  along and Alt+↑/↓ up or down its list, said in an `aria-live` region; `n` is
+  a new task and `/` the filter.
+- **The task panel** (`#tasks/<board>/task/<id>`, `/task/new`): the title,
+  status, priority, labels, and the description with Write and Preview; the
+  other fields and sections as they are; **Edit whole file** for the raw
+  markdown; Save (Ctrl+Enter) and Delete. The panel's frame is the shared
+  board's (`.tpanel`).
+- **Write it for me** (`/api/tasks/write`, server.py "write it for me"): under
+  the description, a button with two choices beside it. *What to write* is
+  Detail, Acceptance criteria or Both; *what it may read* is **Task + board**
+  (no tools: the title, the typed line and the titles of up to 15 other tasks;
+  a small model, about a cent) or **Also read the project** (Read, Glob and
+  Grep over a folder chosen per run, for a task that is for another repo than
+  the one Claude is in; Browse… or a typed path, with the last six kept in the
+  browser per board, starting from the last one used, else the board's work
+  folder or project; about 10 to 30 cents).
+  The run is a headless `claude -p` on a thread of its own, at most two at once.
+  **The answer is sent to the page as a `taskwrite` event and is never written
+  to the task's file**: it replaces the Description box's text (Undo puts back
+  what was there) and is saved only by Create or Save, so it works for a task
+  that doesn't exist yet and a hand edit during the run is the usual rev
+  conflict. Criteria are written under a `###` heading inside the Description,
+  since the Description ends at the next `##` and the form edits only it. Stop,
+  closing the panel and leaving the page end the run. `TATTY_TASKS_MODEL`,
+  `TATTY_TASKS_BUDGET`, `TATTY_TASKS_BUDGET_PROJECT` and `TATTY_TASKS_TIMEOUT`
+  tune it.
+- **Completed:** the total, this week, this month, the best week and the streak
+  of weeks; a bar for each of the last 12 weeks; a line that says how it's
+  going, whatever the motion setting; and the tasks by week, then by month, each
+  with **Reopen**. Finishing is celebrated with a `milestone` event
+  (`tasks.done`), as the toolbox's milestones are: small for a task into the
+  done column, mid for Clear done, big on crossing 10, 50 and each hundred
+  completed (none with the board's `celebrate` off). The tray app's Tatty
+  reacts by his own Animations setting. The page throws confetti only for one
+  that happens while it is open, since the event stream replays old events on
+  every load.
+- **Start workflow** (`/api/tasks/start`), as from a Jira ticket: the feature
+  `<ID>` (its title the task's), the task written into it as `<name> - Ticket.md`, the
+  workflow's own first step started on it, and the task moved on to the
+  board's start column (the option, else the first column that sounds under
+  way). The task's file and board.json name the feature before the session
+  starts, so a second Start is refused rather than making a second feature.
+  Two buttons: **Start workflow** (the full route, as above) and **Start lite**
+  (`mode: "lite"`: `/tt-workflow-lite "<feature folder>"` followed by the task
+  said as for the full route, named `<feature> : Lite`). The session runs in the
+  **linked project**; an optional **work folder** (`workdir`, remembered in
+  board.json `options.workdir` next to `options.project`) is added to the
+  session with `--add-dir`. The toolbox keys its link and ledger on the git
+  root of the session's folder, so the linked project is what the session is
+  filed under, but it also runs git and `verify-refs.sh` from there. The
+  toolbox can't change for this, so Tatty says where the work is done in words:
+  a "Working folder" section written into the Ticket (the one document both
+  routes read) and the same text after the task in the command. It names the
+  folder as the only repo to read, build and verify against, and as the
+  `**Repo:**` of every document. This depends on the model following it; it is
+  not enforced.
+- **A started task shows its workflow.** board.json keeps `begun` beside
+  `started`: `{ID: {from, to, mode}}` (the list the task came from, the one
+  Start moved it to, `full` or `lite`). The board view sends `workflows`, one
+  per started task that isn't done or completed (`task_workflows`): the route
+  (the toolbox's, or `mode` while the folder holds only the ticket), the
+  stage (`feature_summary`) and the newest session Start opened for it. The
+  card says `route · stage · session`; the panel's workflow block says it too,
+  links the feature and the session's tab, and is filled again whenever the
+  board is read, which a session, milestone, ask or answer event causes.
+- **Cancel workflow** (`POST /api/workflow/cancel {name}`, `workflow_cancel`),
+  on the task's panel and on the feature page's header. It ends the sessions
+  Start opened for the feature. If a task started the feature
+  (`task_for_feature`) it undoes that Start (`task_unstart`): the task's
+  Feature link and the board's `started`/`begun` go, and the task returns to
+  the list it came from, but only if it is still in the one Start moved it to.
+  A feature folder holding nothing but the Ticket is moved to
+  `features/.deleted` (never deleted); one with any other file stays, with the
+  task unlinked. A feature no task started only has its sessions ended.
+  An **archived** feature (its link to the task survives Archive) is cancelled
+  too: the task is unlinked and returned, and the folder stays in Archived
+  (`"folder": "archived"`).
+  Cancelling after a failed launch works the same, so the task can be started
+  again. The toolbox's own links for the folder (`links.tsv`, `lite-links.tsv`)
+  are left alone; it asks again when its folder is missing.
+- **Break after a validated work unit** (unitgate.js; server.py "the break after a
+  validated work unit"). The toolbox's tt-execute marks a unit `Done` once its checks
+  pass and stops; it never offers to commit. When the Task Status's last `Done` unit
+  is followed only by units not yet begun (`UNIT_NOT_BEGUN`), `unit_gate` puts
+  `unitGate` {unit, next, outcome} on the feature, `primary_action` answers
+  `unitgate`, and "Where it stands" shows two buttons. **Commit work**
+  (`POST /api/unit-commit`) commits in one click only the files the task results
+  name (`workflow_results_of`), with the suggested message plus `(WUn)`, through
+  `feature_commit`; other changes are left and counted; it never pushes. **Continue**
+  (`POST /api/unit-continue`) starts a new session on the state's next step and only
+  then records `handled` in `<project home>/unit-gates.json`, ending the break. The
+  break survives a reload, restart or a Commit. No toolbox change.
+- **Commit** (commit.js; server.py "committing what the workflow left"). Once a
+  build is complete, a review only sees commits, so the step before it is to commit
+  what the workflow changed, as a page and not a manual step. A card at the top of
+  "Where it stands" says when the feature's branch has uncommitted files (a quiet
+  background look: `git status` can be slow in a big repo) and links to
+  `#feature/<name>/commit`, which also puts a note under the review row. The page
+  (`GET /api/commit?name=`) lists the repo's changed files, one per file
+  (`status_files`: `-uall --no-renames`), in two groups: the ones the workflow's own
+  task results name (`workflow_results`: the "Files Modified" lists of
+  `<feature>/.tt/**/results/*.md`, a folder entry covering what is under it), ticked,
+  and the rest, not ticked ("Not named in the workflow's task results"); with none
+  named, everything is ticked. A name that looks like a secret (`.env`, keys,
+  `*secret*`) is marked and left out of **Commit everything**. The message is suggested
+  from the feature's name and the repo's last 30 commits (`suggest_commit_message`: a
+  `feat:` prefix and a trailing `[KEY]` only if the repo uses them; the workflow's tasks as
+  the body), and is edited freely: nothing of Tatty's is added to it (no trailer).
+  **Commit selected** and **Commit everything** (`POST /api/commit {files | all, message}`,
+  `feature_commit`) stage (`git add -A`) and commit by pathspec, so only those files are
+  committed and whatever else the person staged stays staged; they refuse when the repo is
+  not on the feature's branch, when files are in conflict, or when the list changed since
+  it was shown. The repo's hooks run (never `--no-verify`); if one refuses, its words are
+  shown and what Tatty staged is unstaged again. Committing outside the workflow's own files
+  asks first. It never pushes (the Merge step does).
+- **Review the branch** (review.js; server.py `review_info`, `review_session`).
+  Once a build is complete the Review step starts `/tatty:review`, which runs the toolbox's
+  `/tt-branch-review [branch]`. That skill reviews the repo its session starts in, so a feature whose sessions run in
+  one repo (its project) but whose work is in another would be reviewed in the wrong
+  one. The review row's Start panel therefore asks which repo and branch instead of
+  showing the project line: `GET /api/review?name=&repo=` offers the repo the
+  feature's branch was made in (`branches.json`), else its project's, and the
+  feature's branch if that repo has it, else the one checked out; **Change…** picks
+  another repo. `POST /api/start {review: {repo, branch, against}}` starts the session
+  in that repo, for that session only: the feature's project choice and branch
+  record are untouched, and no branch is made or switched (a review only reads).
+  The toolbox's `[branch]` hint is never sent as text: the command is `/tatty:review`
+  followed by the facts as lines (repository, branch, base, the document and the script),
+  and the skill passes the branch and base on to `tt-branch-review`.
+- **Archive and Delete** (archive.js; server.py "archiving and deleting a
+  feature"). The feature page's header has a split button: **Archive**, with
+  **Delete…** behind its caret (the menu is split.js's `showMenu`).
+  - **Archive** (`POST /api/feature/archive {name}`) ends the feature's sessions
+    and chats and moves its folder to `<root>/archive/<name>` (" (2)" if the
+    name is taken there). A feature that is a link (a junction into a vault) is
+    moved as the link, and the vault's folder stays where it is. The task it
+    was started from is left as it is (an archived feature is usually a finished
+    one); its card says the feature is archived. `GET /api/features` lists them
+    as `archived`, newest archived first (when: `<home>/archived.json`), under a
+    collapsed **Archived (n)** section on the Features page. **Restore**
+    (`/api/feature/restore {name}`) moves it back (409 if the name is taken).
+    Both carry the project chosen for the feature (`projects.tsv`, keyed by the
+    listed path) and its whiteboard (`boards/<key>.json`, keyed by where the folder
+    really is, which only changes for a folder that isn't a link) along: `rekey_feature`.
+    Archived features can't be opened; restore one first.
+  - **Delete** is for good, and the one thing in Tatty that is. The side panel
+    (`deleteFeaturePanel`) first reads `GET /api/feature/delete-preview` (the real
+    path, whether it's a link, how many files and bytes) and asks for the feature's
+    "I understand" to be typed (any case, spacing trimmed; not the feature's name);
+    `POST /api/feature/delete {name, archived, confirm}` is a 400 without it. It ends the sessions and chats, undoes a task's Start
+    (`task_unstart`, as Cancel workflow does), removes the folder (for a link: the
+    real folder it points at, then the link) and forgets the project choice,
+    whiteboard and Jira "started" row. A link met *inside* the folder is removed,
+    not followed (`remove_tree`), so what it points at is untouched. `delete_refused`
+    answers 409 for a real folder that is, or holds, Tatty's root, its features,
+    archive, design or tasks folders, Tatty's or Claude's home, the user's home or the
+    plugin, for a drive or top-level folder, and for a link to another feature.
+    The toolbox's links and ledger are not touched.
+- **Stages** (stages.js; server.py `stages_view`/`stages_set`, "choosing a feature's stages"
+  in the contract). The feature page's header has a **Stages ▾** button: a menu (split.js's
+  `showMenu`) with a tick per stage the workflow includes, the planning stages indented under
+  Plan. The choice is the toolbox's, kept in the feature's folder by `stages.sh` and followed by
+  its workflow; Tatty keeps nothing. `GET /api/feature` carries it as `profile`
+  (`{route, stages: [{key, label, level, on, locked, why}]}`, null for a toolbox without
+  `stages.sh`, and then there is no button). `POST /api/stages {name, stage, on}` runs
+  `stages.sh set`; a stage that has begun or must stay (Requirements, Technical Design,
+  Sign-off, Build) comes back 409 with the toolbox's reason, and shows in the menu as a
+  disabled row whose tooltip says it. After a change the page redraws and the menu opens again.
+  The journey shows a stage left out as left out (Explore, Review, or a plan stage); the draft plan's rows show a
+  left-out stage as skipped (and, once signed off, `stages_of` takes it from the profile
+  instead of calling every stage closed). Plan out means a small change: a new feature then
+  offers the lite route first (`liteFirst`). The Start panel says how many stages it will work
+  through.
+
+## User Stories (the design mode)
+
+- **Boards:** `<root>/design/<name>/`, each a copy of a design document and its
+  `<name> - User Stories.md`, which only the toolbox's `tt-user-stories` skill
+  and its `stories.sh` write (see the contract, "User Stories"). The nav's
+  **User Stories** (design mode) lists them (`#designs`); a board is
+  `#design/<name>`, an opened card `#design/<name>/card/<id>` (`stories.js`).
+- **New from a design document…** picks the file in Windows' own file dialog
+  (`pickFile`; the companion's `pick-file` message, or `TtCompanion.exe
+  --pick-file` from the server), makes the board (`/api/new-design`: the copy,
+  then `stories.sh init`) and starts a draft run.
+- **Runs:** `start_stories_run` runs the skill headless (`claude -p`, the prompt
+  on stdin, stream-json out) on a thread of its own, one at a time. Each tool
+  call becomes a `stories` event with a step for the page's strip; the last one
+  says which stories are new or rewritten, the cost, or the error. Stop
+  (`/api/stories/cancel`) kills the process tree. `state.touch()` on every line
+  keeps the idle watchdog off a long run.
+- **Adding a story:** the board's **＋** tool (S) opens a blank story where it
+  was clicked. Save posts `action: add` with the fields and `at` (the card's
+  place): `stories.sh add`, Accepted, no tokens. **Write it for me** posts the
+  person's line instead: `stories.sh add --proposed` of a placeholder (the line
+  as its title and want, "(to be written)" for the rest), then the skill's own
+  `alter` run on it, with the note "Write this story properly from the
+  designer's note: …". The story waits as Proposed; nothing in the toolbox is
+  new for it.
+- **Changes:** Save, ✓, 🗑 and the group panel post to `/api/stories`, which
+  writes a spec and calls `stories.sh` with the story's hash (`--if`), so a
+  story changed elsewhere is a 409 and the board reloads. No change is taken
+  while a run is writing the same board. `watch_designs` sends a `stories`
+  event whenever a board's document changes on disk (the skill's writes, a hand
+  edit in Obsidian), and the page reloads.
+- **The board** is the whiteboard (see "Whiteboards"), the notes its cards.
+  Notes with no place yet go in a column per group. Each group's colour
+  (`.g0`–`.g7`, kept once given so removing a group recolours nothing) is kept
+  with the board's whiteboard in `<home>/boards/`.
+- **The group panel** is pinned top right, over the board. A click puts the
+  group in focus: its notes outlined, the rest dimmed, a labelled frame round
+  them, and the view framed on them. The framing eases with motion on and jumps
+  with reduced motion; either way it happens.
+- **Export to Tasks** (the board's top bar) puts accepted stories on a Tasks
+  board's backlog (see "Tasks"), a task each, for the production mode to
+  schedule. The panel lists the Accepted stories not yet on a board, all ticked,
+  grouped, and the board to put them on (one of the same name, else a new one
+  of that name). `/api/stories/export` (`stories_export`) reads the stories with
+  `stories.sh list`, refuses (409) a story that is no longer Accepted or whose
+  hash changed since the page read it, and writes the task files itself, under
+  the board's lock, in the stories' order: no headless run, so no tokens. A
+  task gets the story's title, its group as its label, the story sentence and
+  its details as the Description (details under `### Details`), a `## Acceptance
+  criteria` section, and `- **Story:** US-NN on the design board "<name>"`. Which
+  task each story became, and the story's hash then, are kept with the board's
+  layout in `<home>/boards/` (`exported`), never in the stories document. A
+  story whose task is still on that board shows its task's ID on its note (a
+  click opens the task; ✎ when the story changed after it went) and isn't
+  offered again; delete the task and it is.
+
+## QA (the QA mode)
+
+The **QA** mode is the toolbox's `qa` plugin, drawn in teal. It has two jobs, both
+Tatty's pages over the plugin's scripts (see "QA" in [toolbox-contract.md](toolbox-contract.md)):
+writing a bug from plain words, and testing a feature area by area. Nothing is
+written but through `bug.sh` and `test.sh`; the model only drafts.
+
+- **The home** (`#qa`, `renderQa` in `qa.js`): the features under test, each a
+  card with its status (Draft or Ready), a progress bar and its counts, and
+  **Start testing** (a feature that has no plan yet); then the bugs as a table
+  with a filter (Open, All, or one status). **New bug** is at the top.
+- **A bug** (`#qa/bug/new`, `#qa/bug/<ID>`). The tester describes it in their
+  own words, and **Draft it with Claude** (`POST /api/qa/bug/draft`) fills the
+  form: a headless `claude -p` with no tools (haiku, `TATTY_QA_MODEL`), whose
+  system prompt asks for one JSON object (title, severity, summary, steps,
+  expected, actual, environment, evidence, and `notStated`, the facts the
+  description left out, shown as chips under the box). The draft is a form
+  to read and change: **Save bug** is what writes it (`bug.sh new`). **Talk it
+  through in Claude** opens a session running `/tt-qa-bug` instead. A saved bug
+  has its status, a Jira key, **Copy as text** and **Create in Jira**.
+- **Create in Jira** is the one place Tatty writes more than a transition: a
+  headless run over the Atlassian MCP with `createJiraIssue` (and
+  `getAccessibleAtlassianResources`, `getJiraProjectIssueTypesMetadata`),
+  through the Jira board's own `jira_claude` and `jira_job`. The project key is
+  asked once and remembered in the browser; the issue type is Bug, or the
+  project's closest. The new key is kept on the bug (`bug.sh set jira`).
+- **A feature's plan** (`#qa/test/<feature>`, from the features Tatty lists).
+  With no areas it offers **Break it into areas with Claude**: a headless run
+  that may read the feature's own documents (Read, Glob, Grep; haiku is not
+  the default here: `TATTY_QA_MODEL_PLAN`, budget `TATTY_QA_BUDGET_PLAN`) and
+  answers with areas, items and the things the documents don't say. The server
+  writes them through `test.sh`, as a **Draft**, and the page edits them from
+  there (add an area, add an item, edit, remove). **Plan it in a Claude
+  session** does the same with `/tt-qa-test-plan`.
+- **The dashboard** is tiles (items, % tested, passed, failed, blocked,
+  skipped, not tested), a bar (red when anything failed, amber when blocked),
+  the areas as cards with their own counts, the failed items that have no bug
+  yet, and the bugs raised from this test.
+- **An area** (`#qa/test/<feature>/<A1>`) is its checklist. Each item shows how
+  to test and what a pass looks like; **Pass, Fail, Blocked, Skip** record a
+  verdict with a note (`test.sh check`; Reset puts it back). **Raise a bug** on
+  a failed item opens the bug form already filled (title, steps, expected,
+  actual, the item as its source); saving it links the bug to the item.
+- **Events**: the page hears `qa` events (a drafted bug or plan, a change made
+  in another window) and `jira` events for `qabug:<ID>` jobs.
+- **Where it lives**: `<root>/qa/Bugs/BUG-NN - <title>.md` and
+  `<root>/qa/Plans/<feature>/<feature> - Test Plan.md` with its
+  `... - Results.tsv`. The root's folder check (Delete) keeps `qa/` too.
+
+## Whiteboards
+
+`whiteboard.js` (and `whiteboard.css`) is the board the User Stories page draws
+its notes on, and the board of a blank whiteboard and of a feature. A host page
+makes one with `makeWhiteboard(o)`: where it saves (`key: {kind, ref}`), what
+the server gave it, its own cards (`setCards([{id, node, w, h}])`: nodes it
+built, which the board places and drags), what a click on a card does
+(`onOpen`), its own placing tools (`tools`, e.g. the Story tool), and a panel
+to pin top right (`corner`). The board does the rest: pan (a drag with the
+middle button, wherever it starts, or a finger on the background; the left and
+right buttons are kept for the things on the board, so a left drag on the
+background moves nothing and the browser's right-click menu is off, but in a
+text being written), wheel zoom about
+the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
+
+- **What a person adds:** text fields (markdown, edited on double-click, a
+  width handle, a colour), comments (a marker on a card's or a text's corner
+  that follows it, or on a spot; Resolve, and a toggle that hides resolved
+  ones), and lines (between any two things, edge to edge, an arrowhead and a
+  label, redrawn as either end moves; an end that is gone hides the line,
+  never deletes it). Tools: Select `V`, Text `T` (or double-click the
+  background), Comment `C`, Line `L`, then the host's; Esc goes back to Select,
+  Delete removes what is selected. A host card is never removed from here.
+- **Saving:** each change shows at once and goes to `POST /api/whiteboard` as
+  a small batch (cards' places, the view, items and lines upserted or
+  removed), applied under the board's lock and refused whole if any of it is
+  bad. Removing an item takes its lines and lets go of the comments on it. A
+  `whiteboard` event tells other windows, which read the board again (not
+  while a text or a comment is being written there).
+- **Drawing:** the world (`#<id>-world`) is the camera and a layer of its own
+  for good; inside it, `.wbcontent` holds everything in the board's own units,
+  drawn at the zoom the view last settled at. A pan moves the camera's picture
+  and draws nothing again; a wheel zoom scales the picture while it goes on (a
+  little soft) and draws the content sharp once, 250 ms after the last turn (an
+  ease at its end, a button or key at once), on whole device pixels. Zooming
+  well out mid-gesture draws it again at the smaller size, so the picture never
+  has to cover far more of the board than it was drawn for; an ease draws it
+  first at the smaller of its two zooms. Making the layer at each gesture's
+  start and dropping it at its end was what made a pan start with a hitch and a
+  slow wheel stutter (every turn drew the whole board twice). The notes are kept
+  cheap to draw (one small shadow, the same small radius on every corner, no clip
+  of their own), tilted as before.
+  `tools/whiteboard-perf.py` measures it (see "Tests").
+- **Where:** Tatty's own, never in a document: `<home>/boards/<key>.json` for a
+  folder's (a User Stories board, keyed as before; a feature), with any other
+  keys kept as they are (a stories board's colours and exports), and
+  `<home>/whiteboards/<name>.json` for a blank one. The ids of items and lines
+  are the page's (`n` + base 36); a card's is the host's (`US-01`, a
+  document's file name).
+- **Blank whiteboards** (`whiteboards.js`): design mode → **Whiteboards**
+  (`#whiteboards`; one is `#whiteboard/<name>`), New and Delete (into
+  `<home>/whiteboards/.deleted/`).
+- **A feature's whiteboard** (`#feature/<name>/whiteboard`, the **Whiteboard**
+  item in its left rail): its documents are the cards, and a click opens one.
+- **For a generated diagram** (see "Generated diagrams") the board has options no
+  other host uses: `readOnly` (no tools, no double-click text, no Delete),
+  `savePlaced: false` (only a drag is saved, not where `place` put a card),
+  `onZoom`, `onDragging`, `zmin`, a `back` layer under the cards (the group
+  frames), `setLines` (the host's lines: curved, with an end of their own (a
+  filled or open arrow, a hollow triangle), never saved or selected; their words
+  over the cards), `placeCards(pos, keep)` and `forget(ids)`. For every host, a
+  card's drag now draws only that card's lines again (the layer only grows while
+  it goes on, and is sized again at the drop).
+
+## Generated diagrams
+
+A class diagram of C# code, drawn on the whiteboard (read-only), in three places:
+
+- **The Project diagram** (`#diagram`, the Engineering home's **Project diagram** tile): the whole repository at
+  HEAD. The repository is the one chosen on the page, else the project's code repo; folders can be left out
+  (by default `Packages/com.unity.`, `Library/`, `Temp/`, `obj/`, `bin/`).
+- **A feature's Review diagram** (`#feature/<name>/diagram/review`, the **Diagram** rail item, and a link on the
+  Review page): only what the branch's **own commits** change. Its own commits are those no base has (`git log
+  --no-merges <branch> --not <bases>`, the bases being the recorded base, origin's default branch, develop, main and
+  master, local and origin's), so work merged in from develop or a parent branch is never the feature's, however
+  stale the recorded base is. Each such file is compared with the merge-base of the nearest base (the fewest commits
+  back). The types it adds, changes ("changed": base list or members differ; "edited": only bodies) and removes,
+  with the unchanged types they link to, greyed: at most 8 a changed type (`NEIGHBOURS`, the strongest links first).
+- **A feature's Plan diagram** (`#feature/<name>/diagram/plan`, and "View as a diagram" on a plan document): drawn
+  by a model from the Comprehensive Tech Plan (else the Tech Plan or Lite Brief) and joined to the code.
+
+**Reading the code (no LLM).** `app/diagram.py`, standard library only. `parse_cs` blanks comments, strings, char
+literals and preprocessor lines, then walks the `{ } ;` segments: namespaces (block and file-scoped), types
+(class, struct, interface, enum, record, nested ones too) with their base lists, members (fields, properties,
+methods, events; enum values) and the type names each body mentions. `Model` merges partial types and resolves a
+name only when it is visible (the type's own nested types and those round it, its namespace and its parents, the
+file's `using`s): a name nothing makes visible is not linked. Links: **inherits** / **implements** (the base list),
+**has** (a field's or property's type), **creates** (`new T(`), **uses** (any other mention); one a pair, the
+strongest. Groups are the assembly (the nearest `.asmdef`'s name, else a `.csproj`, else Unity's
+`Assembly-CSharp` / `-Editor`) and the namespace in it; with more than 40 assemblies an **area** above them
+(`Packages/<pkg>`, `Assets/Scripts/<x>`). Files are listed with `git ls-tree` and read with one
+`git cat-file --batch`; each blob is parsed once and kept in `<project home>/diagrams/index-<hash>.json`, so a
+file is read again only when it changes (a Unity repository of 14,564 files: 19,276 types and 83k links in about 15 s the first
+time, a second or two after).
+
+**Work units.** A Review diagram's types carry the work units whose files declare them: the files the task results
+list under Files Modified (`change \`path\`: ...`), by the Task Board's `Work unit` column, and the files of commits
+whose subject ends `(WU<n>)`. A Plan diagram's units are the plan's steps (`### §n.`).
+
+**The Plan run.** One headless `claude -p` (as QA's drafts: `qa_claude`, read-only Read/Glob/Grep, `--add-dir` the
+repository), given each step's heading, first lines, Files list and the type declarations its code shows, the
+Affected Files table and the Chosen Approach (about 35 KB for a 355 KB plan). It answers with nodes (name,
+namespace, kind, new / changed / existing, steps, members, a summary) and edges (with **data flow**, and what flows).
+`plan_merge` joins them to the code: an existing type takes its real members and group (a new one is still
+**planned**, though the branch may have built it already). Only the types the plan names are drawn: the code's
+own links are added between them, and no other type is. `TATTY_DIAGRAM_MODEL_PLAN` (the default model), `_BUDGET_PLAN` (3), `_TIMEOUT_PLAN` (900 s). A 17-step
+plan: $0.46, two minutes.
+
+**Hover summaries** are written only when asked ("Write summaries for this group" on a hover card): a small model
+(`TATTY_DIAGRAM_MODEL`, haiku; `_BUDGET` 1) given signatures only (kind, members, file), never whole files, at most
+60 types a run. Kept in `summaries.json` by each type's signature, so a summary is written again only when the type
+changes, and a group's by its id (34 types and a group: $0.06).
+
+**The page** (`web/diagram.js`, `diagram-layout.js`, `diagram.css`). `diagramPanel(o)` is the part a host puts on
+a page (made when, stale or not, Make the diagram / Make again / Stop, a run's steps); `makeDiagram(o)` the
+diagram. Simplified UML: a box is «stereotype» (MonoBehaviour, ScriptableObject, static, abstract, interface...), the
+name and five members (visibility `+ # ~ −`; added green, removed struck); inherits and implements end in a hollow
+triangle, has in a filled arrow, creates and uses in an open one (dashed); data flow is thick, in the accent, with
+its words over the boxes. State colours: added green, changed amber, removed red dashed, planned blue dashed,
+unchanged greyed.
+
+- **Groups:** an open group is a frame behind its members, a closed one a tile (a review's groups with no change in
+  them start closed, greyed: open one to see the types the change leans on). A group with one group in it opens
+  that one too. The Project diagram starts with every group closed and asks for a group's classes only when it is
+  opened (`GET /api/diagram?scope=project&group=<id>`: the classes, all their links, and the group of each far end).
+- **Semantic zoom:** below 40% the innermost open groups turn solid (a tile the size of the frame, its name as big as
+  it fits, its links lifted to it), below 22% the next ones out; the picture keeps its place. The swap waits for the
+  zoom to rest. A click on a solid tile zooms in to read it (60%).
+- **Layout** (`layoutTree`): inside a frame, layers (what a thing relies on goes above it, so arrows point up;
+  cycles broken by a depth-first walk, barycentre sweeps, wide layers wrapped, boxes with no link to a sibling in a
+  grid under them); frames of frames are shelved wide in the same order. It is made with every unit on, so turning
+  units off hides things where they are. A box a person drags is kept (a whiteboard of kind `diagram`); Reset
+  layout forgets them. The view is fitted on opening.
+- **Units:** a chip a work unit (or step) and All. Off, what only it added or removed goes, a changed type looks
+  unchanged, and its links go. **Unchanged links** hides the greyed types.
+- **Links:** with more than 40 boxes drawn each keeps its three strongest links, and hovering or clicking a box
+  shows all of its own (the rest step back); a link with neither end in the group opened last is faint; counts
+  show on a hovered box's links only. Legend chips turn kinds off. Search marks the boxes it finds; Enter frames them.
+
+## Tests
+
+- `tools/test-tatty.sh` covers the server, the scripts and the pages' data:
+  799 checks against a real toolbox (the User Stories board's with a stand-in
+  `claude` that writes through the real `stories.sh`), with a toolbox-free part when there's no
+  toolbox. The milestones are among them: a row appended to the ledger is
+  announced with its label and tier, once per key, unknown events are ignored,
+  and a window that opens on a full ledger says nothing about it, and each
+  alert's `link` (a question's, a reply's, a milestone's with its skill and
+  feature). So are the
+  task boards: a hand-made file kept byte for byte but for the line changed,
+  IDs made at once, moves and the order they keep, conflicts, the columns,
+  Clear done and its milestones, a hand edit reaching the page, problems and
+  adoption, Delete, Start workflow, a board.json that won't read, and a board
+  through a junction. And Export to Tasks: Proposed and changed stories
+  refused, the task files it writes, a story skipped once exported and offered
+  again once its task is deleted, and a workflow started from one. And the
+  chats, with a stand-in `claude` (`claude-chat.sh`): the flags of each turn
+  (only reading, no command, the conversation named then resumed), the side
+  chat's context in front of its first message only, both summaries, one turn
+  at a time and Stop, closing, and a workflow beside a chat hearing nothing of
+  it. And the Engineering home's task box (`intake`): the chat's task parsed from a
+  `tatty-task` block (clamped, malformed ignored, cleared by a reply), the card's
+  Create and start at each level (the command, the Ticket, the branch, the chat
+  closed, once only), a branch name typed on the card, a refused name or a failed
+  Start leaving nothing behind. And the compact chat and its questions (`tools/test-compact-chat.py`, run
+  from here and on its own with `python tools/test-compact-chat.py`): the worker
+  against a stand-in `claude`, so no agent runs: a history per project, kept
+  across a restart, a turn in the project's folder, a command that could do more
+  than read refused, one turn at a time and Stop; then through the server, the
+  same and a question's answer reaching its own session by id, one at a time. And the code changes: a reported edit kept under the task In Progress, one
+  inside the feature's folder skipped, an unknown tool or feature refused, the
+  task's words from its card and result file, the progress and whether it is
+  running, and More info (the explanation stored, a task not on the board
+  refused, the error text kept when the model can't answer). And the desktop
+  app's boot, which starts no Claude session.
+- `claude plugin test plugins/tatty` covers the mod, including the joining
+  rule.
+- `tools/shop-check.py` opens the shop in headless Edge or Chrome against a
+  server with a new wallet and a ledger it can write: coins earned flying into the
+  purse, the shelves, a hat tried on, bought and worn, a thing too dear, and an
+  avatar unlocked, with any script error or CSP refusal reported (`--shots <dir>`
+  keeps screenshots, `--dark` the dark theme). test-tatty.sh's `coins` section
+  covers the server's side: the welcome gift, a milestone paid once, another
+  server paying nothing twice, answers, buying, wearing, choosing and a mangled
+  wallet.
+- `tools/page-check.py` and `tools/features-check.py` drive the page in
+  headless Edge or Chrome, or the tray app's WebView2 with `attach <port>`.
+  Given a page opened as the companion (`?mode=companion`), `page-check.py` also
+  checks the alert banner: a question's text, its going when answered, a
+  milestone's, and that opening one expands to its page. The avatar's click
+  itself (`OpenAlert`) is only checked by hand. Companion or not, it checks the
+  question toast (shown, its Go, gone when answered or followed) and the
+  `#workflows/<tag>/ask/<id>` route; `features-check.py --tabs` has a toast's Go
+  land on its card on the tab. Opened as the companion it also walks the
+  compact bubble at 380×440 (`compact_chat`): it opens on Chat; a question takes
+  over without losing the unsent draft; the newest is first; an inline answer
+  reaches its question; the X hides one without answering it, across a reload,
+  until its answer arrives; and the empty state. It reports; read the JSON. It also posts a challenge-style
+  question and reports how it was laid out (`ask_format`).
+  Run the self-contained compact browser checks with
+  `python tools/test-compact-chat-browser.py page` or
+  `python tools/test-compact-chat-browser.py features`. The runner creates
+  isolated temporary Tatty and project state, starts and stops its own server,
+  and discovers an installed Edge or Chrome; set `TATTY_BROWSER` to override
+  the browser executable.
+  `features-check.py` ends with the Jira board, drawn from a sample board in
+  the page with `api()` stood in for (`--jira`: columns, a ticket's panel and
+  Start lite, Esc, the column menu, a card dragged to another status and within
+  one, the nav item per mode), and the task boards. `features-check.py ... --tasks` walks only those, on the
+  fixture's `Sample` board, with real mouse input: a card dragged to another
+  column and back, a reorder and back, one dragged in from the backlog rail and
+  back, Alt+arrows, the task panel (Write and Preview, Cancel, Esc), the backlog
+  and Completed with and without reduced motion. It leaves every task's file as
+  it was (it never uses the done column).
+  `features-check.py ... --sections` draws the Features page from sample live
+  states (the page's `api()` stood in for) and checks the split into Live
+  Features and the rest, a feature moving when its live state changes, and the
+  layout with many features and in a narrow window.
+  `features-check.py ... --tabs` walks only the workflow tabs, drawn from two
+  sample sessions (the page's `api()` and `confirm()` stood in for): the tab on
+  screen, × asking before it stops a going session and not for an ended one, and
+  a tab that is gone.
+  `features-check.py ... --split` starts two sessions without opening a terminal
+  and walks the documents split with real mouse input: a link from a reply opening
+  in the pane, a second tab and no duplicate, a link inside the pane, the divider
+  dragged, keyed, reset and held to its minimums, the pane across another workflow
+  tab and a reload, the documents rail (opening in the pane, collapsing, kept over a reload), the right-click link menu, an unsaved edit asked about, and the
+  pane closing with its last tab. It needs the toolbox (for the planning IDs).
+  `features-check.py ... --settings` walks the Settings page's connections
+  table, session setting and step table (a step's model changed and put back,
+  so run it on a server with a throwaway `TT_CONFIG_DIR`), and a model picker
+  drawn on the page.
+  `features-check.py ... --chats` starts a session without opening a terminal
+  and posts it a reply with a sentence and a code block, then walks the chats:
+  the old chat column gone, a right-click with nothing selected left alone, a
+  selection's menu and its side chat in the pane (the context, sent with the
+  first message), the code block's own button, the workflow taking new activity
+  meanwhile, the "+" in the pane and in the workflow strip, a reload, and tabs
+  closed. Run its server with a stand-in claude (`TATTY_CLAUDE`) on a throwaway
+  home, or each message is a real turn.
+  `features-check.py ... --diff` puts a task In Progress in the Demo feature's
+  Task Status (and puts it back), starts a session without opening a terminal
+  that reports one edit, and reports the Code Diff page: its rail item, the red
+  and green cells, the progress bar and the task's chip. It writes to the
+  feature, so a throwaway root and home only.
+  `features-check.py ... --stories` walks only a User Stories board with real
+  mouse input (pan, wheel zoom, a group in focus with and without reduced
+  motion, a note dragged and back, a card opened and its edit form); it changes
+  nothing in the stories document. It also reports how the view is drawn: a pan
+  leaves the content as drawn (`contentSame`), and a zoom or an ease settles
+  back to a sharp drawing (`crisp`, `settledAfterEase`, `layer`).
+  `features-check.py ... --archive` makes a feature of its own ("Walk archive") and walks
+  the split button with real mouse and keys: the caret's menu (Esc, the caret again), the
+  Delete panel ("I understand" typed, any case, Esc), Archive into the Archived section,
+  Restore, and Delete from the section. It deletes a folder, so run it only on a
+  throwaway root.
+  `features-check.py ... --export` clicks through Export to Tasks on the first
+  User Stories board (the panel, two stories exported, their IDs on the notes,
+  the backlog, a task's panel, the panel again). It writes task files, so run
+  it only on a throwaway root.
+  `test-tatty-diagram.py` (in the suite's `diagrams` section, a line a check) reads C# files (nested types,
+  partial types, file-scoped namespaces, a comment's or a constraint's `class`, braces in strings and chars, enum
+  values, a record's primary constructor), links them (usings, one name in two namespaces, a name nothing makes
+  visible), then on a scratch git repository: the blob cache (a blob seen before isn't parsed again), a folder left
+  out, a review of two work units (added, changed, removed, the unchanged type, members, links, units) and a plan
+  joined to the code. The section itself drives `/api/diagram*` with a stand-in claude (`claude-dg.sh`): a Project
+  diagram, an opened group, stale after a commit, a Review diagram of a branch whose commits name their units,
+  summaries (asked once), a Plan diagram (the declarations it is shown, read-only tools), stale after the plan
+  changes, one run a diagram, Stop, and a dragged box kept.
+  `features-check.py ... --diagram` draws a sample review graph in the page and walks it with real mouse input:
+  the boxes and their states, frames, a data flow's words, a closed greyed group opened, a unit off (its class
+  and link go) and on (back where it was), the hover card, a drag (mid-drag the other link is the same node,
+  untouched; the frame follows; the place is kept), zoomed out until the groups are solid and back, and a
+  double-click that adds nothing. Its one write (the dragged place) is taken back.
+  `features-check.py ... --whiteboard` makes a blank whiteboard and writes on it
+  with real mouse and keys (a text by the Text tool, one by double-click, a
+  comment pinned to the first, a labelled line between them (its layer only as
+  big as the line, and still taking a click), a drag the comment
+  and the line follow, a reload, Delete), adds a story with the Story tool where
+  it was clicked, and opens a document from the Demo feature's whiteboard. It
+  writes too: a throwaway root and home only.
+  `page-check.py` also covers the modes: the top bar, the landing page, what
+  switching mode does to the colour and the nav, and the mode being remembered
+  across a reload. Start the server with `TATTY_MODES` to drive more than the
+  one discipline installed. It asks for a milestone through the page's own
+  `api()` as well, and reports the card, the confetti, and that the pieces take
+  themselves away again.
+- `features-check.py --qa` walks the QA mode with real clicks on a throwaway root whose
+  server has a stand-in `claude` (and the toolbox's qa plugin): a bug drafted and saved, its status,
+  Create in Jira (the stand-in answers ABC-77), a feature started and its areas drafted, results
+  marked, a failure raised as a bug and linked back, and the dashboard's counts and bar. It
+  writes bugs and plans: a throwaway root and home only.
+- `tools/whiteboard-perf.py` measures the whiteboard's pan and zoom: a User
+  Stories board of 40, 120 or 300 made-up notes (the page's `api()` stood in
+  for, so nothing is written), scripted runs (idle, a middle-button pan, wheel
+  turns 16 to 400 ms apart, zooming out to Fit, a pan straight after a zoom, the
+  eases, and a plain scrolling box of the same notes as the floor), each with a
+  Chrome trace. It reports frames presented and dropped, the gaps between them,
+  a style change's time to the screen, the time from a press to the first moved
+  frame, raster and paint, each thread's time and the GPU it ran on; `--compare`
+  sets two reports side by side, `--inject-css` tries a what-if (e.g. no
+  shadows) without changing the app, and `--observe <s>` traces a person's own
+  pans and zooms. Headless (no GPU, 1920x1080 at a scale of 2), `--headed` (the
+  GPU, a maximised window), or `attach <port>` for the companion. A browser it
+  starts is started afresh for each run: in one Edge, the second or third traced
+  run left it drawing no frames at all (never untraced), so later runs on an
+  attached page may be marked stalled. Wheel turns are sent in the page (a
+  headed Edge drops DevTools' mouseWheel). Its input skips the OS, and
+  "presented" is this machine's, not a Remote Desktop client's.
+- `tools/window-check.py` reports what the shell makes of the companion's
+  windows -- the styles that decide the taskbar and Alt-Tab, who holds the
+  button, what is on top -- and asserts the lot for one view with
+  `--expect <view>`. With `--switch <view>` it changes view through the page's
+  own buttons and checks that the window, its WebView2 and the loaded page all
+  came through unchanged, which is the promise that a view switch never rebuilds
+  the runtime. `--right-click` right-clicks Tatty and asks whether his menu came
+  up and whether Escape took it away. That one borrows the **real** pointer for a
+  moment and puts it back: WPF takes its mouse input from the system cursor and
+  ignores a posted click that didn't happen there, so a synthetic one reaches no
+  handler at all and looks exactly like a menu that doesn't work.
+- `tools/test-companion.sh` walks every view with it (compact, full, maximised,
+  minimised, restored, tucked away and back), right-clicks Tatty for his menu,
+  and finishes a section with `tatty.sh cheer` to see the confetti's window come
+  up and go away again. It is the only test that builds and runs the exe, shows
+  real windows and uses the pointer, so it is opt-in rather than part of
+  `test-tatty.sh`.

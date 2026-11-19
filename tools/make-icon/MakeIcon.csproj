@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Draws Tatty's face into plugins/tatty/assets/tatty.ico (every size drawn
+       natively, not scaled) and .claude-plugin/icon.png. Run it only when the
+       avatar changes, from the repo root: dotnet run (project tools/make-icon)
+       with the assets folder and the plugin icon path as its two arguments. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,60 @@
+/* The compact bubble's chat, and the radio that switches it with the questions
+   waiting (chat.js's compactChatView, app.js's compact tabs). Nothing here shows
+   in the full panel, and nothing changes the size of the window: the chat fills
+   what the bar and the radio leave, and its messages scroll. */
+
+#compact-tabs, #compact-chat { display: none; }
+
+body.companion:not(.expanded) #compact-tabs { display: flex; flex: none; justify-content: center; padding: 6px 10px;
+  border-bottom: 1px solid var(--line); background: var(--panel); }
+body.companion:not(.expanded) #compact-tabs .mode-seg { padding: 2px 14px; font-size: 12px; }
+
+body.companion:not(.expanded)[data-compact="chat"] .feed-col { display: none; }
+body.companion:not(.expanded)[data-compact="chat"] #compact-chat { display: flex; flex: 1; min-width: 0; min-height: 0;
+  padding: 8px 10px; }
+
+/* The questions waiting (app.js's compact question queue): the latest or the
+   selected one with its reply, the rest listed under it. The feed it replaces is
+   still the full panel's. */
+
+#compact-queue { display: none; }
+body.companion:not(.expanded) #compact-queue { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0;
+  overflow: auto; padding: 8px 10px; }
+body.companion:not(.expanded) #feed { display: none; }
+
+.cq-card { flex: none; background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 8px; }
+.cq-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cq-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cq-kind { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+.cq-q { display: flex; flex-direction: column; gap: 6px; }
+.cq-text { max-height: 140px; overflow: auto; overflow-wrap: anywhere; font-size: 13px; }
+.cq-opts { display: flex; flex-wrap: wrap; gap: 4px; }
+.cq-opt { padding: 2px 8px; font-size: 12px; }
+.cq-input { width: 100%; box-sizing: border-box; }
+.cq-card .actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.cq-status { flex: 1; min-width: 0; }
+
+.cq-x { flex: none; width: 22px; height: 22px; padding: 0; line-height: 1; font-size: 16px; border: 0; background: none;
+  color: var(--dim); cursor: pointer; border-radius: 4px; }
+.cq-x:hover, .cq-x:focus-visible { color: var(--ink); background: var(--accent-soft); }
+
+.cq-more { flex: none; }
+.cq-backlog { flex: none; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cq-row { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.cq-row:hover { border-color: var(--accent); }
+.cq-pick { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 0; padding: 4px 8px;
+  border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.cq-title, .cq-pick .dim { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cq-title { font-size: 13px; }
+
+.cq-empty { margin: auto; text-align: center; padding: 16px; }
+.cq-empty-title { font-weight: 600; margin-bottom: 4px; }
+
+.cchat { gap: 6px; min-width: 0; }
+.cchat-head { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cchat .chat-msgs { min-height: 0; }
+.cchat .chat-msg { font-size: 13px; padding: 6px 8px; overflow-wrap: anywhere; }
+.cchat .chat-step { flex: none; }
+.cchat .chat-form { flex: none; }
+.cchat .chat-form textarea { resize: none; min-height: 0; height: 52px; }

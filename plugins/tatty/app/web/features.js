@@ -1,0 +1,2102 @@
+// Tatty's pages: Features (the features in Tatty's root folder), one feature
+// (where it stands in the workflow, its documents on the left, each readable in
+// place) and the Toolbox (app.js's Status / Connections / Docs tabs).
+// Uses app.js's $, el, api, markdown, cmdCell, say, loaded and loadStatus.
+"use strict";
+
+const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
+  feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
+  designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
+  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"),
+  qa: $("#page-qa"), qabug: $("#page-qabug"), qaplan: $("#page-qaplan") };
+// A page of one mode's own: going to it switches to that mode, so a link never
+// shows a mode's pages in another mode's colours. The rest belong to every mode.
+const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", jira: "production", tasks: "production", taskboard: "production",
+  designs: "design", design: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
+// name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
+// decisions are painted from it (paintDecisions).
+const featureCache = new (class extends Map { set(k, v) { super.set(k, v); paintDecisions(v); return this; } })();
+
+// A session's panel has a "Decisions Needed" button, hidden unless questions wait for the feature's person: the
+// workflow is paused on them (the Decide page is where they are answered). It pulses like the way to a question.
+// The one button for what waits on the person: decisions first, else a work unit's validation checks.
+function waitingOn(f) {
+  const d = (f && f.decide && f.decide.open) || 0, v = (f && f.validate && f.validate.open) || 0;
+  if (d) return { n: d, label: "Decisions Needed", rail: "Decisions", sub: `${d} to decide`, href: featureDecideHref(f.name), page: "decide" };
+  if (v) return { n: v, label: "Validation Needed", rail: "Validation", sub: `${v} to check`, href: featureValidateHref(f.name), page: "validate" };
+  return null;
+}
+function paintDecideButton(btn, f) {
+  const w = waitingOn(f);
+  btn.hidden = !w;
+  if (!w) return;
+  btn.href = w.href;
+  btn.textContent = `${w.label} (${w.n})`;
+}
+function paintDecisions(f) {
+  if (!f || !f.name) return;
+  for (const b of document.querySelectorAll(".live-decide[data-feature]")) if (b.dataset.feature === f.name) paintDecideButton(b, f);
+}
+
+// A throbber in the header while anything is being read behind a page already on screen: busy(promise) lights
+// it until the promise settles (and hands the promise back). waitNode() is the big one in an empty frame.
+let busyCount = 0;
+function busy(promise) {
+  const node = $("#busy");
+  busyCount++;
+  if (node) node.hidden = false;
+  const done = () => { busyCount = Math.max(0, busyCount - 1); if (!busyCount && node) node.hidden = true; };
+  promise.then(done, done);
+  return promise;
+}
+const waitNode = () => el("div", { class: "throbber-wait", role: "status", "aria-label": "Loading" }, el("span", { class: "throbber big" }));
+let homeTimer = null;
+
+// ------------------------------------------------------------- words
+
+const PHASES = {
+  exploring: "Exploring", explored: "Explored", planning: "Planning", "signed-off": "Plan signed off",
+  "breakdown-draft": "Breaking down", "breakdown-written": "Ready to build", building: "Building",
+  complete: "Complete", "breakdown-orphan": "Breakdown only", empty: "Not started",
+  "lite-focus": "Exploring", "lite-brief": "Brief written", debugging: "Debugging",
+  "debug-done": "Root cause found", debugged: "Written up",
+};
+const ROUTES = { full: "Feature", lite: "Small change", quick: "Quick", bug: "Bug", new: "New" };
+
+// The toolbox's last phase is "complete" (built and validated); Tatty's Review step follows it.
+function phaseDone(f) { return f.phase === "complete" && (f.merge || {}).state === "merged"; }
+function phaseWord(f) {
+  if (f.phase !== "complete") return PHASES[f.phase] || f.phase || "—";
+  const state = (f.merge || {}).state;
+  const rv = (f.review || {}).phase;
+  return state === "merged" ? "Merged" : state === "opened" ? "In review" : { review: "Ready to review", decide: "Deciding", apply: "Applying review", commit: "To commit" }[rv] || "Ready to merge";
+}
+const EVENTS = {
+  "explore.focus_confirmed": "Exploration focus confirmed", "explore.documented": "Familiarisation written",
+  "plan.familiarisation_closed": "Familiarisation stage closed", "plan.requirements_closed": "Requirements closed",
+  "plan.scope_closed": "Scope & Constraints closed", "plan.approach_closed": "Approach closed",
+  "plan.design_closed": "Technical Design closed", "plan.whole_closed": "Whole-plan challenge closed",
+  "plan.signed_off": "Plan signed off", "breakdown.written": "Task Breakdown written",
+  "lite.brief_written": "Lite Brief written", "build.unit_validated": "validated",
+  "build.complete": "Build complete", "debug.root_cause_confirmed": "Root cause confirmed",
+  "debug.report_written": "Debug Report written", "merge.opened": "Request opened", "merge.merged": "Merged",
+};
+
+function ago(seconds) {
+  const d = Date.now() / 1000 - seconds;
+  if (d < 90) return "just now";
+  if (d < 3600) return `${Math.round(d / 60)} min ago`;
+  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+  if (d < 86400 * 14) return `${Math.round(d / 86400)} days ago`;
+  return new Date(seconds * 1000).toLocaleDateString();
+}
+
+const chip = (text, cls) => el("span", { class: "chip " + (cls || "") }, text);
+const statusClass = s => {
+  s = (s || "").toLowerCase();
+  if (/done|closed|complete|validated/.test(s)) return "done";
+  if (/progress|ready|pending|implemented|reopened/.test(s)) return "now";
+  if (/blocked|failed/.test(s)) return "bad";
+  if (/skipped|dropped/.test(s)) return "skip";
+  return "todo";
+};
+// (Width set through the DOM: the page's CSP refuses inline style attributes.)
+function bar(done, total, label) {
+  if (!total) return "";
+  const fill = el("span");
+  fill.style.width = `${Math.round(100 * done / total)}%`;
+  return el("div", { class: "bar", title: label || `${done} of ${total}` }, fill, el("em", {}, label || `${done} of ${total}`));
+}
+
+function copyable(text) {
+  return el("span", { class: "copyable" }, el("code", {}, text),
+    el("button", { type: "button", title: "Copy", onclick: e => { e.preventDefault(); e.stopPropagation(); navigator.clipboard.writeText(text); } }, "Copy"));
+}
+
+// A panel from the right edge over a dimmed page, for a short form ("New board"). build(msg)
+// returns the form's node, msg being the line under it for errors. One at a time; it goes
+// with Esc, ×, a click on the dimmed page, or a change of page. Not the board panel's classes
+// (.tpanel, taskboard.js's, which the Jira and Tasks pages both use).
+let sidePanelNodes = [];
+function closeSidePanel() {
+  for (const n of sidePanelNodes) n.remove();
+  sidePanelNodes = [];
+}
+function openSidePanel(title, build) {
+  closeSidePanel();
+  const msg = el("p", { class: "home-note small" });
+  const body = build(msg);
+  const panel = el("aside", { class: "spanel", role: "dialog", "aria-label": title, tabindex: "-1" },
+    el("div", { class: "spanel-head" }, el("strong", {}, title), el("span", { class: "spacer" }),
+      el("button", { type: "button", title: "Close (Esc)", "aria-label": "Close", onclick: closeSidePanel }, "×")),
+    body, msg);
+  document.body.append(el("div", { class: "sshade", onclick: closeSidePanel }), panel);
+  sidePanelNodes = [panel.previousSibling, panel];
+  (panel.querySelector("input, textarea, select") || panel).focus();
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && sidePanelNodes.length) { e.stopPropagation(); closeSidePanel(); } }, true);
+window.addEventListener("hashchange", closeSidePanel);
+
+// ------------------------------------------------------------- routing
+// #modes · #mode · #home · #workflows/<session tag>[/ask/<question id>] · #chats/<chat id> (chat.js)
+// · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/code-diff (diff.js)
+// · #feature/<name>/diagram[/plan|/review] · #diagram (the Project diagram; diagram.js)
+// · #toolbox · #settings · #shop (shop.js) · #jira
+// · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
+// · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
+// · #qa · #qa/bug/new · #qa/bug/<ID> · #qa/test/<feature>[/<A1>] (qa.js)
+
+function parseRoute() {
+  const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
+  if (parts[0] === "feature" && parts[1]) {
+    const doc = parts[2] === "doc" ? parts[3] : null;
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate",
+      diagram: parts[2] === "diagram" ? (parts[3] === "plan" || parts[3] === "review" ? parts[3] : "any") : "" };
+  }
+  if (parts[0] === "diagram") return { page: "diagram" };
+  if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
+  if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
+  if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
+  if (parts[0] === "whiteboards") return { page: "whiteboards" };
+  if (parts[0] === "design" && parts[1]) return { page: "design", name: parts[1], card: parts[2] === "card" ? parts[3] : null };
+  if (parts[0] === "designs") return { page: "designs" };
+  if (parts[0] === "tasks" && parts[1]) {
+    const view = parts[2] === "backlog" || parts[2] === "completed" ? parts[2] : "board";
+    const at = view === "board" ? 2 : 3;
+    return { page: "taskboard", name: parts[1], view, task: parts[at] === "task" ? parts[at + 1] || null : null };
+  }
+  if (parts[0] === "tasks") return { page: "tasks" };
+  if (parts[0] === "qa" && parts[1] === "bug" && parts[2]) return { page: "qabug", id: parts[2] };
+  if (parts[0] === "qa" && parts[1] === "test" && parts[2]) return { page: "qaplan", name: parts[2], area: parts[3] || null };
+  if (parts[0] === "qa") return { page: "qa" };
+  if (parts[0] === "toolbox") return { page: "toolbox" };
+  if (parts[0] === "settings") return { page: "settings" };
+  if (parts[0] === "shop") return { page: "shop" };
+  if (parts[0] === "jira") return { page: "jira" };
+  if (parts[0] === "modes") return { page: "modes" };
+  if (parts[0] === "hub") return { page: "hub" };
+  if (parts[0] === "home") return { page: "home" };
+  // #mode, and nothing asked for: the mode's home page, or the landing page
+  // when there is no mode yet to show one of.
+  return { page: currentMode ? "mode" : "modes" };
+}
+// Whether the route is the list of features (not a workflow's or a chat's tab, which share its page).
+const onFeatureList = () => { const r = parseRoute(); return r.page === "home" && !r.tag && !r.chat; };
+// #feature/<name>[/doc/<file>[/at/<heading, or ^block>]], each part encoded
+const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
+  (doc ? "/doc/" + encodeURIComponent(doc) + (at ? "/at/" + encodeURIComponent(at) : "") : "");
+const featureBoardHref = name => "#feature/" + encodeURIComponent(name) + "/whiteboard";
+const featureValidateHref = name => "#feature/" + encodeURIComponent(name) + "/validate";
+const featureDiffHref = name => "#feature/" + encodeURIComponent(name) + "/code-diff";
+const featureDiagramHref = (name, kind) => "#feature/" + encodeURIComponent(name) + "/diagram" + (kind ? "/" + kind : "");
+
+function showPage(which) {
+  for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
+  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks", whiteboard: "whiteboards", qabug: "qa", qaplan: "qa" }[which] || which));
+  $("#settings-link").classList.toggle("on", which === "settings");
+  const purse = $("#wallet-link");
+  if (purse) purse.classList.toggle("on", which === "shop");
+  renderNav();
+  clearInterval(homeTimer);
+}
+
+let routeSeq = 0; // counts the routes taken: a page that was slow to read must not be drawn over one chosen after it
+
+async function route() {
+  if (companion && !document.body.classList.contains("expanded")) return; // the bubble shows the feed only
+  const r = parseRoute();
+  // The Hub waits for a project to be picked, and nothing else is shown until then.
+  document.body.classList.toggle("hub-open", hubPending);
+  if (hubPending && r.page !== "hub") { location.hash = "#hub"; return; }
+  if (paneLeaveBlocked(r)) return; // (split.js: an unsaved edit in the documents pane)
+  lastHash = location.hash;
+  routeSeq++;
+  // The page is drawn again: its live panels are gone (each draws its own).
+  livePanels.clear();
+  usageViews.clear();
+  // A page of one mode's own is shown in that mode (modes.js).
+  const owner = PAGE_MODE[r.page];
+  if (owner && owner !== currentMode && installedModes.includes(owner)) applyMode(owner);
+  // (A window opens on the mode's home page when there is one to open on:
+  // parseRoute. The modes page stays reachable even with a single discipline
+  // installed, because it is also where another one is added.)
+  showPage(r.page);
+  if (r.page === "modes") renderLanding(pageEls.modes);
+  else if (r.page === "hub") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderHub === "function") await renderHub(pageEls.hub);
+    else pageEls.hub.replaceChildren(el("p", { class: "pad st missing" }, "The Hub didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "mode") renderModeHome(pageEls.mode);
+  else if (r.page === "home" && r.tag) await renderWorkflowTab(r.tag);
+  else if (r.page === "home" && r.chat) await renderChatTab(r.chat); // chat.js
+  else if (r.page === "home") {
+    const before = homeDraw;
+    await renderHome();
+    // Only if this is still the page on show: a tab clicked while the list was loading has
+    // already drawn itself, and a timer armed now would draw the list over it.
+    if (homeDraw === before + 1 && onFeatureList()) {
+      clearInterval(homeTimer);
+      homeTimer = setInterval(() => { if (!document.hidden && onFeatureList()) renderHome(true); }, 30000);
+    }
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate, r.diagram);
+  else if (r.page === "diagram") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderProjectDiagram === "function") renderProjectDiagram(pageEls.diagram);
+    else pageEls.diagram.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "settings") renderSettings(pageEls.settings);
+  else if (r.page === "shop") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderShop === "function") await renderShop(pageEls.shop);
+    else pageEls.shop.replaceChildren(el("p", { class: "pad st missing" }, "The shop didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "jira") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderJira === "function") renderJira(pageEls.jira);
+    else pageEls.jira.replaceChildren(el("p", { class: "pad st missing" },
+      "The Jira board didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "tasks" || r.page === "taskboard") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderTasks !== "function") pageEls[r.page].replaceChildren(el("p", { class: "pad st missing" },
+      "The task boards didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+    else if (r.page === "tasks") await renderTasks(pageEls.tasks);
+    else await renderTaskBoard(pageEls.taskboard, r.name, r.view, r.task);
+  }
+  else if (r.page === "qa" || r.page === "qabug" || r.page === "qaplan") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderQa !== "function") pageEls[r.page].replaceChildren(el("p", { class: "pad st missing" },
+      "QA mode didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+    else if (r.page === "qa") await renderQa(pageEls.qa);
+    else if (r.page === "qabug") await renderQaBug(pageEls.qabug, r.id);
+    else await renderQaPlan(pageEls.qaplan, r.name, r.area);
+  }
+  else if (r.page === "designs") await renderDesigns(pageEls.designs);
+  else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);
+  else if (r.page === "whiteboards") await renderWhiteboards(pageEls.whiteboards);
+  else if (r.page === "whiteboard") await renderWhiteboard(pageEls.whiteboard, r.name);
+  else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }
+}
+
+// The top bar's radio (modes.js): the mode changes, and a page of another
+// mode's own -- or the landing page, where picking a mode means going into it --
+// gives way to the new mode's home page. The shop is no mode's page, but a place visited
+// from outside them all: choosing a mode there, even the one it was entered from, leaves it
+// for that mode's home page.
+function switchMode(id) {
+  const r = parseRoute();
+  if (id === currentMode && r.page !== "shop") return;
+  applyMode(id);
+  const owner = PAGE_MODE[r.page];
+  if (r.page === "modes" || r.page === "shop" || (owner && owner !== id)) {
+    if (location.hash === "#mode") route(); else location.hash = "#mode";
+    return;
+  }
+  route();
+}
+
+window.addEventListener("hashchange", route);
+document.addEventListener("tt-expanded", route);
+
+// A document link ([[Doc#Heading]], [[Doc#^block]], [[#Heading]], Doc.md#part)
+// opens the document in place, at that heading or block. The document is found
+// as Obsidian finds it: by name, in this feature, else in another feature under
+// Tatty's root (the server looks). On a workflow (or chat) tab it opens in the documents
+// split beside it (split.js), in a document there it stays in the pane;
+// elsewhere outside a feature page a link does nothing. (Right-clicking a link
+// offers the other ways to open it: split.js's link menu.)
+document.addEventListener("click", async e => {
+  const a = e.target.closest("a.doclink");
+  if (!a) return;
+  e.preventDefault();
+  const got = await linkTarget(a);
+  if (!got) return;
+  if (got.missing) { a.classList.add("missing"); a.title = `No document called “${a.dataset.doc || ""}” under Tatty's root`; return; }
+  openItem(got.name, got.file, got.at); // (ids.js: the split on a workflow tab, else the document's page)
+});
+
+// Where a document link points: { name, file, at } (name: the feature the document
+// is in), { missing: true } when nothing is called that, or null when the link is
+// somewhere with no feature to look in (the document-link rules above).
+async function linkTarget(a) {
+  const at = a.dataset.at || "";
+  if (a.dataset.feature && a.dataset.file) return { name: a.dataset.feature, file: a.dataset.file, at }; // a planning ID's link names its item
+  const r = parseRoute();
+  let feature = "", fallback = null;
+  if (a.closest(".dpane")) {
+    const t = paneActiveTab();
+    if (t) { feature = t.feature; fallback = t.file || null; } // (a chat's tab has its feature, and no file)
+  } else if (r.tag) {
+    const s = sessionInfo.get(r.tag);
+    if (s) feature = s.feature;
+  } else if (r.chat) {
+    feature = (chatList.get(r.chat) || {}).feature || ""; // chat.js
+  } else if (r.page === "feature" && (featureCache.get(r.name) || r.decide)) { feature = r.name; fallback = r.doc; } // (the Decide page drops its cache entry when it sends: featureOf reads it again)
+  if (!feature) return null;
+  let f;
+  try { f = await featureOf(feature); } catch { return null; }
+  const got = await resolveDoc(f, a.dataset.doc || "", fallback);
+  return got ? { ...got, at } : { missing: true };
+}
+
+// A feature as /api/feature gives it, kept for the session.
+async function featureOf(name) {
+  let f = featureCache.get(name);
+  if (!f) { f = await api("/api/feature?name=" + encodeURIComponent(name)); featureCache.set(name, f); }
+  return f;
+}
+
+// The document a link names, as { name, file } (name: the feature it is in), or null.
+// No name (a [[#Heading]] link) is the document the link is in, `fallback`.
+async function resolveDoc(f, want, fallback) {
+  if (!want) return fallback ? { name: f.name, file: fallback } : null;
+  const hit = [...f.docList, ...f.notes].find(d => d.file.replace(/\.md$/i, "").split("/").pop().toLowerCase() === want.toLowerCase());
+  if (hit) return { name: f.name, file: hit.file };
+  try { const got = await api(`/api/resolve?name=${encodeURIComponent(f.name)}&target=${encodeURIComponent(want)}`); return got.file ? { name: got.name, file: got.file } : null; } catch { return null; }
+}
+
+// The heading, block or planning ID's item a link points at, inside a rendered
+// document. A block id that isn't there yet (a document written before block ids)
+// is still found by its ID (ids.js's findId).
+const norm = s => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+function findTarget(main, at) {
+  if (!at) return null;
+  if (at.startsWith("^")) {
+    const id = at.slice(1).toUpperCase();
+    return main.querySelector(`[data-block="${CSS.escape(at.slice(1))}"]`) || (isId(id) ? findId(main, id) : null);
+  }
+  const hit = isId(at) && findId(main, at);
+  if (hit) return hit;
+  const want = norm(at.split("#").pop());
+  const heads = [...main.querySelectorAll(".md h1, .md h2, .md h3, .md h4, .md h5, .md h6")];
+  return heads.find(h => norm(h.textContent) === want) || heads.find(h => (norm(h.textContent) + " ").startsWith(want + " ")) || null;
+}
+
+function goToTarget(main, at) {
+  const hit = findTarget(main, at);
+  const head = main.querySelector(".doc-head");
+  const miss = head && head.querySelector(".at-missing");
+  if (miss) miss.remove();
+  if (!at) { main.scrollTop = 0; return; }
+  if (!hit) {
+    if (head) head.append(el("span", { class: "at-missing small st missing" }, `“${at}” isn't in this document; showing it from the top.`));
+    main.scrollTop = 0;
+    return;
+  }
+  // a ticket or unit that is folded up (views.js's <details>) opens to show it
+  for (let d = hit.closest("details"); d; d = d.parentElement && d.parentElement.closest("details")) d.open = true;
+  hit.scrollIntoView({ block: "start" });
+  for (const n of main.querySelectorAll(".target-flash")) n.classList.remove("target-flash");
+  void hit.offsetWidth; // restart the highlight
+  hit.classList.add("target-flash");
+  hit.addEventListener("animationend", () => hit.classList.remove("target-flash"), { once: true });
+}
+
+// ------------------------------------------------------------- home
+
+let homeDraw = 0; // counts the draws of the Features page (the list and each workflow tab), so a slow one can't land on a newer
+// The last /api/features answer. The list takes a while to read (a script runs for each feature), so a
+// page that has been shown before is drawn from it at once and drawn again only if the answer differs.
+let homeData = null, homeJson = "";
+
+async function renderHome(quiet) {
+  const box = pageEls.home;
+  const mine = ++homeDraw;
+  const put = (...nodes) => box.replaceChildren(workflowTabs(""), ...nodes);
+  // data null: the page's frame (title, buttons) with no list yet; the list goes in when it is read
+  const drawList = data => {
+    const r = data && data.root;
+    const live = data ? data.features.filter(f => f.live) : [], rest = data ? data.features.filter(f => !f.live) : [];
+    const n = data ? data.features.length : 0;
+    const head = el("div", { class: "fhead" },
+      el("div", { class: "fhead-title" }, el("h2", {}, "Features"),
+        data ? el("p", { class: "fhead-sub dim" }, `${n} feature${n === 1 ? "" : "s"} · ${live.length} live`) : "",
+        data ? el("div", { class: "fhead-root dim small" }, "Root: ", copyable(r.root),
+          el("button", { type: "button", class: "primary", title: "Pick another project, or make a new one", onclick: () => { location.hash = "#hub"; } }, "Switch project…")) : ""),
+      el("div", { class: "fhead-actions" },
+        el("button", { type: "button", class: "primary", onclick: () => newFeatureForm.toggle() }, "New feature…"),
+        el("button", { type: "button", onclick: () => renderHome() }, "Refresh")),
+      homeNote);
+    if (!data) { put(head, el("div", { class: "fsec-wait", "aria-busy": "true" }, waitNode())); return; }
+    newFeatureForm.next = data.nextId || ""; // the ID New feature… would give
+    // Tatty only reads the workflow: without the TT toolbox there's nothing to show of it.
+    const missing = data.toolbox ? "" : el("div", { class: "card toolbox-missing" },
+      el("strong", {}, "Tatty can't find the TT toolbox. "),
+      "Tatty shows the toolbox's workflow, so install the toolbox (its core and engineering plugins) and Tatty will show where each feature stands. ",
+      el("span", { class: "dim" }, "For development, set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout."));
+    const form = newFeatureForm.node();
+    if (!data.features.length) {
+      put(missing, head, form, el("div", { class: "card empty-state" },
+        el("p", {}, "No features yet. ", el("strong", {}, "New feature…"), " makes one here and starts it with the workflow."),
+        el("p", { class: "dim small" }, "Or make a folder in the features folder yourself.")), archivedSection(data.archived));
+      return;
+    }
+    put(missing, head, form,
+      featureSection("live", "Live Features", live, "No feature has a workflow running right now."),
+      rest.length ? featureSection("rest", "Other Features", rest) : "",
+      archivedSection(data.archived)); // archive.js
+  };
+  if (!quiet) drawList(homeData);
+  let data;
+  try { data = await busy(api("/api/features")); } catch (e) { if (mine === homeDraw && onFeatureList()) put(el("p", { class: "st missing pad" }, String(e))); return; }
+  if (mine !== homeDraw || !onFeatureList()) return; // (the person has moved on: a tab, a chat or another page)
+  if (!data.root.isSet || !data.root.exists) { homeData = null; homeJson = ""; location.hash = "#hub"; return; } // no project open yet: the Hub is where one is picked
+  const json = JSON.stringify(data);
+  const drawn = !quiet && json === homeJson; // (what is on screen is already this answer)
+  homeData = data; homeJson = json;
+  if (!drawn) drawList(data);
+}
+
+// ------------------------------------------------------------- workflow tabs
+// Every session Start opened has a tab along the top of the Features page, next
+// to the list of features: the session's live panel (#workflows/<tag>). Each is
+// a Claude session of its own, so several workflows can run at once. Closing a
+// tab stops its session (the server ends that claude) and it is not shown again.
+// After them come the chats that aren't in the documents pane (#chats/<id>,
+// chat.js), and the "+" that opens a new one.
+
+const tabList = new Map();  // tag -> the session, for each open tab
+let tabsNode = null;        // the strip: one element, moved into whichever page shows it
+let tabsActive = "";        // the tab on screen ("" for the list of features, "chat:<id>" for a chat)
+let tabsLoad = null;        // the timer that asks the server for the tabs, once for a burst of events
+
+function workflowTabs(active, reload = true) {
+  tabsActive = active;
+  if (!tabsNode) tabsNode = el("nav", { class: "wtabs", "aria-label": "Workflows" });
+  drawTabs();
+  if (reload) loadTabs();
+  return tabsNode;
+}
+
+// A link to the hash already showing fires no hashchange, so it would do nothing even when
+// the page on screen isn't that tab's: draw the route again instead.
+const redrawIfHere = e => { if (location.hash === new URL(e.currentTarget.href).hash) route(); };
+
+function drawTabs() {
+  if (!tabsNode) return;
+  tabsNode.replaceChildren(
+    el("a", { class: "wtab features" + (tabsActive ? "" : " on"), href: "#home", onclick: redrawIfHere }, "Features"),
+    ...[...tabList.values()].map(s => {
+      const info = sessionInfo.get(s.tag) || s;
+      const [text, cls, mode] = sessionStatus(info, sessionEvents.get(s.tag) || []);
+      return el("span", { class: "wtab" + (s.tag === tabsActive ? " on" : ""), "data-tag": s.tag, ...closeOnMiddle(() => closeTab(s.tag)) },
+        el("a", { href: "#workflows/" + encodeURIComponent(s.tag), title: `${info.feature}: ${text}`, onclick: redrawIfHere },
+          el("span", { class: "wdot " + cls + " m-" + mode }), info.name),
+        el("button", { type: "button", class: "x", title: LIVE.has(info.status) ? "Stop this workflow and close the tab" : "Close the tab",
+          "aria-label": "Close " + info.name, onclick: () => closeTab(s.tag) }, "×"));
+    }),
+    ...[...chatList.values()].filter(c => !paneTabs.some(t => t.key === "chat/" + c.id) || tabsActive === "chat:" + c.id).map(c =>
+      el("span", { class: "wtab chat" + (tabsActive === "chat:" + c.id ? " on" : ""), "data-chat": c.id, ...closeOnMiddle(() => closeChatTab(c.id)) },
+        el("a", { href: "#chats/" + encodeURIComponent(c.id), title: `${c.kind === "side" ? "Side chat" : "Chat"} in ${c.project}`, onclick: redrawIfHere },
+          el("span", { class: "chat-mark", "aria-hidden": "true" }, "💬"), c.title || "Chat"),
+        el("button", { type: "button", class: "x", title: "Close this chat", "aria-label": "Close " + (c.title || "the chat"),
+          onclick: () => closeChatTab(c.id) }, "×"))),
+    el("button", { type: "button", class: "wtab-add", title: "New chat", "aria-label": "New chat", onclick: () => newChat("strip") }, "+"));
+}
+
+async function loadTabs() {
+  try {
+    const [list] = await Promise.all([api("/api/sessions"), loadChats()]); // (chat.js)
+    tabList.clear();
+    for (const s of list) { tabList.set(s.tag, s); sessionInfo.set(s.tag, s); }
+  } catch { /* the badge says so */ }
+  drawTabs();
+}
+
+async function closeChatTab(id) {
+  if (!(await closeChat(id))) return; // chat.js
+  dropChatFromPane(id); // split.js
+  if (tabsActive === "chat:" + id) location.hash = "#home";
+  else drawTabs();
+}
+function loadTabsSoon() {
+  clearTimeout(tabsLoad);
+  tabsLoad = setTimeout(loadTabs, 250);
+}
+
+async function closeTab(tag) {
+  const info = sessionInfo.get(tag) || tabList.get(tag);
+  if (info && LIVE.has(info.status) && !confirm(`Stop ${info.name}? Its Claude session is ended, and anything it is in the middle of is lost.`)) return;
+  try {
+    const r = await api("/api/session/stop", { tag });
+    if (r.said) alert(r.said);
+  } catch (e) { alert(e.message || e); return; }
+  tabList.delete(tag);
+  if (tabsActive === tag) location.hash = "#home";
+  else drawTabs();
+}
+
+async function renderWorkflowTab(tag) {
+  const box = pageEls.home;
+  tabsActive = tag;
+  const mine = ++homeDraw;
+  // A tab the page already knows is drawn at once, and the strip is read again behind it.
+  if (tabList.has(tag)) busy(loadTabs());
+  else { await busy(loadTabs()); if (mine !== homeDraw) return; }
+  const s = tabList.get(tag);
+  if (!s) {
+    box.replaceChildren(workflowTabs(tag, false), el("div", { class: "pad" },
+      el("p", { class: "dim" }, "That session isn't here any more: Tatty was restarted, or its tab was closed."),
+      el("a", { href: "#home" }, "Back to the features")));
+    return;
+  }
+  const info = sessionInfo.get(tag) || s;
+  // The documents rail is the slow part (the feature is read by scripts): it is drawn from what is known, or
+  // as its frame alone, and filled in (refreshRail) once the feature has been read.
+  let rail = "";
+  if (info.feature) {
+    const known = featureCache.get(info.feature);
+    rail = documentsRail(known ? featureNav(known, null, false, { side: true })
+      : el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, info.feature, " ", el("span", { class: "throbber", role: "status", "aria-label": "Loading" }))), info.feature);
+  }
+  const ended = info.status === "ended";
+  const panel = sessionPanel({ name: info.feature }, info, () => { location.hash = featureHref(info.feature); }, ended, "Open feature");
+  const w = usageWidget(info.usage);
+  usageViews.set(tag, { tag, update: w.update });
+  box.replaceChildren(el("div", { class: "wf-layout" }, rail, splitLayout([workflowTabs(tag, false), el("div", { class: "wf-body" }, panel, w.node)])));
+  markRail();
+  clearInterval(homeTimer);
+  homeTimer = setInterval(refreshRail, 20000);
+  if (info.feature) refreshRail();
+  const r = parseRoute();
+  if (r.tag === tag && r.ask) focusAsk(r.ask);
+}
+
+// Bring a question's card into view on its workflow tab and flash it, so the eye
+// lands on what was asked. (Also called by the toast's Go when the route is already
+// that tab, since the hash then doesn't change.) An answered question has no card
+// to find: the tab simply stays as it is.
+function focusAsk(id) {
+  // (The same question is also in the feed; the tab's card is the one to land on.)
+  const a = asks.get(id), live = a && a.nodes.filter(n => n.isConnected);
+  const node = live && (live.find(n => n.closest(".live-questions")) || live[0]);
+  if (!node) return;
+  node.scrollIntoView({ block: "center" });
+  node.classList.remove("nudge");
+  void node.offsetWidth; // so a second Go restarts the flash
+  node.classList.add("nudge");
+  setTimeout(() => node.classList.remove("nudge"), 2600);
+}
+
+function featureTile(f) {
+  const building = f.tasks.total > 0 && f.phase !== "complete";
+  return el("a", { class: "hcard hcard-" + f.route + (f.live ? " hcard-live" : ""), href: featureHref(f.name) },
+    el("span", { class: "hcard-stripe", "aria-hidden": "true" }),
+    el("div", { class: "hcard-top" }, el("strong", { class: "hcard-name" }, f.name), chip(ROUTES[f.route] || f.route, "route")),
+    f.title ? el("div", { class: "hcard-title" }, f.title) : "",
+    f.live ? el("div", { class: "hcard-livemark" }, chip(`● Live: ${f.live.name}`, "live")) : "",
+    el("div", { class: "hcard-phase" }, chip(phaseWord(f), phaseDone(f) ? "done" : f.phase === "empty" ? "todo" : "now"),
+      f.stage && f.phase !== "complete" ? el("span", { class: "dim small" }, " · " + f.stage) : ""),
+    el("p", { class: "hcard-text" }, f.text || ""),
+    building ? bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} units · ${f.tasks.done} of ${f.tasks.total} tasks`) : "",
+    el("div", { class: "hcard-foot dim small" }, `${f.docs} document${f.docs === 1 ? "" : "s"} · updated ${ago(f.updated)}`),
+    f.next ? el("div", { class: "hcard-next" }, copyable(f.next)) : "");
+}
+
+function featureSection(kind, title, list, emptyText) {
+  const head = el("div", { class: "fsec-head" },
+    kind === "live" ? el("span", { class: "pulse", "aria-hidden": "true" }) : "",
+    el("h3", { id: "fsec-title-" + kind }, title), el("span", { class: "fsec-count" }, String(list.length)));
+  return el("section", { class: "fsec fsec-" + kind, "aria-labelledby": "fsec-title-" + kind }, head,
+    list.length ? el("div", { class: "fsec-grid" }, list.map(featureTile))
+                : el("p", { class: "fsec-empty dim" }, emptyText));
+}
+
+// ------------------------------------------------------------- a new feature
+// New feature… makes <root>/features/<ID> and opens its page, where Start Workflow
+// and Start Workflow Lite are the two ways to begin it. The ID is the next number under
+// the project's short name (TAT-0001, set on the Hub); what is typed is the feature's title.
+
+const newFeatureForm = (() => {
+  let shown = false, node = null;
+  const form = {
+    next: "",
+    node: () => (shown ? draw() : ""),
+    toggle() { shown = !shown; if (shown) { const head = document.querySelector("#page-home .fhead"); if (head) head.after(draw()); } else if (node) node.remove(); },
+  };
+  const draw = () => {
+    const input = el("input", { placeholder: "what the feature is, e.g. Settings page", "aria-label": "Feature title" });
+    const msg = el("span", { class: "small st missing" });
+    node = el("form", { class: "card new-feature", onsubmit: async e => {
+      e.preventDefault();
+      try {
+        const r = await api("/api/new-feature", { title: input.value });
+        shown = false;
+        featureCache.delete(r.name);
+        location.hash = featureHref(r.name);
+      } catch (err) { msg.textContent = String(err.message || err); }
+    } },
+      el("strong", {}, "New feature", form.next ? el("span", { class: "dim", id: "new-feature-id" }, " " + form.next) : ""),
+      el("div", { class: "row" }, input, el("button", { type: "submit", class: "primary" }, "Create"),
+        el("button", { type: "button", onclick: () => { shown = false; node.remove(); } }, "Cancel")),
+      el("p", { class: "dim small" }, `Makes a folder ${form.next ? `named ${form.next} ` : ""}for it in Tatty's features folder, with what you type as its title. `,
+        "The number comes from the project's short name, which you can change on the Hub. Then Start Workflow or Start Workflow Lite begins it."),
+      msg);
+    setTimeout(() => input.focus(), 0);
+    return node;
+  };
+  return form;
+})();
+
+// ------------------------------------------------------------- the root folder
+// Chosen in Windows' own folder dialog: the companion opens it itself (and
+// answers "picked:<folder>"); in a browser the server opens it. Typing a path is
+// only offered where there is no dialog (not Windows).
+
+const homeNote = el("p", { class: "home-note small" });
+const note = (text, bad) => { homeNote.textContent = text; homeNote.className = "home-note small " + (bad ? "st missing" : "ok"); };
+
+async function useRoot(path) {
+  try {
+    const r = await api("/api/root", { path, create: true });
+    note(`Tatty's root is now ${r.root}. Features live in ${r.features}.`);
+    homeData = null; homeJson = ""; featureCache.clear(); // (another root's features are not these)
+    if (parseRoute().page !== "home") location.hash = "#home";
+    else renderHome();
+  } catch (e) { note(String(e.message || e), true); renderHome(true); }
+}
+
+// pickFolder: Windows' folder dialog, from the companion or the server; resolves
+// the chosen folder, or null when cancelled (or there is no dialog).
+let pendingPick = null;
+async function pickFolder(title, start) {
+  if (host) return new Promise(resolve => { pendingPick = resolve; tell("pick-folder", JSON.stringify({ title, start: start || "" })); });
+  const got = await api("/api/pick-folder", { title, start: start || "" });
+  return got.path || null;
+}
+
+async function pickRoot(r) {
+  note("Choose a folder in the dialog…");
+  try {
+    const path = await pickFolder("Choose Tatty's root folder", r && r.isSet ? r.root : "");
+    if (path) useRoot(path); else note("No folder chosen; the root is unchanged.");
+  } catch (e) { note(String(e.message || e), true); }
+}
+
+if (host) host.addEventListener("message", m => {
+  if (typeof m.data !== "string" || !m.data.startsWith("picked:")) return;
+  const path = m.data.slice(7) || null;
+  if (pendingPick) { const p = pendingPick; pendingPick = null; p(path); }
+  else if (path) useRoot(path); // the tray's "Change root folder…"
+});
+
+function rootSetup(r) {
+  const msg = homeNote;
+  const typed = r.picker ? "" : (() => {
+    const input = el("input", { value: r.default, "aria-label": "Root folder" });
+    return el("form", { class: "row", onsubmit: e => { e.preventDefault(); useRoot(input.value.trim()); } },
+      input, el("button", { type: "submit" }, "Use this folder"));
+  })();
+  return el("div", { class: "card root-setup" },
+    el("h2", {}, "Where should Tatty work?"),
+    el("p", {}, "Tatty keeps the features you work on in a root folder of your own, one folder per feature under ",
+      el("code", {}, "features"), ". It's never inside the Claude folder."),
+    el("div", { class: "root-choices" },
+      el("button", { type: "button", class: "primary", onclick: () => useRoot(r.default) }, `Create ${r.default}`),
+      r.picker ? el("button", { type: "button", onclick: () => pickRoot(r) }, "Choose a folder…") : ""),
+    typed,
+    el("p", { class: "dim small" }, "A ", el("code", {}, "features"), " folder is made inside it if there isn't one."),
+    msg);
+}
+
+// ------------------------------------------------------------- one feature
+
+let shown = null; // the document on screen: { name, file, main }
+
+async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate, diagram) {
+  const box = pageEls.feature;
+  // The same document, another part of it ([[#Heading]], or Back): just scroll.
+  const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
+  if (same) { if (docMode.get() === "view") goToTarget(shown.main, at); return; }
+  if (shown && editing && editing.dirty() && !confirm("Discard your unsaved changes?")) {
+    location.hash = featureHref(shown.name, shown.file); // stay where the edit is
+    return;
+  }
+  shown = null;
+  const mine = routeSeq;
+  let f = featureCache.get(name);
+  const cached = !!f;
+  if (!f) {
+    // Reading a feature takes a few seconds (scripts run): the page's frame is drawn now, empty, and
+    // what is read goes into it.
+    featureView = null;
+    box.replaceChildren(el("div", { class: "fpage loading", "aria-busy": "true" },
+      documentsRail(el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, name)), name),
+      el("div", { class: "fmain" }, waitNode())));
+    try { f = await busy(api("/api/feature?name=" + encodeURIComponent(name))); featureCache.set(name, f); } catch (e) {
+      if (mine !== routeSeq) return;
+      box.replaceChildren(el("p", { class: "st missing pad" }, `Can't read ${name}: ${e.message || e}`), el("p", { class: "pad" }, el("a", { href: "#home" }, "Back to features")));
+      return;
+    }
+    if (mine !== routeSeq) return; // (the person has gone elsewhere while it was read)
+  }
+  const main = el("div", { class: "fmain" });
+  const opts = { commit, suggestions, diff, decide, validate, diagram };
+  const isOverview = !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram;
+  box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name, isOverview), main));
+  featureView = { name, doc, board, opts, overview: isOverview, sig: decideSig(f) };
+  // What is drawn is what was read last time; it is read again behind the page, and the page is
+  // redrawn if anything changed (a decision written, a session started).
+  if (!doc && cached) refreshFeature(name);
+  if (decide) await decidePage(f, main); // decide-page.js
+  else if (validate) await validatePage(f, main); // validate-page.js
+  else if (suggestions) await reviewPage(f, main); // review-page.js
+  else if (commit) await commitPage(f, main); // commit.js
+  else if (board) await featureBoard(f, main);
+  else if (diagram) {
+    if (typeof featureDiagram === "function") await featureDiagram(f, main, diagram); // diagram.js
+    else main.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  } else if (diff) {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderCodeDiff === "function") renderCodeDiff(main, f);
+    else main.replaceChildren(el("p", { class: "pad st missing" },
+      "The Code Diff section didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  } else if (doc) {
+    if (await showDoc(f, doc, main, at)) { shown = { name, file: doc, main }; goToTarget(main, at); }
+  } else main.append(overview(f));
+}
+
+// What the feature page on screen is showing: { name, doc, board, opts (commit, suggestions, diff, decide), overview
+// (the overview, which is redrawn when the feature changes), sig (the decisions it was drawn with) }.
+let featureView = null;
+const decideSig = f => `${((f.decide || {}).open || 0) + ((f.validate || {}).open || 0)}/${((f.decide || {}).apply || 0) + ((f.validate || {}).apply || 0)}`;
+
+// Reads the feature again and, when it has changed, redraws what shows it: the rail always, the overview too
+// unless the person is in the middle of something on it (a Start panel, a form, "More options" open), in which
+// case it is tried again at the next look. The page on screen is left alone if the person has moved on.
+async function refreshFeature(name) {
+  const seq = routeSeq;
+  let fresh;
+  try { fresh = await busy(api("/api/feature?name=" + encodeURIComponent(name))); } catch { return; }
+  const old = featureCache.get(name);
+  featureCache.set(name, fresh);
+  const v = featureView;
+  if (seq !== routeSeq || !v || v.name !== name || !pageEls.feature.classList.contains("on")) return;
+  if (old && JSON.stringify(old) === JSON.stringify(fresh) && v.sig === decideSig(fresh)) return;
+  const nav = pageEls.feature.querySelector(".fnav");
+  if (nav) {
+    const top = nav.scrollTop, next = featureNav(fresh, v.doc, v.board, { ...v.opts, notesOpen: !!(nav.querySelector(".fnav-notes") || {}).open });
+    nav.replaceWith(next);
+    next.scrollTop = top;
+  }
+  const main = pageEls.feature.querySelector(".fmain");
+  if (v.overview) {
+    if (!main || main.querySelector("input, textarea, select, .more-options[open], .action-slot > *")) return; // (busy: sig stays, so the next look tries again)
+    const top = main.scrollTop;
+    main.replaceChildren(overview(fresh));
+    main.scrollTop = top;
+  }
+  v.sig = decideSig(fresh);
+}
+
+// A theme put on (looks.js): the Overview's Continue takes its words. (The journey card changes look itself.)
+document.addEventListener("tt-look", () => {
+  const v = featureView, f = v && featureCache.get(v.name), b = document.getElementById("step-continue");
+  if (b && f) try { b.textContent = TattyLooks.continueLabel(journeyModel(f)); } catch (e) { /* it keeps its words */ }
+});
+
+// A workflow session writes its questions into the feature's documents while its page is open. Asking whether
+// any wait is cheap (the server answers from the documents' modified times), so it is asked every few seconds
+// and the feature read again only when the count differs from what the page shows.
+async function pollDecisions() {
+  if (document.hidden) return;
+  const onFeature = pageEls.feature.classList.contains("on") && featureView;
+  const rail = !onFeature && pageEls.home.classList.contains("on") ? document.querySelector("#page-home .frail[data-feature]") : null;
+  const name = onFeature ? featureView.name : rail ? rail.dataset.feature : "";
+  if (!name) return;
+  let items;
+  try { items = (await api("/api/decide?name=" + encodeURIComponent(name))).items || []; } catch { return; }
+  const open = items.filter(i => i.state === "open").length;
+  const sig = `${open}/${items.length - open}`;
+  if (onFeature) { if (featureView && featureView.name === name && featureView.sig !== sig) refreshFeature(name); }
+  // (a workflow tab's rail: against what it was drawn with, not the cache, which may be newer than the rail)
+  else { const nav = rail.querySelector(".fnav"); if (!nav || nav.dataset.sig !== sig) refreshRail(); }
+}
+setInterval(pollDecisions, 6000);
+
+// The feature's left rail: its overview, whiteboard, documents and working notes.
+// On a workflow tab (opts.side) the documents open in the side panel (split.js)
+// instead of taking the page, and the ones open there are marked (markRail).
+// Everything that waits on the person, in order (the first one pulses).
+function waitingItems(f) {
+  const d = (f.decide && f.decide.open) || 0, v = (f.validate && f.validate.open) || 0;
+  return [
+    d ? { rail: "Decisions", sub: `${d} to decide`, href: featureDecideHref(f.name), page: "decide" } : null,
+    v ? { rail: "Validation", sub: `${v} to check`, href: featureValidateHref(f.name), page: "validate" } : null].filter(Boolean);
+}
+
+// The rail's pages have an icon each, which is all a collapsed rail shows (with what waits as a badge).
+const NAV_ICONS = { Overview: "◎", Whiteboard: "▦", Diagram: "◇", "Code Diff": "±", Commit: "✓", "Review suggestions": "✎", Decisions: "?", Validation: "☑" };
+function featureNav(f, current, board, opts = {}) {
+  const item = (label, href, on, sub, file) => {
+    const ic = !file && NAV_ICONS[label];
+    const a = el("a", { class: "fnav-item" + (on ? " on" : ""), href, "data-ic": ic || null, title: ic ? label + (sub ? " · " + sub : "") : null,
+      "data-badge": ic && sub ? (sub.match(/\d+/) || [""])[0] || null : null }, el("span", {}, label), sub ? el("span", { class: "dim small" }, sub) : "");
+    if (opts.side && file) {
+      a.dataset.key = f.name + "/" + file;
+      a.addEventListener("click", e => { e.preventDefault(); openInPane(f.name, file, ""); });
+    }
+    return a;
+  };
+  const docs = f.docList.map(d => item(d.doc, featureHref(f.name, d.file), current === d.file, (f.docList.some(o => o.prefix !== d.prefix) ? d.prefix + " · " : "") + ago(d.updated), d.file));
+  const groups = new Map();
+  for (const n of f.notes) { if (!groups.has(n.group)) groups.set(n.group, []); groups.get(n.group).push(n); }
+  const notesOpen = opts.notesOpen ?? f.notes.some(n => n.file === current);
+  return el("nav", { class: "fnav", "data-sig": decideSig(f) }, // (the decisions it is drawn with: pollDecisions)
+    el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
+    el("h3", {}, f.name),
+    f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate && !opts.diagram),
+    item("Whiteboard", featureBoardHref(f.name), !!board),
+    item("Diagram", featureDiagramHref(f.name), !!opts.diagram), // diagram.js
+    item("Code Diff", featureDiffHref(f.name), !!opts.diff),
+    f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
+    f.review && f.review.doc ? item("Review suggestions", featureReviewHref(f.name), !!opts.suggestions) : "", // review-page.js
+    // decide-page.js. While questions wait it pulses to be seen (not on the Decide page itself, where it is already open)
+    ...waitingItems(f).map((w, n) => (a => { if (!n && !opts[w.page]) a.classList.add("decide-pulse"); return a; })(item(w.rail, w.href, !!opts[w.page], w.sub))),
+    // (collapsed, the documents are one icon, which opens the rail)
+    el("button", { type: "button", class: "fnav-item fnav-docs-ic", "data-ic": "≡", title: `Documents (${f.docList.length})`,
+      onclick: e => { const t = e.currentTarget.closest(".frail")?.querySelector(".rail-toggle"); if (t) t.click(); } }, el("span", {}, "Documents")),
+    el("div", { class: "fnav-head" }, "Documents"),
+    docs.length ? docs : el("p", { class: "dim small" }, "None yet."),
+    f.notes.length ? el("details", { class: "fnav-notes", open: notesOpen },
+      el("summary", {}, `Working notes (${f.notes.length})`),
+      [...groups].map(([g, ns]) => el("div", {}, el("div", { class: "dim small" }, g),
+        ns.map(n => item(n.name, featureHref(f.name, n.file), current === n.file, "", n.file))))) : "");
+}
+
+// The rail with its collapse button at the top left: collapsed it is a narrow strip of
+// the pages' icons. Collapsed or not is kept for next time, apart for the Overview (a
+// stage, so collapsed until the person opens it) and the other pages.
+function documentsRail(nav, feature, onOverview) {
+  const key = onOverview ? "tt-rail-overview" : "tt-rail";
+  const kept = localStorage.getItem(key);
+  const rail = el("div", { class: "frail" + ((kept || (onOverview ? "collapsed" : "open")) === "collapsed" ? " collapsed" : ""), "data-feature": feature });
+  const toggle = el("button", { type: "button", class: "rail-toggle" });
+  const sync = () => {
+    const collapsed = rail.classList.contains("collapsed");
+    toggle.textContent = collapsed ? "»" : "«";
+    toggle.title = collapsed ? "Show the documents panel" : "Hide the documents panel";
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  };
+  toggle.addEventListener("click", () => {
+    rail.classList.toggle("collapsed");
+    localStorage.setItem(key, rail.classList.contains("collapsed") ? "collapsed" : "open");
+    sync();
+  });
+  sync();
+  rail.append(el("div", { class: "frail-bar" }, toggle), nav);
+  return rail;
+}
+
+// Marks the rail's documents that are open in the side panel (called by split.js
+// whenever its tabs change): the one on show, and the others with a bar.
+function markRail() {
+  for (const it of document.querySelectorAll(".frail .fnav-item[data-key]")) {
+    const open = paneTabs.some(t => t.key === it.dataset.key);
+    it.classList.toggle("on", it.dataset.key === paneActive);
+    it.classList.toggle("open", open && it.dataset.key !== paneActive);
+  }
+}
+
+// A workflow tab's rail is read again now and then: the workflow writes documents. A call made while a read is
+// going is not dropped: it runs again once that read is back (the tab may have been drawn again meanwhile, from a
+// cache older than the read). What is read goes into the rail on screen then, if it is still that feature's.
+let railBusy = false, railAgain = false;
+async function refreshRail() {
+  if (railBusy) { railAgain = true; return; }
+  const rail = document.querySelector("#page-home .frail[data-feature]");
+  if (!rail || document.hidden || !rail.querySelector(".fnav")) return;
+  const name = rail.dataset.feature;
+  railBusy = true;
+  railAgain = false;
+  let f = null;
+  try { f = await busy(api("/api/feature?name=" + encodeURIComponent(name))); featureCache.set(name, f); } catch { /* tried again at the next look */ } finally { railBusy = false; }
+  const now = document.querySelector("#page-home .frail[data-feature]"), old = now && now.querySelector(".fnav");
+  if (f && old && now.dataset.feature === name) {
+    const top = old.scrollTop, fresh = featureNav(f, null, false, { side: true, notesOpen: !!(old.querySelector(".fnav-notes") || {}).open });
+    old.replaceWith(fresh);
+    fresh.scrollTop = top;
+    markRail();
+  }
+  if (railAgain) { railAgain = false; refreshRail(); }
+}
+
+// A feature's whiteboard (#feature/<name>/whiteboard): its documents as cards on
+// whiteboard.js, with whatever is sketched round them (text, comments, lines;
+// Tatty's own, in <home>/boards). A click on a document opens it.
+async function featureBoard(f, main) {
+  main.classList.add("fmain-board");
+  main.replaceChildren(el("p", { class: "dim pad" }, "Opening the whiteboard…"));
+  let d;
+  try { d = await api(`/api/whiteboard?kind=feature&ref=${encodeURIComponent(f.name)}`); } catch (e) {
+    main.replaceChildren(el("p", { class: "st missing pad" }, String(e.message || e)));
+    return;
+  }
+  const W = 210, H = 86;
+  const note = el("p", { class: "small st missing wb-note" });
+  const wb = makeWhiteboard({ id: "fboard", key: { kind: "feature", ref: f.name }, data: d,
+    // a new document goes under the ones already placed, four to a row
+    place: (id, pos) => {
+      const placed = d.docs.filter(x => x.file !== id && Array.isArray(pos[x.file])).length;
+      return [(placed % 4) * (W + 30), Math.floor(placed / 4) * (H + 30)];
+    },
+    onOpen: id => { location.hash = featureHref(f.name, id); },
+    onError: t => { note.textContent = t; },
+    empty: "No documents yet. Sketch the plan here: T for text (or double-click), 💬 for a comment, ↗ to join two things. Drag with the middle button to move around." });
+  main.replaceChildren(el("div", { class: "board-page" }, note, wb.element));
+  wb.setCards(d.docs.map(x => ({ id: x.file, w: W, h: H,
+    node: el("div", { class: "wbdoc", tabindex: "0", role: "button", "aria-label": `Open ${x.doc}` },
+      el("div", { class: "dim small" }, x.prefix || "Working note"), el("strong", {}, x.doc), el("div", { class: "dim small" }, `updated ${ago(x.updated)}`)) })));
+}
+
+// The steps of the feature's route, and which one it is on.
+function pipeline(f) {
+  const p = f.phase;
+  const done = phaseDone(f); // the build is done at "complete"; the work is done once it is merged
+  if (f.route === "lite") {
+    const at = { "lite-focus": 0, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
+    return { steps: ["Explore", "Lite Brief", "Build", "Review", "Done"], at, done };
+  }
+  if (f.route === "quick") { // the small change with the understanding done by Tatty; Review is offered at the end, not run
+    const at = { exploring: 0, "lite-focus": 1, "lite-brief": 2, building: 2, complete: 3 }[p] ?? 0;
+    return { steps: ["Understand", "Brief", "Build", "Review", "Done"], at, done };
+  }
+  if (f.route === "bug") {
+    const kinds = new Set(f.docList.map(d => d.doc));
+    const at = p === "debugging" ? 0 : p === "debug-done" ? 1 : p === "complete" ? 3 : kinds.has("Lite Brief") ? 2 : p === "debugged" ? 2 : 1;
+    return { steps: ["Debug", "Write-up", "Fix", "Review", "Done"], at, done };
+  }
+  const at = { empty: 0, exploring: 0, explored: 1, planning: 1, "signed-off": 2, "breakdown-draft": 2, "breakdown-orphan": 2,
+    "breakdown-written": 3, building: 3, complete: 4 }[p] ?? 0;
+  return { steps: ["Explore", "Plan", "Breakdown", "Build", "Review", "Done"], at, done };
+}
+
+// The Review step's phases, as chips under it: the review, deciding on its suggestions, making the changes,
+// committing them, then the request (the merge phase). Where it stands comes from the Review Suggestions
+// document (f.review) and the request's state (f.merge).
+function reviewChips(f) {
+  const m = f.merge || {}, r = f.review || {};
+  const order = ["review", "decide", "apply", "commit", "merge"];
+  const merged = m.state === "merged";
+  const cur = m.state === "opened" ? 4 : Math.max(0, order.indexOf(r.phase));
+  const labels = ["Review", "Decide", "Apply", "Commit", merged ? "Merged" : m.state === "opened" ? "Request open" : "Merge"];
+  return el("div", { class: "substeps" }, labels.map((word, n) => {
+    const cls = "chip " + (merged || n < cur ? "done" : n === cur ? "now" : "todo");
+    if (n === 4 && m.url) return el("a", { class: cls, href: m.url, target: "_blank", rel: "noopener", title: m.url }, word);
+    return el("span", { class: cls, title: n === 1 && r.total ? `${r.decided} of ${r.total} decided` : n === 4 && m.branch ? m.branch : "" }, word);
+  }));
+}
+
+// The feature as a journey for looks.js: every stage of its route in order (a full route's Plan opened
+// up into the plan's own stages), each one done, now, next (waiting for you at a gate), todo, skip or
+// out (left out of this feature), and the mode: running (a session is working), decide (something
+// waits on you), gate (nothing runs until you continue) or complete (merged).
+const PLAN_SHORT = { "Scope & Constraints": "Scope", "Technical Design": "Tech design" };
+const PLAN_STAGES = ["Requirements", "Scope & Constraints", "Approach", "Technical Design", "Whole plan", "Sign-off"];
+function journeyModel(f) {
+  const { steps, at, done } = pipeline(f);
+  const off = new Set((f.profile?.stages || []).filter(s => !s.on).map(s => s.key));
+  const word = s => { s = (s || "").toLowerCase(); return /not selected/.test(s) ? "out" : /skipped|dropped/.test(s) ? "skip" : statusClass(s) === "done" ? "done" : statusClass(s) === "now" ? "now" : "todo"; };
+  const byPlace = i => done || i < at ? "done" : i === at ? "now" : "todo";
+  const nodes = [], st = [];
+  const rows = (f.stages || []).filter(r => r.stage !== "Familiarisation");
+  const fam = (f.stages || []).find(r => r.stage === "Familiarisation");
+  steps.forEach((s, i) => {
+    const key = s.toLowerCase();
+    if (s === "Plan") {
+      const plan = rows.length ? rows : PLAN_STAGES.map(stage => ({ stage, status: "" }));
+      let nowSeen = false;
+      for (const r of plan) {
+        nodes.push({ k: r.stage, l: PLAN_SHORT[r.stage] || r.stage, plan: true });
+        let w = rows.length ? word(r.status) : "todo";
+        if (w !== "out" && w !== "skip") {
+          if (i < at || done) w = "done";
+          else if (i > at) w = "todo";
+          else if (w === "now" || (w === "todo" && !nowSeen)) { w = nowSeen ? "todo" : "now"; nowSeen = true; }
+        }
+        st.push(w);
+      }
+      return;
+    }
+    const units = s === "Build" && f.units && f.units.total ? f.units.total : 0;
+    nodes.push({ k: key, l: s, units });
+    let w = byPlace(i);
+    if (i === 0 && fam && word(fam.status) === "out") w = "out";
+    if ((key === "explore" || key === "review") && off.has(key)) w = "out";
+    if (s === "Done") w = done ? "done" : "todo";
+    st.push(w);
+  });
+  let cur = st.indexOf("now");
+  if (cur < 0) cur = st.indexOf("todo");
+  if (cur < 0) cur = st.length - 1;
+  // a session that is open but idle (or asking) is waiting for the person, not working
+  const going = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s).filter(s => LIVE.has(s.status));
+  const busy = going.some(s => MOVING.has(sessionStatus(s, sessionEvents.get(s.tag) || [])[2]));
+  const a = f.action || {};
+  const mode = done ? "complete" : a.kind === "decide" || a.kind === "unitgate" ? "decide" : busy ? "running" : going.length ? "waiting" : "gate";
+  if (mode === "gate" && st[cur] === "now") st[cur] = "next";
+  if (mode === "complete") cur = st.length - 1;
+  return { nodes, st, cur, mode, units: (f.units && f.units.done) || 0, dec: (f.decide && f.decide.open) || 0, what: a.what || "",
+    base: (f.merge && f.merge.base) || "" };
+}
+
+// The journey across the top of the Overview, in the look the app wears (looks.js), and under it
+// the Review step's chips once the build is done.
+function journeyCard(f) {
+  if (!window.TattyLooks) return tracker(f);
+  let m;
+  try { m = journeyModel(f); } catch (e) { return tracker(f); }
+  if (!m.nodes.length) return tracker(f);
+  const card = TattyLooks.journey(m, { key: f.name });
+  card.id = "journey";
+  // what it shows, in words, for the walks (features-check.py): Label:state|... and the mode
+  card.dataset.stages = m.nodes.map((n, i) => `${n.l}:${m.st[i]}`).join("|");
+  card.dataset.mode = m.mode;
+  const reviewing = f.phase === "complete" ? reviewChips(f) : "";
+  return reviewing ? el("div", {}, card, el("div", { class: "jy-under" }, reviewing)) : card;
+}
+
+function tracker(f) {
+  const { steps, at, done } = withProfile(f, pipeline(f)); // stages.js
+  return el("ol", { class: "tracker" }, steps.map((s, i) => {
+    const state = done || i < at ? "done" : i === at ? "now" : "todo";
+    const sub = s === "Plan" && f.stages.length ? el("div", { class: "substeps" },
+      f.stages.map(st => el("span", { class: "chip " + statusClass(st.status), title: `${st.stage}: ${st.status}` + (st.ts ? ` (${new Date(st.ts).toLocaleDateString()})` : "") }, st.stage))) : "";
+    const units = s === "Build" && f.tasks.total ? el("div", { class: "substeps" }, bar(f.tasks.done, f.tasks.total)) : "";
+    const reviewing = s === "Review" && f.phase === "complete" ? reviewChips(f) : "";
+    return el("li", { class: state }, el("span", { class: "dot" }, state === "done" ? "✓" : String(i + 1)), el("span", { class: "label" }, s), sub, units, reviewing);
+  }));
+}
+
+// ------------------------------------------------------------- starting the next step
+// Start… opens a panel: the project the new session runs in, the command, the
+// session's name, a box for each <placeholder>; Start session has the server
+// open a new Claude session (session-handoff.sh) started with the command.
+
+const PROJECT_FROM = { chosen: "chosen by you", link: "from the tt-workflow link", ledger: "from the events ledger", docs: "from the documents" };
+const placeholders = cmd => [...cmd.matchAll(/<([^<>]{1,60})>/g)].map(m => m[1]);
+
+async function chooseProject(f) {
+  const path = await pickFolder(`Choose the project (repo) for ${f.name}`, f.project || "");
+  if (!path) return false;
+  const r = await api("/api/project", { name: f.name, path });
+  f.project = r.project; f.projectFrom = r.projectFrom;
+  return true;
+}
+
+function projectLine(f, onChange) {
+  return el("div", { class: "project-line small" }, "Sessions run in ",
+    f.project ? copyable(f.project) : el("strong", { class: "st missing" }, "no project chosen yet"),
+    f.project ? el("span", { class: "dim" }, ` (${PROJECT_FROM[f.projectFrom] || f.projectFrom})`) : "",
+    el("button", { type: "button", onclick: async () => { try { if (await chooseProject(f)) onChange(); } catch (e) { alert(e.message || e); } } },
+      f.project ? "Change…" : "Choose project…"));
+}
+
+// Cancelling a workflow (the server's workflow_cancel): its sessions are ended and,
+// if it was started from a task, that Start is undone. What the person is told first
+// says what will happen to the task and the folder.
+function cancelWorkflowText(name, task, ticketOnly, running, archived) {
+  if (archived) return [`Cancel the workflow ${name}?`,
+    task ? `${task.id} goes back to where it was, and can be started again.` : "",
+    "The feature is archived, and stays in Archived."].filter(Boolean).join("\n\n");
+  return [`Cancel the workflow ${name}?`,
+    running ? "Its Claude session is ended, and anything it is in the middle of is lost." : "",
+    task ? (task.stays ? `${task.id} stays where it is in Jira, and can be started again.` : `${task.id} goes back to where it was, and can be started again.`) : "",
+    task ? (ticketOnly ? "The feature folder holds only the ticket, so it is moved to features/.deleted." : "The feature folder has documents in it, so it stays.") : ""]
+    .filter(Boolean).join("\n\n");
+}
+
+// The answer (see workflow_cancel), or null when it was declined or failed.
+async function cancelWorkflow(name, text, client) {
+  if (!confirm(text)) return null;
+  try {
+    const r = await api("/api/workflow/cancel", { name, client });
+    featureCache.delete(name);
+    if (r.said) alert(r.said);
+    loadTabsSoon();
+    return r;
+  } catch (e) { alert(e.message || e); return null; }
+}
+
+// Which repository, and which of its local branches, this feature's work is on. Tatty otherwise makes a
+// branch from the feature's name, or takes the one the project's repo is on, the first time it starts a
+// step, and switches that repo back to it at every later Start. b is what /api/branch answered; project is
+// the feature's own project. Picking another repository lists its branches; picking a branch records both.
+function branchPicker(f, b0, project, done) {
+  const box = el("div", { class: "branch-picker" });
+  const draw = (b, switched) => {
+    const have = b.branch || "";
+    const repos = el("select", { class: "repo-select", "aria-label": "repository", title: "Which repository is the branch in?" });
+    const known = b.repos || [];
+    for (const r of known.includes(b.repo) ? known : [b.repo, ...known]) repos.append(el("option", { value: r }, r));
+    repos.append(el("option", { value: "::pick" }, "Choose a folder…"));
+    repos.value = b.repo;
+    repos.addEventListener("change", async () => {
+      repos.disabled = true;
+      const back = () => { repos.value = b.repo; repos.disabled = false; };
+      try {
+        const to = repos.value === "::pick" ? await pickFolder("Choose the repository", b.repo) : repos.value;
+        if (!to) return back();
+        const nb = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project) + "&repo=" + encodeURIComponent(to));
+        if (!nb.repo) { alert(nb.note || "That isn't a git repository."); return back(); }
+        draw(nb, true);
+      } catch (e) { alert(e.message || e); back(); }
+    });
+    const sel = el("select", { class: "branch-select", "aria-label": "branch", title: "Which branch is this feature's work on?" });
+    if (!have && b.create) sel.append(el("option", { value: "" }, "New branch " + b.create));
+    else if (!have && switched) sel.append(el("option", { value: "" }, "Choose a branch…"));
+    const all = b.branches || [];
+    for (const n of have && !all.includes(have) ? [have, ...all] : all) sel.append(el("option", { value: n }, n + (n === b.current ? " (checked out)" : "")));
+    sel.value = have || (b.create || switched ? "" : b.current || "");
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      sel.disabled = true;
+      try { await api("/api/branch", { name: f.name, project: b.repo, branch: sel.value }); featureCache.delete(f.name); await done(); }
+      catch (e) { alert(e.message || e); sel.disabled = false; }
+    });
+    box.replaceChildren(el("span", { class: "pick-label" }, "Repository"), repos, el("span", { class: "pick-label" }, "Branch"), sel);
+  };
+  draw(b0, false);
+  return box;
+}
+
+// What the server (begin_row) starts a feature with when Start Workflow / Start Workflow Lite is chosen: the
+// idea, then the folder and prefix, the way tt-workflow and tt-workflow-lite hand a new folder to their first skill.
+function beginCommand(f, begin, kind, idea) {
+  const text = idea.trim() || "<what is it>";
+  const lead = /[.!?]$/.test(text) ? text : text + ".";
+  const where = `Folder: ${f.folder}. Prefix: ${f.name}`;
+  if (begin === "full") return `/${f.rows[0].skill} ${lead} ${where}`;
+  return kind === "bug" ? `/tt-debug ${lead} ${where}.` : `/tt-familiarise lite ${lead} Mode: lite. ${where}.`;
+}
+
+// Bug | Feature, for Start Workflow Lite. value() is "bug" or "feature".
+function kindToggle(onChange) {
+  const group = "kind-" + Math.random().toString(36).slice(2, 8);
+  const opt = (value, text, on) => el("label", { class: "kind-opt" },
+    el("input", { type: "radio", name: group, value, ...(on ? { checked: true } : {}), onchange: onChange }), text);
+  const node = el("div", { class: "kind-toggle", role: "radiogroup", "aria-label": "Is it a bug or a feature?" },
+    opt("feature", "Feature", true), opt("bug", "Bug", false));
+  return { node, value: () => (node.querySelector("input:checked") || {}).value || "feature" };
+}
+
+// begin: "full" or "lite" for the first Start of a feature with nothing written yet (the Start Workflow and
+// Start Workflow Lite buttons): the person says what it is, and for Lite whether it is a bug or a feature.
+// What its sessions are called before " : <stage>": "<name> · <title cut at a word to 40>", as the server names them (start_session).
+function featureCalled(f) {
+  let t = f.title || "";
+  if (t.length > 40) t = (t.slice(0, 40).replace(/\s+\S*$/, "").replace(/[ ,.;:\-–]+$/, "") || t.slice(0, 40)) + "…";
+  return t ? `${f.name} · ${t}` : f.name;
+}
+
+function startPanel(f, row, index, close, begin) {
+  const cmd = begin ? "" : command(row);
+  const inputs = begin ? [] : placeholders(cmd).map(ph => ({ ph, input: el("input", { placeholder: ph, "aria-label": ph }) }));
+  const idea = begin ? el("textarea", { class: "start-idea", rows: "3", placeholder: "an idea, a spec or a ticket", "aria-label": "What is it? An idea, a spec or a ticket" }) : null;
+  const kinds = begin === "lite" ? kindToggle(() => refresh()) : null;
+  const preview = el("code", {});
+  const called = featureCalled(f);
+  const name = begin ? `${called} : ${begin === "full" ? "Start" : "Lite"}`
+    : `${!row.prefix || row.prefix === f.name ? called : row.prefix} : ${row.stage || "Next"}`;
+  const result = el("div", { class: "start-result" });
+  const picker = modelPicker("start-" + (begin || index));
+  const go = el("button", { type: "button", class: "primary" }, "Start session");
+  // The review step asks which repo and branch (review.js) instead of using the project line.
+  const review = row.skill === "tt-branch-review" || row.skill === "tatty:review" ? reviewStart(f, () => refresh(), row.skill === "tatty:review" ? "/tatty:review" : "/tt-branch-review") : null;
+  const refresh = () => {
+    let c = review ? review.cmd() : cmd;
+    for (const { ph, input } of inputs) c = c.replace(`<${ph}>`, input.value.trim() || `<${ph}>`);
+    if (begin) c = beginCommand(f, begin, kinds ? kinds.value() : "", idea.value);
+    preview.textContent = c;
+    go.disabled = (review ? !review.ready() : !f.project) || inputs.some(i => !i.input.value.trim()) || (!!idea && !idea.value.trim());
+  };
+  for (const { input } of inputs) input.addEventListener("input", refresh);
+  if (idea) idea.addEventListener("input", refresh);
+  const panel = el("div", { class: "start-panel" });
+  // The branch the work will be on. By default a feature gets a branch in a worktree of its own (a separate folder,
+  // so features run side by side without touching each other or the repo's checkout) on its first Start; the box
+  // opts out, and a feature under way can take one too. Without a worktree the repo is switched to the branch.
+  const branchLine = el("div", { class: "small branch-line" });
+  const wt = { on: null, base: "" }; // what the person chose on this panel; null = the server's suggestion
+  const showBranch = async () => {
+    branchLine.replaceChildren();
+    if (!f.project) return;
+    try {
+      const b = await api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(f.project));
+      const code = t => el("code", {}, t);
+      if (!b.repo) { branchLine.replaceChildren(el("span", { class: "dim" }, b.note || "")); return; }
+      if (b.isolated) {
+        branchLine.replaceChildren(el("span", {}, "On branch ", code(b.branch), b.worktree ? [" in its own worktree ", code(b.worktree)] : " in its own worktree (the folder is made again at Start)"));
+        wt.fields = () => ({});
+        return;
+      }
+      const on = () => wt.on === true; // opt in: a worktree is a whole second checkout
+      const box = el("input", { type: "checkbox", id: "own-worktree", "aria-label": "own worktree" });
+      box.checked = on();
+      const base = el("select", { class: "branch-select", "aria-label": "base branch", title: "The new branch starts from this" });
+      const bases = b.branches || [];
+      const start = wt.base || b.baseDefault || b.current || "";
+      for (const n of start && !bases.includes(start) ? [start, ...bases] : bases) base.append(el("option", { value: n }, n));
+      base.value = start;
+      base.addEventListener("change", () => { wt.base = base.value; });
+      wt.fields = () => (on() ? { isolate: true, ...(base.value ? { base: base.value } : {}) } : {});
+      const detail = el("div", {});
+      const paint = () => {
+        const shared = b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "";
+        if (on()) {
+          detail.replaceChildren(
+            el("div", {}, "A new branch ", code(b.newBranch), " is made in ", code(b.newPath), " from ", base, ". The repo's own checkout is left as it is."),
+            el("div", { class: "dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files."),
+            b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch; the feature gets one of its own.`) : "");
+        } else {
+          detail.replaceChildren(b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch. If the repo can't switch to it (another folder has it checked out), tick Own worktree to give this feature a branch of its own.`) : "", el("span", {},
+            b.branch ? ["On branch ", code(b.branch), b.current && b.current !== b.branch ? [" (the repo is on ", code(b.current), ": Tatty switches it)"] : ""]
+              : b.create ? ["A new branch ", code(b.create), " is made in the repo's own checkout from ", code(b.current || "the detached HEAD")]
+                : ["Works on the branch the repo is on, ", code(b.current || "(detached HEAD)")]),
+            branchPicker(f, b, f.project, showBranch), shared);
+        }
+      };
+      box.addEventListener("change", () => { wt.on = box.checked; paint(); });
+      branchLine.replaceChildren(el("label", { class: "own-worktree" }, box, " Own worktree (a branch and a folder of its own, so other workflows can run at the same time)"), detail);
+      paint();
+    } catch { /* the server says so at Start */ }
+  };
+  const draw = () => {
+    panel.replaceChildren(
+      el("div", { class: "start-title" }, begin ? (begin === "full" ? "Start Workflow" : "Start Workflow Lite") : "Start a new Claude session"),
+      ...(review ? [review.node] : [projectLine(f, () => { draw(); refresh(); }), branchLine]),
+      inputs.length ? el("div", { class: "start-inputs" }, inputs.map(({ ph, input }) => el("label", {}, el("span", { class: "dim small" }, ph), input))) : "",
+      idea ? el("div", { class: "start-inputs" }, el("label", {}, el("span", { class: "dim small" }, "What is it?"), idea)) : "",
+      kinds ? el("div", { class: "start-inputs" }, el("span", { class: "dim small" }, "It is a"), kinds.node) : "",
+      el("div", { class: "small" }, "running ", preview),
+      el("div", { class: "small dim" }, "named ", el("strong", {}, name)),
+      stagesLine(f), // stages.js
+      picker.node,
+      el("div", { class: "start-actions" }, go, el("button", { type: "button", onclick: close }, "Cancel")),
+      result);
+    if (!review) showBranch();
+  };
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    result.replaceChildren(el("span", { class: "dim small" }, "Opening a new session…"));
+    tell("allow-foreground");
+    const values = Object.fromEntries(inputs.map(({ ph, input }) => [ph, input.value.trim()]));
+    try {
+      const what = begin ? { begin, idea: idea.value.trim(), ...(kinds ? { kind: kinds.value() } : {}) } : { row: index, values };
+      const r = await api("/api/start", { name: f.name, ...what, ...picker.fields(), ...(review ? {} : (wt.fields ? wt.fields() : {})), ...(review ? review.fields() : {}) });
+      if (r.ok) {
+        // its tab opens straight away: the panel fills in as the session reports
+        sessionInfo.set(r.tag, { tag: r.tag, feature: f.name, name: r.name, command: r.command, project: r.project,
+          started: Date.now() / 1000, status: "starting" });
+        featureCache.delete(f.name);
+        location.hash = "#workflows/" + encodeURIComponent(r.tag);
+      }
+      else result.replaceChildren(el("p", { class: "st missing" }, "Couldn't open a terminal here. Run this yourself:"), el("pre", {}, r.said));
+    } catch (e) { result.replaceChildren(el("p", { class: "st missing" }, String(e.message || e))); go.disabled = false; }
+  });
+  draw(); refresh();
+  return panel;
+}
+
+// ------------------------------------------------------------- a started session, live
+// A session Start opened has a tab on the Features page (see workflowTabs) that
+// shows what it is doing (each tool call, prompt and reply, as its Tatty mod
+// reports them), its questions to answer in place, and a box to message it. Its
+// feature's page points to the tab. Events come from app.js's stream
+// ("tt-event"); history is replayed when the page connects, so the panel can be
+// drawn at any time.
+
+const sessionEvents = new Map(); // tag -> [activity / ask / say events]
+const sessionInfo = new Map();   // tag -> the latest "session" event
+const LIVE = new Set(["starting", "running", "lost", "unseen"]);
+const livePanels = new Map();    // tag -> the panel on screen: { tag, update(ev) }
+const statusViews = new Map();   // tag -> a status shown elsewhere (the feature page's line): { update() }
+const usageViews = new Map();    // tag -> the usage widget on screen: { tag, update(usage) }
+
+document.addEventListener("tt-event", e => {
+  const ev = e.detail;
+  if (!ev.tag) return;
+  let moved = false; // the session is new, or its status changed
+  if (ev.type === "session") {
+    const was = sessionInfo.get(ev.tag);
+    moved = !was || was.status !== ev.status;
+    sessionInfo.set(ev.tag, ev);
+    const usage = usageViews.get(ev.tag);
+    if (usage) usage.update(ev.usage);
+  }
+  else {
+    if (!sessionEvents.has(ev.tag)) sessionEvents.set(ev.tag, []);
+    sessionEvents.get(ev.tag).push(ev);
+  }
+  const panel = ev.closed ? null : livePanels.get(ev.tag); // (a closed tab is going: nothing to redraw)
+  if (panel) panel.update(ev);
+  const line = ev.closed ? null : statusViews.get(ev.tag);
+  if (line) line.update();
+  if (ev.type !== "session") return;
+  // The tabs: a closed one goes (here or in another window), a new one comes, a dot changes.
+  if (ev.closed) {
+    tabList.delete(ev.tag);
+    if (parseRoute().tag === ev.tag) location.hash = "#home";
+  }
+  else if (!tabList.has(ev.tag) && ev.feature) loadTabsSoon();
+  else if (tabList.has(ev.tag)) tabList.set(ev.tag, ev);
+  if (pageEls.home.classList.contains("on")) drawTabs();
+  // a session of the feature on screen started, or changed: its page says so (once,
+  // however many session events arrive together, as on a reconnect's replay)
+  const r = parseRoute();
+  if (moved && r.page === "feature" && !r.doc && ev.feature === r.name) {
+    clearTimeout(redrawSoon);
+    redrawSoon = setTimeout(() => refreshFeature(r.name), 300); // (read again behind the page: not the page thrown away, as the Decide page's answers would be)
+  }
+});
+let redrawSoon = null;
+
+const TOOL_ICONS = { Read: "📄", Edit: "✏️", Write: "📝", Bash: "⌨️", Grep: "🔎", Glob: "🗂️", Agent: "🤖", Skill: "🧩", WebFetch: "🌐", AskUserQuestion: "❓", TodoWrite: "☑️" };
+
+// What a started session is doing, as [words, chip colour, mode, since (ms), how many]:
+// the mode (starting, thinking, tool, agents, waiting, ask, idle, lost, ended) picks the bar's
+// colour and motion (see .statebar in style.css). A mod that reports turns and
+// subagents (s.turn, s.agents) is exact: the main loop may have ended its turn and
+// still be waiting on subagents it started in the background, which is not idle.
+// An older mod reports neither, and the activity feed is all there is to go on.
+const AGENT_ACTIVE = new Set(["pending", "running", "waiting"]);
+// A tool call in words that match what Tatty acts out for it (the desktop Tatty's states,
+// App.xaml.cs's Doing): reading, writing, running a command, delegating.
+const TOOL_KINDS = [
+  [["Read", "Grep", "Glob", "LS", "WebFetch", "WebSearch", "NotebookRead"], "Reading"],
+  [["Edit", "Write", "MultiEdit", "NotebookEdit"], "Writing"],
+  [["Bash", "BashOutput", "PowerShell", "KillShell", "KillBash"], "Running"],
+  [["Task", "Agent"], "Delegating"],
+];
+const TOOL_DOING = tool => (TOOL_KINDS.find(([tools]) => tools.includes(tool)) || [, "Working"])[1] + ": " + tool;
+const activeAgents = s => (s.agents || []).filter(a => AGENT_ACTIVE.has(a.status));
+
+function sessionStatus(s, events) {
+  const asks = events.filter(ev => ev.type === "ask" && !answers.has(ev.id));
+  if (s.status === "ended") return ["Ended", "done", "ended", 0, 1];
+  if (s.status === "unseen") return ["Can't see this session (Tatty's plugin isn't loaded in it)", "bad", "lost", 0, 1];
+  if (s.status === "lost") return ["Not heard from for a while", "bad", "lost", 0, 1];
+  if (s.status === "starting") return ["Opening the session", "now", "starting", (s.started || 0) * 1000, 1];
+  if (asks.length) return ["Waiting for your answer", "bad", "ask", (asks[0].ts || 0) * 1000, 1];
+  const acts = events.filter(ev => ev.type === "activity");
+  const last = acts[acts.length - 1];
+  const done = new Set(acts.filter(a => a.kind === "tool-done").map(a => a.id));
+  const running = [...acts].reverse().find(a => a.kind === "tool" && !done.has(a.id));
+  const agents = activeAgents(s);
+  if (agents.length) {
+    const since = Math.min(...agents.map(a => a.since || Date.now() / 1000)) * 1000;
+    const words = agents.length === 1
+      ? `Delegating to a subagent: ${agents[0].type || "agent"}${agents[0].description ? " · " + agents[0].description : ""}`
+      : `Delegating to ${agents.length} subagents`;
+    return [words, "now", "agents", since, agents.length];
+  }
+  if (running) return [`${TOOL_DOING(running.tool)}${running.text ? " · " + running.text : ""}`, "now", "tool", (running.ts || 0) * 1000, 1];
+  // The turn is over but a command it started in the background is still going: the session
+  // carries on when it finishes, so it is waiting on the command, not on the person.
+  const shells = s.shells || [];
+  if (s.turn === false && shells.length) {
+    const since = Math.min(...shells.map(x => x.since || Date.now() / 1000)) * 1000;
+    const what = x => x.description || x.command || "";
+    const words = shells.length === 1
+      ? `Waiting on a command${what(shells[0]) ? " · " + what(shells[0]) : ""}`
+      : `Waiting on ${shells.length} commands`;
+    return [words, "now", "waiting", since, shells.length];
+  }
+  if (s.turn !== undefined) {
+    return s.turn ? ["Thinking", "now", "thinking", (s.turnSince || 0) * 1000, 1] : ["Idle: waiting for you", "todo", "idle", 0, 1];
+  }
+  if (!last || last.kind === "reply") return ["Idle: waiting for you", "todo", "idle", 0, 1];
+  return ["Working", "now", "thinking", (last.ts || 0) * 1000, 1];
+}
+
+// ---- showing the status: the chip's words with moving dots and the time in it, and the
+// bar along the card's top edge. Both are repainted only when what they say changes,
+// so their animations aren't restarted by every event.
+
+const MOVING = new Set(["starting", "thinking", "tool", "agents", "waiting"]);
+
+function elapsed(since) {
+  const sec = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
+  return `${Math.floor(sec / 3600)}h ${String(Math.floor(sec / 60) % 60).padStart(2, "0")}m`;
+}
+
+const timeNode = since => since ? el("span", { class: "st-time", "data-since": String(since) }, elapsed(since)) : "";
+
+setInterval(() => {
+  if (document.hidden) return;
+  for (const n of document.querySelectorAll(".st-time[data-since]")) n.textContent = elapsed(+n.dataset.since);
+}, 1000);
+
+// The bar: a track along the top of a card with up to four comets that sweep left to right.
+const stateBar = () => el("div", { class: "statebar", "data-mode": "idle", "data-n": "1", "aria-hidden": "true" }, el("i"), el("i"), el("i"), el("i"));
+
+function paintBar(bar, st) {
+  if (!bar) return;
+  bar.dataset.mode = st[2];
+  bar.dataset.n = String(Math.min(4, Math.max(1, st[4] || 1)));
+}
+
+function paintStatus(chip, bar, st) {
+  paintBar(bar, st);
+  const [text, cls, mode, since] = st;
+  const key = [text, cls, mode].join("|");
+  if (chip._key === key) return;
+  chip._key = key;
+  chip.className = "chip " + cls + " m-" + mode;
+  chip.replaceChildren(el("span", { class: "st-label" }, text),
+    MOVING.has(mode) ? el("span", { class: "st-dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")) : "",
+    mode === "ended" || mode === "lost" ? "" : timeNode(since));
+}
+
+// The subagents that are going, one chip each with the time it has been at it.
+// The model a subagent runs on, short, and whether it is the one it was asked for. An
+// alias it was asked for (sonnet) is met by an id of that family (...claude-sonnet-5-5);
+// it is off only when the id names another family. A blank ask left the choice to the
+// session, so there is nothing to compare, and an id we can't place in a family is let be.
+const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
+const modelFamily = m => MODEL_FAMILIES.find(f => String(m || "").toLowerCase().includes(f));
+const agentModelShort = m => String(m || "").replace(/^[a-z]+\.anthropic\./, "").replace(/^claude-/, "");
+const agentModelMismatch = a => {
+  if (!a.model || !a.asked) return false;
+  const want = MODEL_FAMILIES.includes(a.asked) ? a.asked : modelFamily(a.asked), got = modelFamily(a.model);
+  return Boolean(want && got && want !== got);
+};
+
+function paintAgents(box, s) {
+  const list = activeAgents(s);
+  const key = list.map(a => [a.id, a.status, a.description, a.model, a.asked].join("|")).join("\n");
+  if (box._key === key) return;
+  box._key = key;
+  box.replaceChildren(...list.map(a => {
+    const off = agentModelMismatch(a);
+    const title = `${a.type}: ${a.description}` + (a.model ? `\nRuns on ${a.model}` + (a.asked ? `; asked for ${a.asked}` : "; the session's choice") : "");
+    return el("span", { class: "agent-chip" + (off ? " warn" : ""), title },
+      el("i", { class: "spin", "aria-hidden": "true" }), el("strong", {}, a.type || "agent"), a.description ? " · " + a.description : "", " ",
+      a.model ? el("span", { class: "dim small mono agent-model" }, (off ? "⚠ " : "") + agentModelShort(a.model) + " ") : "",
+      timeNode((a.since || 0) * 1000));
+  }));
+  box.hidden = !list.length;
+}
+
+function activityRow(ev, rows) {
+  if (ev.type === "say") return el("li", { class: "act you" }, el("span", { class: "who" }, "You"), el("span", {}, ev.text));
+  if (ev.kind === "tool") {
+    const li = el("li", { class: "act tool running", "data-id": ev.id },
+      el("span", { class: "icon" }, TOOL_ICONS[ev.tool] || "•"), el("strong", {}, ev.tool), el("span", { class: "dim" }, ev.text || ""),
+      el("span", { class: "state" }, "…"));
+    rows.set(ev.id, li);
+    return li;
+  }
+  if (ev.kind === "tool-done") {
+    const li = rows.get(ev.id);
+    if (li) { li.classList.remove("running"); li.classList.toggle("failed", !ev.ok); li.querySelector(".state").textContent = ev.ok ? "✓" : "✗"; }
+    return null;
+  }
+  if (ev.kind === "prompt") return el("li", { class: "act you" }, el("span", { class: "who" }, "Prompt"), el("span", {}, ev.text));
+  if (ev.kind === "reply") {
+    const body = mdNode(ev.text);
+    linkIds(body, ev.feature || (sessionInfo.get(ev.tag) || {}).feature);
+    const li = el("li", { class: "act reply", "data-ts": String(ev.ts || "") }, el("span", { class: "who" }, "Claude"), body);
+    if (ev.text.split("\n").length > 8 || ev.text.length > 700) {
+      li.classList.add("folded");
+      li.append(el("button", { type: "button", class: "more", onclick: e => { li.classList.toggle("folded"); e.target.textContent = li.classList.contains("folded") ? "More" : "Less"; } }, "More"));
+    }
+    return li;
+  }
+  return el("li", { class: "act" }, ev.text || "");
+}
+
+// A new row in the history: it opens out at the top (the older rows slide down to make room as it grows) while it
+// fades in, and is lit for a moment (.fresh, style.css). Like the status bar this is not gated on
+// prefers-reduced-motion: the lit row and the "Latest first" caption say it with everything still.
+function enterRow(li) {
+  li.classList.add("fresh");
+  setTimeout(() => li.classList.remove("fresh"), 2200);
+  if (document.hidden || !li.isConnected) return;
+  const h = li.getBoundingClientRect().height;
+  li.style.overflow = "hidden";
+  const a = li.animate([{ height: "0px", opacity: 0, transform: "translateY(-12px)" }, { height: h + "px", opacity: 1, transform: "none" }],
+    { duration: 420, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  a.onfinish = a.oncancel = () => { li.style.overflow = ""; };
+}
+
+// A question just answered, in a session panel: its card shrinks into the small box and
+// flies down to the top of "Previously answered", where it pops in and the boxes
+// already there are pushed down with a bounce. The card's own place closes up under a
+// spacer meanwhile. The motion is not gated on prefers-reduced-motion (see style.css).
+const FLY_MS = 550, BOUNCE = "cubic-bezier(.34,1.56,.64,1)";
+
+function settleAnswered(card, ask, ans, boxes, history) {
+  const box = answeredBox(ask, ans), old = [...boxes.children];
+  if (!card.isConnected || document.hidden) { card.remove(); boxes.prepend(box); history.hidden = false; return; }
+  const from = card.getBoundingClientRect(), tops = old.map(b => b.getBoundingClientRect().top);
+  const spacer = el("div", { class: "abox-spacer" });
+  spacer.style.height = from.height + "px";
+  const cardLayer = card.cloneNode(true), boxLayer = box.cloneNode(true);
+  cardLayer.classList.remove("nudge");
+  card.replaceWith(spacer);
+  box.style.visibility = "hidden";
+  boxes.prepend(box);
+  history.hidden = false;
+  old.forEach((b, i) => {
+    const d = tops[i] - b.getBoundingClientRect().top;
+    if (d) b.animate([{ transform: `translateY(${d}px)` }, { transform: "none" }], { duration: 450, easing: BOUNCE });
+  });
+  spacer.animate([{ height: from.height + "px" }, { height: "0px" }], { duration: 350, easing: "ease-out", fill: "forwards" });
+  // the flying layer: the question card fades into the box as it shrinks
+  boxLayer.style.cssText = "position:absolute;left:0;top:0;width:100%;margin:0;visibility:visible";
+  cardLayer.style.cssText = "position:absolute;left:0;top:0;width:100%;margin:0";
+  const ghost = el("div", { class: "abox-ghost" }, cardLayer, boxLayer);
+  document.body.append(ghost);
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    ghost.remove(); spacer.remove();
+    box.style.visibility = "";
+    box.animate([{ transform: "scale(1.05)" }, { transform: "none" }], { duration: 300, easing: BOUNCE });
+  };
+  const t0 = performance.now();
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const frame = now => {
+    if (finished) return;
+    const t = Math.min(1, (now - t0) / FLY_MS), p = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const to = box.getBoundingClientRect(); // measured each frame: the layout above is closing up
+    const below = to.top > innerHeight - 8, top = Math.min(to.top, innerHeight - to.height - 8);
+    const gs = ghost.style;
+    gs.left = lerp(from.left, to.left, p) + "px";
+    gs.top = lerp(from.top, top, p) + "px";
+    gs.width = lerp(from.width, to.width, p) + "px";
+    gs.height = lerp(from.height, to.height, p) + "px";
+    cardLayer.style.opacity = String(Math.max(0, 1 - p / .6));
+    boxLayer.style.opacity = String(Math.min(1, Math.max(0, (p - .3) / .5)));
+    gs.opacity = below ? String(Math.min(1, Math.max(0, (1 - p) / .3))) : "1";
+    if (t < 1) requestAnimationFrame(frame); else finish();
+  };
+  frame(t0);
+  requestAnimationFrame(frame);
+  setTimeout(finish, FLY_MS + 150);
+}
+
+function sessionPanel(f, s, showWhere, quiet, whereLabel = "Where it stands") {
+  const tag = s.tag;
+  const events = () => sessionEvents.get(tag) || [];
+  const status = el("span", { class: "chip" });
+  const bar = stateBar();
+  const agents = el("div", { class: "live-agents", hidden: true });
+  const doing = el("div", { class: "dim small live-meta" });
+  const questions = el("div", { class: "live-questions" });
+  const decide = el("a", { class: "go-btn waiting live-decide", "data-feature": f.name || "", id: "live-decide", hidden: true });
+  paintDecideButton(decide, featureCache.get(f.name)); // (what is known now; it is painted again whenever the feature is read)
+  const list = el("ol", { class: "activity" });
+  const rows = new Map();
+  const shownAsks = new Set();
+  const say = el("textarea", { rows: 2, placeholder: "Message this session…  (Enter sends)" });
+  const sent = el("span", { class: "dim small" });
+  const send = async () => {
+    const text = say.value.trim();
+    if (!text) return;
+    try { await api("/api/say", { text, tag }); say.value = ""; sent.textContent = "Sent; it reaches the session when it's ready."; } catch (e) { sent.textContent = String(e.message || e); }
+  };
+  say.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+
+  const boxes = el("div", { class: "abox-list" });
+  const history = el("div", { class: "live-answered", hidden: true }, el("h5", {}, "Previously answered"), boxes);
+  const add = ev => {
+    if (ev.type === "ask") {
+      if (shownAsks.has(ev.id)) return;
+      shownAsks.add(ev.id);
+      if (answers.has(ev.id)) { // answered before this panel was drawn: straight into the history
+        boxes.prepend(answeredBox(ev, answers.get(ev.id)));
+        history.hidden = false;
+        return;
+      }
+      const card = askCard(ev);
+      card._answered = (ask, ans) => settleAnswered(card, ask, ans, boxes, history);
+      questions.prepend(card); // newest on top, older ones further down
+      return;
+    }
+    if (ev.type !== "activity" && ev.type !== "say") return;
+    const li = activityRow(ev, rows);
+    if (li) { // newest on top, as the questions are; one that arrives while the panel is on screen slides in
+      list.prepend(li);
+      while (list.children.length > 120) list.lastChild.remove();
+      if (arriving) enterRow(li);
+    }
+  };
+  // The fade along the list's foot says "older ones below, nothing there needs you": it is there only while the
+  // list has more below what is in view, and goes once the end is in view.
+  const edge = () => list.classList.toggle("more", list.scrollHeight - list.scrollTop - list.clientHeight > 4);
+  list.addEventListener("scroll", edge, { passive: true });
+  if (typeof ResizeObserver === "function") new ResizeObserver(edge).observe(list);
+  const refresh = () => {
+    const info = sessionInfo.get(tag) || s;
+    paintStatus(status, bar, sessionStatus(info, events()));
+    paintAgents(agents, info);
+    doing.textContent = `started ${ago(info.started)} · in ${info.project} · ${info.command}`;
+    edge();
+  };
+  let arriving = false; // (what is replayed as the panel is drawn does not slide in)
+  for (const ev of events()) add(ev);
+  arriving = true;
+  const ended = () => (sessionInfo.get(tag) || s).status === "ended";
+  const panel = el("section", { class: "card live" }, bar,
+    el("div", { class: "live-head" }, el("span", { class: "pulse" }), el("h4", {}, s.name), status,
+      el("button", { type: "button", class: "right", title: "The feature's steps, to start another", onclick: showWhere }, whereLabel)),
+    agents, doing, ended() ? "" : decide, questions,
+    // the message box under the current question, then the history, newest first
+    ended() ? "" : el("div", { class: "live-say" }, say, el("button", { type: "button", onclick: send }, "Send"), sent),
+    list.childElementCount || !ended() ? list : el("p", { class: "dim small" }, "Nothing was reported."),
+    history);
+  if (!list.childElementCount && !ended()) list.append(el("li", { class: "act dim" }, "Waiting for the session to report in…"));
+  refresh();
+  if (quiet) return panel; // an ended session's record: nothing more will come
+  livePanels.set(tag, {
+    tag, update(ev) {
+      if (list.firstChild && list.firstChild.classList.contains("dim")) list.firstChild.remove();
+      add(ev);
+      refresh();
+      if (ev.type === "session" && ev.status === "ended") { featureCache.delete(f.name); route(); }
+    },
+  });
+  return panel;
+}
+
+// The panel's derived states (lost, unseen) change with time, not events: ask again now and then.
+setInterval(async () => {
+  if ((!livePanels.size && !usageViews.size) || document.hidden || !["feature", "home"].includes(parseRoute().page)) return;
+  try {
+    for (const s of await api("/api/sessions")) {
+      const was = sessionInfo.get(s.tag);
+      sessionInfo.set(s.tag, s);
+      if (tabList.has(s.tag)) tabList.set(s.tag, s);
+      const usage = usageViews.get(s.tag), panel = livePanels.get(s.tag);
+      if (usage) usage.update(s.usage);
+      if (panel && (!was || was.status !== s.status)) panel.update({ type: "session", ...s });
+    }
+    if (pageEls.home.classList.contains("on")) drawTabs();
+  } catch { /* the badge says so */ }
+}, 10000);
+
+// A step's command with Copy, Ask and Start…
+function stepActions(f, row, index, openNow) {
+  if (row.link) {  // a step done on a page of Tatty's own, not in a session
+    const label = row.phase === "decide" ? "Decide on the suggestions…" : "Choose what to commit…";
+    return el("div", { class: "start-actions" }, el("a", { class: "go-btn", id: "step-" + row.phase, href: row.link }, label),
+      row.phase === "commit" ? el("button", { type: "button", id: "step-review-done", title: "If the changes were committed another way", onclick: async () => {
+        try { await api("/api/review/done", { name: f.name }); featureCache.delete(f.name); route(); } catch (e) { alert(e.message || e); }
+      } }, "Mark the review done") : "");
+  }
+  const cmd = command(row);
+  if (!cmd) return "";
+  const slot = el("div");
+  const start = el("button", { type: "button", class: "primary", title: "Open a new Claude session that runs this" }, "Start…");
+  const close = () => { slot.replaceChildren(); start.disabled = false; };
+  const open = () => { start.disabled = true; slot.replaceChildren(startPanel(f, row, index, close)); };
+  start.addEventListener("click", open);
+  if (openNow) open();
+  const cell = cmdCell(cmd, f.name);
+  cell.prepend(start);
+  return el("div", {}, cell, slot);
+}
+
+// The feature's branch (Tatty makes one when a workflow starts) and, once the build is done, its pull / merge
+// request: the Review step's merge phase (in Where it stands) walks through opening it; these buttons tell Tatty
+// what happened when it can't see for itself (it looks with glab / gh when asked, and once when the page opens).
+function mergeCard(f) {
+  const m = f.merge || {};
+  if (!m.branch && (f.phase !== "complete" || !f.project)) return "";
+  const atMerge = !!m.branch && f.phase === "complete" && m.state !== "merged";
+  // which branch the work is on: Tatty's record may be a branch it made or took, not the one the work went on
+  const chooser = el("div", { class: "small" });
+  const project = f.project || m.repo;
+  if (project) api("/api/branch?name=" + encodeURIComponent(f.name) + "&project=" + encodeURIComponent(project)).then(b => {
+    if (b.repo) chooser.replaceChildren(el("div", { class: "dim" }, m.branch ? "Wrong repository or branch?" : "Which branch is the work on?"), branchPicker(f, b, project, () => route()));
+  }).catch(() => {});
+  const act = async (action, extra = {}) => {
+    try { await api("/api/merge", { name: f.name, action, ...extra }); featureCache.delete(f.name); route(); }
+    catch (e) { alert(e.message || e); }
+  };
+  if (atMerge) {  // one quiet look at the host; the page is drawn again only if it found something new
+    api("/api/merge", { name: f.name, action: "check" }).then(r => {
+      if (r.state !== m.state) { featureCache.delete(f.name); route(); }
+    }).catch(() => {});
+  }
+  return el("section", { class: "card merge-card" }, el("h4", {}, "Branch and merge"),
+    m.branch ? el("div", { class: "small" }, "Branch ", el("code", {}, m.branch), m.base ? [" from ", el("code", {}, m.base)] : "",
+      m.state === "merged" ? el("span", { class: "chip done" }, "merged") : m.state === "opened" ? el("span", { class: "chip now" }, "request open") : "") : el("div", { class: "small dim" }, "No branch is recorded for this feature yet."),
+    chooser,
+    m.url ? el("div", { class: "small" }, "Request: ", el("a", { href: m.url, target: "_blank", rel: "noopener" }, m.url)) : "",
+    m.note ? el("div", { class: "small dim" }, m.note) : "",
+    atMerge ? el("div", { class: "start-actions" },
+      el("button", { type: "button", id: "merge-check", onclick: () => act("check", { force: true }) }, "Check now"),
+      el("button", { type: "button", id: "merge-opened", onclick: () => {
+        const url = prompt("The pull / merge request's link (optional):", m.url || "");
+        if (url !== null) act("opened", { url: url.trim() });
+      } }, "I opened the request"),
+      el("button", { type: "button", id: "merge-merged", onclick: () => act("merged") }, "Mark merged")) : "");
+}
+
+// The one thing a feature's page offers first (the server's primary_action), as large buttons:
+//   start     Start Workflow and Start Workflow Lite, for a feature with nothing written yet
+//   decide    Decisions Needed        commit    Commit        continue  Continue (the state's next command)
+//   session   nothing here: the running session's card below has the button (Open session)
+// covered is the index of the row it stands for, so that row is not offered again under More options.
+function actionBar(f) {
+  const a = f.action || { kind: "none" };
+  const rows = f.rows || [];
+  const node = el("div", { class: "action-bar" });
+  const slot = el("div", { class: "action-slot" });
+  const buttons = [];
+  const closePanel = () => { slot.replaceChildren(); for (const b of buttons) b.disabled = false; };
+  const opener = (id, label, make) => {
+    const b = el("button", { type: "button", id, class: "primary action-main" }, label);
+    b.addEventListener("click", () => { for (const x of buttons) x.disabled = true; slot.replaceChildren(make(closePanel)); });
+    buttons.push(b); node.append(b);
+  };
+  const link = (id, label, href) => node.append(el("a", { id, class: "go-btn action-main", href }, label));
+  let covered = -1, said = "";
+  if (a.kind === "start") {
+    covered = 0;
+    said = a.note || "";
+    for (const m of a.modes) opener("start-" + m, m === "full" ? "Start Workflow" : "Start Workflow Lite",
+      close => startPanel(f, m === "full" ? rows[0] : { phase: "lite", stage: "Lite" }, m, close, m));
+  } else if (a.kind === "continue") {
+    covered = a.row;
+    said = rows[a.row].text;
+    // (in the look the app wears: "Gild through to Approach"; Minimal's is plain "Continue")
+    let label = "Continue";
+    try { if (window.TattyLooks) label = TattyLooks.continueLabel(journeyModel(f)); } catch (e) { /* the plain word */ }
+    opener("step-continue", label, close => startPanel(f, rows[a.row], a.row, close));
+  } else if (a.kind === "unitgate") {
+    covered = a.row == null ? -1 : a.row; // (its buttons are the "Where it stands" card's: unitgate.js)
+  } else if (a.kind === "decide" || a.kind === "commit") {
+    const open = a.what === "validate" ? 0 : f.decide && f.decide.open;
+    covered = rows.findIndex(r => r.link);
+    said = a.what === "validate" ? `${a.count} ${a.count === 1 ? "check waits" : "checks wait"} for your result.`
+      : open ? `${open} ${open === 1 ? "question waits" : "questions wait"} for your decision (${f.decide.kinds.map(k => k + "s").join(", ")}).` : rows[covered].text;
+    link(open || a.what === "validate" ? "decide-waiting" : "step-" + a.kind, a.label + (a.count ? ` (${a.count})` : ""), a.href);
+    if (open || a.what === "validate") covered = -1; // (the review's own row, if any, is offered under More options)
+  }
+  if (!node.childElementCount) return { node: "", covered };
+  return { covered, node: el("div", { class: "action" + (a.kind === "start" ? " action-start" : "") },
+    said ? el("p", { class: "action-said" }, said) : "", node, slot) };
+}
+
+// ------------------------------------------------------------- the Overview as a stage
+// The feature's Overview is one scene in the theme the app wears, filling the window (proposed on
+// docs/overview/stage-view.html): a top line (whose feature, its chips, the page's few actions), the
+// hero (where it is, what is next), the journey across the full width, the gate (the one place to
+// act: what "Where it stands" held, the live sessions in a line each), and a dock whose pills open
+// the other cards in a drawer over the stage. Every drawer's card is built with the page (hidden
+// until asked for), so nothing is lost and the page's selectors still find them.
+let stageDrawer = null; // the drawer open, kept across the redraws a feature's changes cause
+
+function overview(f) {
+  if (!window.TattyLooks) return overviewCards(f);
+  let m;
+  try { m = journeyModel(f); } catch (e) { return overviewCards(f); }
+  if (!m.nodes.length) return overviewCards(f);
+  const act = actionBar(f);
+  const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
+  const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind }, el("p", {}, r.kind === "warn" ? "⚠ " : "", r.text), stepActions(f, r, i));
+  const more = rest.filter(x => x.r.kind !== "warn").map(stand1);
+  const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
+  // the live sessions: a line each in the gate, which keeps up as they report
+  const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
+  const going = sessions.filter(s => LIVE.has(s.status));
+  statusViews.clear();
+  const lines = going.map(s => {
+    const status = el("span", { class: "chip" }), bar = stateBar();
+    const go = el("a", { class: "go-btn" + (f.action && f.action.kind === "session" ? " action-main" : "") });
+    const paint = () => {
+      paintStatus(status, bar, sessionStatus(sessionInfo.get(s.tag) || s, sessionEvents.get(s.tag) || []));
+      const open = (sessionEvents.get(s.tag) || []).filter(ev => ev.type === "ask" && !answers.has(ev.id)).pop();
+      go.href = "#workflows/" + encodeURIComponent(s.tag) + (open ? "/ask/" + encodeURIComponent(open.id) : "");
+      go.textContent = open ? "Go to the question" : "Open session ↗";
+      go.classList.toggle("waiting", !!open);
+    };
+    paint();
+    statusViews.set(s.tag, { update: paint });
+    const stage = (s.name || "").split(" : ").pop();
+    return el("div", { class: "sv-sess live-link" }, el("span", { class: "pulse" }), el("strong", { title: s.name }, stage || s.name), status, go);
+  });
+  const gate = el("section", { class: "card sv-gate" },
+    el("h4", { class: "sv-gate-h" }, "Where it stands"),
+    f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
+    unitGateCard(f), commitCard(f), // unitgate.js, commit.js
+    act.node,
+    ...rest.filter(x => x.r.kind === "warn").map(stand1),
+    f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "",
+    lines.length ? el("div", { class: "sv-lines" }, lines) : "",
+    more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
+    !act.node && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
+    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
+  // the drawers: today's cards, one click away
+  const last = !going.length && sessions[0];
+  const shown = going[0] || last;
+  usageViews.clear();
+  let usage = "";
+  if (shown) { const w = usageWidget(shown.usage); usageViews.set(shown.tag, { tag: shown.tag, update: w.update }); usage = w.node; }
+  const docItems = [...f.docList.map(d => el("a", { class: "fnav-item", href: featureHref(f.name, d.file) }, el("span", {}, d.doc), el("span", { class: "dim small" }, ago(d.updated)))),
+    ...f.notes.map(n => el("a", { class: "fnav-item", href: featureHref(f.name, n.file) }, el("span", {}, n.name), el("span", { class: "dim small" }, n.group)))];
+  const panes = [
+    ["docs", `Documents · ${f.docList.length}`, el("div", {}, el("div", { class: "dim small sv-folder" }, copyable(f.folder)), docItems.length ? docItems : el("p", { class: "dim" }, "None yet."))],
+    ["merge", "Branch & merge", mergeCard(f)],
+    ["session", "Last session", last && last.status === "ended" ? el("details", { class: "card ended-session", open: true },
+      el("summary", {}, `Last session: ${last.name}, ended`), sessionPanel(f, last, () => {}, true)) : ""],
+    ["build", f.units && f.units.total ? `Build · ${f.units.done}/${f.units.total}` : "Build", f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
+      bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
+      el("table", { class: "units" }, el("tbody", {}, f.unitList.map(u => el("tr", {},
+        el("td", { class: "mono" }, u.id), el("td", {}, u.outcome), el("td", {}, chip(u.status || "—", statusClass(u.status)))))))) : ""],
+    ["timeline", "Timeline", f.events.length ? el("section", { class: "card" }, el("h4", {}, "Timeline"),
+      el("ul", { class: "timeline" }, f.events.map(e => el("li", {},
+        el("span", { class: "dim small mono" }, e.ts ? new Date(e.ts).toLocaleString() : ""),
+        el("span", {}, (e.qualifier ? e.qualifier + " " : "") + (EVENTS[e.event] || e.event)),
+        e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : ""],
+    ["usage", "Usage", usage],
+  ].filter(([, , node]) => node);
+  if (stageDrawer && !panes.some(([k]) => k === stageDrawer)) stageDrawer = null;
+  const title = el("h3", {});
+  const body = el("div", { class: "sv-drawer-body" }, panes.map(([k, , node]) => el("div", { class: "sv-pane", "data-k": k, hidden: true }, node)));
+  const drawer = el("aside", { class: "sv-drawer", hidden: true, "aria-label": "Details" },
+    el("div", { class: "sv-drawer-head" }, title, el("button", { type: "button", title: "Close (Esc)", onclick: () => openPane(null) }, "×")), body);
+  const pills = panes.map(([k, label]) => el("button", { type: "button", "data-k": k, onclick: () => openPane(stageDrawer === k ? null : k) }, label));
+  function openPane(k) {
+    stageDrawer = k;
+    drawer.hidden = !k;
+    for (const p of body.children) p.hidden = p.dataset.k !== k;
+    for (const b of pills) b.classList.toggle("open", b.dataset.k === k);
+    if (k) title.textContent = panes.find(p => p[0] === k)[1];
+  }
+  // the top line: whose feature, its chips, the page's actions (the old head, so its buttons keep their ids)
+  const head = el("div", { class: "ov-head sv-top" },
+    el("h2", {}, f.name, f.title ? el("span", { class: "ov-title" }, f.title) : ""), chip(ROUTES[f.route] || f.route, "route"),
+    chip(phaseWord(f), phaseDone(f) ? "done" : "now"),
+    el("span", { class: "dim small sv-when" }, "updated " + ago(f.updated)),
+    el("span", { class: "ov-acts" },
+      f.task || going.length ? el("button", { type: "button", id: "feature-cancel",
+        title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
+          const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
+          if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
+        } }, "Cancel workflow") : "",
+      stagesButton(f), // stages.js
+      el("button", { type: "button", onclick: () => route() }, "Refresh"),
+      archiveCombo(f))); // archive.js
+  const stage = TattyLooks.journey(m, { key: f.name });
+  stage.id = "journey";
+  // what it shows, in words, for the walks (features-check.py): Label:state|... and the mode
+  stage.dataset.stages = m.nodes.map((n, i) => `${n.l}:${m.st[i]}`).join("|");
+  stage.dataset.mode = m.mode;
+  const fx = stage.querySelector(".fx");
+  stage.insertBefore(head, stage.firstChild);
+  stage.insertBefore(el("div", { class: "sv-gate-wrap" }, gate), fx);
+  if (pills.length) stage.insertBefore(el("div", { class: "sv-dock" }, pills), fx);
+  const root = el("div", { class: "overview sv" }, stage, drawer);
+  if (stageDrawer) openPane(stageDrawer);
+  return root;
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || !stageDrawer) return;
+  const close = document.querySelector(".overview.sv .sv-drawer-head button");
+  if (close) close.click();
+});
+
+// The Overview as cards, as it was before the stage: what a page draws when looks.js isn't there
+// (a server older than this page).
+function overviewCards(f) {
+  const act = actionBar(f);
+  const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
+  const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind },
+    el("p", {}, r.kind === "warn" ? "⚠ " : "", r.text), // (the toolbox's own "or …" rows say so themselves)
+    stepActions(f, r, i));
+  // A warning is a problem, not an option: it stays in sight. The other steps are folded away.
+  const more = rest.filter(x => x.r.kind !== "warn").map(stand1);
+  const stand = [
+    f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
+    act.node,
+    ...rest.filter(x => x.r.kind === "warn").map(stand1),
+    more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : ""];
+  const units = f.unitList.length ? el("section", { class: "card" }, el("h4", {}, "Build"),
+    bar(f.tasks.done, f.tasks.total, `${f.units.done} of ${f.units.total} work units done · ${f.tasks.done} of ${f.tasks.total} tasks implemented or done`),
+    el("table", { class: "units" }, el("tbody", {}, f.unitList.map(u => el("tr", {},
+      el("td", { class: "mono" }, u.id), el("td", {}, u.outcome), el("td", {}, chip(u.status || "—", statusClass(u.status)))))))) : "";
+  const events = f.events.length ? el("section", { class: "card" }, el("h4", {}, "Timeline"),
+    el("ul", { class: "timeline" }, f.events.map(e => el("li", {},
+      el("span", { class: "dim small mono" }, e.ts ? new Date(e.ts).toLocaleString() : ""),
+      el("span", {}, (e.qualifier ? e.qualifier + " " : "") + (EVENTS[e.event] || e.event)),
+      e.approx ? el("span", { class: "dim small", title: "Recorded when Tatty noticed it, not when it happened" }, " (noticed)") : "")))) : "";
+  const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
+  const where = el("section", { class: "card" }, el("h4", {}, "Where it stands"), unitGateCard(f), commitCard(f), // unitgate.js, commit.js
+    stand.some(Boolean) ? stand : el("p", { class: "dim" }, "Nothing to report."),
+    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
+  // Each session Start opened that is still going has a tab on the Features page: one line
+  // here says so and goes there. (More than one may be going: they are separate sessions.)
+  const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
+  const going = sessions.filter(s => LIVE.has(s.status));
+  statusViews.clear();
+  const tabs = going.map(s => {
+    const status = el("span", { class: "chip" });
+    const bar = stateBar();
+    // The way to its tab: straight to the question when one waits, with the button
+    // calling for it; else just the tab.
+    const go = el("a", { class: "go-btn right" + (f.action && f.action.kind === "session" ? " action-main" : "") });
+    const paint = () => {
+      paintStatus(status, bar, sessionStatus(sessionInfo.get(s.tag) || s, sessionEvents.get(s.tag) || []));
+      const open = (sessionEvents.get(s.tag) || []).filter(ev => ev.type === "ask" && !answers.has(ev.id)).pop();
+      go.href = "#workflows/" + encodeURIComponent(s.tag) + (open ? "/ask/" + encodeURIComponent(open.id) : "");
+      go.textContent = open ? "Go to the question" : "Open session";
+      go.classList.toggle("waiting", !!open);
+    };
+    paint();
+    statusViews.set(s.tag, { update: paint }); // it keeps up as the session reports
+    return el("section", { class: "card live-link" }, bar, el("span", { class: "pulse" }), el("strong", {}, s.name), status, go);
+  });
+  const process = tabs.length ? el("div", {}, tabs, where) : where;
+  const live = going[0];
+  const last = !live && sessions[0];
+  const ended = last && last.status === "ended" ? el("details", { class: "card ended-session" },
+    el("summary", {}, `Last session: ${last.name}, ended`), sessionPanel(f, last, () => {}, true)) : "";
+  // What the live session has used so far, or the last one's final total: above the Timeline.
+  usageViews.clear();
+  const shown = live || last;
+  let usage = "";
+  if (shown) {
+    const w = usageWidget(shown.usage);
+    usageViews.set(shown.tag, { tag: shown.tag, update: w.update });
+    usage = w.node;
+  }
+  return el("div", { class: "overview" },
+    el("div", { class: "ov-head" },
+      el("h2", {}, f.name, f.title ? el("span", { class: "ov-title" }, f.title) : ""), chip(ROUTES[f.route] || f.route, "route"),
+      chip(phaseWord(f), phaseDone(f) ? "done" : "now"),
+      el("span", { class: "dim small" }, "updated " + ago(f.updated)),
+      el("span", { class: "ov-acts" },
+        f.task || going.length ? el("button", { type: "button", id: "feature-cancel",
+          title: f.task ? `Stop its sessions and undo the start of ${f.task.id}` : "Stop its sessions", onclick: async () => {
+            const r = await cancelWorkflow(f.name, cancelWorkflowText(f.name, f.task, f.ticketOnly, going.length > 0));
+            if (r) { if (r.folder === "removed") location.hash = "#home"; else route(); }
+          } }, "Cancel workflow") : "",
+        stagesButton(f), // stages.js
+        el("button", { type: "button", onclick: () => route() }, "Refresh"), // (drawn from what is known at once, read again behind it)
+        archiveCombo(f))), // archive.js
+    el("div", { class: "dim small" }, copyable(f.folder)),
+    journeyCard(f),
+    mergeCard(f),
+    process, ended,
+    units, usage, events);
+}
+
+// A document is read in View (a viewer made for its kind, views.js; the plain
+// markdown for a kind without one) or changed in Edit (its markdown, saved back to
+// the file). It opens in View; the choice is kept for the session.
+const docMode = {
+  get: () => (sessionStorage.getItem("tt-doc-mode") === "edit" ? "edit" : "view"),
+  set: m => sessionStorage.setItem("tt-doc-mode", m),
+};
+let editing = null; // the editor on screen: { dirty() }
+window.addEventListener("beforeunload", e => { if (editing && editing.dirty()) e.preventDefault(); });
+
+const docUrl = (f, file) => `/api/doc?name=${encodeURIComponent(f.name)}&file=${encodeURIComponent(file)}`;
+
+// d is the /api/doc answer; it is kept current as the document is saved or reloaded.
+function editor(f, file, d, meta, changed) {
+  const ta = el("textarea", { class: "doc-edit", spellcheck: "false", "aria-label": "Document markdown" });
+  ta.value = d.text;
+  let base = d.text;
+  const note = el("span", { class: "small dim" });
+  const save = el("button", { type: "button", onclick: () => write(d.updated) }, "Save");
+  const revert = el("button", { type: "button", onclick: () => { ta.value = base; sync(); } }, "Revert");
+  const fix = el("span", { class: "ed-fix" });
+  const sync = () => {
+    const dirty = ta.value !== base;
+    save.disabled = revert.disabled = !dirty;
+    note.className = "small dim";
+    note.textContent = dirty ? "Unsaved changes" : "";
+  };
+  const adopt = (text, updated) => { base = text; d.text = text; d.updated = updated; if (meta) meta.updated = updated; changed(updated); };
+  async function write(expected) {
+    fix.replaceChildren();
+    try {
+      const r = await api("/api/doc/save", { name: f.name, file, text: ta.value, expected });
+      adopt(ta.value, r.updated);
+      sync();
+      note.textContent = "Saved";
+    } catch (e) {
+      if (e.status !== 409) { note.className = "small st missing"; note.textContent = `Couldn't save: ${e.message || e}`; return; }
+      note.className = "small st missing";
+      note.textContent = "This document changed on disk since you opened it.";
+      fix.replaceChildren(
+        el("button", { type: "button", onclick: async () => { const cur = await api(docUrl(f, file)); write(cur.updated); } }, "Overwrite with mine"),
+        el("button", { type: "button", onclick: async () => { const cur = await api(docUrl(f, file)); ta.value = cur.text; adopt(cur.text, cur.updated); fix.replaceChildren(); sync(); } }, "Load the disk version"));
+    }
+  }
+  ta.addEventListener("input", sync);
+  ta.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (!save.disabled) write(d.updated); } });
+  sync();
+  editing = { dirty: () => ta.value !== base };
+  return el("div", { class: "doc-editor" }, el("div", { class: "ed-bar" }, save, revert, note, fix), ta);
+}
+
+async function showDoc(f, file, main, at) {
+  main.replaceChildren(el("p", { class: "dim" }, "Opening…"));
+  editing = null;
+  try {
+    const d = await api(docUrl(f, file));
+    const meta = [...f.docList, ...f.notes].find(x => x.file === file);
+    const kind = meta && meta.doc;
+    if (at) docMode.set("view"); // following a link to a heading: read it
+    const body = el("div", { class: "doc-body" });
+    const changedAt = el("span", { class: "dim small" }, "changed " + ago(d.updated));
+    const buttons = {};
+    // What a viewer may ask for: another document of this feature, by kind (a Task
+    // Breakdown shows its tasks' status from the Task Status).
+    const ctx = {
+      sibling: async other => {
+        const hit = f.docList.find(x => x.doc === other && meta && x.prefix === meta.prefix);
+        if (!hit) return null;
+        try { return (await api(docUrl(f, hit.file))).text; } catch { return null; }
+      },
+    };
+    const render = () => {
+      const mode = docMode.get();
+      for (const [m, b] of Object.entries(buttons)) b.classList.toggle("on", m === mode);
+      editing = null;
+      body.replaceChildren(mode === "edit" ? editor(f, file, d, meta, u => { changedAt.textContent = "changed " + ago(u); })
+        : viewOf(kind, d.text, ctx) || mdNode(d.text));
+      if (mode === "view") { linkIds(body, f.name); codeActions(body); } // the IDs it cites, as links to their items; app.js's code bars
+    };
+    const pick = m => {
+      if (m === docMode.get()) return;
+      if (editing && editing.dirty() && !confirm("Discard your unsaved changes?")) return;
+      docMode.set(m);
+      render();
+    };
+    for (const [m, label] of [["view", "View"], ["edit", "Edit"]]) {
+      buttons[m] = el("button", { type: "button", class: "mode-btn", title: m === "view" ? "Read it" : "Change its markdown", onclick: () => pick(m) }, label);
+    }
+    main.replaceChildren(
+      el("div", { class: "doc-head" },
+        el("h2", {}, meta ? (meta.doc || meta.name) : file),
+        el("div", { class: "mode-toggle", role: "group", "aria-label": "Document mode" }, buttons.view, buttons.edit),
+        changedAt,
+        // a plan can be seen as a diagram (diagram.js)
+        meta && /Tech Plan$|Lite Brief$/.test(meta.doc || "") ? el("a", { class: "small", href: featureDiagramHref(f.name, "plan") }, "View as a diagram") : "",
+        el("span", { class: "right" }, copyable(d.path))),
+      body);
+    render();
+    main.scrollTop = 0;
+    return true;
+  } catch (e) { main.replaceChildren(el("p", { class: "st missing" }, `Can't open ${file}: ${e.message || e}`)); return false; }
+}
+
+// ------------------------------------------------------------- start
+
+if (!companion) document.body.classList.add("full");
+// The first page comes once app.js's boot knows which modes are installed.
+booted.then(route);

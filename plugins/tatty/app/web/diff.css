@@ -1,0 +1,41 @@
+/* The Code Diff section of a feature (diff.js). */
+.diff-page { display: flex; flex-direction: column; gap: 14px; max-width: 1400px; }
+.diff-line { margin: 8px 0 0; color: var(--dim); }
+
+.diff-task-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.diff-task-head strong { min-width: 0; word-break: break-word; }
+.diff-note { color: var(--dim); font-size: 12px; }
+.diff-note.warn { color: var(--warn); }
+
+.diff-words { margin-bottom: 10px; }
+.diff-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin-bottom: 3px; }
+.diff-words pre { margin: 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+
+.diff-more-block { margin-bottom: 10px; }
+.diff-more-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.diff-more-btn:disabled { opacity: .6; cursor: default; }
+.diff-more-block .diff-label { margin-top: 6px; }
+.diff-more-block p { margin: 4px 0 0; }
+.diff-more { margin: 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+
+.diff-change { margin-top: 12px; }
+.diff-change-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }
+.diff-change-head code { word-break: break-all; }
+.diff-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+
+.diff { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px/1.45 var(--mono); }
+.diff col.ln-col { width: 4.5em; }
+.diff td { padding: 0 6px; vertical-align: top; }
+.diff td.ln { text-align: right; color: var(--dim); user-select: none; }
+.diff td.code { white-space: pre; width: 50%; }
+.diff td.code.ctx { background: var(--panel); }
+.diff td.code.del { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.diff td.code.add { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.diff td.code.del::before { content: "−  "; color: var(--bad); }
+.diff td.code.add::before { content: "+  "; color: var(--ok); }
+.diff td.code.ctx::before { content: "   "; }
+.diff td.code.empty { background: var(--bg); }
+.diff td.code + td.ln { border-left: 1px solid var(--line); }
+.diff td.diff-hunk { color: var(--dim); background: var(--bg); padding: 2px 6px; }

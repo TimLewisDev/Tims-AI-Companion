@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "prefix": "T",
+  "nextId": 8,
+  "columns": [
+    {"id": "c1", "name": "To Do"},
+    {"id": "c2", "name": "In Progress"},
+    {"id": "c3", "name": "In Review"},
+    {"id": "c4", "name": "Done"}
+  ],
+  "order": {"backlog": ["T-0006", "T-0005"], "c1": ["T-0001", "T-0002"]},
+  "options": {"autoCompleteDays": 0, "startColumn": "", "project": "", "celebrate": true,
+              "priorities": ["Highest", "High", "Medium", "Low", "Lowest"]},
+  "started": {}
+}

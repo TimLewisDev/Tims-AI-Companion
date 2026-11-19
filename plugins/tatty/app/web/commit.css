@@ -1,0 +1,17 @@
+/* The Commit page and its card (commit.js). */
+.commit-page { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
+.commit-page h2 { margin: 0; font-size: 19px; }
+.commit-section .commit-head { display: flex; align-items: baseline; gap: 10px; }
+.commit-section h4 { margin: 0 auto 0 0; }
+.crows { display: flex; flex-direction: column; margin-top: 6px; }
+.crow { display: flex; align-items: center; gap: 8px; padding: 3px 2px; border-top: 1px solid var(--line); cursor: pointer; }
+.crow:first-child { border-top: none; }
+.crow:hover { background: var(--accent-soft); }
+.crow.gone .cpath { text-decoration: line-through; }
+.cpath { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; flex: 1; }
+#commit-message { width: 100%; box-sizing: border-box; font: inherit; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+.commit-error { white-space: pre-wrap; margin: 8px 0 0; }
+.commit-card { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.commit-card p { margin: 0; flex: 1 1 320px; }
+.commit-section .linkish { background: none; border: none; color: var(--accent); padding: 0 4px; cursor: pointer; font-size: 12px; }
+.commit-section .linkish:hover { text-decoration: underline; }
