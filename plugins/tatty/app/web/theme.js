@@ -38,11 +38,27 @@
     document.dispatchEvent(new CustomEvent("tt-theme", { detail: choice }));
   }
 
-  // Apply, and keep it. Returns the settings the server answered with.
-  async function set(value) {
+  // Apply, and keep it. Returns the settings the server answered with. A choice made here
+  // is the person's own, so it also ends any mode a worn look moved them to (themeBase).
+  let base = "none"; // the person's own choice while a look's mode is on: "none" (no look's), "", "light" or "dark"
+  async function set(value, keepBase) {
     touched = true;
     apply(value);
-    try { return await api("/api/settings", { theme: choice }); } catch (e) { return null; }
+    if (!keepBase) base = "none";
+    try { return await api("/api/settings", { theme: choice, themeBase: base }); } catch (e) { return null; }
+  }
+
+  // A look was worn: move to its own mode (mode "dark" or "light"), remembering the person's
+  // own choice the first time; a look with no mode gives that choice back.
+  function forLook(mode) {
+    if (mode === "dark" || mode === "light") {
+      if (base === "none") base = choice;
+      return set(mode, true);
+    }
+    if (base === "none") return Promise.resolve(null);
+    const back = base;
+    base = "none";
+    return set(back, true);
   }
 
   button.addEventListener("click", () => set(effective() === "dark" ? "light" : "dark"));
@@ -53,7 +69,7 @@
   paint();
 
   // The server's word is the truth (another window may have changed it).
-  api("/api/settings").then(s => { if (!touched && typeof s.theme === "string") apply(s.theme); }).catch(() => {});
+  api("/api/settings").then(s => { if (typeof s.themeBase === "string") base = s.themeBase; if (!touched && typeof s.theme === "string") apply(s.theme); }).catch(() => {});
 
-  window.TattyTheme = { set, effective };
+  window.TattyTheme = { set, effective, forLook };
 })();

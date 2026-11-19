@@ -378,7 +378,13 @@ through a feature, so most of it is in how it looks and sounds.
   one not owned, or no longer sold, is Minimal), `/api/status` and the `wallet` event
   carry it, and every window follows (`TattyLooks.follow`). A theme's id may not be an
   avatar's or an accessory's (what is owned is one list), and `shop_catalogue` drops one
-  that is. A theme is two things:
+  that is. Each theme also names the mode it looks best in (`mode`: `dark` for Star Chart,
+  Night Drive, Kintsugi and Aurora, `light` for the Map; Minimal and Chronograph name none).
+  Wearing or buying one (`wearLook`, never a try-on) calls `TattyTheme.forLook(mode)`: it
+  sets the light/dark choice to the theme's and keeps the person's own in the `themeBase`
+  setting (`"none"` while no theme has moved it); wearing a theme with no mode gives that
+  choice back, and the person's own click on the button or Settings ends the override. A
+  theme is two things:
   - **The whole app** (`web/looks.css`): a palette, theme.css's layer-2 neutrals (`--bg`,
     `--panel`, `--ink`, `--dim`, `--line`), for light and for dark, and a backdrop behind
     the page, keyed on `data-look` on `<html>`. `data-shade` says which of light and dark

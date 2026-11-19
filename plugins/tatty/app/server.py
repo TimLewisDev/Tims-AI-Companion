@@ -350,7 +350,10 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      # branches (see "branches and merging" below): what a workflow's new branch name starts with
                      "branchPrefix": "feature/",
                      # the page's theme (web/theme.js): "light" or "dark" once the person has chosen, "" to follow Windows
-                     "theme": ""}
+                     "theme": "",
+                     # the "theme" the person had before a worn look moved it to the look's own mode
+                     # (web/theme.js): "none" while no look has, else "", "light" or "dark"
+                     "themeBase": "none"}
 
 
 def load_settings():
@@ -371,6 +374,8 @@ def save_settings(changes):
         now["chatSummary"] = "tatty"
     if now["theme"] not in ("", "light", "dark"):
         now["theme"] = ""
+    if now["themeBase"] not in ("none", "", "light", "dark"):
+        now["themeBase"] = "none"
     if not re.fullmatch(r"(?:[A-Za-z0-9_-]+/)*", now["branchPrefix"]) or len(now["branchPrefix"]) > 30:
         now["branchPrefix"] = SETTINGS_DEFAULTS["branchPrefix"]
     home().mkdir(parents=True, exist_ok=True)

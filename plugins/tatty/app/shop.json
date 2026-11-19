@@ -17,12 +17,12 @@
   ],
   "themes": [
     {"id": "minimal", "name": "Minimal", "tagline": "Clean and quiet. Everyone's to start with", "price": 0, "rarity": "common"},
-    {"id": "chart", "name": "Star Chart", "tagline": "Launch your feature into the stars", "price": 900, "rarity": "rare"},
-    {"id": "map", "name": "Expedition Map", "tagline": "Plant a flag at every stage", "price": 900, "rarity": "rare"},
+    {"id": "chart", "name": "Star Chart", "tagline": "Launch your feature into the stars", "price": 900, "rarity": "rare", "mode": "dark"},
+    {"id": "map", "name": "Expedition Map", "tagline": "Plant a flag at every stage", "price": 900, "rarity": "rare", "mode": "light"},
     {"id": "chrono", "name": "Chronograph", "tagline": "Every stage, a precise tick", "price": 1200, "rarity": "epic"},
-    {"id": "drive", "name": "Night Drive", "tagline": "Light the city, lamp by lamp", "price": 1200, "rarity": "epic"},
-    {"id": "kin", "name": "Kintsugi", "tagline": "Mend the feature with gold", "price": 1500, "rarity": "legendary"},
-    {"id": "aur", "name": "Aurora", "tagline": "Northern lights over every stage you pass", "price": 1500, "rarity": "legendary"}
+    {"id": "drive", "name": "Night Drive", "tagline": "Light the city, lamp by lamp", "price": 1200, "rarity": "epic", "mode": "dark"},
+    {"id": "kin", "name": "Kintsugi", "tagline": "Mend the feature with gold", "price": 1500, "rarity": "legendary", "mode": "dark"},
+    {"id": "aur", "name": "Aurora", "tagline": "Northern lights over every stage you pass", "price": 1500, "rarity": "legendary", "mode": "dark"}
   ],
   "slots": [
     {"id": "hat", "name": "Hats"}, {"id": "eyes", "name": "Eyes"}, {"id": "face", "name": "Face"},

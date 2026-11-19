@@ -2099,6 +2099,8 @@ get /api/wallet >"$T/w"
 	ok "the app wears Minimal, everyone's to start with" || bad "the app wears Minimal, everyone's to start with" "$(head -c 300 "$T/w")"
 [ "$(pick "$T/w" "[t['id'] for t in d['catalogue']['themes']] == ['minimal', 'chart', 'map', 'chrono', 'drive', 'kin', 'aur'] and all(t.get('rarity') for t in d['catalogue']['themes']) and [t['id'] for t in d['catalogue']['themes'] if not t.get('price')] == ['minimal']")" = True ] &&
 	ok "the catalogue sells six themes, each with its rarity" || bad "the catalogue sells six themes, each with its rarity" "$(pick "$T/w" "d['catalogue']['themes']")"
+[ "$(pick "$T/w" "{t['id']: t.get('mode') for t in d['catalogue']['themes']} == {'minimal': None, 'chart': 'dark', 'map': 'light', 'chrono': None, 'drive': 'dark', 'kin': 'dark', 'aur': 'dark'}")" = True ] &&
+	ok "each theme names the mode it looks best in (Minimal and Chronograph name none)" || bad "each theme names the mode it looks best in" "$(pick "$T/w" "d['catalogue']['themes']")"
 [ "$(pick "$T/w" "not {t['id'] for t in d['catalogue']['themes']} & {x['id'] for x in d['catalogue']['avatars'] + d['catalogue']['items']}")" = True ] &&
 	ok "no theme shares an id with an avatar or an accessory" || bad "no theme shares an id with an avatar or an accessory"
 $PY - "$root/plugins/tatty/app" <<'PYEOF' >"$T/looks" 2>&1
@@ -2193,6 +2195,14 @@ post /api/settings '{"theme":5}' >"$T/set"
 [ "$(pick "$T/set" "d['theme']")" = light ] && ok "a wrong type is ignored" || bad "a wrong type is ignored" "$(head -c 200 "$T/set")"
 post /api/settings '{"theme":""}' >"$T/set"
 [ "$(pick "$T/set" "d['theme']")" = "" ] && ok "Match Windows clears the choice" || bad "Match Windows clears the choice"
+# themeBase: the person's own mode while a worn theme has moved it ("none" when it has not).
+[ "$(pick "$T/set" "d['themeBase']")" = none ] && ok "no theme has moved the mode by default" || bad "no theme has moved the mode by default" "$(head -c 200 "$T/set")"
+post /api/settings '{"themeBase":"dark"}' >"$T/set"
+[ "$(pick "$T/set" "d['themeBase']")" = dark ] && ok "a remembered mode is kept" || bad "a remembered mode is kept"
+post /api/settings '{"themeBase":"nonsense"}' >"$T/set"
+[ "$(pick "$T/set" "d['themeBase']")" = none ] && ok "a remembered mode that is not a mode is none" || bad "a remembered mode that is not a mode is none"
+post /api/settings '{"themeBase":5}' >"$T/set"
+[ "$(pick "$T/set" "d['themeBase']")" = none ] && ok "a wrong type for the remembered mode is ignored" || bad "a wrong type for the remembered mode is ignored"
 for f in theme.js theme-init.js; do
 	[ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"
 done

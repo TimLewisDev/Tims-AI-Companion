@@ -175,6 +175,10 @@ function tryLook(t) {
 async function wearLook(id, card, quiet) {
   try { await shopPost({ action: "theme", id }); } catch (e) { TattySfx.play("denied"); return; }
   if (hasLooks()) TattyLooks.follow(shopNow.theme);
+  if (window.TattyTheme) {
+    const worn = ((shopNow.catalogue || {}).themes || []).find(t => t.id === shopNow.theme);
+    TattyTheme.forLook(worn && worn.mode);
+  }
   TattySfx.play("equip");
   paintLookPreview(shopNow.theme);
   if (lookPreview && lookPreview.isConnected) TattyWallet.burst(centreOf(lookPreview), quiet ? 26 : 12, { reach: quiet ? 140 : 80 });
