@@ -4,7 +4,8 @@
 // an agent that reads the code (Recommend action): act, rebut or ask, with a reply drafted for the person to
 // copy. Ticking "Make this change" on comments and pressing "Make N changes" starts a session that edits the
 // code, and the Commit page commits it; the ticked comments' replies are then drafted with "Fixed in <sha>".
-// Nothing here posts anything to the host.
+// A reply is a draft in a box; Post reply sends what is in the box to the host as the person (through glab or gh),
+// and that is the only thing here that writes to it.
 //
 // Things that need attention pulse and glow; what explains them is a hover card (mrPop). The motion follows the
 // shop's Motion switch (TattyWallet.motion(), the `still` class), not the system's reduced-motion setting.
@@ -260,6 +261,31 @@ const mrThreadHead = (t, where) => {
 };
 const mrNotes = t => t.notes.map(n => el("div", { class: "mr-note" },
   el("div", { class: "mr-note-head" }, mrAvatar(n.author, "sm"), el("strong", { class: "mr-author" }, n.author || "someone"), el("span", { class: "dim small" }, mrWhen(n.created))), mdNode(n.body || "")));
+// Whatever scrolls the page: the nearest scrolling ancestor, else the document.
+function mrScroller(node) {
+  for (let n = node.parentElement; n && n !== document.body; n = n.parentElement) {
+    const o = getComputedStyle(n).overflowY;
+    if ((o === "auto" || o === "scroll") && n.scrollHeight > n.clientHeight) return n;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+// Replace a card with its new drawing without moving what the person is looking at: the first card or heading still
+// in view is the anchor, and the page is scrolled by however far it was pushed (an answer arriving in a card above
+// it makes that card taller). If the anchor is the card itself, the new card takes its place as the anchor.
+function mrReplaceKeepingView(root, old, nu) {
+  const sc = mrScroller(root);
+  const docWide = sc === document.scrollingElement || sc === document.documentElement || sc === document.body;
+  const line = docWide ? 56 : sc.getBoundingClientRect().top + 4; // (under the app's own header)
+  let anchor = [...root.querySelectorAll(".mr-thread, .mr-group > h4")].find(c => c.getBoundingClientRect().bottom > line + 24) || null;
+  const before = anchor ? anchor.getBoundingClientRect().top : 0;
+  old.replaceWith(nu);
+  if (anchor === old) anchor = nu;
+  if (!anchor) return;
+  const d = anchor.getBoundingClientRect().top - before;
+  if (Math.abs(d) < 0.5) return;
+  if (docWide) window.scrollBy({ top: d, behavior: "instant" }); else sc.scrollTop += d;
+}
 
 async function mrPage(f, main) {
   const enc = encodeURIComponent;
@@ -358,11 +384,36 @@ async function mrPage(f, main) {
     });
     reply.addEventListener("blur", () => { if (view.stale.delete(t.id)) paintThread(t.id); });
     const copy = el("button", { type: "button", onclick: async () => { try { await navigator.clipboard.writeText(reply.value); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy reply"; }, 1500); } catch { reply.select(); } } }, "Copy reply");
+    // Post reply: what is in the box goes to the host as the person; it waits behind a spinner, and a refusal says why and keeps the text
+    let posting = false;
+    const postErr = el("p", { class: "st missing mr-error", id: "mr-post-error", hidden: true });
+    const post = el("button", { type: "button", class: "primary", id: "mr-post", disabled: !(draft.text || "").trim() }, "Post reply");
+    reply.addEventListener("input", () => { post.disabled = posting || !reply.value.trim(); });
+    post.addEventListener("click", async () => {
+      const text = reply.value.trim();
+      if (!text || posting) return;
+      posting = true; post.disabled = true; reply.disabled = true; postErr.hidden = true;
+      post.replaceChildren(el("span", { class: "mr-spin", "aria-hidden": "true" }), " Posting…");
+      try {
+        const r = await api("/api/mr/reply", { name: f.name, thread: t.id, text });
+        const at = view.data.mr.threads.findIndex(x => x.id === t.id);
+        if (at >= 0 && r.thread) view.data.mr.threads[at] = r.thread;
+        if (r.draft) tstate(t.id).draft = r.draft;
+        view.data.mr.fetched = Date.now() / 1000;
+        paintThread(t.id);  // the reply is in the thread now, and the box is empty
+      } catch (e) {
+        posting = false; reply.disabled = false; post.textContent = "Post reply"; post.disabled = !reply.value.trim();
+        postErr.textContent = String(e.message || e); postErr.hidden = false;
+      }
+    });
     card.append(head, ...notes,
       el("div", { class: "mr-actions" }, recommend, stop, el("label", { class: "mr-switch" }, tick, el("span", { class: "mr-knob", "aria-hidden": "true" }), el("span", {}, "Make this change"), spin), result,
         working ? el("span", { class: "dim small mr-step" }, (view.data.step && view.data.step[t.id]) || "Starting…") : ""),
       failed, recCard,
-      el("div", { class: "mr-reply" }, el("div", { class: "dim small" }, "Reply: a draft. Tatty never sends it", draft.commit ? mrTip(el("span", { class: "chip done" }, `committed as ${draft.commit}`), "The change was committed here: the draft says so.") : ""), reply, el("div", { class: "start-actions" }, copy)));
+      el("div", { class: "mr-reply" }, el("div", { class: "dim small mr-reply-label" }, "Your reply: sent only when you press Post reply",
+        draft.commit ? mrTip(el("span", { class: "chip done" }, `committed as ${draft.commit}`), "The change was committed here: the draft says so.") : "",
+        draft.posted ? mrTip(el("span", { class: "chip done" }, "posted " + ago(draft.posted)), "Your reply was posted to the merge request: it is in the thread above.") : ""),
+        reply, postErr, el("div", { class: "start-actions" }, post, copy)));
     card.style.setProperty("--i", String(Math.min(i, 12)));
     return card;
   };
@@ -373,7 +424,7 @@ async function mrPage(f, main) {
     const t = view.data && view.data.mr && view.data.mr.threads.find(x => x.id === tid);
     if (!old || !t) return;
     if (old.contains(document.activeElement) && document.activeElement.classList.contains("mr-draft")) { view.stale.add(tid); return; }  // not under someone typing
-    old.replaceWith(threadCard(t, 0, false));
+    mrReplaceKeepingView(root, old, threadCard(t, 0, false));
   }
   function updateBar() {
     const old = root.querySelector(".mr-bar");

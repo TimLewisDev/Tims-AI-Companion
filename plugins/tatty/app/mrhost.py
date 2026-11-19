@@ -1,6 +1,7 @@
 """Reading a merge / pull request from the host it lives on, for a feature's Merge request page.
 
-This module only reads. `run(args)` is given by the server: it runs the host's CLI (glab or gh) with those
+This module reads, and posts one thing: a reply the person typed (`reply_gitlab`, `reply_github`), when they press
+Post reply. `run(args)` is given by the server: it runs the host's CLI (glab or gh) with those
 arguments, as argv with no shell, and returns (exit code, stdout, stderr). What comes back is one shape whatever
 the host (see `normal`), so the page never knows which host it is looking at:
 
@@ -13,7 +14,7 @@ the host (see `normal`), so the page never knows which host it is looking at:
      "threads": [{"id", "url", "path", "line", "resolved", "outdated", "hunk", "notes": [{"id", "author", "body", "created", "url"}]}]}
 
 and `diffs`, {path: the file's unified diff text}. A thread with no path is a general comment. Nothing here
-posts, replies to or resolves anything.
+resolves, approves or merges anything, and no reply is made but the one it is handed.
 """
 import json
 import re
@@ -485,3 +486,29 @@ def list_github(run, owner, name, me=""):
         if not r["roles"]:
             r["roles"].append("mentioned")
     return me, sorted(found.values(), key=lambda r: r["updated"], reverse=True)[:MAX_LIST]
+
+
+# ---------------------------------------------------------------- the one write: a reply the person typed
+
+REPLY_MUTATION = ("mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body})"
+                  "{comment{id url}}}")
+
+
+def reply_gitlab(run, project, iid, thread, body_file, single):
+    """Reply in a discussion (or, for a plain comment that isn't a thread, add a note to the request). The text is read
+    from body_file by the CLI, so no quoting is ever involved."""
+    if not str(iid).isdigit() or not good_id(thread):
+        raise HostError("no such merge request or comment")
+    base = f"projects/{urllib.parse.quote(project, safe='')}/merge_requests/{iid}"
+    path = f"{base}/notes" if single else f"{base}/discussions/{thread}/notes"
+    must(run(["api", "-X", "POST", path, "-F", f"body=@{body_file}"]), "posting the reply")
+
+
+def reply_github(run, owner, name, number, thread, body_file, single):
+    """Reply in a review thread (a GraphQL mutation), or comment on the pull request when it isn't a thread."""
+    if not str(number).isdigit() or not good_id(thread):
+        raise HostError("no such pull request or comment")
+    if single:
+        must(run(["pr", "comment", str(number), "-R", f"{owner}/{name}", "--body-file", body_file]), "posting the reply")
+    else:
+        must(run(["api", "graphql", "-f", "query=" + REPLY_MUTATION, "-f", f"id={thread}", "-F", f"body=@{body_file}"]), "posting the reply")

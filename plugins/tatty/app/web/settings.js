@@ -294,7 +294,7 @@ function mergeSkillSettings() {
 }
 
 // The Merge request page (mr.js): what kind of host this project's requests are on, when its name doesn't
-// say, and the model that looks into a comment. Tatty only reads the host (glab, gh) and never posts to it.
+// say, and the model that looks into a comment. Tatty reads the host (glab, gh), and posts only a reply you press Post reply on.
 function mrSettings(s) {
   const host = el("select", { id: "set-mrHost", "aria-label": "Merge request host" },
     [["", "Automatic (from the git remote's name)"], ["gitlab", "GitLab"], ["github", "GitHub"], ["bitbucket", "Bitbucket"], ["other", "Something else"]].map(([v, l]) => el("option", { value: v }, l)));
@@ -308,7 +308,7 @@ function mrSettings(s) {
   });
   return el("section", { id: "mr-settings" },
     el("h3", {}, "Merge request page"),
-    el("p", { class: "dim small" }, "The feature's Merge request page reads the request, its comments and its diff through glab (GitLab) or gh (GitHub), signed in as you. Tatty never posts, replies or resolves anything there: a reply is a draft for you to copy."),
+    el("p", { class: "dim small" }, "The feature's Merge request page reads the request, its comments and its diff through glab (GitLab) or gh (GitHub), signed in as you. Tatty posts nothing there but a reply you write and press Post reply on (as you, through the same tool), and never resolves, approves or merges."),
     el("label", { class: "field-row" }, el("strong", {}, "Host"), host,
       el("span", { class: "dim small" }, "Set it when the repository's address doesn't say (a self-hosted server). Other hosts show the link and the branch's own diff.")),
     el("label", { class: "field-row" }, el("strong", {}, "Model"), model,

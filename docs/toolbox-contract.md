@@ -559,12 +559,15 @@ are therefore Tatty's own, outside the workflow's records:
 - Tatty finds the request with `glab` or `gh` when they are installed and signed
   in, read-only; otherwise the person says it by hand.
 - The feature's **Merge request** page (rail item, `#feature/<name>/merge-request`) reads the request
-  the same way and only reads: `glab api projects/<path>/merge_requests/<n>`, `.../discussions` and
+  the same way: `glab api projects/<path>/merge_requests/<n>`, `.../discussions` and
   `.../changes` (GitLab), `gh pr view`, `gh api graphql` (review threads and comments) and `gh pr diff`
-  (GitHub), all as argv with no shell. The page's Overview also shows who is assigned, the reviewers and what each decided,
+  (GitHub), all as argv with no shell. Reading is all it does until the person presses **Post reply** on a comment:
+  then that one reply (whatever is in its box) is posted as them, `glab api -X POST .../discussions/<id>/notes -F body=@<file>`
+  (or `.../notes` for a plain comment) on GitLab, `gh api graphql` with `addPullRequestReviewThreadReply` (or `gh pr comment
+  --body-file`) on GitHub, with the text read from a temporary file so nothing is ever quoted into a command line. Tatty never
+  resolves a thread, approves or merges. The page's Overview also shows who is assigned, the reviewers and what each decided,
   labels, the milestone, approvals, whether it can be merged and why not, and the checks (GitLab: `.../approvals` and
-  `.../pipelines/<id>/jobs`, each optional and tolerated when the host refuses; GitHub: more `gh pr view --json` fields). Nothing is posted, replied to or resolved from Tatty: a reply is
-  a draft in Tatty's own state (`<project home>/mr/<feature>.state.json`) for the person to copy. A host
+  `.../pipelines/<id>/jobs`, each optional and tolerated when the host refuses; GitHub: more `gh pr view --json` fields). A reply is a draft in Tatty's own state (`<project home>/mr/<feature>.state.json`) for the person to post or copy. A host
   with no such command (Bitbucket, a self-hosted server named oddly: Settings has a Host choice) shows the
   link and the branch's own `git diff` only. "Recommend action" runs a headless `claude -p` that may
   read the repository (Read, Glob, Grep); "Make N changes" starts a session on this plugin's own skill

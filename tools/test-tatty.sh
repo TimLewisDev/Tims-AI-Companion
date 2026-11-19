@@ -1574,7 +1574,21 @@ printf '%s' '{"approvals_required":2,"approved_by":[{"user":{"username":"robin"}
 printf '%s' '[{"name":"lint","status":"success","web_url":"https://gitlab.example.com/j/1","stage":"check"},{"name":"unit-tests","status":"failed","web_url":"https://gitlab.example.com/j/2","stage":"test"},{"name":"build","status":"running","web_url":"","stage":"build"}]' >"$T/mr-jobs.json"
 printf '%s' '[{"id":"d1","notes":[{"id":11,"system":false,"body":"Please guard against null here.","author":{"username":"sam"},"created_at":"2026-11-01T10:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":2}},{"id":12,"system":false,"body":"Thanks.","author":{"username":"alex"},"created_at":"2026-11-01T11:00:00Z","resolvable":true,"resolved":false}]},{"id":"d2","notes":[{"id":21,"system":false,"body":"Looks good overall.","author":{"username":"sam"},"created_at":"2026-11-02T10:00:00Z","resolvable":false}]},{"id":"d3","notes":[{"id":31,"system":true,"body":"added 1 commit","author":{"username":"alex"}}]},{"id":"d4","notes":[{"id":41,"system":false,"body":"Typo.","author":{"username":"sam"},"created_at":"2026-11-03T10:00:00Z","resolvable":true,"resolved":true,"position":{"new_path":"docs/a.md","new_line":1}}]},{"id":"d5","notes":[{"id":61,"system":false,"body":"Rename this?","author":{"username":"sam"},"created_at":"2026-11-04T10:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":3}}]},{"id":"bad id;","notes":[{"id":51,"system":false,"body":"x"}]}]' >"$T/mr-disc.json"
 printf '%s' '{"changes":[{"old_path":"src/widget.txt","new_path":"src/widget.txt","new_file":false,"deleted_file":false,"renamed_file":false,"diff":"@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n"},{"old_path":"docs/a.md","new_path":"docs/a.md","new_file":true,"deleted_file":false,"renamed_file":false,"diff":"@@ -0,0 +1 @@\n+hello\n"}]}' >"$T/mr-changes.json"
-printf '#!/usr/bin/env bash\necho "$*" >>"%s/glab.log"\ncase "$*" in\n*"mr list"*) cat "%s/glab-answer" ;;\n*/discussions*) cat "%s/mr-disc.json" ;;\n*/changes*) cat "%s/mr-changes.json" ;;\n*/approvals*) cat "%s/mr-approvals.json" ;;\n*/jobs*) cat "%s/mr-jobs.json" ;;\n*"api projects/"*) cat "%s/mr-mr.json" ;;\nesac\n' "$T" "$T" "$T" "$T" "$T" "$T" "$T" >"$T/glab.sh"
+cat >"$T/glab.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+echo "$*" >>"$d/glab.log"
+for a in "$@"; do case $a in body=@*) cat "${a#body=@}" >"$d/glab-posted.txt" ;; esac; done
+case "$*" in
+*"-X POST"*) [ -f "$d/glab-post-fail" ] && { echo "403 Forbidden" >&2; exit 1; }; echo '{"id":99}' ;;
+*"mr list"*) cat "$d/glab-answer" ;;
+*/discussions*) cat "$d/mr-disc.json" ;;
+*/changes*) cat "$d/mr-changes.json" ;;
+*/approvals*) cat "$d/mr-approvals.json" ;;
+*/jobs*) cat "$d/mr-jobs.json" ;;
+*"api projects/"*) cat "$d/mr-mr.json" ;;
+esac
+EOS
 echo '[]' >"$T/glab-answer"; : >"$T/glab.log"
 get "/api/mr?name=Mr%20Demo" >"$T/j"
 pick "$T/j" "(d['mr']['provider'], d['mr']['title'], d['mr']['id'], d['mr']['state'], d['mr']['author'], d['mr']['source'], d['mr']['target'], d['mr']['pipeline']['status'])" >"$T/f"
@@ -1703,6 +1717,28 @@ pick "$T/mw" "(d['state']['d1']['draft']['commit'], d['state']['d1']['draft']['t
 has "the reply is told the commit" "$T/f" "('$SHA', 'Good catch, fixed. (Fixed in $SHA.)')"
 [ "$(pick "$T/mw" "d['state']['d2']['draft']['commit']")" = "" ] && ok "a comment that wasn't changed isn't" || bad "a comment that wasn't changed isn't"
 hasnt "and still nothing was written to the host" "$T/glab.log" " -X"
+# Post reply: the one write, and only when asked
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"d1","text":"   "}')" = 400 ] && ok "an empty reply isn't posted" || bad "an empty reply isn't posted"
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"nope","text":"x"}')" = 400 ] && ok "nor to a comment that isn't there" || bad "nor to a comment that isn't there"
+[ "$(mrpost reply '{"name":"No Such","thread":"d1","text":"x"}')" = 404 ] && ok "nor for no such feature" || bad "nor for no such feature"
+hasnt "(so far: no write to the host)" "$T/glab.log" " -X"
+touch "$T/glab-post-fail"
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"d1","text":"Will not go"}')" = 502 ] && ok "a host that refuses is reported" || bad "a host that refuses is reported" "$(cat "$T/mj")"
+has "with what it said" "$T/mj" "403 Forbidden"
+get "/api/mr?name=Mr%20Demo" >"$T/mw"
+[ "$(pick "$T/mw" "d['state']['d1']['draft']['text']")" = "Good catch, fixed. (Fixed in $SHA.)" ] && ok "and the draft is kept" || bad "the draft is kept after a refusal" "$(pick "$T/mw" "d['state']['d1']['draft']")"
+rm -f "$T/glab-post-fail"
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"d1","text":"Good catch, fixed. (Fixed in abc.)\n\nThanks."}')" = 200 ] && ok "Post reply posts what is in the box" || bad "Post reply" "$(cat "$T/mj")"
+has "into the thread's discussion" "$T/glab.log" "api -X POST projects/group%2Fproj/merge_requests/7/discussions/d1/notes -F body=@"
+[ "$(cat "$T/glab-posted.txt" | tr -d '\r')" = "$(printf 'Good catch, fixed. (Fixed in abc.)\n\nThanks.')" ] && ok "word for word, read from a file (no quoting)" || bad "the posted text" "$(cat "$T/glab-posted.txt")"
+[ "$(pick "$T/mj" "(d['ok'], d['draft']['text'], bool(d['draft']['posted']), d['draft']['edited'])")" = "(True, '', True, False)" ] && ok "the draft is cleared and marked posted" || bad "the draft after posting" "$(cat "$T/mj")"
+get "/api/mr?name=Mr%20Demo&force=1" >"$T/mw"
+[ "$(pick "$T/mw" "bool(d['state']['d1']['draft']['posted'])")" = "True" ] && ok "and that is kept" || bad "posted is kept"
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"d2","text":"Thanks all."}')" = 200 ] && ok "a plain comment (not a thread) is answered too" || bad "a plain comment" "$(cat "$T/mj")"
+has "as a note on the request" "$T/glab.log" "api -X POST projects/group%2Fproj/merge_requests/7/notes -F body=@"
+[ "$(grep -c -- '-X POST' "$T/glab.log")" = 3 ] && ok "and nothing else was posted (one refused, two sent)" || bad "the posts made" "$(grep -- '-X' "$T/glab.log")"
+hasnt "never a resolve" "$T/glab.log" "-X PUT"
+hasnt "nor a merge" "$T/glab.log" "merge_requests/7/merge"
 # no command for the host: the link and the branch's own diff
 post /api/mr/host '{"host":"bitbucket"}' >/dev/null
 get "/api/mr?name=Mr%20Demo&force=1" >"$T/j"
@@ -1726,8 +1762,14 @@ has "its review threads and general comments" "$T/f" "[('PRRT_1', 'src/widget.tx
 pick "$T/j" "(d['mr']['assignees'], d['mr']['labels'], d['mr']['milestone'], d['mr']['commits'], d['mr']['approvals']['have'])" >"$T/f"
 has "GitHub: assigned, labels, milestone, commits, approvals" "$T/f" "(['alex'], ['bug'], 'Sprint 4', 2, 1)"
 [ "$(pick "$T/j" "(d['mr']['mergeable']['status'], [(c['name'], c['status']) for c in d['mr']['checks']])")" = "('blocked', [('build', 'failed'), ('lint', 'passed')])" ] && ok "GitHub: why it is blocked, and its checks" || bad "GitHub mergeable and checks" "$(pick "$T/j" "(d['mr']['mergeable'], d['mr']['checks'])")"
-hasnt "gh was only asked to read" "$T/gh.log" "--method"
-hasnt "(no comment was created)" "$T/gh.log" "addPullRequestReview"
+hasnt "gh was only asked to read, so far" "$T/gh.log" "--method"
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"PRRT_1","text":"Fixed."}')" = 200 ] && ok "GitHub: a reply in a review thread" || bad "GitHub reply" "$(cat "$T/mj")"
+has "through the reply mutation" "$T/gh.log" "addPullRequestReviewThreadReply"
+[ "$(mrpost reply '{"name":"Mr Demo","thread":"IC_1","text":"Thanks."}')" = 200 ] && ok "GitHub: a general comment is a pull request comment" || bad "GitHub comment" "$(cat "$T/mj")"
+has "with its text read from a file" "$T/gh.log" "pr comment 7 -R group/proj --body-file"
+hasnt "no review was submitted" "$T/gh.log" "submitPullRequestReview"
+hasnt "no thread was resolved" "$T/gh.log" "resolveReviewThread"
+hasnt "and nothing was merged" "$T/gh.log" "mergePullRequest"
 rm -f "$T/gh.sh"
 post /api/mr/host '{"host":""}' >/dev/null
 fi

@@ -4547,8 +4547,9 @@ def merge_skill_view(folder=None):
 # A feature's merge / pull request, read from its host and shown on its Merge request page (web/mr.js):
 # the request, its comment threads and its diff, a recommended action for a comment (an agent that reads the
 # code), and the comments chosen to change, made in a session of their own and committed from the Commit page.
-# Reads only: nothing here posts, replies to, resolves or otherwise writes to the host. A reply is a draft
-# kept for the person to copy. The host is read through glab or gh (as the Merge step already does); the
+# Reads, and writes one thing: a reply the person typed in a draft and pressed Post reply on (mr_reply). Nothing here
+# resolves, approves or merges, and nothing is ever posted that the person did not press the button for. The host is
+# read through glab or gh (as the Merge step already does); the
 # normalised record is mrhost.py's. Kept in <project home>/mr/: <key>.json (the request as last read),
 # <key>.diff.json (its diffs by file) and <key>.state.json (recommendations, chosen threads, drafts, results:
 # written only by mrstate.py).
@@ -4901,6 +4902,70 @@ def mr_recommend_work(state, folder, tid, seen, r, argv, prompt, cwd, model):
     state.emit("mr", name=folder.name, thread=tid, done=True, ok=not error, error=error)
 
 
+MR_POSTING = set()  # "<feature>|<thread>" being posted now: a double click is one reply
+MR_POSTING_LOCK = threading.Lock()
+
+
+def mr_reply(state, folder, b):
+    """Post the reply in a comment's draft to the host, as the person (through their glab or gh). (http code, answer)
+    On success the draft is cleared, the request is read again and the thread comes back with the reply in it."""
+    tid, text = str(b.get("thread", "")), str(b.get("text", "")).replace("\r\n", "\n").strip()
+    thread, _ = mr_thread(folder, tid)
+    if not mrhost.good_id(tid) or not thread:
+        return 400, {"error": "No such comment: refresh the page."}
+    if not text:
+        return 400, {"error": "Write a reply first."}
+    if len(text) > 6000:
+        return 400, {"error": "Keep the reply under 6000 characters."}
+    rec, repo = commit_repo(folder)
+    if not repo:
+        return 400, {"error": "No repository is known for this feature yet."}
+    info = mrhost.detect(mr_origin(repo), mr_override())
+    tool = {"gitlab": "glab", "github": "gh"}.get(info["kind"], "")
+    if not tool:
+        return 409, {"error": f"Tatty can't post to {info['kind'] or 'this host'}: copy the reply and post it there."}
+    run, have = mr_runner(state, repo, tool)
+    if not have:
+        return 409, {"error": f"{tool} isn't installed, so Tatty can't post: copy the reply and post it on the host."}
+    number = mr_number(state, folder)
+    if not number:
+        return 409, {"error": "No merge request is recorded for this feature's branch yet."}
+    key = f"{folder.name.lower()}|{tid}"
+    with MR_POSTING_LOCK:
+        if key in MR_POSTING:
+            return 409, {"error": "That reply is being posted already."}
+        MR_POSTING.add(key)
+    fd, tmp = tempfile.mkstemp(prefix="tatty-reply-", suffix=".md", dir=str(home()) if home().is_dir() else None)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text + "\n")
+        single = not thread.get("resolvable", True)  # (a plain comment, not a thread)
+        try:
+            if tool == "glab":
+                mrhost.reply_gitlab(run, info["path"], number, tid, Path(tmp).as_posix(), single)
+            else:
+                owner, _, name = info["path"].partition("/")
+                mrhost.reply_github(run, owner, name, number, tid, Path(tmp).as_posix(), single)
+        except mrhost.HostError as e:
+            return 502, {"error": str(e)}
+    finally:
+        with MR_POSTING_LOCK:
+            MR_POSTING.discard(key)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+    def how(data):
+        d = mrstate.thread(data, tid)["draft"]
+        d["text"], d["edited"], d["posted"] = "", False, int(time.time())
+    mrstate.change(mr_file(folder, "state"), how)
+    mr_load(state, folder, force=True)  # the reply is in the thread now
+    fresh, _ = mr_thread(folder, tid)
+    state.emit("mr", name=folder.name, thread=tid)
+    return 200, {"ok": True, "thread": fresh, "draft": mr_state(folder)["threads"].get(tid, {}).get("draft")}
+
+
 def mr_cancel(state, folder, b):
     key = f"{folder.name.lower()}|{b.get('thread', '')}"
     r = state.mr_runs.get(key)
@@ -5043,7 +5108,8 @@ def mr_after_commit(state, folder, sha):
             if t.get("selected") and (t.get("result") or {}).get("status") == "applied" and not (t.get("draft") or {}).get("commit"):
                 d = t["draft"]
                 d["commit"] = sha
-                d["text"] = (d.get("text", "").rstrip() + f" (Fixed in {sha}.)").strip()
+                if not d.get("posted"):  # (a reply already sent can't be added to)
+                    d["text"] = (d.get("text", "").rstrip() + f" (Fixed in {sha}.)").strip()
                 n += 1
         return n
     try:
@@ -13314,14 +13380,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(404, {"error": "no such route"})
             code, answer = todo()
             return self.send(code, answer)
-        if path in ("/api/mr/recommend", "/api/mr/cancel", "/api/mr/draft", "/api/mr/select", "/api/mr/change"):
+        if path in ("/api/mr/recommend", "/api/mr/cancel", "/api/mr/draft", "/api/mr/select", "/api/mr/change", "/api/mr/reply"):
             folder = feature_dir(str(b.get("name", "")))
             if not folder:
                 return self.send(404, {"error": "no such feature"})
             b = b if isinstance(b, dict) else {}
             code, answer = {"/api/mr/recommend": lambda: mr_recommend_start(st, folder, b), "/api/mr/cancel": lambda: mr_cancel(st, folder, b),
                             "/api/mr/draft": lambda: mr_draft_set(folder, b), "/api/mr/select": lambda: mr_select(st, folder, b),
-                            "/api/mr/change": lambda: mr_change(st, folder, b)}[path]()
+                            "/api/mr/change": lambda: mr_change(st, folder, b), "/api/mr/reply": lambda: mr_reply(st, folder, b)}[path]()
             return self.send(code, answer)
         if path == "/api/gate":
             folder = feature_dir(str(b.get("name", "")))

@@ -1973,9 +1973,9 @@ def check_mr(p):
                           { id: 'd4', url: '', path: 'docs/a.md', line: 1, resolved: true, resolvable: true, outdated: false, hunk: '', notes: [mkNote('n4', 'sam', 'Typo.')] }] },
               why: '', state: {}, busy: [], step: {}, branch: 'other', onSource: false, repo: 'C:/work/repo', link: 'https://host.example/mr/7' };
             window.api = async (path, body) => {
-              if (path.startsWith('/api/mr?')) return window.__data;
+              if (path.startsWith('/api/mr?')) return JSON.parse(JSON.stringify(window.__data)); // (a copy, as the server's answer is: the page must not share objects with it)
               if (path.startsWith('/api/mr/diff?')) return { path: 'src/widget.txt', binary: false, cut: false, threads: ['d1'], hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [' a', '-b', '+B', ' c', '+d'] }] };
-              if (path.startsWith('/api/mr/state?')) { window.__lights = (window.__lights || 0) + 1; return { state: window.__data.state, busy: window.__busy || [], step: {} }; }
+              if (path.startsWith('/api/mr/state?')) { window.__lights = (window.__lights || 0) + 1; return { state: JSON.parse(JSON.stringify(window.__data.state)), busy: window.__busy || [], step: {} }; }
               if (path === '/api/mr/recommend') {
                 window.__sent.push(['recommend', body]); window.__busy = ['d1'];
                 setTimeout(() => {
@@ -1992,6 +1992,12 @@ def check_mr(p):
                 st.selected = body.on; if (body.on && st.recommendation && !st.draft.text) st.draft.text = st.recommendation.draftReply; return { ok: true, waiting: false };
               }
               if (path === '/api/mr/draft') { window.__sent.push(['draft', body]); return { ok: true }; }
+              if (path === '/api/mr/reply') {
+                window.__sent.push(['reply', body]); await new Promise(r => setTimeout(r, 300));
+                if (window.__failReply) throw new Error('403 Forbidden');
+                const t = window.__data.mr.threads.find(x => x.id === body.thread); t.notes.push(mkNote('n9', 'alex', body.text));
+                const st = window.__data.state[body.thread]; st.draft = { text: '', edited: false, commit: '', posted: Date.now() / 1000 }; return { ok: true, thread: t, draft: st.draft };
+              }
               if (path === '/api/mr/change') { window.__sent.push(['change', body]); return { ok: true, tag: 's-test', name: 'Demo : MR changes', command: '/tatty:mr-change', project: 'C:/work/repo' }; }
               return window.__real.api(path, body);
             };
@@ -2084,6 +2090,29 @@ def check_mr(p):
     p.js("""(() => { const t = document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft'); t.value = 'Fixed, thanks.'; t.dispatchEvent(new Event('input')); })()""")
     time.sleep(0.9)
     res["draftSaved"] = p.js("window.__sent.filter(x => x[0] === 'draft').map(x => x[1].text)")
+    # Post reply: left of Copy reply, off while the box is empty, a refusal keeps the text, and the reply lands in the thread
+    res["replyBox"] = p.js("""({ label: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-reply-label').innerText.replace(/\\s+/g, ' ').trim(),
+                                 buttons: [...document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-reply .start-actions button')].map(b => b.textContent),
+                                 emptyOff: document.querySelector('#mr-host .mr-thread[data-id=d2] #mr-post').disabled, filledOn: !document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post').disabled })""")
+    p.js("window.__failReply = true; document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post').click(); 1")
+    res["posting"] = p.js("({ text: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post').textContent.trim(), spinner: !!document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post .mr-spin'), boxOff: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').disabled })")
+    wait(p, "!document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post-error').hidden")
+    res["postFailed"] = p.js("""({ error: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post-error').textContent, kept: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value,
+                                  button: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post').textContent, boxOn: !document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').disabled })""")
+    p.js("window.__failReply = false; document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post').click(); 1")
+    wait(p, "document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-note').length === 3")
+    res["posted"] = p.js("""({ sent: window.__sent.filter(x => x[0] === 'reply').map(x => x[1].text), notes: document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-note').length,
+                              last: [...document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-note')].pop().innerText.replace(/\\s+/g, ' ').trim(),
+                              box: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, chip: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-reply-label').innerText.replace(/\\s+/g, ' ').trim(),
+                              postOff: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-post').disabled })""")
+    # a card above the one being read grows (its answer arrives): the page is scrolled by as much, so what is read doesn't move
+    p.js("""(() => { const sp = document.createElement('div'); sp.id = 'mr-spacer'; sp.style.height = '3000px'; document.querySelector('#mr-host .mr-page').append(sp);
+            const d2 = document.querySelector('#mr-host .mr-thread[data-id=d2]'); d2.scrollIntoView({ block: 'start' }); window.__top = d2.getBoundingClientRect().top; window.__y = window.scrollY;
+            const rec = window.__data.state.d1.recommendation; for (let i = 0; i < 6; i++) rec.points.push('A further point number ' + i + ' about `Widget.Get()` that makes the card taller.');
+            document.dispatchEvent(new CustomEvent('tt-event', { detail: { type: 'mr', name: 'Demo', thread: 'd1', done: true } })); })()""")
+    wait(p, "document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-points li').length === 9")
+    res["keptPlace"] = p.js("""({ moved: Math.round(document.querySelector('#mr-host .mr-thread[data-id=d2]').getBoundingClientRect().top - window.__top), scrolledBy: Math.round(window.scrollY - window.__y) > 100 })""")
+    p.js("document.querySelector('#mr-spacer').remove(); window.scrollTo(0, 0); 1")
     p.js("document.querySelector('#mr-change').click(); 1")
     wait(p, "window.__sent.some(x => x[0] === 'change')")
     res["change"] = p.js("({ sent: window.__sent.find(x => x[0] === 'change'), hash: location.hash })")
