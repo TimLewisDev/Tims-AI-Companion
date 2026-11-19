@@ -36,6 +36,29 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SLOT = re.compile(r"^slot-(\d+)$")
 
 
+def tree_size(path, skip=()):
+    """Bytes of the files under `path` (symlinks not followed; folders named in `skip` at its top left out)."""
+    root, total, stack = str(path), 0, [str(path)]
+    while stack:
+        here = stack.pop()
+        try:
+            with os.scandir(here) as it:
+                for e in it:
+                    try:
+                        if e.is_symlink():
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            if not (here == root and e.name in skip):
+                                stack.append(e.path)
+                        else:
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
 class PoolError(Exception):
     def __init__(self, msg, code=1):
         super().__init__(msg)
@@ -151,14 +174,14 @@ class Pool:
     def is_clean(self, path):
         return git(path, "status", "--porcelain", check=False)[1] == ""
 
-    def slot_info(self, name, base_ref):
+    def slot_info(self, name, base_ref, check_clean=True):
         path = self.slot_path(name)
         claim = self.state()["claims"].get(name)
         branch = git(path, "branch", "--show-current", check=False)[1]
-        behind = git(path, "rev-list", "--count", f"HEAD..{base_ref}", check=False)[1]
+        behind = git(path, "rev-list", "--count", f"HEAD..{base_ref}", check=False)[1] if base_ref else ""
         return {"slot": name, "path": path.as_posix(), "state": "claimed" if claim else "free", "branch": branch,
                 "claimedFor": (claim or {}).get("branch", ""), "behind": int(behind) if behind.isdigit() else None,
-                "clean": self.is_clean(path)}
+                "clean": self.is_clean(path) if check_clean else None}
 
     # ---------------------------------------------------------------- warm copy
     def warm(self, name):
@@ -280,6 +303,24 @@ class Pool:
         git(self.repo, "worktree", "remove", "--force", str(path), timeout=900)  # clean, so only ignored files (the warm copies) go
         git(self.repo, "branch", "-D", f"pool/{name}", check=False)
         return {"removed": name}
+
+    def read_sizes(self):
+        """What measure() last found: {at, main, slots: {name: bytes}}, or {}."""
+        try:
+            return json.loads((self.dir / "pool.sizes.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def measure(self):
+        """Read every file of the main checkout (its .git left out) and of each slot, and keep the sizes. Slow on a
+        big project: the caller runs it away from anything waiting."""
+        found = {"at": time.time(), "main": tree_size(self.repo, skip=(".git",)),
+                 "slots": {n: tree_size(self.slot_path(n)) for n in self.slot_names()}}
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.dir / "pool.sizes.tmp"
+        tmp.write_text(json.dumps(found), encoding="utf-8")
+        os.replace(tmp, self.dir / "pool.sizes.json")
+        return found
 
     def counts(self):
         """Free and total slots from the config, the claims and the slot folders: no git, so it is cheap to ask often."""

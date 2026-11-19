@@ -7,11 +7,11 @@
 const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
   designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
-  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"),
+  whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"), worktrees: $("#page-worktrees"),
   qa: $("#page-qa"), qabug: $("#page-qabug"), qaplan: $("#page-qaplan") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
-const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", jira: "production", tasks: "production", taskboard: "production",
+const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", worktrees: "engineering", jira: "production", tasks: "production", taskboard: "production",
   designs: "design", design: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
 // name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
 // decisions are painted from it (paintDecisions).
@@ -154,6 +154,7 @@ function parseRoute() {
       diagram: parts[2] === "diagram" ? (parts[3] === "plan" || parts[3] === "review" ? parts[3] : "any") : "" };
   }
   if (parts[0] === "diagram") return { page: "diagram" };
+  if (parts[0] === "worktrees") return { page: "worktrees" };
   if (parts[0] === "workflows" && parts[1]) return { page: "home", tag: parts[1], ask: parts[2] === "ask" ? parts[3] || null : null };
   if (parts[0] === "chats" && parts[1]) return { page: "home", chat: parts[1] };
   if (parts[0] === "whiteboard" && parts[1]) return { page: "whiteboard", name: parts[1] };
@@ -244,6 +245,11 @@ async function route() {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderProjectDiagram === "function") renderProjectDiagram(pageEls.diagram);
     else pageEls.diagram.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+  }
+  else if (r.page === "worktrees") {
+    // A server started before an update serves the new pages but not a new script of theirs.
+    if (typeof renderWorktrees === "function") await renderWorktrees(pageEls.worktrees);
+    else pageEls.worktrees.replaceChildren(el("p", { class: "pad st missing" }, "The worktrees page didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
   }
   else if (r.page === "settings") renderSettings(pageEls.settings);
   else if (r.page === "shop") {

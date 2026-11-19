@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -1880,6 +1880,66 @@ def check_mr(p):
     return res
 
 
+def check_pool(p):
+    """The Worktrees page (pool.js), drawn with the page's api() stood in for: no repo, no pool yet (the Create
+    card), a pool with a feature on one slot, an orphan on another and one free, and a busy pool. Nothing is made."""
+    res = {}
+    p.js("""window.__real = { api: window.api, hash: location.hash, confirm: window.confirm }; window.__sent = []; window.__asked = [];
+            const GB = 1073741824;
+            const base = { repo: 'C:/work/repo', dir: 'C:/work/repo.pool', busy: '', measuring: false, disk: { total: 1000 * GB, used: 900 * GB, free: 100 * GB, path: 'C:/work' }, sizes: {}, seed: { size: 3, max: 6, warm: ['Library'] } };
+            window.__views = {
+              none: { repo: '', note: 'This project is not in a git repository, so it has no worktrees.' },
+              empty: { ...base, exists: false },
+              pool: { ...base, exists: true, config: { size: 3, max: 4 }, base: 'origin/main', free: 1, sizes: { at: Date.now() / 1000, main: 30 * GB, slots: { 'slot-1': 25 * GB } }, estimate: { bytes: 25 * GB, from: 'a slot' },
+                slots: [{ slot: 'slot-1', path: 'C:/work/repo.pool/slot-1', state: 'claimed', branch: 'feature/x', feature: 'Widget', featureExists: true, featureBranch: 'feature/x', base: 'main', merge: 'opened', behind: 2, size: 25 * GB },
+                        { slot: 'slot-2', path: 'C:/work/repo.pool/slot-2', state: 'claimed', branch: 'bug/y', feature: 'Gone', featureExists: false, featureBranch: 'bug/y', base: 'main', merge: '', behind: 0, size: null },
+                        { slot: 'slot-3', path: 'C:/work/repo.pool/slot-3', state: 'free', branch: 'pool/slot-3', feature: '', featureExists: false, featureBranch: '', base: '', merge: '', behind: 0, size: 25 * GB }] } };
+            window.__view = 'none';
+            window.confirm = t => { window.__asked.push(t); return true; };
+            window.api = async (path, body) => {
+              if (path === '/api/pool') return JSON.parse(JSON.stringify(window.__views[window.__view]));
+              if (path.startsWith('/api/pool/')) { window.__sent.push([path, body]); return { ok: true, made: [{ slot: 'slot-1' }], slot: body && body.slot, branchKept: 'feature/x', slots: [] }; }
+              return window.__real.api(path, body);
+            };
+            document.querySelector('#pool-host') && document.querySelector('#pool-host').remove();
+            const ph = document.createElement('div'); ph.id = 'pool-host'; document.body.append(ph); window.__draw = () => window.renderWorktrees(ph); window.__draw(); 1""")
+    wait(p, "!!document.querySelector('#pool-host .pool-head')")
+    res["none"] = p.js("document.querySelector('#pool-host').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("window.__view = 'empty'; window.__draw(); 1")
+    wait(p, "!!document.querySelector('#pool-host .pool-card')")
+    res["empty"] = p.js("""({ text: document.querySelector('#pool-host').innerText.replace(/\\s+/g, ' ').trim(), meter: document.querySelector('#pool-host .pool-meter-used').style.width,
+                             size: document.querySelector('#pool-host input[aria-label="slots to make"]').value })""")
+    p.js("[...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Create the pool').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["created"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.__sent = []; window.__asked = []; window.__view = 'pool'; window.__draw(); 1")
+    wait(p, "!!document.querySelector('#pool-host .pool-table')")
+    res["pool"] = p.js("""({ rows: [...document.querySelectorAll('#pool-host .pool-table tbody tr')].map(r => [...r.children].map(c => c.innerText.replace(/\\s+/g, ' ').trim()).slice(0, 5).join(' | ')),
+                             link: document.querySelector('#pool-host .pool-table a').getAttribute('href'), orphan: !!document.querySelector('#pool-host .chip.bad'),
+                             disk: [...document.querySelectorAll('#pool-host .pool-card')][0].innerText.replace(/\\s+/g, ' ').trim(),
+                             head: [...document.querySelectorAll('#pool-host .pool-card h3')].map(h => h.textContent.replace(/\\s+/g, ' ').trim()) })""")
+    p.js("[...document.querySelectorAll('#pool-host .pool-table tbody tr')][0].querySelector('button').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["freed"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.__sent = []; window.__asked = []; [...document.querySelectorAll('#pool-host .pool-table tbody tr')][2].querySelector('button').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["deleted"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.__sent = []; [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["added"] = p.js("({ sent: window.__sent[0], asked: window.__asked[window.__asked.length - 1] })")
+    p.js("window.__views.pool.busy = 'Adding a slot.'; window.__draw(); 1")
+    wait(p, "!!document.querySelector('#pool-host .pool-busy')")
+    res["busy"] = p.js("({ text: document.querySelector('#pool-host .pool-busy').innerText, addOff: [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').disabled })")
+    p.js("document.querySelector('#pool-host').remove(); window.__view = 'pool'; window.__views.pool.busy = ''; location.hash = '#worktrees'; 1")
+    wait(p, "!!document.querySelector('#page-worktrees .pool-table')")
+    res["route"] = p.js("""({ on: document.querySelector('#page-worktrees').classList.contains('on'), mode: document.body.dataset.mode || '',
+                             nav: (document.querySelector('.pnav a[data-page=worktrees]') || {}).className || 'missing',
+                             navOn: document.querySelector('.pnav a[data-page=worktrees]').classList.contains('on') })""")
+    res["tile"] = p.js("MODE_PAGES.engineering.map(t => t.label + ' ' + t.href + ' ' + (ICONS[t.icon] ? 'icon' : 'no icon'))")
+    p.js("window.api = window.__real.api; window.confirm = window.__real.confirm; 1")
+    return res
+
+
 def check_suggestions(p):
     """The Review step on the page, drawn with the page's api() stood in for: the tracker's phase chips, the
     rows that are a link and not a session, and the Review page taking three suggestions one at a time (the
@@ -2795,10 +2855,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--pool", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--pool": check_pool, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

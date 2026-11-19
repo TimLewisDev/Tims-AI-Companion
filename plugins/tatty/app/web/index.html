@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="/static/archive.css">
 <link rel="stylesheet" href="/static/commit.css">
 <link rel="stylesheet" href="/static/mr.css">
+<link rel="stylesheet" href="/static/pool.css">
 <link rel="stylesheet" href="/static/review-page.css">
 <link rel="stylesheet" href="/static/hub.css">
 <link rel="stylesheet" href="/static/compact-chat.css">
@@ -57,6 +58,7 @@
     <a href="#hub" data-page="hub" title="Switch to another project">Projects</a>
     <a href="#mode" data-page="mode">Home</a>
     <a href="#home" data-page="home" data-mode="engineering">Features</a>
+    <a href="#worktrees" data-page="worktrees" data-mode="engineering">Worktrees</a>
     <a href="#jira" data-page="jira" data-mode="production">Jira</a>
     <a href="#tasks" data-page="tasks" data-mode="production">Tasks</a>
     <a href="#qa" data-page="qa" data-mode="qa">QA</a>
@@ -102,6 +104,8 @@
   <section class="page" id="page-whiteboard"></section>
   <!-- The Project diagram: how the code fits together (diagram.js, on whiteboard.js). -->
   <section class="page" id="page-diagram"></section>
+  <!-- Worktrees: the project's worktree pool, its slots and the features on them (pool.js). -->
+  <section class="page" id="page-worktrees"></section>
   <!-- Settings: Tatty's own options and its updates (settings.js). -->
   <section class="page" id="page-settings"></section>
   <!-- The shop: avatars and accessories for Tatty coins (shop.js; the purse beside the gear is wallet.js's). -->
@@ -160,6 +164,7 @@
 <script src="/static/review.js"></script>
 <script src="/static/commit.js"></script>
 <script src="/static/mr.js"></script>
+<script src="/static/pool.js"></script>
 <script src="/static/unitgate.js"></script>
 <script src="/static/review-page.js"></script>
 <script src="/static/decide-page.js"></script>

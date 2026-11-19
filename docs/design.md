@@ -734,6 +734,18 @@ folders and Claude Code's own install records; see
     With a pool, Own worktree claims a free slot (`make_worktree` -> `Pool.claim`) instead of `git worktree add`,
     and archive releases it (`remove_feature_worktree`, for a record marked `pooled`). A slot is never added by
     itself: the Start panel shows the free count and an Add a slot button (`/api/pool/add`) when 0 or 1 is free.
+  - **The Worktrees page** (`#worktrees`, an Engineering nav item and home tile; `web/pool.js`, `pool.css`;
+    server "the worktrees page") manages the current project's pool only (the Hub's active repo, `pool_top`).
+    `GET /api/pool` gives the slots (state, branch, behind, size) with the feature that holds each (matched
+    from `branches.json` worktree paths, else the claim's owner; "feature not found" for an orphan), the disk
+    (`shutil.disk_usage` of the pool's drive) and what a new slot takes: **measured** by `POST /api/pool/measure`
+    in a thread of its own (it reads every file, so minutes on a big project) into `<repo>.pool/pool.sizes.json`,
+    an estimate of the largest slot, else the checkout without `.git`. A slot's cleanliness is not read on load
+    (a status of a big tree is slow): release and delete check it and refuse. `POST /api/pool/create|add|release|
+    remove|refresh|config` run one at a time per repo (`pool_run`, `POOL_BUSY`, shown and polled by the page).
+    **Free up** (`pool_release_slot`) refuses while a session runs in the slot, gives the slot back and removes
+    `worktree`/`pooled` from the feature's record, so a later Start of that feature neither switches a slot that
+    may be another's back to its branch nor loses the branch itself (it is always kept). Delete only takes a free slot.
   - **A branch per workflow, in a worktree if asked.** `start_session` calls
     `ensure_branch` before it launches. The first Start of a feature that has no
     documents yet (New feature, a Jira ticket, a task, a lite start) makes a
