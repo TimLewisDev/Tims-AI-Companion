@@ -1761,14 +1761,21 @@ def check_commit(p):
 
 
 def check_mr(p):
-    """The Merge request page (mr.js) and its rail item, drawn with the page's api() stood in for: the header,
-    the threads (open ones, resolved folded), Recommend action, the recommendation card, ticking Make this change
-    and its draft, the change bar, the diff tab. Nothing is sent anywhere."""
+    """The Merge request page (mr.js) and its rail item, drawn with the page's api() stood in for: the hero and its
+    status pills, the Overview panel (folds, remembered) and tab (first), hover cards, the threads, Recommend action,
+    ticking Make this change and its draft, the change bar, the diff tab, the burst when the last comment is resolved,
+    and the Motion switch. Nothing is sent anywhere."""
     res = {}
-    p.js("""window.__real = { api: window.api, hash: location.hash }; window.__sent = [];
+    p.js("""window.__real = { api: window.api, hash: location.hash, burst: window.TattyWallet && TattyWallet.burst }; window.__sent = []; window.__bursts = [];
+            localStorage.removeItem('tt-mr-overview'); localStorage.removeItem('tt-juice');
             const mkNote = (id, author, body) => ({ id, author, body, created: '2026-11-01T10:00:00Z', url: 'https://host.example/mr/7#' + id });
-            window.__data = { mr: { provider: 'gitlab', id: '7', url: 'https://host.example/mr/7', title: 'Add the widget', description: 'Adds a **widget**.', state: 'opened', draft: false,
-                author: 'alex', source: 'feature/x', target: 'main', sha: 'abc', pipeline: { status: 'failed', url: '' },
+            window.__data = { mr: { provider: 'gitlab', id: '7', url: 'https://host.example/mr/7', title: 'Add the widget', description: 'Adds a **widget**.\\n\\n' + 'It is long. '.repeat(40), state: 'opened', draft: false,
+                author: 'alex', source: 'feature/x', target: 'main', sha: 'abcdef0123456789', pipeline: { status: 'failed', url: '' },
+                assignees: ['alex'], labels: ['bug', 'ui'], milestone: 'Sprint 4', created: '2026-10-30T10:00:00Z', updated: '2026-11-02T10:00:00Z', commits: 3,
+                reviewers: [{ name: 'sam', state: 'changes', at: '2026-11-01T10:00:00Z' }, { name: 'robin', state: 'approved', at: '' }, { name: 'kim', state: 'pending', at: '' }],
+                approvals: { have: 1, need: 2 }, mergeable: { status: 'blocked', reasons: ['Comments are still unresolved.'] },
+                checks: [{ name: 'unit-tests', status: 'failed', url: 'https://host.example/job/1', note: 'test' }, { name: 'lint', status: 'passed', url: '', note: 'check' }, { name: 'build', status: 'running', url: '', note: 'build' }],
+                stats: { add: 3, del: 1, files: 2 },
                 files: [{ path: 'src/widget.txt', status: 'modified', add: 2, del: 1 }, { path: 'docs/a.md', status: 'added', add: 1, del: 0 }],
                 threads: [{ id: 'd1', url: 'https://host.example/mr/7#d1', path: 'src/widget.txt', line: 2, resolved: false, resolvable: true, outdated: false, hunk: '', notes: [mkNote('n1', 'sam', 'Please guard against **null**.'), mkNote('n2', 'alex', 'Thanks.')] },
                           { id: 'd2', url: '', path: '', line: 0, resolved: false, resolvable: false, outdated: false, hunk: '', notes: [mkNote('n3', 'sam', 'Looks good overall.')] },
@@ -1784,47 +1791,92 @@ def check_mr(p):
               return window.__real.api(path, body);
             };
             window.__f = { name: 'Demo', phase: 'complete', route: 'full', review: { phase: 'merge' }, decide: { open: 0, kinds: [] }, validate: { open: 0 }, docList: [], notes: [], units: { done: 1, total: 1 }, tasks: { done: 1, total: 1 },
-              merge: { state: 'opened', branch: 'feature/x', url: 'https://host.example/mr/7', number: 7, host: 'gitlab', mr: { open: 2, total: 2 } } };
+              merge: { state: 'opened', branch: 'feature/x', url: 'https://host.example/mr/7', number: 7, host: 'gitlab', mr: { open: 1, total: 2 } } };
             document.querySelector('#mr-host') && document.querySelector('#mr-host').remove();
             const mrh = document.createElement('div'); mrh.id = 'mr-host'; document.body.append(mrh); window.mrPage(window.__f, mrh); 1""")
-    wait(p, "!!document.querySelector('#mr-host .mr-head')")
-    res["head"] = p.js("""({ title: document.querySelector('#mr-host .mr-head h2').innerText.replace(/\\s+/g, ' ').trim(), meta: document.querySelector('#mr-host .mr-meta').innerText.replace(/\\s+/g, ' ').trim(),
+    wait(p, "!!document.querySelector('#mr-host .mr-hero')")
+    res["hero"] = p.js("""({ title: document.querySelector('#mr-host .mr-hero h2').innerText.replace(/\\s+/g, ' ').trim(), meta: document.querySelector('#mr-host .mr-meta').innerText.replace(/\\s+/g, ' ').trim(),
                             go: document.querySelector('#mr-go').getAttribute('href'), branchWarn: (document.querySelector('#mr-branch') || {}).innerText || '',
-                            tabs: [...document.querySelectorAll('#mr-host .mr-tabs button')].map(b => b.textContent) })""")
+                            signals: [...document.querySelectorAll('#mr-host .mr-sig')].map(b => b.className.replace('mr-sig ', '').replace(' mr-hasPop', '') + ': ' + b.innerText.replace(/\\s+/g, ' ').trim()) })""")
+    res["tabs"] = p.js("""({ labels: [...document.querySelectorAll('#mr-host .mr-tabs button')].map(b => b.textContent), on: document.querySelector('#mr-host .mr-tabs button.on').dataset.tab })""")
+    res["panel"] = p.js("""({ open: document.querySelector('#mr-over-toggle').getAttribute('aria-expanded'), assigned: [...document.querySelectorAll('#mr-over .mr-prow')].map(r => r.innerText.replace(/\\s+/g, ' ').trim()),
+                             clamped: !!document.querySelector('#mr-over .mr-desc:not(.more)'), more: !!document.querySelector('#mr-more'),
+                             badges: [...document.querySelectorAll('#mr-over .mr-person')].map(x => x.className.replace('mr-person ', '') + ':' + x.querySelector('.mr-pn').textContent) })""")
+    p.js("document.querySelector('#mr-more').click(); 1")
+    res["readMore"] = p.js("!!document.querySelector('#mr-over .mr-desc.more') && document.querySelector('#mr-more').textContent")
+    p.js("document.querySelector('#mr-over-toggle').click(); 1")
+    res["folded"] = p.js("({ expanded: document.querySelector('#mr-over-toggle').getAttribute('aria-expanded'), body: !!document.querySelector('#mr-over .mr-over-body'), kept: localStorage.getItem('tt-mr-overview'), brief: document.querySelector('#mr-over-toggle').innerText.replace(/\\s+/g, ' ').trim() })")
+    p.js("document.querySelector('#mr-over-toggle').click(); 1")
+    res["unfolded"] = p.js("({ expanded: document.querySelector('#mr-over-toggle').getAttribute('aria-expanded'), kept: localStorage.getItem('tt-mr-overview') })")
+    # hover cards
+    p.js("document.querySelector('#mr-host .mr-sig.checks').dispatchEvent(new PointerEvent('pointerenter')); 1")
+    wait(p, "!!document.querySelector('.mr-pop')")
+    res["checksCard"] = p.js("document.querySelector('.mr-pop').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("document.querySelector('#mr-host .mr-sig.checks').dispatchEvent(new PointerEvent('pointerleave')); 1")
+    wait(p, "!document.querySelector('.mr-pop')")
+    res["cardClosed"] = True
+    p.js("document.querySelector('#mr-host .mr-sig.merge').dispatchEvent(new PointerEvent('pointerenter')); 1")
+    wait(p, "!!document.querySelector('.mr-pop')")
+    res["mergeCard"] = p.js("document.querySelector('.mr-pop').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("document.querySelector('#mr-host .mr-sig.merge').dispatchEvent(new PointerEvent('pointerleave')); 1")
+    wait(p, "!document.querySelector('.mr-pop')")
+    p.js("document.querySelector('#mr-over .mr-person.bad').dispatchEvent(new PointerEvent('pointerenter')); 1")
+    wait(p, "!!document.querySelector('.mr-pop')")
+    res["reviewerCard"] = p.js("document.querySelector('.mr-pop').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
+    res["escCloses"] = p.js("!document.querySelector('.mr-pop')")
+    res["motion"] = p.js("""({ bad: getComputedStyle(document.querySelector('#mr-host .mr-sig.checks')).animationName, still: document.querySelector('#mr-host .mr-page').classList.contains('still') })""")
+    res["overviewTab"] = p.js("""({ desc: document.querySelector('#mr-host .mr-fulldesc').innerText.slice(0, 40), dl: [...document.querySelectorAll('#mr-host .mr-dl dt')].map(d => d.textContent),
+                                  folders: [...document.querySelectorAll('#mr-host .mr-folder code')].map(c => c.textContent), talk: document.querySelectorAll('#mr-host .mr-side .mr-who').length })""")
+    # discussion
+    p.js("document.querySelector('#mr-host .mr-tabs button[data-tab=discussion]').click(); 1")
+    wait(p, "!!document.querySelector('#mr-host .mr-thread')")
     res["threads"] = p.js("""({ groups: [...document.querySelectorAll('#mr-host .mr-group h4')].map(h => h.textContent),
-                              cards: [...document.querySelectorAll('#mr-host .mr-thread')].map(c => c.dataset.id + ':' + c.querySelector('.mr-where, .chip.route').textContent),
-                              notes: document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-note').length,
-                              bold: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-note strong:not(.mr-author)') ? true : false,
-                              bar: document.querySelector('#mr-change').disabled, barText: document.querySelector('#mr-change').textContent })""")
+                              cards: [...document.querySelectorAll('#mr-host .mr-thread')].map(c => c.dataset.id + ':' + c.className.replace('card mr-thread', '').trim()),
+                              notes: document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-note').length, avatars: document.querySelectorAll('#mr-host .mr-thread[data-id=d1] .mr-av').length,
+                              bar: document.querySelector('#mr-change').disabled, barText: document.querySelector('#mr-change').textContent, lit: !!document.querySelector('.mr-bar.lit') })""")
     p.js("document.querySelector('#mr-all').click(); 1")
     res["withResolved"] = p.js("[...document.querySelectorAll('#mr-host .mr-thread')].map(c => c.dataset.id)")
     p.js("document.querySelector('#mr-all').click(); 1")
     p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').click(); 1")
     wait(p, "!!document.querySelector('#mr-host .mr-rec')")
-    res["recommended"] = p.js("""({ sent: window.__sent[0], rec: document.querySelector('#mr-host .mr-rec').innerText.replace(/\\s+/g, ' ').trim(),
+    res["recommended"] = p.js("""({ sent: window.__sent[0], rec: document.querySelector('#mr-host .mr-rec').innerText.replace(/\\s+/g, ' ').trim(), cls: document.querySelector('#mr-host .mr-thread[data-id=d1]').className,
                                    draft: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, btn: document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-recommend').textContent })""")
+    p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-action').dispatchEvent(new PointerEvent('pointerenter')); 1")
+    wait(p, "!!document.querySelector('.mr-pop')")
+    res["actionCard"] = p.js("document.querySelector('.mr-pop').innerText.replace(/\\s+/g, ' ').trim()")
+    p.js("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); 1")
     p.js("document.querySelector('#mr-host .mr-thread[data-id=d1] #mr-tick').click(); 1")
     wait(p, "document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value !== ''")
     res["ticked"] = p.js("""({ sent: window.__sent[1], draft: document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft').value, bar: document.querySelector('#mr-change').textContent,
-                              barOff: document.querySelector('#mr-change').disabled })""")
+                              barOff: document.querySelector('#mr-change').disabled, lit: !!document.querySelector('.mr-bar.lit'), chosen: document.querySelector('#mr-host .mr-thread[data-id=d1]').classList.contains('chosen') })""")
     p.js("""(() => { const t = document.querySelector('#mr-host .mr-thread[data-id=d1] .mr-draft'); t.value = 'Fixed, thanks.'; t.dispatchEvent(new Event('input')); })()""")
     time.sleep(0.9)
     res["draftSaved"] = p.js("window.__sent.filter(x => x[0] === 'draft').map(x => x[1].text)")
     p.js("document.querySelector('#mr-change').click(); 1")
     wait(p, "window.__sent.some(x => x[0] === 'change')")
     res["change"] = p.js("({ sent: window.__sent.find(x => x[0] === 'change'), hash: location.hash })")
-    p.js("location.hash = window.__real.hash; document.querySelector('#mr-host .mr-tabs button[data-tab=diff]').click(); 1")
+    # the last open comment is resolved: a burst, and a cheer
+    p.js("""location.hash = window.__real.hash; window.__bursts = []; if (window.TattyWallet) TattyWallet.burst = (at, n) => window.__bursts.push([Math.round(at.x) > 0, n]);
+            window.__data.mr.threads.forEach(t => { t.resolved = true; }); mrView.reload(''); 1""")
+    wait(p, "!!document.querySelector('#mr-cheer')")
+    res["cheer"] = p.js("({ text: document.querySelector('#mr-cheer').innerText.trim(), bursts: window.__bursts, signal: document.querySelector('#mr-host .mr-sig.comments').className })")
+    p.js("if (window.TattyWallet) TattyWallet.burst = window.__real.burst; 1")
+    # the diff
+    p.js("document.querySelector('#mr-host .mr-tabs button[data-tab=diff]').click(); 1")
     wait(p, "!!document.querySelector('#mr-host .mr-file')")
     p.js("document.querySelector('#mr-host .mr-file').click(); 1")
     wait(p, "!!document.querySelector('#mr-host table.diff')")
-    res["diff"] = p.js("""({ files: [...document.querySelectorAll('#mr-host .mr-file')].map(b => b.dataset.path + ' ' + b.querySelector('.mr-fcount').innerText.replace(/\\s+/g, ' ').trim()),
+    res["diff"] = p.js("""({ files: [...document.querySelectorAll('#mr-host .mr-file')].map(b => b.querySelector('.mr-mark').textContent + ' ' + b.dataset.path + ' ' + b.querySelector('.mr-fcount').innerText.replace(/\\s+/g, ' ').trim()),
                             added: [...document.querySelectorAll('#mr-host td.code.add')].map(td => td.textContent), onFile: document.querySelector('#mr-host .mr-onfile h4').textContent })""")
-    p.js("document.querySelector('#mr-host .mr-tabs button[data-tab=description]').click(); 1")
-    res["description"] = p.js("document.querySelector('#mr-host .md').innerHTML")
+    # the Motion switch
+    p.js("localStorage.setItem('tt-juice', 'off'); document.querySelector('#mr-host .mr-tabs button[data-tab=overview]').click(); 1")
+    res["still"] = p.js("""({ still: document.querySelector('#mr-host .mr-page').classList.contains('still'), anim: getComputedStyle(document.querySelector('#mr-host .mr-sig.checks')).animationName })""")
+    p.js("localStorage.removeItem('tt-juice'); 1")
     res["nav"] = p.js("""(() => { const n = featureNav(window.__f, null, false, { mr: true }); const a = [...n.querySelectorAll('.fnav-item')].find(x => x.querySelector('span').textContent === 'Merge request');
                           return a ? { on: a.classList.contains('on'), sub: a.querySelector('.dim').textContent, ic: a.dataset.ic, badge: a.dataset.badge, href: a.getAttribute('href') } : null; })()""")
     res["navHidden"] = p.js("""(() => { const f = { ...window.__f, phase: 'building', merge: { branch: 'feature/x', state: '' } }; const n = featureNav(f, null, false, {}); return [...n.querySelectorAll('.fnav-item')].some(x => x.querySelector('span').textContent === 'Merge request'); })()""")
-    p.js("window.api = window.__real.api; document.querySelector('#mr-host').remove(); 1")
+    p.js("window.api = window.__real.api; document.querySelector('#mr-host').remove(); localStorage.removeItem('tt-mr-overview'); 1")
     return res
 
 

@@ -561,7 +561,9 @@ are therefore Tatty's own, outside the workflow's records:
 - The feature's **Merge request** page (rail item, `#feature/<name>/merge-request`) reads the request
   the same way and only reads: `glab api projects/<path>/merge_requests/<n>`, `.../discussions` and
   `.../changes` (GitLab), `gh pr view`, `gh api graphql` (review threads and comments) and `gh pr diff`
-  (GitHub), all as argv with no shell. Nothing is posted, replied to or resolved from Tatty: a reply is
+  (GitHub), all as argv with no shell. The page's Overview also shows who is assigned, the reviewers and what each decided,
+  labels, the milestone, approvals, whether it can be merged and why not, and the checks (GitLab: `.../approvals` and
+  `.../pipelines/<id>/jobs`, each optional and tolerated when the host refuses; GitHub: more `gh pr view --json` fields). Nothing is posted, replied to or resolved from Tatty: a reply is
   a draft in Tatty's own state (`<project home>/mr/<feature>.state.json`) for the person to copy. A host
   with no such command (Bitbucket, a self-hosted server named oddly: Settings has a Host choice) shows the
   link and the branch's own `git diff` only. "Recommend action" runs a headless `claude -p` that may

@@ -6,6 +6,10 @@ the host (see `normal`), so the page never knows which host it is looking at:
 
     {"provider", "id", "url", "title", "description", "state", "draft", "author", "source", "target", "sha",
      "pipeline": {"status", "url"}, "files": [{"path", "status", "add", "del"}],
+     "assignees": [name], "reviewers": [{"name", "state": approved|changes|commented|pending, "at"}], "labels": [name],
+     "milestone", "created", "updated", "commits", "stats": {"add", "del", "files"},
+     "mergeable": {"status": ok|conflicts|blocked|checking|"", "reasons": [text]}, "approvals": {"have", "need"},
+     "checks": [{"name", "status": passed|failed|running|skipped, "url", "note"}],
      "threads": [{"id", "url", "path", "line", "resolved", "outdated", "hunk", "notes": [{"id", "author", "body", "created", "url"}]}]}
 
 and `diffs`, {path: the file's unified diff text}. A thread with no path is a general comment. Nothing here
@@ -153,10 +157,37 @@ def clip(s, n=20000):
     return s if len(s) <= n else s[:n] + "\n\n[cut: the rest is on the host]"
 
 
-def normal(provider, mr_id, url, title, description, state, draft, author, source, target, sha, pipeline, files, threads):
-    return {"provider": provider, "id": str(mr_id), "url": url, "title": title, "description": clip(description),
-            "state": state, "draft": bool(draft), "author": author, "source": source, "target": target, "sha": sha,
-            "pipeline": pipeline, "files": files, "threads": threads}
+def normal(provider, mr_id, url, title, description, state, draft, author, source, target, sha, pipeline, files, threads, **more):
+    """The one shape the page reads (see the module's docstring); `more` carries the fields a host could give besides."""
+    out = {"provider": provider, "id": str(mr_id), "url": url, "title": title, "description": clip(description),
+           "state": state, "draft": bool(draft), "author": author, "source": source, "target": target, "sha": sha,
+           "pipeline": pipeline, "files": files, "threads": threads,
+           "assignees": [], "reviewers": [], "labels": [], "milestone": "", "created": "", "updated": "", "commits": 0,
+           "mergeable": {"status": "", "reasons": []}, "approvals": {"have": 0, "need": 0}, "checks": []}
+    out.update(more)
+    out["stats"] = more.get("stats") or {"add": sum(f.get("add", 0) for f in files), "del": sum(f.get("del", 0) for f in files), "files": len(files)}
+    return out
+
+
+def optional(run, args, many=False):
+    """What a call that may be refused (a plan without it, a permission) answers, or None."""
+    try:
+        code, out, _ = run(args)
+        if code != 0 or not str(out).strip():
+            return None
+        return loads_many(out) if many else json.loads(out)
+    except (HostError, ValueError):
+        return None
+
+
+def names(items, *keys):
+    """The names in a list of people or labels (strings, or dicts with one of these keys)."""
+    out = []
+    for v in items or []:
+        n = v if isinstance(v, str) else next((str(v.get(k)) for k in keys if isinstance(v, dict) and v.get(k)), "")
+        if n and n not in out:
+            out.append(n)
+    return out
 
 
 def good_id(v):
@@ -206,10 +237,46 @@ def gitlab(run, project, iid):
     pipe = mr.get("head_pipeline") or mr.get("pipeline") or {}
     status = {"success": "passed", "failed": "failed", "running": "running", "pending": "running", "canceled": "failed"}.get(str(pipe.get("status", "")), "")
     state = {"opened": "opened", "locked": "opened", "merged": "merged", "closed": "closed"}.get(str(mr.get("state")), str(mr.get("state") or ""))
+    # who reviews, and who has approved (the approvals call is the paid tiers': tolerated when refused)
+    appr = optional(run, ["api", f"{base}/approvals"])
+    approved = names([(a or {}).get("user") if isinstance(a, dict) else a for a in (appr or {}).get("approved_by") or []], "username", "name")
+    asked = names(mr.get("reviewers"), "username", "name")
+    reviewers = [{"name": n, "state": "approved" if n in approved else "pending", "at": ""} for n in asked]
+    reviewers += [{"name": n, "state": "approved", "at": ""} for n in approved if n not in asked]
+    jobs = optional(run, ["api", "--paginate", f"projects/{urllib.parse.quote(project, safe='')}/pipelines/{pipe['id']}/jobs?per_page=100"], many=True) if pipe.get("id") else None
+    checks = []
+    for j in jobs or []:
+        if isinstance(j, dict) and j.get("name"):
+            st = {"success": "passed", "failed": "failed", "canceled": "failed", "running": "running", "pending": "running", "created": "running",
+                  "waiting_for_resource": "running", "preparing": "running", "scheduled": "running"}.get(str(j.get("status")), "skipped")
+            checks.append({"name": str(j["name"]), "status": st, "url": str(j.get("web_url") or ""),
+                           "note": ("allowed to fail" if j.get("allow_failure") and st == "failed" else str(j.get("stage") or ""))})
+    checks.sort(key=lambda c: {"failed": 0, "running": 1, "passed": 2}.get(c["status"], 3))
+    dms = str(mr.get("detailed_merge_status") or mr.get("merge_status") or "")
+    why = {"ci_must_pass": "The pipeline must pass.", "ci_still_running": "The pipeline is still running.", "conflict": "It has merge conflicts.",
+           "discussions_not_resolved": "Comments are still unresolved.", "draft_status": "It is a draft.", "not_approved": "It needs approval.",
+           "requested_changes": "Changes were requested.", "need_rebase": "The branch needs a rebase.", "blocked_status": "Another request blocks it.",
+           "external_status_checks": "An external check is pending.", "not_open": "It is not open.", "approvals_syncing": "Approvals are syncing.",
+           "jira_association_missing": "It needs a linked issue.", "commits_status": "Its commits are not allowed yet.",
+           "merge_request_blocked": "Another request blocks it.", "title_regex": "Its title doesn't match the required pattern."}
+    if mr.get("has_conflicts") or dms == "conflict":
+        mergeable = {"status": "conflicts", "reasons": ["It has merge conflicts."]}
+    elif dms in ("mergeable", "can_be_merged"):
+        mergeable = {"status": "ok", "reasons": []}
+    elif dms in ("checking", "unchecked", "preparing", "cannot_be_merged_recheck", ""):
+        mergeable = {"status": "checking" if dms else "", "reasons": ["The host is still working it out."] if dms else []}
+    else:
+        mergeable = {"status": "blocked", "reasons": [why.get(dms, dms.replace("_", " ").capitalize() + ".")]}
+    if mr.get("blocking_discussions_resolved") is False and mergeable["status"] == "ok":
+        mergeable = {"status": "blocked", "reasons": ["Comments are still unresolved."]}
+    need = (appr or {}).get("approvals_required") or 0
     return normal("gitlab", mr.get("iid"), url, str(mr.get("title") or ""), mr.get("description"), state,
                   mr.get("draft") or mr.get("work_in_progress"), person(mr.get("author")), str(mr.get("source_branch") or ""),
                   str(mr.get("target_branch") or ""), str(mr.get("sha") or ""), {"status": status, "url": str(pipe.get("web_url") or "")},
-                  files, threads), diffs
+                  files, threads, assignees=names(mr.get("assignees"), "username", "name"), reviewers=reviewers,
+                  labels=names(mr.get("labels"), "name"), milestone=str((mr.get("milestone") or {}).get("title") or "") if isinstance(mr.get("milestone"), dict) else "",
+                  created=str(mr.get("created_at") or ""), updated=str(mr.get("updated_at") or ""), mergeable=mergeable,
+                  approvals={"have": len(approved), "need": int(need or 0)}, checks=checks[:60]), diffs
 
 
 # ---------------------------------------------------------------- GitHub (gh)
@@ -226,7 +293,8 @@ def github(run, owner, name, number):
         raise HostError("no pull request number")
     repo = f"{owner}/{name}"
     pr = json.loads(must(run(["pr", "view", str(number), "-R", repo, "--json",
-                             "number,title,body,state,isDraft,author,headRefName,baseRefName,url,headRefOid,statusCheckRollup"]), "the pull request") or "{}")
+                             "number,title,body,state,isDraft,author,headRefName,baseRefName,url,headRefOid,statusCheckRollup,assignees,labels,milestone,"
+                             "reviewRequests,latestReviews,reviewDecision,mergeable,mergeStateStatus,createdAt,updatedAt,commits"]), "the pull request") or "{}")
     if not isinstance(pr, dict) or not pr.get("number"):
         raise HostError("the host didn't describe that pull request")
     got = json.loads(must(run(["api", "graphql", "-f", "query=" + GRAPHQL, "-F", f"owner={owner}", "-F", f"name={name}",
@@ -253,10 +321,51 @@ def github(run, owner, name, number):
                                        "created": str(n.get("createdAt") or ""), "url": str(n.get("url") or "")}]})
     files, diffs = files_from_git(must(run(["pr", "diff", str(number), "-R", repo]), "the diff"))
     marks = [c for c in pr.get("statusCheckRollup") or [] if isinstance(c, dict)]
-    bad = any(str(c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED") for c in marks)
-    busy = any(str(c.get("status") or c.get("state") or "").upper() in ("IN_PROGRESS", "QUEUED", "PENDING") for c in marks)
-    pipe = {"status": "failed" if bad else "running" if busy else "passed" if marks else "", "url": ""}
+    checks = []
+    for c in marks:
+        raw = str(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        st = ("failed" if raw in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE") else
+              "running" if raw in ("IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED", "EXPECTED", "") else
+              "passed" if raw in ("SUCCESS", "NEUTRAL") else "skipped")
+        checks.append({"name": str(c.get("name") or c.get("context") or "check"), "status": st,
+                       "url": str(c.get("detailsUrl") or c.get("targetUrl") or ""), "note": raw.lower().replace("_", " ")})
+    checks.sort(key=lambda c: {"failed": 0, "running": 1, "passed": 2}.get(c["status"], 3))
+    bad = any(c["status"] == "failed" for c in checks)
+    busy = any(c["status"] == "running" for c in checks)
+    pipe = {"status": "failed" if bad else "running" if busy else "passed" if checks else "", "url": ""}
     state = {"OPEN": "opened", "MERGED": "merged", "CLOSED": "closed"}.get(str(pr.get("state")), str(pr.get("state") or "").lower())
+    # who reviews: the latest review of each person, then those still asked
+    reviewers, seen = [], set()
+    for r in pr.get("latestReviews") or []:
+        who = person(r.get("author")) if isinstance(r, dict) else ""
+        if who and who not in seen:
+            seen.add(who)
+            reviewers.append({"name": who, "state": {"APPROVED": "approved", "CHANGES_REQUESTED": "changes"}.get(str(r.get("state")), "commented"),
+                              "at": str(r.get("submittedAt") or "")})
+    for r in pr.get("reviewRequests") or []:
+        who = person(r.get("requestedReviewer") if isinstance(r, dict) and r.get("requestedReviewer") else r) or (str(r.get("name") or r.get("slug") or "") if isinstance(r, dict) else "")
+        if who and who not in seen:
+            seen.add(who)
+            reviewers.append({"name": who, "state": "pending", "at": ""})
+    merge_state, can = str(pr.get("mergeStateStatus") or "").upper(), str(pr.get("mergeable") or "").upper()
+    if can == "CONFLICTING" or merge_state == "DIRTY":
+        mergeable = {"status": "conflicts", "reasons": ["It has merge conflicts."]}
+    elif merge_state in ("CLEAN", "HAS_HOOKS") or (can == "MERGEABLE" and merge_state in ("", "UNSTABLE") and not bad):
+        mergeable = {"status": "ok", "reasons": []}
+    elif merge_state == "BEHIND":
+        mergeable = {"status": "blocked", "reasons": ["The branch is behind its base."]}
+    elif merge_state == "DRAFT":
+        mergeable = {"status": "blocked", "reasons": ["It is a draft."]}
+    elif merge_state == "UNSTABLE":
+        mergeable = {"status": "blocked", "reasons": ["Some checks failed."]}
+    elif merge_state == "BLOCKED":
+        mergeable = {"status": "blocked", "reasons": ["Required reviews or checks are missing."]}
+    else:
+        mergeable = {"status": "checking" if (can or merge_state) else "", "reasons": ["The host is still working it out."] if (can or merge_state) else []}
     return normal("github", pr.get("number"), str(pr.get("url") or ""), str(pr.get("title") or ""), pr.get("body"), state,
                   pr.get("isDraft"), person(pr.get("author")), str(pr.get("headRefName") or ""), str(pr.get("baseRefName") or ""),
-                  str(pr.get("headRefOid") or ""), pipe, files, threads), diffs
+                  str(pr.get("headRefOid") or ""), pipe, files, threads, assignees=names(pr.get("assignees"), "login", "name"), reviewers=reviewers,
+                  labels=names(pr.get("labels"), "name"), milestone=str((pr.get("milestone") or {}).get("title") or "") if isinstance(pr.get("milestone"), dict) else "",
+                  created=str(pr.get("createdAt") or ""), updated=str(pr.get("updatedAt") or ""), mergeable=mergeable,
+                  approvals={"have": sum(1 for r in reviewers if r["state"] == "approved"), "need": 0}, checks=checks[:60],
+                  commits=len(pr.get("commits") or [])), diffs
