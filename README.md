@@ -96,6 +96,23 @@ Tatty is for when you'd rather see it laid out, and be told when it needs you.
   side chat. The workflow carries on, and the chat can read your project but
   never change it.
 
+### Review other people's merge requests
+
+- A Merge requests page lists the open GitLab or GitHub requests that involve
+  you (yours, ones you review or are assigned, ones you are mentioned in),
+  split into Needs me, My MRs and Watching, with why each is news: new commits,
+  new comments, a review asked of you. The list is read through `glab` or `gh`
+  as you, on a timer you set (or never): no model, no tokens. A bubble alert
+  tells you when one starts needing you.
+- Open one for its overview and status, its files, its discussion and a
+  review. Pick lines in a diff and ask Tatty about them, or have it review the
+  whole request. It reads the changed files (nothing else, and nothing it can
+  run or change), and its findings wait as drafts you keep, edit or drop.
+- Tatty sends nothing on its own. A comment, a reply or a resolve goes only
+  from a confirm sheet that shows the exact text and where it lands, and the
+  server checks that sheet's hash again before it sends. The comments go as one
+  review, so the author gets one notification.
+
 ### Think and plan, not just build
 
 - Turn a design document into user stories, laid out as sticky notes you can

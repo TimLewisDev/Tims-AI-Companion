@@ -525,7 +525,7 @@ function drawAlert() {
   const more = alerts.length - 1;
   alertBar.replaceChildren(
     el("div", { class: "what" },
-      el("div", { class: "kind" }, a.kind === "ask" ? "Question" : a.kind === "reply" ? "Reply" : "Finished", more ? ` · +${more} more` : ""),
+      el("div", { class: "kind" }, a.kind === "ask" ? "Question" : a.kind === "reply" ? "Reply" : a.kind === "mr" ? "Merge request" : "Finished", more ? ` · +${more} more` : ""),
       el("div", { class: "title" }, a.title),
       a.sub ? el("div", { class: "sub" }, a.sub) : ""),
     a.kind === "ask" ? "" : el("button", { type: "button", class: "dismiss", title: "Dismiss", "aria-label": "Dismiss" }, "×"));
@@ -547,6 +547,8 @@ function alertFrom(ev) {
   } else if (fresh && ev.type === "milestone") {
     pushAlert({ kind: "milestone", key: "m" + ev.seq, title: ev.label || "Finished",
                sub: [ev.skill, ev.feature || ev.prefix, ev.qualifier].filter(Boolean).join(" · "), link: ev.link || "" });
+  } else if (fresh && ev.type === "mrs" && ev.alert) {
+    pushAlert({ kind: "mr", key: "mr" + ev.seq, title: ev.alert.title, sub: ev.alert.sub, link: ev.alert.link || "#mrs" });
   } else if (fresh && ev.type === "card" && ev.kind === "reply" && !ev.tag) {
     pushAlert({ kind: "reply", key: "r" + ev.seq, title: ev.title || "Claude replied",
                sub: firstLine(ev.body).slice(0, 200), link: ev.link || "" });

@@ -92,6 +92,121 @@ function mrPop(node, build) {
 }
 const mrTip = (node, text) => mrPop(node, () => el("div", { class: "mr-tip" }, text));
 
+// ---- parts both the feature's page and the Merge requests page draw
+
+// ---- the status pills: what needs attention is bright and pulses; what is fine is calm
+const mrSignal = (cls, icon, label, state, build) => {
+  const b = el("button", { type: "button", class: "mr-sig " + cls + " " + state }, el("span", { class: "mr-sig-ic", "aria-hidden": "true" }, icon), el("span", { class: "mr-sig-label" }, label));
+  return build ? mrPop(b, build) : b;
+};
+const mrSignals = (mr, counted) => {
+  const out = [];
+  const open = mr.threads.filter(mrOpen);
+  const num = el("b", {}, "");
+  const comments = mrSignal("comments", "✎", "", open.length ? "warn" : "ok", () => open.length ? el("div", {}, el("strong", {}, `${open.length} comment${open.length === 1 ? "" : "s"} waiting`),
+    el("ul", { class: "mr-poplist" }, open.slice(0, 6).map(t => el("li", {}, el("code", {}, t.path ? `${t.path.split("/").pop()}${t.line ? ":" + t.line : ""}` : "general"), " ", (t.notes[0].body || "").split("\n")[0].slice(0, 80))),
+      open.length > 6 ? el("li", { class: "dim" }, `and ${open.length - 6} more`) : "")) : el("div", {}, "Every comment is resolved."));
+  comments.querySelector(".mr-sig-label").replaceChildren(num, ` open comment${open.length === 1 ? "" : "s"}`);
+  if (!counted) mrCount(num, open.length); else num.textContent = String(open.length);
+  out.push(comments);
+  const checks = mr.checks || [];
+  const pipe = (mr.pipeline || {}).status;
+  if (checks.length || pipe) {
+    const failed = checks.filter(c => c.status === "failed"), running = checks.filter(c => c.status === "running");
+    const state = pipe === "failed" || failed.length ? "bad" : pipe === "running" || running.length ? "run" : "ok";
+    const label = failed.length ? `${failed.length} of ${checks.length} checks failed` : state === "bad" ? "Checks failed" : state === "run" ? (running.length ? `${running.length} check${running.length === 1 ? "" : "s"} running` : "Checks running") : "Checks passed";
+    out.push(mrSignal("checks", state === "ok" ? "✓" : state === "bad" ? "✕" : "◔", label, state, () => checks.length ? el("div", {}, el("strong", {}, label),
+      el("ul", { class: "mr-poplist mr-jobs" }, checks.slice(0, 14).map(c => el("li", { class: "job " + c.status }, el("span", { class: "dot" }), c.url ? el("a", { href: c.url, target: "_blank", rel: "noopener" }, c.name) : el("span", {}, c.name),
+        el("span", { class: "dim small" }, c.note ? ` ${c.note}` : ""))), checks.length > 14 ? el("li", { class: "dim" }, `and ${checks.length - 14} more`) : "")) :
+      el("div", {}, label, mr.pipeline && mr.pipeline.url ? [" ", el("a", { href: mr.pipeline.url, target: "_blank", rel: "noopener" }, "open the pipeline")] : "")));
+  }
+  const mg = mr.mergeable || {};
+  if (mg.status) {
+    const word = { ok: "Ready to merge", conflicts: "Merge conflicts", blocked: "Can't merge yet", checking: "Checking" }[mg.status] || "Unknown";
+    out.push(mrSignal("merge", mg.status === "ok" ? "⇢" : mg.status === "conflicts" ? "⚠" : "⏸", word, mg.status === "ok" ? "ok" : mg.status === "conflicts" ? "bad" : mg.status === "blocked" ? "warn" : "idle",
+      () => el("div", {}, el("strong", {}, word), (mg.reasons || []).length ? el("ul", { class: "mr-poplist" }, mg.reasons.map(r => el("li", {}, r))) : el("p", { class: "dim small" }, mg.status === "ok" ? "Nothing stands in its way." : "The host hasn't said why."))));
+  }
+  const ap = mr.approvals || { have: 0, need: 0 };
+  const approvers = (mr.reviewers || []).filter(r => r.state === "approved");
+  if (ap.need || approvers.length) {
+    const done = ap.need ? ap.have >= ap.need : approvers.length > 0;
+    out.push(mrSignal("approvals", done ? "✓" : "◐", ap.need ? `${ap.have} of ${ap.need} approvals` : `${approvers.length} approved`, done ? "ok" : "warn",
+      () => el("div", {}, el("strong", {}, ap.need ? `${ap.have} of ${ap.need} approvals` : "Approved by"), approvers.length ? el("ul", { class: "mr-poplist" }, approvers.map(r => el("li", {}, mrWho(r.name)))) : el("p", { class: "dim small" }, "Nobody has approved yet."))));
+  }
+  const rv = mr.reviewers || [];
+  if (rv.length) {
+    const changes = rv.filter(r => r.state === "changes"), waiting = rv.filter(r => r.state === "pending");
+    const state = changes.length ? "bad" : waiting.length ? "idle" : "ok";
+    const label = changes.length ? `${changes.length} asked for changes` : waiting.length ? `${waiting.length} reviewer${waiting.length === 1 ? "" : "s"} waiting` : "Reviewed";
+    out.push(mrSignal("reviewers", changes.length ? "!" : waiting.length ? "○" : "✓", label, state, () => mrReviewerList(rv)));
+  }
+  return out;
+};
+
+const mrReviewerList = rv => el("div", {}, el("strong", {}, "Reviewers"), el("ul", { class: "mr-poplist" }, rv.map(r => {
+  const [word, cls, icon] = MR_REVIEW[r.state] || MR_REVIEW.pending;
+  return el("li", {}, mrWho(r.name), el("span", { class: "mr-rv " + cls }, el("i", {}, icon), " " + word + (r.at ? " · " + mrWhen(r.at) : "")));
+})));
+
+const mrReviewerChips = rv => rv.length ? rv.map(r => {
+  const [word, cls, icon] = MR_REVIEW[r.state] || MR_REVIEW.pending;
+  const chip = el("span", { class: "mr-person " + cls }, mrAvatar(r.name), el("span", { class: "mr-pn" }, r.name), el("span", { class: "mr-badge", "aria-label": word }, icon));
+  return mrPop(chip, () => el("div", {}, mrWho(r.name), el("div", { class: "mr-rv " + cls }, el("i", {}, icon), " " + word + (r.at ? " · " + mrWhen(r.at) : ""))));
+}) : [el("span", { class: "dim small" }, "none asked")];
+
+// ---- the overview: a panel above every tab (folds away), and the tab with the rest
+const mrPeopleBlock = mr => el("div", { class: "mr-people" },
+  el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Author"), mrWho(mr.author)),
+  el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Assigned"), (mr.assignees || []).length ? el("span", { class: "mr-chips" }, mr.assignees.map(n => mrWho(n))) : el("span", { class: "dim small" }, "nobody")),
+  el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Reviewers"), el("span", { class: "mr-chips" }, mrReviewerChips(mr.reviewers || []))),
+  (mr.labels || []).length ? el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Labels"), el("span", { class: "mr-chips" }, mr.labels.map(l => {
+    const c = el("span", { class: "mr-label" }, l); c.style.setProperty("--h", String(mrHue(l))); return c; }))) : "",
+  mr.milestone ? el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Milestone"), el("span", {}, "◎ " + mr.milestone)) : "");
+
+const mrFolders = mr => {
+  const by = new Map();
+  for (const file of mr.files) { const k = file.path.includes("/") ? file.path.slice(0, file.path.indexOf("/")) : "(top)"; const v = by.get(k) || { add: 0, del: 0, n: 0 }; v.add += file.add; v.del += file.del; v.n++; by.set(k, v); }
+  const rows = [...by.entries()].sort((a, b) => (b[1].add + b[1].del) - (a[1].add + a[1].del)).slice(0, 12);
+  const top = Math.max(1, ...rows.map(r => r[1].add + r[1].del));
+  return el("div", { class: "mr-folders" }, rows.map(([k, v]) => {
+    const bar = el("span", { class: "mr-bar-fill" }); bar.style.setProperty("--w", String(Math.max(3, Math.round(100 * (v.add + v.del) / top))));
+    const split = el("i", { class: "mr-split" }); split.style.setProperty("--add", String(v.add + v.del ? Math.round(100 * v.add / (v.add + v.del)) : 0));
+    bar.append(split);
+    return el("div", { class: "mr-folder" }, el("code", {}, k), bar, el("span", { class: "dim small" }, `${v.n} file${v.n === 1 ? "" : "s"} · +${v.add} −${v.del}`));
+  }));
+};
+
+const mrOverviewTab = mr => {
+  const talk = new Map();
+  for (const t of mr.threads) for (const n of t.notes) talk.set(n.author || "someone", (talk.get(n.author || "someone") || 0) + 1);
+  return el("div", { class: "mr-grid" },
+    el("div", { class: "card mr-fulldesc" }, el("h4", {}, "Description"), mr.description ? mdNode(mr.description) : el("p", { class: "dim" }, "No description.")),
+    el("div", { class: "mr-side" },
+      el("div", { class: "card" }, el("h4", {}, "Details"), el("dl", { class: "mr-dl" },
+        el("dt", {}, "Branch"), el("dd", {}, el("code", {}, mr.source || "?"), " → ", el("code", {}, mr.target || "?")),
+        el("dt", {}, "Created"), el("dd", {}, mrWhen(mr.created) || "—"), el("dt", {}, "Updated"), el("dd", {}, mrWhen(mr.updated) || "—"),
+        el("dt", {}, "Changes"), el("dd", {}, `${mr.stats ? mr.stats.files : mr.files.length} files · +${mr.stats ? mr.stats.add : 0} −${mr.stats ? mr.stats.del : 0}` + (mr.commits ? ` · ${mr.commits} commit${mr.commits === 1 ? "" : "s"}` : "")),
+        mr.sha ? [el("dt", {}, "Head"), el("dd", {}, el("code", {}, mr.sha.slice(0, 10)))] : "")),
+      talk.size ? el("div", { class: "card" }, el("h4", {}, "In the conversation"), el("div", { class: "mr-chips" }, [...talk.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => mrWho(n, el("span", { class: "chip route" }, String(c)))))) : "",
+      mr.files.length ? el("div", { class: "card" }, el("h4", {}, "Where the change is"), mrFolders(mr)) : ""));
+};
+
+// A comment thread's head (where it is, resolved, outdated, how many comments) and its notes: shared by both pages.
+// where(t) is called when the place is pressed.
+const mrThreadHead = (t, where) => {
+  const at = t.path ? `${t.path}${t.line ? ":" + t.line : ""}` : "";
+  return el("div", { class: "mr-thread-head" },
+    t.notes[0] ? mrAvatar(t.notes[0].author) : "",
+    at ? mrPop(el("button", { type: "button", class: "mr-where", onclick: () => where && where(t) }, at),
+      () => el("div", {}, el("code", {}, t.path), el("p", { class: "small dim" }, `Line ${t.line || "?"}. Click to see the file's diff.` + (t.outdated ? " The code has changed since this comment was made." : "")))) : el("span", { class: "chip route" }, "general"),
+    t.resolved ? el("span", { class: "chip done" }, "resolved") : "",
+    t.outdated ? mrTip(el("span", { class: "chip todo" }, "outdated"), "The code under this comment has changed since it was made, so the line may have moved.") : "",
+    el("span", { class: "dim small" }, `${t.notes.length} comment${t.notes.length === 1 ? "" : "s"}`),
+    t.url ? el("a", { class: "small mr-host", href: t.url, target: "_blank", rel: "noopener" }, "on the host ↗") : "");
+};
+const mrNotes = t => t.notes.map(n => el("div", { class: "mr-note" },
+  el("div", { class: "mr-note-head" }, mrAvatar(n.author, "sm"), el("strong", { class: "mr-author" }, n.author || "someone"), el("span", { class: "dim small" }, mrWhen(n.created))), mdNode(n.body || "")));
+
 async function mrPage(f, main) {
   const enc = encodeURIComponent;
   const view = mrView = { name: f.name, main, data: null, tab: "overview", all: false, file: "", pending: false, said: "", prevOpen: null, ticked: 0,
@@ -103,75 +218,6 @@ async function mrPage(f, main) {
 
   const busyNow = () => new Set(view.data ? view.data.busy : []);
 
-  // ---- the status pills: what needs attention is bright and pulses; what is fine is calm
-  const signal = (cls, icon, label, state, build) => {
-    const b = el("button", { type: "button", class: "mr-sig " + cls + " " + state }, el("span", { class: "mr-sig-ic", "aria-hidden": "true" }, icon), el("span", { class: "mr-sig-label" }, label));
-    return build ? mrPop(b, build) : b;
-  };
-  const signals = mr => {
-    const out = [];
-    const open = mr.threads.filter(mrOpen);
-    const num = el("b", {}, "");
-    const comments = signal("comments", "✎", "", open.length ? "warn" : "ok", () => open.length ? el("div", {}, el("strong", {}, `${open.length} comment${open.length === 1 ? "" : "s"} waiting`),
-      el("ul", { class: "mr-poplist" }, open.slice(0, 6).map(t => el("li", {}, el("code", {}, t.path ? `${t.path.split("/").pop()}${t.line ? ":" + t.line : ""}` : "general"), " ", (t.notes[0].body || "").split("\n")[0].slice(0, 80))),
-        open.length > 6 ? el("li", { class: "dim" }, `and ${open.length - 6} more`) : "")) : el("div", {}, "Every comment is resolved."));
-    comments.querySelector(".mr-sig-label").replaceChildren(num, ` open comment${open.length === 1 ? "" : "s"}`);
-    if (!view.counted) mrCount(num, open.length); else num.textContent = String(open.length);
-    out.push(comments);
-    const checks = mr.checks || [];
-    const pipe = (mr.pipeline || {}).status;
-    if (checks.length || pipe) {
-      const failed = checks.filter(c => c.status === "failed"), running = checks.filter(c => c.status === "running");
-      const state = pipe === "failed" || failed.length ? "bad" : pipe === "running" || running.length ? "run" : "ok";
-      const label = failed.length ? `${failed.length} of ${checks.length} checks failed` : state === "bad" ? "Checks failed" : state === "run" ? (running.length ? `${running.length} check${running.length === 1 ? "" : "s"} running` : "Checks running") : "Checks passed";
-      out.push(signal("checks", state === "ok" ? "✓" : state === "bad" ? "✕" : "◔", label, state, () => checks.length ? el("div", {}, el("strong", {}, label),
-        el("ul", { class: "mr-poplist mr-jobs" }, checks.slice(0, 14).map(c => el("li", { class: "job " + c.status }, el("span", { class: "dot" }), c.url ? el("a", { href: c.url, target: "_blank", rel: "noopener" }, c.name) : el("span", {}, c.name),
-          el("span", { class: "dim small" }, c.note ? ` ${c.note}` : ""))), checks.length > 14 ? el("li", { class: "dim" }, `and ${checks.length - 14} more`) : "")) :
-        el("div", {}, label, mr.pipeline && mr.pipeline.url ? [" ", el("a", { href: mr.pipeline.url, target: "_blank", rel: "noopener" }, "open the pipeline")] : "")));
-    }
-    const mg = mr.mergeable || {};
-    if (mg.status) {
-      const word = { ok: "Ready to merge", conflicts: "Merge conflicts", blocked: "Can't merge yet", checking: "Checking" }[mg.status] || "Unknown";
-      out.push(signal("merge", mg.status === "ok" ? "⇢" : mg.status === "conflicts" ? "⚠" : "⏸", word, mg.status === "ok" ? "ok" : mg.status === "conflicts" ? "bad" : mg.status === "blocked" ? "warn" : "idle",
-        () => el("div", {}, el("strong", {}, word), (mg.reasons || []).length ? el("ul", { class: "mr-poplist" }, mg.reasons.map(r => el("li", {}, r))) : el("p", { class: "dim small" }, mg.status === "ok" ? "Nothing stands in its way." : "The host hasn't said why."))));
-    }
-    const ap = mr.approvals || { have: 0, need: 0 };
-    const approvers = (mr.reviewers || []).filter(r => r.state === "approved");
-    if (ap.need || approvers.length) {
-      const done = ap.need ? ap.have >= ap.need : approvers.length > 0;
-      out.push(signal("approvals", done ? "✓" : "◐", ap.need ? `${ap.have} of ${ap.need} approvals` : `${approvers.length} approved`, done ? "ok" : "warn",
-        () => el("div", {}, el("strong", {}, ap.need ? `${ap.have} of ${ap.need} approvals` : "Approved by"), approvers.length ? el("ul", { class: "mr-poplist" }, approvers.map(r => el("li", {}, mrWho(r.name)))) : el("p", { class: "dim small" }, "Nobody has approved yet."))));
-    }
-    const rv = mr.reviewers || [];
-    if (rv.length) {
-      const changes = rv.filter(r => r.state === "changes"), waiting = rv.filter(r => r.state === "pending");
-      const state = changes.length ? "bad" : waiting.length ? "idle" : "ok";
-      const label = changes.length ? `${changes.length} asked for changes` : waiting.length ? `${waiting.length} reviewer${waiting.length === 1 ? "" : "s"} waiting` : "Reviewed";
-      out.push(signal("reviewers", changes.length ? "!" : waiting.length ? "○" : "✓", label, state, () => reviewerList(rv)));
-    }
-    return out;
-  };
-
-  const reviewerList = rv => el("div", {}, el("strong", {}, "Reviewers"), el("ul", { class: "mr-poplist" }, rv.map(r => {
-    const [word, cls, icon] = MR_REVIEW[r.state] || MR_REVIEW.pending;
-    return el("li", {}, mrWho(r.name), el("span", { class: "mr-rv " + cls }, el("i", {}, icon), " " + word + (r.at ? " · " + mrWhen(r.at) : "")));
-  })));
-
-  const reviewerChips = rv => rv.length ? rv.map(r => {
-    const [word, cls, icon] = MR_REVIEW[r.state] || MR_REVIEW.pending;
-    const chip = el("span", { class: "mr-person " + cls }, mrAvatar(r.name), el("span", { class: "mr-pn" }, r.name), el("span", { class: "mr-badge", "aria-label": word }, icon));
-    return mrPop(chip, () => el("div", {}, mrWho(r.name), el("div", { class: "mr-rv " + cls }, el("i", {}, icon), " " + word + (r.at ? " · " + mrWhen(r.at) : ""))));
-  }) : [el("span", { class: "dim small" }, "none asked")];
-
-  // ---- the overview: a panel above every tab (folds away), and the tab with the rest
-  const peopleBlock = mr => el("div", { class: "mr-people" },
-    el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Author"), mrWho(mr.author)),
-    el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Assigned"), (mr.assignees || []).length ? el("span", { class: "mr-chips" }, mr.assignees.map(n => mrWho(n))) : el("span", { class: "dim small" }, "nobody")),
-    el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Reviewers"), el("span", { class: "mr-chips" }, reviewerChips(mr.reviewers || []))),
-    (mr.labels || []).length ? el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Labels"), el("span", { class: "mr-chips" }, mr.labels.map(l => {
-      const c = el("span", { class: "mr-label" }, l); c.style.setProperty("--h", String(mrHue(l))); return c; }))) : "",
-    mr.milestone ? el("div", { class: "mr-prow" }, el("span", { class: "mr-plabel" }, "Milestone"), el("span", {}, "◎ " + mr.milestone)) : "");
-
   const overviewPanel = mr => {
     const rv = mr.reviewers || [];
     const brief = [`${rv.length} reviewer${rv.length === 1 ? "" : "s"}`, (mr.assignees || []).length ? `${mr.assignees.length} assigned` : "", (mr.labels || []).length ? `${mr.labels.length} label${mr.labels.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
@@ -181,36 +227,8 @@ async function mrPage(f, main) {
     const desc = el("div", { class: "mr-desc" + (view.more ? " more" : "") }, mr.description ? mdNode(mr.description) : el("p", { class: "dim" }, "No description."));
     const body = view.over ? el("div", { class: "mr-over-body" }, el("div", { class: "mr-over-desc" }, desc,
       mr.description && mr.description.length > 280 ? el("button", { type: "button", class: "linkish", id: "mr-more", onclick: () => { view.more = !view.more; draw(); } }, view.more ? "Show less" : "Read more") : ""),
-      peopleBlock(mr)) : "";
+      mrPeopleBlock(mr)) : "";
     return el("section", { class: "mr-over card" + (view.over ? " open" : ""), id: "mr-over" }, head, body);
-  };
-
-  const folders = mr => {
-    const by = new Map();
-    for (const file of mr.files) { const k = file.path.includes("/") ? file.path.slice(0, file.path.indexOf("/")) : "(top)"; const v = by.get(k) || { add: 0, del: 0, n: 0 }; v.add += file.add; v.del += file.del; v.n++; by.set(k, v); }
-    const rows = [...by.entries()].sort((a, b) => (b[1].add + b[1].del) - (a[1].add + a[1].del)).slice(0, 12);
-    const top = Math.max(1, ...rows.map(r => r[1].add + r[1].del));
-    return el("div", { class: "mr-folders" }, rows.map(([k, v]) => {
-      const bar = el("span", { class: "mr-bar-fill" }); bar.style.setProperty("--w", String(Math.max(3, Math.round(100 * (v.add + v.del) / top))));
-      const split = el("i", { class: "mr-split" }); split.style.setProperty("--add", String(v.add + v.del ? Math.round(100 * v.add / (v.add + v.del)) : 0));
-      bar.append(split);
-      return el("div", { class: "mr-folder" }, el("code", {}, k), bar, el("span", { class: "dim small" }, `${v.n} file${v.n === 1 ? "" : "s"} · +${v.add} −${v.del}`));
-    }));
-  };
-
-  const overviewTab = mr => {
-    const talk = new Map();
-    for (const t of mr.threads) for (const n of t.notes) talk.set(n.author || "someone", (talk.get(n.author || "someone") || 0) + 1);
-    return el("div", { class: "mr-grid" },
-      el("div", { class: "card mr-fulldesc" }, el("h4", {}, "Description"), mr.description ? mdNode(mr.description) : el("p", { class: "dim" }, "No description.")),
-      el("div", { class: "mr-side" },
-        el("div", { class: "card" }, el("h4", {}, "Details"), el("dl", { class: "mr-dl" },
-          el("dt", {}, "Branch"), el("dd", {}, el("code", {}, mr.source || "?"), " → ", el("code", {}, mr.target || "?")),
-          el("dt", {}, "Created"), el("dd", {}, mrWhen(mr.created) || "—"), el("dt", {}, "Updated"), el("dd", {}, mrWhen(mr.updated) || "—"),
-          el("dt", {}, "Changes"), el("dd", {}, `${mr.stats ? mr.stats.files : mr.files.length} files · +${mr.stats ? mr.stats.add : 0} −${mr.stats ? mr.stats.del : 0}` + (mr.commits ? ` · ${mr.commits} commit${mr.commits === 1 ? "" : "s"}` : "")),
-          mr.sha ? [el("dt", {}, "Head"), el("dd", {}, el("code", {}, mr.sha.slice(0, 10)))] : "")),
-        talk.size ? el("div", { class: "card" }, el("h4", {}, "In the conversation"), el("div", { class: "mr-chips" }, [...talk.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => mrWho(n, el("span", { class: "chip route" }, String(c)))))) : "",
-        mr.files.length ? el("div", { class: "card" }, el("h4", {}, "Where the change is"), folders(mr)) : ""));
   };
 
   // ---- one comment thread
@@ -220,17 +238,8 @@ async function mrPage(f, main) {
     const draft = st.draft || { text: "", edited: false, commit: "" };
     const working = busyNow().has(t.id);
     const stale = rec.action && rec.seen != null && rec.seen < t.notes.length;
-    const where = t.path ? `${t.path}${t.line ? ":" + t.line : ""}` : "";
-    const head = el("div", { class: "mr-thread-head" },
-      t.notes[0] ? mrAvatar(t.notes[0].author) : "",
-      where ? mrPop(el("button", { type: "button", class: "mr-where", onclick: () => { view.tab = "diff"; view.file = t.path; draw(); } }, where),
-        () => el("div", {}, el("code", {}, t.path), el("p", { class: "small dim" }, `Line ${t.line || "?"}. Click to see the file's diff.` + (t.outdated ? " The code has changed since this comment was made." : "")))) : el("span", { class: "chip route" }, "general"),
-      t.resolved ? el("span", { class: "chip done" }, "resolved") : "",
-      t.outdated ? mrTip(el("span", { class: "chip todo" }, "outdated"), "The code under this comment has changed since it was made, so the line may have moved.") : "",
-      el("span", { class: "dim small" }, `${t.notes.length} comment${t.notes.length === 1 ? "" : "s"}`),
-      t.url ? el("a", { class: "small mr-host", href: t.url, target: "_blank", rel: "noopener" }, "on the host ↗") : "");
-    const notes = t.notes.map(n => el("div", { class: "mr-note" },
-      el("div", { class: "mr-note-head" }, mrAvatar(n.author, "sm"), el("strong", { class: "mr-author" }, n.author || "someone"), el("span", { class: "dim small" }, mrWhen(n.created))), mdNode(n.body || "")));
+    const head = mrThreadHead(t, () => { view.tab = "diff"; view.file = t.path; draw(); });
+    const notes = mrNotes(t);
     const recommend = el("button", { type: "button", class: rec.action ? "" : "primary", id: "mr-recommend", disabled: working }, working ? "Working…" : rec.action ? "Look again" : "Recommend action");
     recommend.addEventListener("click", async () => {
       recommend.disabled = true;
@@ -371,13 +380,13 @@ async function mrPage(f, main) {
         mr.author ? mrWho(mr.author) : "", mr.source ? el("span", { class: "mr-branches" }, el("code", {}, mr.source), " → ", el("code", {}, mr.target)) : "",
         el("span", { class: "dim small mr-stats" }, `${st.files} file${st.files === 1 ? "" : "s"} `, el("span", { class: "add" }, "+" + st.add), " ", el("span", { class: "del" }, "−" + st.del), mr.commits ? ` · ${mr.commits} commit${mr.commits === 1 ? "" : "s"}` : "",
           mr.updated ? ` · updated ${mrWhen(mr.updated)}` : "")),
-      el("div", { class: "mr-signals", id: "mr-signals" }, signals(mr)));
+      el("div", { class: "mr-signals", id: "mr-signals" }, mrSignals(mr, view.counted)));
     const notes = [d.why ? el("p", { class: "st missing", id: "mr-why" }, d.why) : "",
       mr.local ? el("p", { class: "small dim" }, "Only the branch's own diff is shown: comments aren't read for this host here.") : "",
       d.onSource === false ? el("p", { class: "small st missing", id: "mr-branch" }, `The repository is on ${d.branch || "a detached HEAD"}, not the merge request's branch ${mr.source}: a recommendation reads the code as it is checked out.`) : ""];
     const openN = mr.threads.filter(mrOpen).length;
     const tabs = [["overview", "Overview"], ["discussion", `Discussion · ${openN}`], ["diff", `Diff · ${mr.files.length}`]];
-    const body = view.tab === "diff" ? diffTab() : view.tab === "discussion" ? discussion() : overviewTab(mr);
+    const body = view.tab === "diff" ? diffTab() : view.tab === "discussion" ? discussion() : mrOverviewTab(mr);
     root.replaceChildren(hero, ...notes, overviewPanel(mr), el("div", { class: "mr-tabs", role: "tablist" }, tabs.map(([k, label]) => el("button", { type: "button", role: "tab", "data-tab": k,
       class: view.tab === k ? "on" : "", "aria-selected": String(view.tab === k), onclick: () => { view.tab = k; draw(); } }, label,
       k === "discussion" && openN ? el("span", { class: "mr-dot", "aria-hidden": "true" }) : ""))), el("div", { class: "mr-body" }, body), view.tab === "discussion" && !mr.local ? changeBar() : "");

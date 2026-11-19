@@ -73,6 +73,7 @@ function drawSettings() {
     branchSettings(s),
     mergeSkillSettings(),
     mrSettings(s),
+    mrsSettings(s),
     jiraSettings(s),
     debugSettings()));
 }
@@ -312,6 +313,25 @@ function mrSettings(s) {
       el("span", { class: "dim small" }, "Set it when the repository's address doesn't say (a self-hosted server). Other hosts show the link and the branch's own diff.")),
     el("label", { class: "field-row" }, el("strong", {}, "Model"), model,
       el("span", { class: "dim small" }, "The model that looks into a comment, reading the code. Blank: sonnet.")));
+}
+
+// The Merge requests page (mrs.js): how often the list is read (through glab or gh: no model, no tokens), whether a new
+// request that needs you rings the bubble, and the model that reviews.
+function mrsSettings(s) {
+  const save = async body => { try { settingsNow = await api("/api/settings", body); } catch (e) { alert(String(e)); } };
+  const poll = el("input", { id: "set-mrsPoll", type: "number", min: "0", max: "1440", value: String(s.mrsPoll), "aria-label": "Minutes between reads of the list" });
+  poll.addEventListener("change", () => save({ mrsPoll: Math.max(0, Math.min(1440, Math.round(Number(poll.value) || 0))) }));
+  const alerts = el("input", { id: "set-mrsAlerts", type: "checkbox", "aria-label": "Alert when a request needs me" });
+  alerts.checked = !!s.mrsAlerts;
+  alerts.addEventListener("change", () => save({ mrsAlerts: alerts.checked }));
+  const model = el("input", { id: "set-mrsModel", value: s.mrsModel, placeholder: "sonnet", "aria-label": "Model for reviewing" });
+  model.addEventListener("change", () => save({ mrsModel: model.value.trim() }));
+  return el("section", { id: "mrs-settings" },
+    el("h3", {}, "Merge requests page"),
+    el("p", { class: "dim small" }, "The list of requests that involve you is read through glab (GitLab) or gh (GitHub), signed in as you: no model and no tokens. A review or a chat uses the model below. Tatty sends a comment, reply or resolve only after you confirm its exact text."),
+    el("label", { class: "field-row" }, el("strong", {}, "Check every"), poll, el("span", { class: "dim small" }, "minutes. 0 turns checking off (Refresh on the page still reads it).")),
+    el("label", { class: "field-row" }, el("strong", {}, "Alert me"), alerts, el("span", { class: "dim small" }, "in the bubble when a request starts needing you.")),
+    el("label", { class: "field-row" }, el("strong", {}, "Model"), model, el("span", { class: "dim small" }, "The model that reviews and answers about a request. Blank: sonnet.")));
 }
 
 // The Jira board's reading (jira.js): which tickets, through which MCP server

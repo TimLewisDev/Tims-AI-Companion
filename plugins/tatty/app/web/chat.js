@@ -105,6 +105,7 @@ function chatView(id, opts = {}) {
 
   const view = {
     id, node,
+    setText: t => { box.value = t || ""; },
     dirty: () => !!box.value.trim(),
     focus: () => requestAnimationFrame(() => box.focus()),
     update(ev) {
@@ -128,6 +129,7 @@ function chatMessage(m, chat) {
   if (m.role === "error") return el("li", { class: "chat-msg error" }, el("span", { class: "who" }, "Not answered"), el("div", {}, m.text));
   const body = mdNode(m.text);
   linkIds(body, chat.feature); // ids.js
+  if (chat.kind === "mr" && typeof mrCommentButtons === "function") mrCommentButtons(body, chat); // mrs.js
   const steps = (m.steps || []).length ? el("details", { class: "chat-steps dim small" },
     el("summary", {}, `${m.steps.length} step${m.steps.length === 1 ? "" : "s"}`), el("ul", {}, m.steps.map(s => el("li", {}, s)))) : "";
   return el("li", { class: "chat-msg claude", "data-ts": String(m.ts || "") }, el("span", { class: "who" }, "Claude"), steps, body);

@@ -276,7 +276,9 @@ def gitlab(run, project, iid):
                   files, threads, assignees=names(mr.get("assignees"), "username", "name"), reviewers=reviewers,
                   labels=names(mr.get("labels"), "name"), milestone=str((mr.get("milestone") or {}).get("title") or "") if isinstance(mr.get("milestone"), dict) else "",
                   created=str(mr.get("created_at") or ""), updated=str(mr.get("updated_at") or ""), mergeable=mergeable,
-                  approvals={"have": len(approved), "need": int(need or 0)}, checks=checks[:60]), diffs
+                  approvals={"have": len(approved), "need": int(need or 0)}, checks=checks[:60],
+                  diffRefs={k: str((mr.get("diff_refs") or {}).get(k) or "") for k in ("base_sha", "start_sha", "head_sha")}
+                  if isinstance(mr.get("diff_refs"), dict) else {}), diffs
 
 
 # ---------------------------------------------------------------- GitHub (gh)
@@ -369,3 +371,117 @@ def github(run, owner, name, number):
                   created=str(pr.get("createdAt") or ""), updated=str(pr.get("updatedAt") or ""), mergeable=mergeable,
                   approvals={"have": sum(1 for r in reviewers if r["state"] == "approved"), "need": 0}, checks=checks[:60],
                   commits=len(pr.get("commits") or [])), diffs
+
+
+# ---------------------------------------------------------------- the open requests that involve me (the inbox)
+# Slim records, one per request, for the Merge requests page's list (no threads, no diff):
+#
+#     {"id", "url", "title", "author", "draft", "source", "target", "updated", "sha", "notes": <comment count>,
+#      "roles": [author|reviewer|assignee|mentioned], "asked": <a review is asked of me / a to-do waits for me>,
+#      "reviewers": [name], "conflicts": bool}
+#
+# Only list calls: a poll costs a handful of CLI calls and no model at all.
+
+ROLES = ("author", "reviewer", "assignee", "mentioned")
+MAX_LIST = 100
+
+
+def me_gitlab(run):
+    got = json.loads(must(run(["api", "user"]), "who you are on GitLab") or "{}")
+    who = str((got or {}).get("username") or "") if isinstance(got, dict) else ""
+    if not who:
+        raise HostError("GitLab didn't say who you are: sign in with glab auth login")
+    return who
+
+
+def me_github(run):
+    who = must(run(["api", "user", "--jq", ".login"]), "who you are on GitHub").strip()
+    if not who:
+        raise HostError("GitHub didn't say who you are: sign in with gh auth login")
+    return who
+
+
+def slim(mr_id, url, title, author, draft, source, target, updated, sha, notes, reviewers, conflicts=False):
+    return {"id": str(mr_id), "url": str(url or ""), "title": str(title or "")[:300], "author": author, "draft": bool(draft),
+            "source": str(source or ""), "target": str(target or ""), "updated": str(updated or ""), "sha": str(sha or ""),
+            "notes": int(notes or 0), "roles": [], "asked": False, "reviewers": reviewers, "conflicts": bool(conflicts)}
+
+
+def list_gitlab(run, project, me=""):
+    """(me, [slim record]) of the open merge requests in the project that involve me: mine, the ones I review
+    or am assigned, and the ones a pending to-do of mine points at (a mention, a review asked)."""
+    me = me or me_gitlab(run)
+    base = f"projects/{urllib.parse.quote(project, safe='')}/merge_requests?state=opened&scope=all&per_page={MAX_LIST}"
+    who = urllib.parse.quote(me, safe="")
+    found = {}
+
+    def take(items, role):
+        for m in items:
+            if not isinstance(m, dict) or not str(m.get("iid") or "").isdigit():
+                continue
+            if str(m.get("state") or "opened") not in ("opened", "locked"):
+                continue
+            iid = str(m["iid"])
+            if iid not in found:
+                found[iid] = slim(iid, m.get("web_url"), m.get("title"), person(m.get("author")), m.get("draft") or m.get("work_in_progress"),
+                                  m.get("source_branch"), m.get("target_branch"), m.get("updated_at"), m.get("sha"), m.get("user_notes_count"),
+                                  names(m.get("reviewers"), "username", "name"), m.get("has_conflicts"))
+            if role and role not in found[iid]["roles"]:
+                found[iid]["roles"].append(role)
+            if role == "reviewer":
+                found[iid]["asked"] = True
+
+    take(loads_many(must(run(["api", f"{base}&author_username={who}"]), "your merge requests")), "author")
+    take(loads_many(must(run(["api", f"{base}&reviewer_username={who}"]), "the merge requests you review")), "reviewer")
+    take(loads_many(must(run(["api", f"{base}&assignee_username={who}"]), "the merge requests assigned to you")), "assignee")
+    todos = optional(run, ["api", "todos?state=pending&type=MergeRequest&per_page=100"], many=True) or []
+    for t in todos:
+        if not isinstance(t, dict) or str((t.get("project") or {}).get("path_with_namespace") or "").lower() != project.lower():
+            continue
+        target = t.get("target") if isinstance(t.get("target"), dict) else {}
+        take([target], "mentioned" if t.get("action_name") in ("mentioned", "directly_addressed") else "")
+        iid = str(target.get("iid") or "")
+        if iid in found:
+            found[iid]["asked"] = True
+    out = sorted(found.values(), key=lambda r: r["updated"], reverse=True)[:MAX_LIST]
+    for r in out:
+        if r["author"] == me and "author" not in r["roles"]:
+            r["roles"].insert(0, "author")
+    return me, out
+
+
+GH_LIST = "number,title,author,isDraft,headRefName,baseRefName,updatedAt,headRefOid,url,reviewRequests,assignees,comments,mergeable"
+
+
+def list_github(run, owner, name, me=""):
+    """(me, [slim record]) of the open pull requests in the repository that involve me."""
+    me = me or me_github(run)
+    repo = f"{owner}/{name}"
+    found = {}
+
+    def take(items, role):
+        for p in items:
+            if not isinstance(p, dict) or not str(p.get("number") or "").isdigit():
+                continue
+            n = str(p["number"])
+            if n not in found:
+                asked = [person(r.get("requestedReviewer") if isinstance(r, dict) and r.get("requestedReviewer") else r) for r in p.get("reviewRequests") or []]
+                found[n] = slim(n, p.get("url"), p.get("title"), person(p.get("author")), p.get("isDraft"), p.get("headRefName"),
+                                p.get("baseRefName"), p.get("updatedAt"), p.get("headRefOid"), len(p.get("comments") or []),
+                                [a for a in asked if a], str(p.get("mergeable") or "").upper() == "CONFLICTING")
+                if found[n]["author"] == me:
+                    found[n]["roles"].append("author")
+                if me in names(p.get("assignees"), "login", "name"):
+                    found[n]["roles"].append("assignee")
+            if role and role not in found[n]["roles"]:
+                found[n]["roles"].append(role)
+            if role == "reviewer":
+                found[n]["asked"] = True
+
+    args = ["pr", "list", "-R", repo, "--state", "open", "--limit", str(MAX_LIST), "--json", GH_LIST, "--search"]
+    take(loads_many(must(run(args + ["involves:@me"]), "the pull requests that involve you")), "")
+    take(loads_many(must(run(args + ["review-requested:@me"]), "the pull requests waiting for your review")), "reviewer")
+    for r in found.values():
+        if not r["roles"]:
+            r["roles"].append("mentioned")
+    return me, sorted(found.values(), key=lambda r: r["updated"], reverse=True)[:MAX_LIST]

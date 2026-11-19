@@ -132,6 +132,7 @@ function modeCard(id, box) {
 const MODE_PAGES = {
   engineering: [
     { href: "#home", label: "Features", icon: "features", blurb: "Your features, where each stands, and their documents." },
+    { href: "#mrs", label: "Merge requests", icon: "mrs", blurb: "Open requests that involve you, what needs you, and an assisted review of a colleague's." },
     { href: "#diagram", label: "Project diagram", icon: "diagram", blurb: "How the code fits together: its groups, classes and the links between them." },
   ],
   design: [
@@ -159,6 +160,7 @@ const ICONS = {
   tasks: ["M4 4h16v16H4Z", "M8 12.5l2.5 2.5L16 9"],
   qa: ["M9 3h6v4l4 11a2 2 0 0 1-1.9 2.7H6.9A2 2 0 0 1 5 18L9 7Z", "M8 14h8"],
   bug: ["M9 8h6v8a3 3 0 0 1-6 0Z", "M12 8V5", "M9 11H5", "M15 11h4", "M9 15H5", "M15 15h4"],
+  mrs: ["M6 3v10", "M6 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z", "M18 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z", "M18 7v4a4 4 0 0 1-4 4H9"],
   modes: ["M4 4h6.5v6.5H4Z", "M13.5 4H20v6.5h-6.5Z", "M4 13.5h6.5V20H4Z", "M13.5 13.5H20V20h-6.5Z"],
   diagram: ["M9 3h6v5H9Z", "M3 16h6v5H3Z", "M15 16h6v5h-6Z", "M12 8v4", "M6 16v-4h12v4"],
 };

@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --mrs | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --mrs | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -26,6 +26,7 @@ throwaway root;
 --stages only the Stages button on a feature it makes itself ("Walk stages"): real mouse and keys on its menu,
 leaving Scope, Plan and Review out and putting them back. It writes the feature's stage profile, so a throwaway root only;
 --review only the review step's Start panel (the page's api() stood in for: nothing is started);
+--mrs only the Merge requests page: the inbox, a request's Files, Discussion and Review, and the confirm sheet (the page's api() stood in for: nothing is sent);
 --commit only the Commit page and its card (the page's api() and confirm() stood in for: nothing is committed);
 --intake      only the Engineering home's task box: the box and the card it draws, the effort slider's stops, a bug, Create and start
 (the page's api() stood in for: nothing is made);
@@ -1760,6 +1761,196 @@ def check_commit(p):
     return res
 
 
+def check_mrs(p):
+    """The Merge requests page (mrs.js), drawn with the page's api() stood in for: the inbox's three groups, rows, chips and
+    the nav badge; one request's hero, tabs and Overview; the Files tab (picking lines, Comment, Ask Tatty and the chat's Add as
+    comment button); the Discussion tab (Help me reply, Post reply); the Review tab (its drafts and the confirm sheet, with
+    the exact text and where it lands); and the Motion switch. Nothing is sent anywhere. Prints what it found, with a list
+    of `problems` (empty when every expectation held)."""
+    res = {}
+    p.js("""(() => { window.__errs = []; window.addEventListener('error', e => window.__errs.push(String(e.message))); window.addEventListener('unhandledrejection', e => window.__errs.push(String(e.reason && e.reason.stack || e.reason)));
+            window.__real = { api: window.api, hash: location.hash }; window.__sent = [];
+            const slim = (id, title, author, roles, asked, reasons, extra) => Object.assign({ id: String(id), key: 'gitlab-group_proj-' + id, url: '', title, author, draft: false,
+              source: 's' + id, target: 'main', updated: '2026-11-0' + (id % 9 + 1) + 'T10:00:00Z', sha: 'x', notes: id, roles, asked, reviewers: [], conflicts: false, reasons,
+              needsMe: asked, unread: reasons.length > 0, busy: false }, extra || {});
+            window.__list = { groups: { needs: [slim(7, 'Add the widget', 'bob', ['reviewer'], true, ['new-commits']), slim(9, 'You are mentioned', 'dan', ['mentioned'], true, [])],
+                mine: [slim(5, 'My own change', 'me', ['author'], false, [])], watching: [slim(8, 'Docs tidy', 'carol', ['assignee'], false, [], { draft: true })] },
+              counts: { total: 4, needsMe: 2, unread: 1 }, kind: 'gitlab', host: 'gitlab.example.com', path: 'group/proj', repo: 'C:/work/repo', me: 'me', fetched: 1,
+              unsupported: false, why: '', poll: 5, alerts: true, model: '', read: true };
+            const note = (id, author, body) => ({ id, author, body, created: '2026-11-01T10:00:00Z', url: '' });
+            window.__one = { mr: { provider: 'gitlab', kind: 'gitlab', id: '7', url: 'https://host.example/mr/7', title: 'Add the widget', description: 'Adds a **widget**.', state: 'opened',
+                draft: false, author: 'bob', source: 'colleague', target: 'main', sha: 'abc', pipeline: { status: 'passed', url: '' }, assignees: [], labels: [], milestone: '',
+                created: '2026-10-30T10:00:00Z', updated: '2026-11-02T10:00:00Z', commits: 2, reviewers: [{ name: 'me', state: 'pending', at: '' }], approvals: { have: 0, need: 1 },
+                mergeable: { status: 'ok', reasons: [] }, checks: [], stats: { add: 3, del: 1, files: 2 },
+                files: [{ path: 'src/widget.txt', status: 'modified', add: 2, del: 1 }, { path: 'docs/a.md', status: 'added', add: 1, del: 0 }],
+                threads: [{ id: 'd1', url: '', path: 'src/widget.txt', line: 2, resolved: false, resolvable: true, outdated: false, hunk: '', notes: [note('n1', 'sam', 'Guard **null**.')] },
+                          { id: 'd2', url: '', path: '', line: 0, resolved: false, resolvable: false, outdated: false, hunk: '', notes: [note('n2', 'sam', 'Overall fine.')] }] },
+              why: '', state: { replies: {}, pending: [], review: null, chats: [] }, busy: [], step: {}, repo: 'C:/work/repo', kind: 'gitlab', roles: ['reviewer'], asked: true, snapshot: true, link: '' };
+            let n = 0;
+            const where = x => x.path ? x.path + ':' + (x.side === 'old' ? x.oldLine : x.line) : 'the conversation';
+            window.api = async (path, body) => {
+              if (path.startsWith('/api/mrs?')) return window.__list;
+              if (path.startsWith('/api/mrs/one?')) return JSON.parse(JSON.stringify(window.__one));
+              if (path.startsWith('/api/mrs/diff?')) return { path: 'src/widget.txt', binary: false, cut: false, threads: ['d1'], hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [' a', '-b', '+B', ' c', '+d'] }] };
+              if (path.startsWith('/api/chat?')) return { id: 'c-test', kind: 'mr', mr: 'gitlab-group_proj-7', feature: '', project: 'C:/work/repo', title: 'MR', busy: false, cost: 0, context: null,
+                messages: [{ role: 'you', text: 'Any feedback?', ts: 1 }, { role: 'claude', ts: 2, text: 'One thing.\\n\\n```tatty-comment\\n{"path":"src/widget.txt","line":4,"body":"From the chat."}\\n```' }] };
+              if (path === '/api/mrs/seen' || path === '/api/mrs/draft' || path === '/api/mrs/cancel') { window.__sent.push([path, body]); return { ok: true }; }
+              if (path === '/api/mrs/recommend') { window.__sent.push([path, body]); return { ok: true }; }
+              if (path === '/api/mrs/chat') { window.__sent.push([path, body]); return { chat: { id: 'c-test', kind: 'mr', mr: body.key, messages: [], busy: false }, reused: false }; }
+              if (path === '/api/mrs/comment') {
+                window.__sent.push([path, body]);
+                if (body.op === 'add') window.__one.state.pending.push({ cid: 'p-' + (++n), path: body.path || '', line: body.line || 0, oldLine: body.oldLine || 0, side: body.side || 'new', severity: '', body: body.body, from: body.from || 'me', status: 'draft', hostId: '', edited: true });
+                return { ok: true };
+              }
+              if (path === '/api/mrs/review') {
+                window.__sent.push([path, body]);
+                window.__one.state.review = { summary: 'Adds a widget.', risk: 'medium', depth: body.depth, model: 'sonnet', cost: 0.1, error: '', questions: ['Why d?'], findings: [] };
+                window.__one.state.pending.push({ cid: 'p-r1', path: 'src/widget.txt', line: 2, oldLine: 0, side: 'new', severity: 'major', body: '**Capital B**\\n\\nNo reason given.', from: 'review', status: 'draft', hostId: '', edited: false });
+                return { ok: true };
+              }
+              if (path === '/api/mrs/preview') {
+                window.__sent.push([path, body]);
+                const acts = body.items.map(i => { const x = window.__one.state.pending.find(q => q.cid === i.cid); return i.kind === 'comment' ? { type: 'comment', label: 'Comment', where: where(x), body: x.body }
+                  : { type: i.kind, label: i.kind === 'reply' ? 'Reply' : 'Resolve', where: 'the thread on src/widget.txt:2', body: 'Thanks.', tid: i.tid, on: i.on }; });
+                return { actions: acts, digest: 'dig123', host: 'gitlab', url: '' };
+              }
+              if (path === '/api/mrs/post') { window.__sent.push([path, body]); for (const i of body.items) { const x = window.__one.state.pending.find(q => q.cid === i.cid); if (x) x.status = 'posted'; } return { ok: true, results: body.items.map(i => ({ type: i.kind, ok: true, note: '' })) }; }
+              return window.__real.api(path, body);
+            };
+            document.querySelector('#mrs-host') && document.querySelector('#mrs-host').remove();
+            const h = document.createElement('div'); h.id = 'mrs-host'; document.body.append(h); window.renderMrs(h, '', ''); })(); 1""")
+    wait(p, "document.querySelectorAll('#mrs-host .mrs-row').length >= 4")
+    res["inbox"] = p.js("""({ head: document.querySelector('#mrs-host .mrs-head').innerText.replace(/\\s+/g, ' ').trim(),
+                             groups: [...document.querySelectorAll('#mrs-host .mrs-group')].map(g => g.dataset.group + ': ' + g.querySelectorAll('.mrs-row').length),
+                             first: document.querySelector('#mrs-host .mrs-group.needs .mrs-row').innerText.replace(/\\s+/g, ' ').trim(),
+                             unread: document.querySelectorAll('#mrs-host .mrs-row.unread').length, needs: document.querySelectorAll('#mrs-host .mrs-row.needs').length,
+                             href: document.querySelector('#mrs-host .mrs-row').getAttribute('href'),
+                             draftChip: [...document.querySelectorAll('#mrs-host .mrs-group.watching .chip')].map(c => c.textContent) })""")
+    res["motion"] = p.js("""({ still: document.querySelector('#mrs-host .mrs-page').classList.contains('still'), anim: getComputedStyle(document.querySelector('#mrs-host .mrs-row')).animationName })""")
+    p.js("mrsPaintBadge(2); 1")
+    res["badge"] = p.js("document.querySelector('.pnav a[data-page=mrs]').dataset.badge")
+    # unsupported host
+    p.js("window.__list0 = JSON.stringify(window.__list); 1")
+    p.js("window.__list.unsupported = true; window.__list.why = 'Bitbucket isn\\'t supported yet.'; window.__list.groups = { needs: [], mine: [], watching: [] }; window.__list.counts = { total: 0, needsMe: 0, unread: 0 }; document.querySelector('#mrs-refresh').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-unsupported')")
+    res["unsupported"] = p.js("document.querySelector('#mrs-unsupported').innerText.replace(/\\s+/g, ' ').trim()")
+    # one request
+    p.js("window.renderMrs(document.querySelector('#mrs-host'), 'gitlab-group_proj-7', 'overview'); 1")
+    wait(p, "!!document.querySelector('#mrs-host .mr-hero')")
+    res["hero"] = p.js("""({ title: document.querySelector('#mrs-host .mr-hero h2').innerText.replace(/\\s+/g, ' ').trim(), meta: document.querySelector('#mrs-host .mr-meta').innerText.replace(/\\s+/g, ' ').trim(),
+                            signals: [...document.querySelectorAll('#mrs-host .mr-sig')].map(b => b.className.replace('mr-sig ', '').replace(' mr-hasPop', '')),
+                            tabs: [...document.querySelectorAll('#mrs-host .mr-tabs button')].map(b => b.textContent), seen: window.__sent.some(x => x[0] === '/api/mrs/seen'),
+                            people: document.querySelectorAll('#mrs-host .mr-people .mr-prow').length })""")
+    # files: pick a line, comment on it
+    p.js("document.querySelector('#mrs-host .mr-tabs button[data-tab=files]').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-host .mr-file')")
+    p.js("document.querySelector('#mrs-host .mr-file').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-host table.diff')")
+    p.js("""(() => { const tr = [...document.querySelectorAll('#mrs-host table.diff tr')].find(r => r.cells.length >= 4 && r.cells[2].textContent === '2'); tr.cells[2].click(); })()""")
+    wait(p, "!document.querySelector('#mrs-pickbar').hidden")
+    res["picked"] = p.js("""({ bar: document.querySelector('#mrs-pickbar').innerText.replace(/\\s+/g, ' ').trim(), selected: document.querySelectorAll('#mrs-host table.diff tr.mrs-sel').length,
+                             buttons: [...document.querySelectorAll('#mrs-pickbar button')].map(b => b.textContent) })""")
+    p.js("""(() => { const tr = [...document.querySelectorAll('#mrs-host table.diff tr')].find(r => r.cells.length >= 4 && r.cells[2].textContent === '4'); tr.cells[2].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })); })()""")
+    res["range"] = p.js("({ selected: document.querySelectorAll('#mrs-host table.diff tr.mrs-sel').length, bar: document.querySelector('#mrs-pickbar').innerText.replace(/\\s+/g, ' ').trim() })")
+    p.js("document.querySelector('#mrs-pick-comment').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-host .mrs-compose')")
+    p.js("""(() => { const t = document.querySelector('#mrs-host .mrs-compose'); t.value = 'Why a capital B?'; })(); document.querySelector('#mrs-compose-save').click(); 1""")
+    wait(p, "!!document.querySelector('#mrs-host tr.mrs-inline .mrs-pending')")
+    res["comment"] = p.js("""({ sent: window.__sent.filter(x => x[0] === '/api/mrs/comment').map(x => [x[1].op, x[1].path, x[1].line, x[1].side, x[1].body]),
+                              inline: document.querySelectorAll('#mrs-host tr.mrs-inline .mrs-pending').length, thread: document.querySelectorAll('#mrs-host tr.mrs-inline .mrs-thread-inline').length,
+                              dashed: getComputedStyle(document.querySelector('#mrs-host .mrs-pending')).borderStyle })""")
+    # ask Tatty, and the chat's Add as comment
+    p.js("""(() => { const tr = [...document.querySelectorAll('#mrs-host table.diff tr')].find(r => r.cells.length >= 4 && r.cells[2].textContent === '2'); tr.cells[2].click(); })()""")
+    wait(p, "!document.querySelector('#mrs-pickbar').hidden")
+    p.js("document.querySelector('#mrs-pick-ask').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-host .mrs-ask .mrs-add-comment')")
+    res["ask"] = p.js("""({ sent: window.__sent.filter(x => x[0] === '/api/mrs/chat').map(x => x[1].context), asking: document.querySelector('#mrs-host .mrs-detail').classList.contains('asking'),
+                            button: document.querySelector('#mrs-host .mrs-add-comment').textContent, block: !!document.querySelector('#mrs-host .mrs-ask pre[data-lang=tatty-comment]') })""")
+    p.js("document.querySelector('#mrs-host .mrs-add-comment').click(); 1")
+    wait(p, "window.__sent.some(x => x[0] === '/api/mrs/comment' && x[1].from === 'chat')")
+    res["added"] = p.js("({ sent: window.__sent.filter(x => x[0] === '/api/mrs/comment' && x[1].from === 'chat').map(x => [x[1].path, x[1].line, x[1].body]), button: document.querySelector('#mrs-host .mrs-add-comment').textContent })")
+    # discussion
+    p.js("document.querySelector('#mrs-host .mr-tabs button[data-tab=discussion]').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-host .mrs-thread')")
+    p.js("document.querySelector('#mrs-host .mrs-thread[data-id=d1] .mrs-help').click(); 1")
+    wait(p, "window.__sent.some(x => x[0] === '/api/mrs/recommend')")
+    p.js("""(() => { const t = document.querySelector('#mrs-host .mrs-thread[data-id=d1] .mr-draft'); t.value = 'Thanks.'; })(); document.querySelector('#mrs-host .mrs-thread[data-id=d1] .mrs-post-reply').click(); 1""")
+    wait(p, "!!document.querySelector('.mrs-sheet')")
+    res["replySheet"] = p.js("""({ text: document.querySelector('.mrs-sheet').innerText.replace(/\\s+/g, ' ').trim(), draftSaved: window.__sent.filter(x => x[0] === '/api/mrs/draft').map(x => x[1].text) })""")
+    p.js("document.querySelector('#mrs-cancel').click(); 1")
+    res["sheetCancelled"] = p.js("!document.querySelector('.mrs-sheet') && !window.__sent.some(x => x[0] === '/api/mrs/post')")
+    # review
+    p.js("document.querySelector('#mrs-host .mr-tabs button[data-tab=review]').click(); 1")
+    wait(p, "!!document.querySelector('#mrs-review-quick')")
+    p.js("document.querySelector('#mrs-review-quick').click(); 1")
+    wait(p, "document.querySelectorAll('#mrs-host .mrs-pending').length >= 3")
+    res["review"] = p.js("""({ sent: window.__sent.filter(x => x[0] === '/api/mrs/review').map(x => x[1].depth), summary: document.querySelector('#mrs-host .mrs-summary').innerText.replace(/\\s+/g, ' ').trim(),
+                               drafts: document.querySelectorAll('#mrs-host .mrs-pending').length, ticked: document.querySelectorAll('#mrs-host .mrs-keep:checked').length,
+                               send: document.querySelector('#mrs-send-review').textContent, tab: document.querySelector('#mrs-host .mr-tabs button.on').textContent })""")
+    p.js("document.querySelector('#mrs-send-review').click(); 1")
+    wait(p, "!!document.querySelector('.mrs-sheet')")
+    res["sheet"] = p.js("""({ head: document.querySelector('.mrs-sheet h3').textContent, items: [...document.querySelectorAll('.mrs-send-item')].map(i => i.innerText.replace(/\\s+/g, ' ').trim()),
+                             modal: document.querySelector('.mrs-sheet-back').getAttribute('aria-modal') })""")
+    p.js("document.querySelector('#mrs-send').click(); 1")
+    wait(p, "!document.querySelector('.mrs-sheet')")
+    res["posted"] = p.js("""({ sent: window.__sent.filter(x => x[0] === '/api/mrs/post').map(x => [x[1].confirm, x[1].items.map(i => i.kind)]),
+                              left: document.querySelectorAll('#mrs-host .mrs-pending').length })""")
+    shots = os.environ.get("TATTY_SHOTS")
+    if shots:  # pictures through the real route, with the stand-in api still in place: TATTY_SHOTS=<folder>
+        import base64
+        os.makedirs(shots, exist_ok=True)
+        p.js("document.querySelector('#mrs-host').remove(); window.__list = JSON.parse(window.__list0); 1")
+        p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+        for theme in ("light", "dark"):
+            p.js(f"document.documentElement.dataset.theme = '{theme}'; 1")
+            for name, hash_, pre in (("inbox", "#mrs", ""), ("overview", "#mrs/gitlab-group_proj-7", ""), ("files", "#mrs/gitlab-group_proj-7/files", "document.querySelector('#page-mrs .mr-file') && document.querySelector('#page-mrs .mr-file').click();"),
+                                     ("review", "#mrs/gitlab-group_proj-7/review", "")):
+                p.js(f"location.hash = '#home'; 1"); time.sleep(0.3)
+                p.js(f"location.hash = '{hash_}'; 1")
+                wait(p, "!!document.querySelector('#page-mrs .mrs-row, #page-mrs .mr-hero')")
+                time.sleep(0.8)
+                if pre:
+                    p.js(pre + " 1"); time.sleep(0.8)
+                shot = p.call("Page.captureScreenshot", format="png")
+                with open(os.path.join(shots, f"mrs-{name}-{theme}.png"), "wb") as fh:
+                    fh.write(base64.b64decode(shot.get("result", {}).get("data", "")))
+        p.js("document.documentElement.dataset.theme = ''; location.hash = '#home'; 1")
+    p.js("""if (window.__real) { window.api = window.__real.api; } document.querySelector('#mrs-host') && document.querySelector('#mrs-host').remove(); localStorage.removeItem('tt-juice'); 1""")
+    bad = []
+    if not res["inbox"]["groups"] == ["needs: 2", "mine: 1", "watching: 1"]:
+        bad.append("the groups")
+    if res["inbox"]["unread"] != 1 or res["inbox"]["needs"] != 2:
+        bad.append("unread and needs rows")
+    if res["badge"] != "2":
+        bad.append("the nav badge")
+    if "supported" not in res["unsupported"]:
+        bad.append("the unsupported panel")
+    if "Ask Tatty" not in res["picked"]["buttons"] or "Comment" not in res["picked"]["buttons"] or res["picked"]["selected"] != 1:
+        bad.append("picking a line")
+    if res["range"]["selected"] < 3:
+        bad.append("a shift-click range")
+    if res["comment"]["sent"] != [["add", "src/widget.txt", 4, "new", "Why a capital B?"]]:  # (a range is commented on at its last line)
+        bad.append("the comment sent")
+    if res["comment"]["inline"] != 1 or res["comment"]["dashed"] != "dashed":
+        bad.append("the draft shown inline, dashed")
+    if not res["ask"]["asking"] or not res["ask"]["block"] or not res["ask"]["button"].startswith("Add as comment"):
+        bad.append("Ask Tatty and the Add as comment button")
+    if res["added"]["sent"] != [["src/widget.txt", 4, "From the chat."]]:
+        bad.append("Add as comment")
+    if "Thanks." not in res["replySheet"]["text"] or "Send" not in res["replySheet"]["text"]:
+        bad.append("the reply's confirm sheet")
+    if not res["sheetCancelled"]:
+        bad.append("Cancel on the sheet")
+    if res["review"]["sent"] != ["quick"] or res["review"]["ticked"] != res["review"]["drafts"]:
+        bad.append("the review and its drafts")
+    if res["sheet"]["modal"] != "true" or not any("src/widget.txt:2" in i for i in res["sheet"]["items"]):
+        bad.append("the confirm sheet's where")
+    if not res["posted"]["sent"] or res["posted"]["sent"][0][0] != "dig123":
+        bad.append("the post carries the sheet's hash")
+    res["problems"] = bad
+    return res
+
+
 def check_mr(p):
     """The Merge request page (mr.js) and its rail item, drawn with the page's api() stood in for: the hero and its
     status pills, the Overview panel (folds, remembered) and tab (first), hover cards, the threads, Recommend action,
@@ -2795,10 +2986,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--mrs": check_mrs, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")
