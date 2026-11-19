@@ -65,6 +65,7 @@ import mrhost  # noqa: E402  a merge request read from its host
 import mrstate  # noqa: E402  what Tatty keeps about a feature's merge request
 import compact_chat  # noqa: E402  the compact window's chat, one per project
 import diagram as dg  # noqa: E402  reading C# into generated diagrams
+import worktreepool  # noqa: E402  ready worktrees to claim, so a feature starts on a branch switch
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "models.js": "text/javascript", "hub.js": "text/javascript", "hub.css": "text/css",
@@ -3406,6 +3407,7 @@ def branch_info(state, folder, project, workdir="", pick=""):
     out["canIsolate"] = not has_wt
     if not has_wt:
         newbranch = branch_name(repo, folder.name)
+        out["pool"] = pool_summary(repo)
         out.update(newBranch=newbranch, newPath=worktree_path(repo, newbranch), baseDefault=out["branch"] or here,
                    protected=is_protected(repo, out["branch"] or here))
     out["others"] = [] if has_wt else sorted(k for k, r in branch_records().items()
@@ -4140,6 +4142,23 @@ def branch_pick(repo, feature, wanted=""):
     return wanted, ""
 
 
+def pool_of(repo):
+    """The repo's worktree pool, or None when it has none (worktreepool.py). Reads files only, no process:
+    branch_info asks on every refresh, and `repo` is already the repo's top folder."""
+    pool = worktreepool.Pool(repo)
+    return pool if pool.exists() else None
+
+
+def pool_slot_name(path):
+    return Path(path).name
+
+
+def pool_summary(repo):
+    """What the Start panel shows of a repo's pool ({} without one), from files alone."""
+    pool = pool_of(repo)
+    return pool.counts() if pool else {}
+
+
 def make_worktree(feature, repo, here, base, old, wanted=""):
     """Give a feature a new branch in a new worktree, from `base` (else the branch the repo is on).
     The repo's own checkout is not touched. (ok, info); BRANCH_LOCK held."""
@@ -4149,6 +4168,17 @@ def make_worktree(feature, repo, here, base, old, wanted=""):
     name, why = branch_pick(repo, feature, wanted)
     if why:
         return False, {"error": why}
+    pool = pool_of(repo)
+    if pool:  # a ready slot: the branch is a switch, and a big untracked cache is already warm
+        try:
+            got = pool.claim(name, base=base, owner=feature)
+        except worktreepool.PoolError as e:
+            return False, {"error": f"{e} (the worktree pool of {repo})", **({"poolFull": True} if e.code == 4 else {})}
+        rec = {"repo": repo, "branch": name, "base": base, "worktree": got["path"], "created": time.time(), "merge": {}, "pooled": True,
+               **({"pinned": True} if old.get("pinned") else {})}
+        save_branch(feature, rec)
+        more = " That was the last free slot: add one on the Start panel before the next." if got["needAdd"] else ""
+        return True, {**worktree_info(repo, rec, got["path"], f"Took {pool_slot_name(got['path'])} for {name} from {got['base']}.{more}"), "created": True}
     path = worktree_path(repo, name)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     left = len([l for l in git(repo, "status", "--porcelain", "--untracked-files=no")[1].splitlines() if l.strip()])
@@ -8916,6 +8946,13 @@ def remove_feature_worktree(name):
             return ""
         if not any(same_folder(w["path"], wt) for w in worktrees_of(repo)):
             return f"{wt} isn't a worktree of {repo} any more: left alone."
+        pool = pool_of(repo) if rec.get("pooled") else None
+        if pool and same_folder(str(pool.dir), str(Path(wt).parent)):  # a pool slot goes back to the pool, not away
+            try:
+                got = pool.release(Path(wt).name)
+            except worktreepool.PoolError as e:
+                return f"The slot {wt} was left as it is: {e}"
+            return f"Gave {got['slot']} back to the pool (the branch {rec.get('branch', '')} is kept)."
         code, out = git(wt, "status", "--porcelain")
         if code != 0 or out.strip():
             return f"The worktree {wt} has uncommitted or untracked files: left in place."
@@ -12319,6 +12356,17 @@ class Handler(BaseHTTPRequestHandler):
             project = str(b.get("project") or "").strip() or feature_project(folder, docs_of(folder))[0]
             code, answer = set_branch(folder, project, b.get("branch"), feature_project(folder, docs_of(folder))[0])
             return self.send(code, answer)
+        if path == "/api/pool/add":  # the person said yes to one more slot (the pool never grows by itself)
+            repo = repo_of(str(b.get("repo") or ""))
+            pool = pool_of(repo) if repo else None
+            if not pool:
+                return self.send(404, {"error": "That repo has no worktree pool."})
+            try:
+                with BRANCH_LOCK:
+                    pool.add(1)
+            except worktreepool.PoolError as e:
+                return self.send(409, {"error": str(e)})
+            return self.send(200, {"ok": True, "pool": pool_summary(repo)})
         if path == "/api/merge":
             folder = feature_dir(str(b.get("name", "")))
             if not folder:

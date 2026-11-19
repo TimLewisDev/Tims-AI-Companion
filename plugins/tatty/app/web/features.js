@@ -1268,7 +1268,20 @@ function startPanel(f, row, index, close, begin) {
       const detail = el("div", {});
       const paint = () => {
         const shared = b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "";
-        if (on()) {
+        const pool = b.pool && b.pool.total ? b.pool : null; // the repo has a worktree pool: a ready slot is taken, nothing is checked out
+        if (on() && pool) {
+          const addBtn = el("button", { class: "small" }, "Add a slot");
+          const note = el("span", { class: "dim" });
+          addBtn.addEventListener("click", async () => {
+            addBtn.disabled = true; note.textContent = " Adding (a slot copies the project's cache, so this takes a while)...";
+            try { await api("/api/pool/add", { repo: b.repo }); await showBranch(); } catch (e) { note.textContent = " " + String(e.message || e); addBtn.disabled = false; }
+          });
+          detail.replaceChildren(
+            el("div", {}, "A ready slot from the worktree pool is taken for a new branch ", code(b.newBranch), " from ", base, ". The repo's own checkout is left as it is."),
+            el("div", { class: pool.free ? "dim" : "st missing" }, `${pool.free} of ${pool.total} slots free.`,
+              pool.free === 0 ? " Start needs a free slot: add one" + (pool.canAdd ? "." : ` (the pool is at its most, ${pool.max}: raise max with pool.sh config).`) : pool.free === 1 ? " That is the last free slot: add one before the next Start." : "",
+              pool.canAdd && pool.free <= 1 ? [" ", addBtn, note] : ""));
+        } else if (on()) {
           detail.replaceChildren(
             el("div", {}, "A new branch ", code(b.newBranch), " is made in ", code(b.newPath), " from ", base, ". The repo's own checkout is left as it is."),
             el("div", { class: "dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files."),

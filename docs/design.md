@@ -727,6 +727,13 @@ folders and Claude Code's own install records; see
   each other's files, and finished work mustn't sit uncommitted and forgotten.
   Neither is the toolbox's business (its skills never create a branch or commit),
   so both are Tatty's, and the toolbox is unchanged.
+  - **A worktree pool, when the repo has one.** `scripts/pool.sh` (`app/worktreepool.py`) keeps ready worktrees
+    (slots) at `<repo parent>/<repo name>.pool/slot-N`, each parked on `pool/slot-N`, with the config
+    (`size`, `max`, `base`, `warm`) in `pool.config.json` and claims in `pool.json`. `warm` lists folders copied
+    from the main checkout into each new slot (a Unity project is seeded with `Library`; any other project, none).
+    With a pool, Own worktree claims a free slot (`make_worktree` -> `Pool.claim`) instead of `git worktree add`,
+    and archive releases it (`remove_feature_worktree`, for a record marked `pooled`). A slot is never added by
+    itself: the Start panel shows the free count and an Add a slot button (`/api/pool/add`) when 0 or 1 is free.
   - **A branch per workflow, in a worktree if asked.** `start_session` calls
     `ensure_branch` before it launches. The first Start of a feature that has no
     documents yet (New feature, a Jira ticket, a task, a lite start) makes a
