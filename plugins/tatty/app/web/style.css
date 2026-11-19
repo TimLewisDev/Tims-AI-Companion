@@ -11,14 +11,15 @@ button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); backgr
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 input, textarea { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
-  border-radius: 6px; padding: 5px 8px; }
+  border-radius: 6px; padding: 8px 12px; }
+textarea { padding: 10px 12px; line-height: 1.45; }
 
 header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line);
   background: var(--panel); }
 .brand { color: var(--ink); text-decoration: none; white-space: nowrap; }
 .brand .bot { font-family: var(--mono); color: var(--accent); }
 .where { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
-.badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); margin-left: 6px; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); margin-left: 6px; white-space: nowrap; }
 .badge.ok { color: var(--ok); border-color: var(--ok); }
 .badge.bad { color: var(--bad); border-color: var(--bad); }
 
@@ -132,7 +133,7 @@ body.companion:not(.expanded) #alert:not([hidden]) { display: flex; flex: none; 
    Features (home), one feature, Toolbox; a question waiting comes out as a
    right-hand column (the feed). */
 .pnav { display: flex; gap: 2px; }
-.pnav a { color: var(--ink); text-decoration: none; padding: 4px 10px; border-radius: 6px; }
+.pnav a { color: var(--ink); text-decoration: none; padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
 .pnav a:hover { background: var(--bg); }
 .pnav a.on { color: var(--accent); background: var(--bg); font-weight: 600; }
 .gear { position: relative; color: var(--dim); text-decoration: none; font-size: 16px; line-height: 1; margin-left: 6px; padding: 2px 4px; border-radius: 6px; }

@@ -1904,10 +1904,10 @@ def check_mrs(p):
         for theme in ("light", "dark"):
             p.js(f"document.documentElement.dataset.theme = '{theme}'; 1")
             for name, hash_, pre in (("inbox", "#mrs", ""), ("overview", "#mrs/gitlab-group_proj-7", ""), ("files", "#mrs/gitlab-group_proj-7/files", "document.querySelector('#page-mrs .mr-file') && document.querySelector('#page-mrs .mr-file').click();"),
-                                     ("review", "#mrs/gitlab-group_proj-7/review", "")):
+                                     ("review", "#mrs/gitlab-group_proj-7/review", ""), ("settings", "#settings", "")):
                 p.js(f"location.hash = '#home'; 1"); time.sleep(0.3)
                 p.js(f"location.hash = '{hash_}'; 1")
-                wait(p, "!!document.querySelector('#page-mrs .mrs-row, #page-mrs .mr-hero')")
+                wait(p, "!!document.querySelector('#page-mrs .mrs-row, #page-mrs .mr-hero, #set-mrsPoll')")
                 time.sleep(0.8)
                 if pre:
                     p.js(pre + " 1"); time.sleep(0.8)
