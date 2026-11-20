@@ -1322,9 +1322,7 @@ def resolve_model(state, value, allow_bare=False):
 
 def surface_model(state, key):
     """The native model of a configured surface choice: (id, "") or ("", why)."""
-    value = load_settings()[key].strip()
-    if not value:
-        return "", f"The {key} model isn't set. Choose one in Settings."
+    value = load_settings()[key].strip() or SETTINGS_DEFAULTS[key]
     return resolve_model(state, value)
 
 
