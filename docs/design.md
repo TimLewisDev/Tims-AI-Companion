@@ -753,7 +753,7 @@ folders and Claude Code's own install records; see
     running), `git worktree list --porcelain` (`prunable`, not listed), a resolving HEAD on the expected branch, tracked
     files missing from the folder (`ls-files -d`) and the `warm` folders. Each slot is ok, look (warn) or broken, with
     the fix it offers, kept in `POOL_CHECK` and shown in the page's Check column. `POST /api/pool/repair` re-checks the
-    slot and refuses a fix the slot doesn't offer: `clear-lock`, `prune`, `restore-files` (free slots) and `rebuild`
+    slot and refuses a fix the slot doesn't offer: `clear-lock`, `prune`, `warm` (resumes a warm copy: a folder is marked finished in `pool.warm.json` only when its copy ends, so a folder with no mark is reported as possibly stopped, and the repair copies only the files that are missing or another size), `restore-files` (free slots) and `rebuild`
     (the folder is removed and made again; a claimed slot is made again on its claimed branch, keeping the claim and
     the branch's commits but losing what was uncommitted, so the page asks for the slot's name and a running session
     refuses it). `worktreepool.py validate` and `repair` do the same from a shell.

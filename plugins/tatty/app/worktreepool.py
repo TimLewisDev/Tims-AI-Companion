@@ -43,6 +43,34 @@ def long_path(p):
     return "\\\\?\\" + p if os.name == "nt" and len(p) >= 240 and not p.startswith("\\\\?\\") else p
 
 
+def sync_tree(src, dst):
+    """Copy what `dst` lacks of `src`, or has at another size: a copy that stopped carries on where it was, and a whole one is
+    only read. Symlinks are made again, never followed. Returns the number of files copied."""
+    copied, stack = 0, [(str(src), str(dst))]
+    while stack:
+        here, there = stack.pop()
+        os.makedirs(long_path(there), exist_ok=True)
+        with os.scandir(long_path(here)) as it:
+            entries = list(it)
+        for e in entries:
+            target = os.path.join(there, e.name)
+            if e.is_symlink():
+                if not os.path.lexists(long_path(target)):
+                    os.symlink(os.readlink(e.path), long_path(target), target_is_directory=e.is_dir())
+                    copied += 1
+            elif e.is_dir(follow_symlinks=False):
+                stack.append((e.path, target))
+            else:
+                try:
+                    have = os.stat(long_path(target)).st_size
+                except OSError:
+                    have = -1
+                if have != e.stat(follow_symlinks=False).st_size:
+                    shutil.copy2(long_path(e.path), long_path(target))
+                    copied += 1
+    return copied
+
+
 def tree_size(path, skip=()):
     """Bytes of the files under `path` (symlinks not followed; folders named in `skip` at its top left out)."""
     root, total, stack = str(path), 0, [str(path)]
@@ -199,14 +227,38 @@ class Pool:
                 "clean": self.is_clean(path) if check_clean else None}
 
     # ---------------------------------------------------------------- warm copy
-    def warm(self, name):
-        """Copy the config's `warm` folders from the main checkout into a slot. Returns the folders copied."""
+    def warm_done(self):
+        """{slot: {folder: when its copy finished}}: written only after a copy ends, so a folder with no entry may have stopped."""
+        try:
+            return json.loads((self.dir / "pool.warm.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def warm_mark(self, name, rel=None):
+        """Note that a slot's folder `rel` was copied whole (or, with no rel, forget the slot: it is being made again)."""
+        data = self.warm_done()
+        if rel is None:
+            data.pop(name, None)
+        else:
+            data.setdefault(name, {})[rel] = time.time()
+        tmp = self.dir / "pool.warm.tmp"
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, self.dir / "pool.warm.json")
+
+    def warm(self, name, resume=False):
+        """Copy the config's `warm` folders from the main checkout into a slot. With resume, a folder the slot has already is
+        carried on rather than copied again (only what is missing or another size is copied). A folder is marked done only
+        when its copy ends, so one that stopped is found by validate. Returns the folders copied."""
         done = []
         for rel in self.config()["warm"]:
             src, dst = self.repo / rel, self.slot_path(name) / rel
             if not src.is_dir():
                 continue
-            shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+            if resume and dst.is_dir():
+                sync_tree(src, dst)
+            else:
+                shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+            self.warm_mark(name, rel)
             done.append(rel)
         return done
 
@@ -216,6 +268,7 @@ class Pool:
         path = self.slot_path(name)
         git(self.repo, "worktree", "prune")
         git(self.repo, "worktree", "add", "-B", f"pool/{name}", str(path), self.base_ref())
+        self.warm_mark(name)  # a slot made again starts with no copy on record
         return name, self.warm(name)
 
     def init(self, size=None):
@@ -317,6 +370,7 @@ class Pool:
             raise PoolError(f"{path.as_posix()} has uncommitted or untracked files: left as it is.")
         git(self.repo, "worktree", "remove", "--force", str(path), timeout=900)  # clean, so only ignored files (the warm copies) go
         git(self.repo, "branch", "-D", f"pool/{name}", check=False)
+        self.warm_mark(name)
         return {"removed": name}
 
     # ---------------------------------------------------------------- validate and repair
@@ -400,9 +454,14 @@ class Pool:
                     gone = [f for f in out.split("\0") if f]
                     bad("missing-files", f"{len(gone)} tracked file{'s' if len(gone) != 1 else ''} missing from the folder (first: {gone[0]}).",
                         "rebuild" if claim else "restore-files")
+        marks = self.warm_done().get(name, {})
         for rel in self.config()["warm"]:
-            if (self.repo / rel).is_dir() and not (path / rel).is_dir():
-                bad("warm-missing", f"{rel} was not copied into the slot.", "", "warn")
+            if not (self.repo / rel).is_dir():
+                continue
+            if not (path / rel).is_dir():
+                bad("warm-missing", f"{rel} was not copied into the slot.", "warm", "warn")
+            elif rel not in marks:
+                bad("warm-unfinished", f"{rel} has no record that its copy finished: it may have stopped part way (or was copied before Tatty kept a record).", "warm", "warn")
         return self._level(name, claim, probs)
 
     def _level(self, name, claim, probs):
@@ -432,6 +491,8 @@ class Pool:
         if action == "prune":
             git(self.repo, "worktree", "prune")
             return {"slot": name, "did": "pruned git's list"}
+        if action == "warm":
+            return {"slot": name, "did": "copied " + ", ".join(self.warm(name, resume=True))}
         if action == "restore-files":
             if claim:
                 raise PoolError(f"{name} is claimed: its files are the feature's to restore.")
@@ -460,6 +521,7 @@ class Pool:
             git(self.repo, "worktree", "add", str(path), branch)
         else:  # the branch is gone: made again from where it began
             git(self.repo, "worktree", "add", "-b", branch, str(path), claim.get("base") or self.base_ref())
+        self.warm_mark(name)
         self.warm(name)
         return {"slot": name, "did": f"made the slot again on {branch}"}
 
@@ -531,7 +593,7 @@ def main(argv=None):
     p = sub.add_parser("release"); p.add_argument("slot")
     sub.add_parser("refresh")
     sub.add_parser("validate")
-    p = sub.add_parser("repair"); p.add_argument("slot"); p.add_argument("action", choices=["clear-lock", "prune", "restore-files", "rebuild"])
+    p = sub.add_parser("repair"); p.add_argument("slot"); p.add_argument("action", choices=["clear-lock", "prune", "warm", "restore-files", "rebuild"])
     p = sub.add_parser("add"); p.add_argument("count", nargs="?", type=int, default=1)
     p = sub.add_parser("remove"); p.add_argument("slot")
     p = sub.add_parser("config"); p.add_argument("pairs", nargs="*")

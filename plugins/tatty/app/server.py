@@ -13553,9 +13553,9 @@ class Handler(BaseHTTPRequestHandler):
             slot, action = str(b.get("slot") or ""), str(b.get("action") or "")
             if not worktreepool.SLOT.match(slot):
                 return self.send(400, {"error": "slot: a slot name such as slot-1"})
-            if action not in ("clear-lock", "prune", "restore-files", "rebuild"):
-                return self.send(400, {"error": "action: clear-lock, prune, restore-files or rebuild"})
-            label = f"Rebuilding {slot}: a whole checkout and a copy of the project's cache, so this takes a while." if action == "rebuild" else f"Mending {slot}."
+            if action not in ("clear-lock", "prune", "warm", "restore-files", "rebuild"):
+                return self.send(400, {"error": "action: clear-lock, prune, warm, restore-files or rebuild"})
+            label = f"Rebuilding {slot}: a whole checkout and a copy of the project's cache, so this takes a while." if action == "rebuild" else f"Copying the project's cache into {slot}: this takes a while." if action == "warm" else f"Mending {slot}."
             code, answer = pool_run(label, lambda p: pool_repair_slot(st, p, slot, action))
             return self.send(code, answer)
         if path == "/api/merge":

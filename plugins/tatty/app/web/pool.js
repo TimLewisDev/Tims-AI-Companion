@@ -158,6 +158,7 @@ async function renderWorktrees(box) {
   const FIXES = {
     "clear-lock": ["Remove stale lock", () => "Remove the lock git left behind? Nothing else changes."],
     "prune": ["Prune", () => "Remove git's record of this missing worktree?"],
+    "warm": ["Copy cache", s => `Copy the project's cache (the folders the pool keeps warm, such as Library) into ${s.slot}? A copy that stopped carries on from where it was: only files that are missing or a different size are copied, and nothing in the slot is removed. A whole one is only read. It can take minutes.`],
     "restore-files": ["Restore files", s => `Restore the missing tracked files in ${s.slot}? It is free, so nothing of a feature's is touched.`],
     "rebuild": ["Rebuild slot", s => s.state === "claimed"
       ? `Rebuild ${s.slot}?

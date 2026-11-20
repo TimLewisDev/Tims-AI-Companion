@@ -97,6 +97,31 @@ check "rebuild is" 0 bash "$POOL" repair slot-1 rebuild
 [ "$(git -C "$T/v.pool/slot-1" branch --show-current)" = feat/v ] && ok "on its claimed branch" || bad "on its claimed branch"
 [ ! -e "$T/v.pool/slot-1/work.txt" ] && ok "uncommitted files are lost" || bad "uncommitted files are lost"
 check "the claim is kept" 0 bash "$POOL" release feat/v
+# a warm copy that never happened is a look, and one repair copies it
+mkrepo w yes
+cd "$T/w" || exit 1
+check "init a Unity pool to validate" 0 bash "$POOL" init --size 1
+rm -rf "$T/w.pool/slot-1/Library"
+check "a missing warm copy is a look, not ok" 3 bash "$POOL" validate
+has "that offers the cache copy" "[warm]"
+check "the copy mends it" 0 bash "$POOL" repair slot-1 warm
+[ -f "$T/w.pool/slot-1/Library/c.bin" ] && ok "the cache is back" || bad "the cache is back"
+check "and it validates again" 0 bash "$POOL" validate
+# a copy that stopped part way: the folder is there but its copy was never marked finished
+mkdir -p "$T/w/Library/deep" && echo more >"$T/w/Library/deep/d.bin"
+rm -f "$T/w.pool/pool.warm.json"
+rm -f "$T/w.pool/slot-1/Library/c.bin"
+check "a folder with no finished copy on record is a look" 3 bash "$POOL" validate
+has "it says the copy may have stopped" "may have stopped part way"
+check "resume carries it on" 0 bash "$POOL" repair slot-1 warm
+[ -f "$T/w.pool/slot-1/Library/c.bin" ] && [ -f "$T/w.pool/slot-1/Library/deep/d.bin" ] && ok "the missing files are copied" || bad "the missing files are copied"
+check "and it validates ok" 0 bash "$POOL" validate
+echo mine >"$T/w.pool/slot-1/Library/c.bin"
+check "a repair that is not needed is refused" 1 bash "$POOL" repair slot-1 warm
+rm -rf "$T/w.pool/slot-1/Library"
+rm -f "$T/w.pool/pool.warm.json"
+check "a missing folder is copied whole again" 0 bash "$POOL" repair slot-1 warm
+check "and then is marked finished" 0 bash "$POOL" validate
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
