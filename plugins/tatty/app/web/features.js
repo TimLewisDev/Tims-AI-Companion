@@ -1936,7 +1936,13 @@ function overview(f) {
   const act = actionBar(f, k => { if (panes.some(p => p[0] === k)) openPane(k); });
   const rest = (f.rows || []).map((r, i) => ({ r, i })).filter(({ r, i }) => r.kind && i !== act.covered);
   const stand1 = ({ r, i }) => el("div", { class: "stand " + r.kind }, el("p", {}, r.kind === "warn" ? "⚠ " : "", r.text), stepActions(f, r, i));
-  const more = rest.filter(x => x.r.kind !== "warn").map(stand1);
+  // Nothing to press and nothing running (merged, or a debug written up): the gate still says where it stands,
+  // in one line, rather than leaving its label over an empty box. That step's own row is then not offered twice.
+  const quiet = !act.node && !f.unitGate && !(f.sessions || []).some(s => LIVE.has((sessionInfo.get(s.tag) || s).status));
+  const doneRow = quiet && !phaseDone(f) ? rest.find(x => x.r.kind === "primary") : null;
+  const doneText = !quiet ? "" : phaseDone(f) ? ((f.merge || {}).skipped ? "Finished: the merge was skipped." : "Merged: this feature is finished.")
+    : doneRow ? doneRow.r.text.replace(/^./, c => c.toUpperCase()) : "";
+  const more = rest.filter(x => x.r.kind !== "warn" && x !== doneRow).map(stand1);
   const redraw = () => { const main = $(".fmain"); if (main) main.replaceChildren(overview(f)); };
   // the live sessions: a line each in the gate, which keeps up as they report
   const sessions = (f.sessions || []).map(s => sessionInfo.get(s.tag) || s);
@@ -1957,19 +1963,22 @@ function overview(f) {
     const stage = (s.name || "").split(" : ").pop();
     return el("div", { class: "sv-sess live-link" }, el("span", { class: "pulse" }), el("strong", { title: s.name }, stage || s.name), status, go);
   });
+  const sessionsFirst = lines.length > 0 && !act.node && !f.unitGate;
   const gate = el("section", { class: "card sv-gate" },
     el("h4", { class: "sv-gate-h" }, "Where it stands"),
     f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "", // the stage tags sit right under the label
     f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
     unitGateCard(f), commitCard(f), // unitgate.js, commit.js
+    sessionsFirst ? el("div", { class: "sv-lines first" }, lines) : "", // a session is the one thing to press: it leads
     act.node,
+    doneText ? el("p", { class: "gate-done", id: "gate-done" }, el("span", { class: "tick", "aria-hidden": "true" }, "✓"), doneText) : "",
     typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js: the way to the Merge request page, whatever else is going on
     ...rest.filter(x => x.r.kind === "warn").map(stand1),
     more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
-    !act.node && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
+    !act.node && !f.unitGate && !doneText && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "",
-    lines.length ? el("hr", { class: "sv-divider" }) : "", // the call to action ends here; the open sessions follow
-    lines.length ? el("div", { class: "sv-lines" }, lines) : "");
+    lines.length && !sessionsFirst && (act.node || f.unitGate || f.phase === "complete" || more.length) ? el("hr", { class: "sv-divider" }) : "", // the call to action ends here; the open sessions follow
+    lines.length && !sessionsFirst ? el("div", { class: "sv-lines" }, lines) : "");
   // the drawers: today's cards, one click away
   const last = !going.length && sessions[0];
   const shown = going[0] || last;

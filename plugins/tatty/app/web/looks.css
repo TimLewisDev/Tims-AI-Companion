@@ -230,28 +230,46 @@
 .sv-top .sv-when { color: inherit; opacity: .6; }
 .sv-top .ov-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 /* the gate */
-.sv-gate-wrap { width: 100%; max-width: 1120px; margin: 0 auto 10px; }
-.overview.sv .sv-gate { padding: 12px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+.sv-gate-wrap { width: 100%; max-width: 1120px; margin: 0 auto 14px; }
+.overview.sv .sv-gate { padding: 22px 32px 24px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); color: var(--ink);
   backdrop-filter: blur(6px); box-shadow: 0 6px 24px rgba(0,0,0,.18); }
-.sv-gate .sv-gate-h { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .65; color: inherit; }
+.sv-gate .sv-gate-h { margin: 0 0 16px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; opacity: .65; color: inherit; }
+/* The gate reads top to bottom in one rhythm, whatever the phase: label, the stage tags (when there are any), what is
+   happening, the one thing to press (with room round it for the pulse's ring), then the quieter things below. */
 .sv-gate .action { margin: 0; }
-.sv-gate .sv-steps { margin: 6px 0 2px; }
-.sv-gate .sv-divider { border: 0; border-top: 1px solid var(--line); margin: 12px 0 4px; }
-.sv-lines { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 2px; }
-.sv-sess { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.sv-gate .action-said { margin: 0 0 20px; font-size: 15px; line-height: 1.5; }
+.sv-gate .action-bar { gap: 14px; padding: 8px 0; }
+.sv-gate .action-slot:not(:empty) { margin-top: 12px; text-align: left; }
+.sv-gate .gate-done { margin: 4px 0 18px; font-size: 15px; line-height: 1.5; }
+.sv-gate .gate-done .tick { color: var(--ok); margin-right: 6px; }
+.sv-gate .stand { padding: 0; margin: 0 0 18px; }
+.sv-gate .stand p { margin: 0 0 12px; font-size: 15px; line-height: 1.5; }
+.sv-gate .stand .start-actions { margin-top: 8px; }
+.sv-gate .gate-done:last-child { margin-bottom: 0; }
+.sv-lines.first { margin: 0 0 6px; }
+.sv-gate .mr-gate { margin: 4px 0 8px; gap: 12px; }
+.sv-gate .mr-gate-sum { gap: 8px; }
+.sv-gate .mr-gate-chip { padding: 2px 12px; }
+.sv-gate > .st.missing { margin: 0 0 14px; }
+.sv-gate .sv-steps { margin: 0 0 18px; }
+.sv-gate .substeps { gap: 8px; }
+.sv-gate .substeps .chip { padding: 2px 12px; font-size: 11.5px; }
+.sv-gate .sv-divider { border: 0; border-top: 1px solid var(--line); margin: 22px 0 6px; }
+.sv-lines { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 2px; }
+.sv-sess { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .sv-sess .go-btn { margin-left: auto; }
 /* Everything in the gate down to "More options" is centred (the buttons, the said line, the cards, the steps and
    the session lines); More options and the project line under it keep their own alignment. */
 .overview.sv .sv-gate { text-align: center; }
 .overview.sv .sv-gate > .more-options, .overview.sv .sv-gate > .project-line { text-align: left; }
 .sv-gate .action-bar, .sv-gate .start-actions, .sv-gate .substeps { justify-content: center; }
-.sv-gate .commit-card { justify-content: center; }
+.sv-gate .commit-card { justify-content: center; gap: 14px; margin-bottom: 18px; }
 .sv-gate .commit-card p { flex: 1 1 100%; }
 .sv-gate .sv-sess { justify-content: center; }
 .sv-gate .sv-sess .go-btn { margin-left: 0; }
 .sv-gate .sv-lines { align-items: center; }
-.sv-gate .more-options { margin-top: 8px; }
-.sv-gate .project-line { margin-top: 8px; }
+.sv-gate .more-options { margin-top: 18px; }
+.sv-gate .project-line { margin-top: 18px; padding-top: 16px; gap: 10px; }
 /* the dock */
 .sv-dock { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 0 auto; }
 .sv-dock button { font-size: 12px; padding: 4px 12px; border-radius: 999px; background: color-mix(in srgb, var(--panel) 70%, transparent);
