@@ -1802,6 +1802,7 @@ fi
 if section mrs; then
 echo "# the merge requests inbox"
 [ "$(code "$U/static/mrs.js")" = 200 ] && ok "mrs.js served" || bad "mrs.js served"
+[ "$(code "$U/static/spinner.js")" = 200 ] && [ "$(code "$U/static/spinner.css")" = 200 ] && ok "spinner assets served" || bad "spinner assets served"
 [ "$(code "$U/static/mrs.css")" = 200 ] && ok "mrs.css served" || bad "mrs.css served"
 MS="$T/mrsrepo"
 mkdir -p "$MS/src" && git -C "$MS" init -q -b main && git -C "$MS" config user.email t@example.com && git -C "$MS" config user.name Tester

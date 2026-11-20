@@ -365,7 +365,7 @@ function compactChatView(mount) {
     head.textContent = name ? `Chat · ${name}` : "Chat";
     head.title = chat ? chat.project : "";
     if (!chat) {
-      list.replaceChildren(el("li", { class: "chat-msg " + (problem ? "error" : "dim") }, problem || "Loading…"));
+      list.replaceChildren(el("li", { class: "chat-msg " + (problem ? "error" : "dim") }, problem || makeSpinner({ size: "sm", label: "Loading" }).node));
       drawn = -1;
       send.disabled = !!problem;
       return;

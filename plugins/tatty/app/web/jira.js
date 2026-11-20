@@ -152,10 +152,10 @@ function drawJiraHead() {
   jiraAct.replaceChildren(refresh);
   const said = [];
   // What is running now: each is a headless claude run, which takes a while.
-  if (busy) said.push(el("p", { class: "home-note small jprogress", id: "jira-progress" },
+  if (busy) said.push(el("p", { class: "home-note small jprogress", id: "jira-progress" }, spinnerMark("sp-mark"), " ",
     "Asking Claude to read your tickets from Jira… ", jiraSince("board"), ". It usually takes about 20 s."));
   for (const job of (b.busy || []).filter(j => j.startsWith("move:"))) {
-    said.push(el("p", { class: "home-note small jprogress" }, `Moving ${job.slice(5)} in Jira… `, jiraSince(job)));
+    said.push(el("p", { class: "home-note small jprogress" }, spinnerMark("sp-mark"), " ", `Moving ${job.slice(5)} in Jira… `, jiraSince(job)));
   }
   if (b.error) said.push(el("p", { class: "home-note small st missing", id: "jira-error" }, "The last refresh failed: " + b.error));
   if (jiraNote) said.push(el("p", { class: "home-note small " + (jiraNote.bad ? "st missing" : "ok") }, jiraNote.text));
@@ -229,7 +229,7 @@ function showTicket(key) {
           el("ul", {}, d.links.map(l => el("li", {}, el("span", { class: "dim" }, (l.relation || "relates to") + ": "), `${l.key} ${l.summary || ""}`)))) : "",
         el("div", { class: "dim small jfetched" }, `Copied from Jira ${ago(d.fetchedAt)}. `, load))
       : el("div", { class: "jload" },
-        el("p", { class: loading ? "jprogress" : "" }, loading ? ["Asking Claude to read the ticket from Jira… ", jiraSince("issue:" + key), ". It usually takes about 20 s."] : "Not loaded yet."),
+        el("p", { class: loading ? "jprogress" : "" }, loading ? [spinnerMark("sp-mark"), " ", "Asking Claude to read the ticket from Jira… ", jiraSince("issue:" + key), ". It usually takes about 20 s."] : "Not loaded yet."),
         el("p", { class: "dim small" }, "Loading reads the whole ticket through Claude, which spends a few thousand tokens. Tatty keeps it afterwards."),
         load),
     loaded ? startSection(i) : "");

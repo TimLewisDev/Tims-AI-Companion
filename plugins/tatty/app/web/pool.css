@@ -14,8 +14,6 @@
 .pool-nums { display: flex; gap: 16px; flex-wrap: wrap; }
 .pool-busy { display: flex; align-items: center; gap: 8px; color: var(--accent); }
 /* a plain turning ring: set explicitly, as this machine's own animation settings would otherwise leave it still */
-.pool-spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: pool-turn 0.9s linear infinite; }
-@keyframes pool-turn { to { transform: rotate(360deg); } }
 .pool-table { border-collapse: collapse; width: 100%; }
 .pool-table th { text-align: left; font-weight: 600; color: var(--dim); font-size: 12.5px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
 .pool-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }

@@ -82,7 +82,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
           "intake.js": "text/javascript", "intake.css": "text/css",
-          "review.js": "text/javascript", "commit.js": "text/javascript", "mr.js": "text/javascript", "mr.css": "text/css", "mrs.js": "text/javascript", "mrs.css": "text/css", "pool.js": "text/javascript", "pool.css": "text/css", "unitgate.js": "text/javascript", "commit.css": "text/css",
+          "review.js": "text/javascript", "commit.js": "text/javascript", "mr.js": "text/javascript", "mr.css": "text/css", "mrs.js": "text/javascript", "mrs.css": "text/css", "spinner.js": "text/javascript", "spinner.css": "text/css", "pool.js": "text/javascript", "pool.css": "text/css", "unitgate.js": "text/javascript", "commit.css": "text/css",
           "review-page.js": "text/javascript", "review-page.css": "text/css", "decide-page.js": "text/javascript", "validate-page.js": "text/javascript",
           "diff.js": "text/javascript", "diff.css": "text/css", "stages.js": "text/javascript",
           "avatar.js": "text/javascript", "face.js": "text/javascript", "avatar.css": "text/css", "sfx.js": "text/javascript",

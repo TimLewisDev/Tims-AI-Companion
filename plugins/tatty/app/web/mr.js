@@ -295,7 +295,7 @@ async function mrPage(f, main) {
   const root = el("div", { class: "mr-page" });
   const skeleton = () => el("div", { class: "mr-skel-wrap" }, [0, 1, 2].map(i => el("div", { class: "card mr-skel" }, el("span", {}), el("span", {}), el("span", {}))));
   main.replaceChildren(root);
-  root.replaceChildren(skeleton());
+  root.replaceChildren(spinnerWait("Opening merge request", "md"), skeleton());
 
   const busyNow = () => new Set([...(view.data ? view.data.busy : []), ...view.local]);
   // what Tatty keeps about one comment (a thread nobody has touched has none yet)
@@ -325,7 +325,7 @@ async function mrPage(f, main) {
     const notes = mrNotes(t);
     // Recommend action: the button turns to a spinner at once; the agent's steps appear as one line that changes in place
     const recommend = el("button", { type: "button", class: (rec.action ? "" : "primary") + (working ? " busy" : ""), id: "mr-recommend", disabled: working },
-      working ? [el("span", { class: "mr-spin", "aria-hidden": "true" }), " Working…"] : rec.action ? "Look again" : "Recommend action");
+      working ? [spinnerMark("mr-spin"), " Working…"] : rec.action ? "Look again" : "Recommend action");
     recommend.addEventListener("click", () => {
       view.local.add(t.id);
       paintThread(t.id);  // working, now: no waiting on the server to say so
@@ -353,7 +353,7 @@ async function mrPage(f, main) {
     // from the recommendation); the server is told behind it, and only a wait for the agent shows a spinner
     const tick = el("input", { type: "checkbox", id: "mr-tick", "aria-label": "Make this change" });
     tick.checked = !!st.selected;
-    const spin = el("span", { class: "mr-spin mr-tick-spin", "aria-hidden": "true", hidden: true });
+    const spin = (() => { const m = spinnerMark("mr-spin mr-tick-spin"); m.hidden = true; return m; })();
     const reply = el("textarea", { class: "mr-draft", rows: 3, "aria-label": "Draft reply", spellcheck: "true", placeholder: "A reply to this comment, for you to post on the host" });
     reply.value = draft.text || "";
     const card = el("div", { class: ["card", "mr-thread", enter ? "enter" : "", t.resolved ? "resolved" : "", t.outdated ? "outdated" : "", working ? "working" : "", st.selected ? "chosen" : "",
@@ -393,7 +393,7 @@ async function mrPage(f, main) {
       const text = reply.value.trim();
       if (!text || posting) return;
       posting = true; post.disabled = true; reply.disabled = true; postErr.hidden = true;
-      post.replaceChildren(el("span", { class: "mr-spin", "aria-hidden": "true" }), " Posting…");
+      post.replaceChildren(spinnerMark("mr-spin"), " Posting…");
       try {
         const r = await api("/api/mr/reply", { name: f.name, thread: t.id, text });
         const at = view.data.mr.threads.findIndex(x => x.id === t.id);

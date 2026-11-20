@@ -336,7 +336,7 @@ function makeDiagram(o) {
   // ----------------------------------------------------------- the boxes
 
   function cardFor(c) {
-    if (c.wait) return reuse(c.id, "wait", () => el("div", { class: "dgcard dgwait dim" }, "Loading its classes…"), c);
+    if (c.wait) return reuse(c.id, "wait", () => el("div", { class: "dgcard dgwait dim" }, makeSpinner({ size: "sm", label: "Loading its classes" }).node), c);
     if (c.group) {
       const g = S.groups.get(c.group);
       const quiet = !project && !changedIn(g.id); // only unchanged types a change reaches

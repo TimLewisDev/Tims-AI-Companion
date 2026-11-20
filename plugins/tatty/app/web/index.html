@@ -19,6 +19,7 @@
 <link rel="stylesheet" href="/static/diff.css">
 <link rel="stylesheet" href="/static/archive.css">
 <link rel="stylesheet" href="/static/commit.css">
+<link rel="stylesheet" href="/static/spinner.css">
 <link rel="stylesheet" href="/static/mr.css">
 <link rel="stylesheet" href="/static/mrs.css">
 <link rel="stylesheet" href="/static/pool.css">
@@ -67,7 +68,7 @@
   <div class="where dim" id="cwd"></div>
   <div class="badges">
     <!-- Lit while a page is being read behind what is on screen (features.js's busy). -->
-    <span class="throbber" id="busy" role="status" aria-label="Loading" title="Reading the latest…" hidden></span>
+    <span class="sp sp-sm" id="busy" role="status" aria-label="Loading" title="Reading the latest…" hidden><span class="sp-disc"><span class="sp-ring"></span></span></span>
     <span class="badge" id="conn" title="Connection to the window server">connecting…</span>
     <a href="#settings" id="settings-link" class="gear" title="Settings" aria-label="Settings">⚙<span class="dot" hidden></span></a>
     <span class="badge" id="mod" title="Whether a Claude Code session works with Tatty (/tatty open or /tatty attach in it)">no session</span>
@@ -171,6 +172,7 @@
 <script src="/static/stages.js"></script>
 <script src="/static/review.js"></script>
 <script src="/static/commit.js"></script>
+<script src="/static/spinner.js"></script>
 <script src="/static/mr.js"></script>
 <script src="/static/mrs.js"></script>
 <script src="/static/pool.js"></script>

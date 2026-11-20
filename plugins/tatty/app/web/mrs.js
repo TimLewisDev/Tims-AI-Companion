@@ -70,7 +70,7 @@ async function mrsInbox(box) {
   const draw = () => {
     if (!data) { root.replaceChildren(el("p", { class: "dim pad" }, "Reading…")); return; }
     root.classList.toggle("still", !mrMotion());
-    const refresh = el("button", { type: "button", id: "mrs-refresh", disabled: reading, onclick: () => load(true) }, reading ? "Reading…" : "Refresh");
+    const refresh = el("button", { type: "button", id: "mrs-refresh", disabled: reading, onclick: () => load(true) }, reading ? [spinnerMark("sp-mark"), " Reading…"] : "Refresh");
     const head = el("div", { class: "mrs-head" }, el("h2", {}, "Merge requests"),
       el("span", { class: "dim small" }, data.path ? `${data.path} · ${data.kind}` + (data.me ? ` · you are ${data.me}` : "") : ""), refresh,
       el("a", { href: "#settings", class: "small" }, data.poll ? `checks every ${data.poll} min` : "checking is off"));
@@ -111,6 +111,8 @@ async function mrsInbox(box) {
 // ================================================================ one request
 async function mrsDetail(box, key, tab0) {
   const root = el("div", { class: "mrs-page mrs-detail" });
+  root.classList.toggle("still", !mrMotion());
+  root.append(el("div", { class: "sp-wait" }, makeSpinner({ size: "lg", label: "Opening merge request" }).node));   // until the first read draws over it
   box.replaceChildren(root);
   const enc = encodeURIComponent;
   const view = mrsView = { box, key, tab: tab0, data: null, file: "", pickedFor: "", all: false, ask: null, steps: {}, said: "", ticked: null, stop() { clearTimeout(mrsSoon); } };

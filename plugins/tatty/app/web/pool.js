@@ -50,7 +50,7 @@ async function renderWorktrees(box) {
       "A worktree is a whole second checkout of this project, so features and bug fixes can run side by side. The pool keeps some made and " +
       "up to date: a feature takes a free one instead of waiting for a new checkout, and gives it back when it's done."));
     if (view.note) kids.push(el("p", { class: view.noteBad ? "st missing" : "st ok" }, view.note));
-    if (busy) kids.push(el("p", { class: "pool-busy" }, el("span", { class: "pool-spin" }), d.busy));
+    if (busy) kids.push(el("p", { class: "pool-busy" }, spinnerMark("sp-mark"), d.busy));
     if (d.warning) kids.push(el("p", { class: "st missing" }, d.warning));
     kids.push(diskCard(d, busy));
     kids.push(d.exists ? poolCard(d, busy) : createCard(d, busy));

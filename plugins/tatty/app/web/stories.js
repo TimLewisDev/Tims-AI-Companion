@@ -551,7 +551,7 @@ const { renderDesigns, renderBoard } = (() => {
     const r = b.run;
     if (r && r.status === "running") {
       b.strip.className = "run-strip on";
-      b.strip.replaceChildren(el("span", { class: "spinner" }),
+      b.strip.replaceChildren(makeSpinner({ size: "sm" }).node,
         el("strong", {}, r.mode === "alter" ? `Rewriting ${r.id}… ` : "Writing stories… "),
         el("span", { class: "dim" }, r.step || ""), r.steps ? el("span", { class: "dim small" }, ` · ${r.steps} step${r.steps === 1 ? "" : "s"}`) : "",
         el("span", { class: "spacer" }),

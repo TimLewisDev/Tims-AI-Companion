@@ -38,7 +38,7 @@ function paintDecisions(f) {
   for (const b of document.querySelectorAll(".live-decide[data-feature]")) if (b.dataset.feature === f.name) paintDecideButton(b, f);
 }
 
-// A throbber in the header while anything is being read behind a page already on screen: busy(promise) lights
+// The spinner in the header while anything is being read behind a page already on screen: busy(promise) lights
 // it until the promise settles (and hands the promise back). waitNode() is the big one in an empty frame.
 let busyCount = 0;
 function busy(promise) {
@@ -49,7 +49,7 @@ function busy(promise) {
   promise.then(done, done);
   return promise;
 }
-const waitNode = () => el("div", { class: "throbber-wait", role: "status", "aria-label": "Loading" }, el("span", { class: "throbber big" }));
+const waitNode = () => spinnerWait("Loading");
 let homeTimer = null;
 
 // ------------------------------------------------------------- words
@@ -559,7 +559,7 @@ async function renderWorkflowTab(tag) {
   if (info.feature) {
     const known = featureCache.get(info.feature);
     rail = documentsRail(known ? featureNav(known, null, false, { side: true })
-      : el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, info.feature, " ", el("span", { class: "throbber", role: "status", "aria-label": "Loading" }))), info.feature);
+      : el("nav", { class: "fnav" }, el("a", { class: "fnav-back small", href: "#home" }, "← Features"), el("h3", {}, info.feature, " ", makeSpinner({ size: "sm", delay: 0 }).node)), info.feature);
   }
   const ended = info.status === "ended";
   const panel = sessionPanel({ name: info.feature }, info, () => { location.hash = featureHref(info.feature); }, ended, "Open feature");
@@ -1522,7 +1522,7 @@ function paintAgents(box, s) {
     const off = agentModelMismatch(a);
     const title = `${a.type}: ${a.description}` + (a.model ? `\nRuns on ${a.model}` + (a.asked ? `; asked for ${a.asked}` : "; the session's choice") : "");
     return el("span", { class: "agent-chip" + (off ? " warn" : ""), title },
-      el("i", { class: "spin", "aria-hidden": "true" }), el("strong", {}, a.type || "agent"), a.description ? " · " + a.description : "", " ",
+      spinnerMark("sp-mark"), el("strong", {}, a.type || "agent"), a.description ? " · " + a.description : "", " ",
       a.model ? el("span", { class: "dim small mono agent-model" }, (off ? "⚠ " : "") + agentModelShort(a.model) + " ") : "",
       timeNode((a.since || 0) * 1000));
   }));

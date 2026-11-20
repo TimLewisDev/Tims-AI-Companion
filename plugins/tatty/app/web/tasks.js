@@ -598,7 +598,7 @@ const { renderTasks, renderTaskBoard } = (() => {
             try { const p = await pickFolder(`Choose the project this task is for`, ai.folder.trim()); if (p) { ai.folder = p; o.drawAi(); } } catch (e) { ai.note = String(e.message || e); o.drawAi(); }
           } }, "Browse…")) : "",
         running || ai.note || ai.undo ? el("div", { class: "twrite-row small" },
-          running ? el("span", { class: "spinner" }) : "",
+          running ? makeSpinner({ size: "sm" }).node : "",
           running ? el("span", { class: "dim", id: "task-ai-step" }, `${ai.step}…`) : "",
           running ? el("button", { type: "button", id: "task-write-stop", onclick: () => { stopWrite(o); ai.note = "Stopped."; o.drawAi(); } }, "Stop") : "",
           !running && ai.note ? el("span", { class: ai.note.startsWith("Written") ? "ok" : "dim", id: "task-ai-note" }, ai.note) : "",

@@ -312,14 +312,6 @@ body.companion.expanded #feed > .card:not(.ask, .notice), body.companion.expande
 .fsec-live .fsec-head h3 { color: var(--accent); font-size: 18px; }
 .fsec-live .fsec-count { color: var(--accent); border-color: var(--accent); background: var(--panel); }
 .fsec-empty { margin: 4px 0 12px; font-size: 13px; font-style: italic; }
-/* The radial throbber: something is being read. Its motion is not gated on prefers-reduced-motion (this
-   machine has the OS animations off, and a throbber that doesn't turn says nothing is happening). */
-.throbber { display: inline-block; flex: none; box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; vertical-align: -2px;
-  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); animation: throb .8s linear infinite; }
-.throbber[hidden] { display: none; }
-.throbber.big { width: 30px; height: 30px; border-width: 3px; }
-.throbber-wait { display: flex; align-items: center; justify-content: center; padding: 56px 0; }
-@keyframes throb { to { transform: rotate(360deg); } }
 .fsec-wait { min-height: 220px; }  /* the list is on its way: the frame holds its place */
 .fpage.loading .fmain { min-height: 240px; }
 .fsec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding-bottom: 16px; }
@@ -582,12 +574,9 @@ ol.activity.more::after { content: ""; display: block; position: sticky; bottom:
 .agent-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 12px; padding: 2px 9px; border-radius: 10px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border: 1px solid color-mix(in srgb, #8b5cf6 55%, transparent); background: color-mix(in srgb, #8b5cf6 9%, transparent); }
-.agent-chip .spin { flex: none; width: 9px; height: 9px; border-radius: 50%; border: 2px solid color-mix(in srgb, #8b5cf6 30%, transparent);
-  border-top-color: #8b5cf6; animation: st-spin .9s linear infinite; }
 /* a subagent that isn't on the model it was asked for */
 .agent-chip.warn { border-color: color-mix(in srgb, #d97706 70%, transparent); background: color-mix(in srgb, #d97706 12%, transparent); }
 .agent-chip .agent-model { flex: none; }
-@keyframes st-spin { to { transform: rotate(360deg); } }
 .wdot.m-thinking, .wdot.m-tool, .wdot.m-agents, .wdot.m-starting, .wdot.m-waiting { animation: st-blink 1.4s ease-in-out infinite; }
 .wdot.m-tool { background: #14a39a; }
 .wdot.m-agents { background: #8b5cf6; }
@@ -755,9 +744,6 @@ body.asking::after {
 .jkey { font-family: var(--mono); font-size: 12px; color: var(--dim); }
 .jstarted { color: var(--accent); }
 .jprogress { color: var(--accent); }
-.jprogress::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%;
-  background: var(--accent); animation: jpulse 1.2s ease-in-out infinite; }
-@keyframes jpulse { 50% { opacity: .25; } }
 .jticket-head { display: flex; gap: 8px; align-items: center; }
 .jticket-head a { color: var(--accent); font-weight: 600; }
 .jfacts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
@@ -818,7 +804,6 @@ body.companion:not(.expanded) #toasts { display: none; }
 /* Less motion asked for: the cards say it all without anything flying about. */
 @media (prefers-reduced-motion: reduce) {
   .burst, body.asking::after { display: none; }
-  .jprogress::before { animation: none; } /* the seconds still count */
 }
 
 /* The repository and branch pickers (the Start panel, the Branch and merge card): a label beside each

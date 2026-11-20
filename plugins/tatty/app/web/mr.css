@@ -171,9 +171,8 @@
 .mr-rv.bad { color: var(--bad); } .mr-rv.bad i { background: var(--bad); color: #fff; }
 
 /* ---- a spinner: for what has to wait (an agent looking into a comment), at once, where the click was */
-.mr-spin { display: inline-block; width: 13px; height: 13px; border-radius: 50%; vertical-align: -2px; flex: none; border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent); border-top-color: var(--accent); animation: mr-spin .7s linear infinite; }
+.mr-spin { display: inline-flex; vertical-align: -3px; flex: none; }
 .mr-spin[hidden] { display: none; }
-button.primary .mr-spin { border-color: color-mix(in srgb, var(--on-accent) 35%, transparent); border-top-color: var(--on-accent); }
 button.busy { cursor: progress; }
 .mr-step { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -203,7 +202,6 @@ button.busy { cursor: progress; }
 .mr-skel span:nth-child(2) { width: 80%; } .mr-skel span:nth-child(3) { width: 55%; }
 
 /* ---- motion: everything that moves is here, and `.still` (the shop's Motion switch) stops it */
-@keyframes mr-spin { to { transform: rotate(360deg); } }
 @keyframes mr-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes mr-pop-in { from { opacity: 0; transform: translateY(3px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes mr-shimmer { to { background-position: -200% 0; } }

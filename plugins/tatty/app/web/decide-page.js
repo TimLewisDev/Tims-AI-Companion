@@ -147,7 +147,7 @@ async function decidePage(f, main) {
         glanceSoon();
       }).catch(() => {}); // no avatar is no loss
     }
-    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, el("span", { class: "throbber" }), ` Sending ${total} decision${total === 1 ? "" : "s"}…`), stage);
+    put(head, el("p", { class: "dim", id: "dc-sending", role: "status" }, makeSpinner({ size: "sm", delay: 0 }).node, ` Sending ${total} decision${total === 1 ? "" : "s"}…`), stage);
     const onProgress = e => {
       const ev = e.detail;
       if (ev.type !== "decided" || ev.batch !== batch) return;
