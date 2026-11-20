@@ -3334,18 +3334,6 @@ def worktree_holding(repo, branch):
     return next((w["path"] for w in worktrees_of(repo) if w["branch"] == branch), "")
 
 
-def worktree_path(repo, branch):
-    """Where a feature's worktree goes: <repo parent>/<repo name>.worktrees/<branch made safe for a folder>,
-    -2, -3 ... if that folder is taken."""
-    top = Path(repo)
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", branch).strip("-.")[:60].strip("-.") or "work"
-    base = top.parent / f"{top.name}.worktrees"
-    path, n = base / slug, 2
-    while path.exists():
-        path, n = base / f"{slug}-{n}", n + 1
-    return path.as_posix()
-
-
 def work_repo(rec):
     """The folder a feature's git work happens in: its worktree if it has one and it is there, else its repo."""
     wt = str(rec.get("worktree") or "")
@@ -3416,7 +3404,8 @@ def branch_info(state, folder, project, workdir="", pick=""):
     if not has_wt:
         newbranch = branch_name(repo, folder.name)
         out["pool"] = pool_summary(repo)
-        out.update(newBranch=newbranch, newPath=worktree_path(repo, newbranch), baseDefault=out["branch"] or here,
+        out["noPool"] = not out["pool"].get("total")
+        out.update(newBranch=newbranch, baseDefault=out["branch"] or here,
                    protected=is_protected(repo, out["branch"] or here))
     out["others"] = [] if has_wt else sorted(k for k, r in branch_records().items()
                                              if k != folder.name.lower() and isinstance(r, dict) and same_folder(r.get("repo", ""), repo)
@@ -4113,6 +4102,10 @@ def attach_worktree(feature, repo, rec):
     want, wt = rec["branch"], rec["worktree"]
     if os.path.isdir(wt) and current_branch(wt) == want:
         return True, worktree_info(repo, rec, wt, f"On {want} in {wt}.")
+    if not os.path.isdir(wt):  # only the pool makes worktrees: a folder that is gone is mended there, not made again here
+        return False, {"error": (f"The worktree {wt} for {want} is missing. Open the Worktrees page and press Validate: it can rebuild a slot on {want}."
+                                 if rec.get("pooled") else f"The worktree {wt} for {want} is missing, and only the pool makes worktrees. Create the pool on the Worktrees page, then free this feature's branch with Own worktree."),
+                       "noPool": not rec.get("pooled")}
     git(repo, "worktree", "prune")  # a folder deleted by hand would otherwise still hold its branch
     if branch_exists(repo, want):
         if os.path.isdir(wt) and any(same_folder(w["path"], wt) for w in worktrees_of(repo)):  # switched inside it
@@ -4127,14 +4120,7 @@ def attach_worktree(feature, repo, rec):
             rec = {**rec, "worktree": holder}
             save_branch(feature, rec)
             return True, worktree_info(repo, rec, holder, f"Using {holder}, where {want} is checked out.")
-        args = ["worktree", "add", wt, want]
-    else:  # the branch was deleted: made again from where it began
-        args = ["worktree", "add", "-b", want, wt] + ([rec["base"]] if branch_exists(repo, rec.get("base", "")) else [])
-    Path(wt).parent.mkdir(parents=True, exist_ok=True)
-    code, out = git(repo, *args, timeout=900)
-    if code != 0:
-        return False, {"error": f"Couldn't make the worktree {wt} for {want}: {out}"}
-    return True, worktree_info(repo, rec, wt, f"Made the worktree {wt} on {want}.")
+    return False, {"error": f"{wt} is on {current_branch(wt) or 'a detached HEAD'} and git doesn't list it as a worktree of {repo}, so {want} can't be put back in it. Open the Worktrees page and press Validate."}
 
 
 def branch_pick(repo, feature, wanted=""):
@@ -4167,9 +4153,13 @@ def pool_summary(repo):
     return pool.counts() if pool else {}
 
 
+NO_POOL_TEXT = "This project has no worktree pool, and only the pool makes worktrees: create one on the Worktrees page, then Start again."
+
+
 def make_worktree(feature, repo, here, base, old, wanted=""):
-    """Give a feature a new branch in a new worktree, from `base` (else the branch the repo is on).
-    The repo's own checkout is not touched. (ok, info); BRANCH_LOCK held."""
+    """Give a feature a new branch in a worktree: a ready slot of the repo's pool, from `base` (else the branch the repo
+    is on). Only the pool makes worktrees; with none, nothing is made. The repo's own checkout is not touched.
+    (ok, info); BRANCH_LOCK held."""
     base = (base or here or "").strip()
     if base and (base.startswith("-") or not REF_NAME.match(base) or git(repo, "rev-parse", "--verify", "--quiet", base + "^{commit}")[0] != 0):
         return False, {"error": f"{base or '(none)'} isn't a branch or commit of {repo}."}
@@ -4187,17 +4177,7 @@ def make_worktree(feature, repo, here, base, old, wanted=""):
         save_branch(feature, rec)
         more = " That was the last free slot: add one on the Start panel before the next." if got["needAdd"] else ""
         return True, {**worktree_info(repo, rec, got["path"], f"Took {pool_slot_name(got['path'])} for {name} from {got['base']}.{more}"), "created": True}
-    path = worktree_path(repo, name)
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    left = len([l for l in git(repo, "status", "--porcelain", "--untracked-files=no")[1].splitlines() if l.strip()])
-    code, out = git(repo, "worktree", "add", "-b", name, path, *([base] if base else []), timeout=900)  # a big checkout takes minutes
-    if code != 0:
-        return False, {"error": f"Couldn't make the branch {name} in a worktree at {path}: {out}"}
-    rec = {"repo": repo, "branch": name, "base": base, "worktree": path, "created": time.time(), "merge": {},
-           **({"pinned": True} if old.get("pinned") else {})}
-    save_branch(feature, rec)
-    note = f"Made {name} in {path} from {base or 'a detached HEAD'}." + (f" The {left} changed file(s) in {repo} stay there." if left else "")
-    return True, {**worktree_info(repo, rec, path, note), "created": True}
+    return False, {"error": NO_POOL_TEXT, "noPool": True}
 
 
 def ensure_branch(folder, project, workdir, fresh, isolate=None, base="", wanted=""):
@@ -9903,6 +9883,7 @@ def forget_feature_records(name):
 POOL_LOCK = threading.Lock()
 POOL_BUSY = {}  # main repo -> what is being done to its pool now
 POOL_MEASURING = set()
+POOL_CHECK = {}  # main repo -> the last Validate: {at, slots: {slot: {level, problems}}}
 
 
 def pool_project_repo():
@@ -9970,6 +9951,7 @@ def pool_view():
         claim = claims.get(name, {})
         feat = str(claim.get("owner") or "") or (hit[0] if hit else "")  # the owner keeps the name's own case; a record's key is lower-cased
         folder = feature_dir(feat) if feat else None
+        row["check"] = (POOL_CHECK.get(str(top)) or {}).get("slots", {}).get(name)
         row.update(feature=folder.name if folder else feat, featureExists=bool(folder),
                    featureBranch=hit[1].get("branch", "") if hit else claim.get("branch", ""),
                    base=hit[1].get("base", "") if hit else claim.get("base", ""),
@@ -9978,7 +9960,39 @@ def pool_view():
         rows.append(row)
     out["slots"] = rows
     out["free"] = sum(r["state"] == "free" for r in rows)
+    out["checkedAt"] = (POOL_CHECK.get(str(top)) or {}).get("at")
     return 200, out
+
+
+def pool_validate():
+    """POST /api/pool/validate: look at every slot (read-only) and keep what was found for the page. (http code, answer)"""
+    def run(pool):
+        found = pool.validate()
+        POOL_CHECK[str(pool.repo)] = found
+        levels = [r["level"] for r in found["slots"].values()]
+        return {"checked": len(levels), **{k: levels.count(k) for k in ("ok", "warn", "broken")}, "at": found["at"]}
+    return pool_run("Checking the slots: this reads every slot's files, so a big project takes a minute or two.", run)
+
+
+def pool_repair_slot(state, pool, slot, action):
+    """One repair of one slot. A rebuild of a claimed slot is refused while a session runs in it: it throws away
+    what was not committed there. The branch and its commits are kept."""
+    path = pool.slot_path(slot).as_posix()
+    if action == "rebuild":
+        with BRANCH_LOCK:
+            keys = {k for k, r in branch_records().items() if isinstance(r, dict) and r.get("worktree") and same_folder(r["worktree"], path)}
+            with state.cond:
+                live = [s for s in state.sessions.values() if s.get("feature") and not s.get("closed")
+                        and s["feature"].lower() in keys and state.session_view(s)["status"] in ("starting", "running")]
+            if live:
+                raise worktreepool.PoolError(f"{live[0]['feature']} has a session running in {slot}: stop it first.")
+            got = pool.repair(slot, action)
+    else:
+        got = pool.repair(slot, action)
+    after = pool.validate_slot(slot)  # what the page shows now, without waiting for another Validate
+    check = POOL_CHECK.setdefault(str(pool.repo), {"at": time.time(), "slots": {}})
+    check["slots"][slot] = after
+    return {**got, "check": after}
 
 
 def pool_run(label, fn):
@@ -13531,6 +13545,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer)
         if path == "/api/pool/measure":
             code, answer = pool_measure_start()
+            return self.send(code, answer)
+        if path == "/api/pool/validate":
+            code, answer = pool_validate()
+            return self.send(code, answer)
+        if path == "/api/pool/repair":
+            slot, action = str(b.get("slot") or ""), str(b.get("action") or "")
+            if not worktreepool.SLOT.match(slot):
+                return self.send(400, {"error": "slot: a slot name such as slot-1"})
+            if action not in ("clear-lock", "prune", "restore-files", "rebuild"):
+                return self.send(400, {"error": "action: clear-lock, prune, restore-files or rebuild"})
+            label = f"Rebuilding {slot}: a whole checkout and a copy of the project's cache, so this takes a while." if action == "rebuild" else f"Mending {slot}."
+            code, answer = pool_run(label, lambda p: pool_repair_slot(st, p, slot, action))
             return self.send(code, answer)
         if path == "/api/merge":
             folder = feature_dir(str(b.get("name", "")))

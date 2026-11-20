@@ -21,3 +21,4 @@
 .pool-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .pool-path { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; max-width: 340px; }
 .pool-free td { opacity: 0.8; }
+.pool-problem { margin-top: 4px; max-width: 46ch; }

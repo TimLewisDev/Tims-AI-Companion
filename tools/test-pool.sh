@@ -60,5 +60,43 @@ git fetch -q origin
 check "refresh follows the base" 0 bash "$POOL" refresh
 [ -f "$T/p.pool/slot-1/b.txt" ] && ok "and the slot has the new file" || bad "and the slot has the new file"
 
+# validate: a whole slot is ok; a checkout cut off half way is broken and the repair mends it
+mkrepo v no
+cd "$T/v" || exit 1
+check "init two slots to validate" 0 bash "$POOL" init --size 2
+check "whole slots are ok" 0 bash "$POOL" validate
+has "and it says so" "slot-1: ok"
+ADMIN=$(sed 's/^gitdir: //' "$T/v.pool/slot-1/.git")
+rm -f "$ADMIN/index"
+check "a missing index is broken" 3 bash "$POOL" validate
+has "named as an unfinished checkout" "never finished"
+has "and slot-2 is still ok" "slot-2: ok"
+check "rebuild mends it" 0 bash "$POOL" repair slot-1 rebuild
+check "and it validates again" 0 bash "$POOL" validate
+echo x >"$ADMIN/index.lock"
+check "a fresh lock is a command still running, not a fault" 0 bash "$POOL" validate
+touch -d '1 hour ago' "$ADMIN/index.lock" 2>/dev/null || touch -t 200001010000 "$ADMIN/index.lock"
+check "an old lock is a fault" 3 bash "$POOL" validate
+has "that clear-lock offers" "[clear-lock]"
+check "clear-lock removes it" 0 bash "$POOL" repair slot-1 clear-lock
+[ ! -e "$ADMIN/index.lock" ] && ok "the lock is gone" || bad "the lock is gone"
+check "a repair that isn't needed is refused" 1 bash "$POOL" repair slot-1 clear-lock
+rm "$T/v.pool/slot-2/a.txt"
+check "a deleted tracked file is broken" 3 bash "$POOL" validate
+has "naming the file" "missing from the folder (first: a.txt)"
+check "restore-files brings it back" 0 bash "$POOL" repair slot-2 restore-files
+[ -f "$T/v.pool/slot-2/a.txt" ] && ok "the file is back" || bad "the file is back"
+rm -rf "$T/v.pool/slot-2"
+check "a deleted slot folder isn't a slot any more" 0 bash "$POOL" validate
+bash "$POOL" claim feat/v >/dev/null
+echo mine >"$T/v.pool/slot-1/work.txt"
+rm "$T/v.pool/slot-1/a.txt"
+check "a claimed slot with missing files is broken" 3 bash "$POOL" validate
+check "restore-files is not offered on a claimed slot" 1 bash "$POOL" repair slot-1 restore-files
+check "rebuild is" 0 bash "$POOL" repair slot-1 rebuild
+[ "$(git -C "$T/v.pool/slot-1" branch --show-current)" = feat/v ] && ok "on its claimed branch" || bad "on its claimed branch"
+[ ! -e "$T/v.pool/slot-1/work.txt" ] && ok "uncommitted files are lost" || bad "uncommitted files are lost"
+check "the claim is kept" 0 bash "$POOL" release feat/v
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

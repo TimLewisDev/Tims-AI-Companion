@@ -189,7 +189,7 @@ function makeIntake() {
       branchLine.replaceChildren(el("label", {}, "Branch ", branch), " ",
         el("label", { class: "own-worktree" }, wt, " Own worktree"),
         el("div", { class: "dim" }, wt.checked
-          ? ["A new branch in a folder of its own, from ", el("code", {}, branchInfo.base || "the repo's HEAD"), ". A worktree is a full second checkout: a Unity project re-imports its Library there."]
+          ? ["A new branch in a free slot of the worktree pool, from ", el("code", {}, branchInfo.base || "the repo's HEAD"), ". Only the pool makes worktrees: create one on the Worktrees page first."]
           : ["Made in the repo's own checkout from ", el("code", {}, branchInfo.base || "the detached HEAD"), "."]));
     };
     branch.addEventListener("input", () => { branchEdited = true; });

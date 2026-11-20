@@ -114,15 +114,17 @@ async function renderWorktrees(box) {
     const max = el("input", { type: "number", min: "1", value: String(cfg.max), class: "pool-num", "aria-label": "most slots the pool may have" });
     const save = el("button", { class: "small", disabled: busy }, "Save");
     save.addEventListener("click", () => act("/api/pool/config", { size: parseInt(size.value, 10), max: parseInt(max.value, 10) }, () => "Settings saved."));
+    const validate = el("button", { disabled: busy || !slots.length, title: "Look at every slot for a checkout that stopped half way, a lock left behind or missing files (changes nothing)" }, "Validate");
+    validate.addEventListener("click", () => act("/api/pool/validate", {}, r => `${r.checked} slot${r.checked === 1 ? "" : "s"} checked: ${r.ok} ok, ${r.warn} to look at, ${r.broken} broken.`));
     const rows = slots.map(s => slotRow(d, s, busy));
     return el("section", { class: "pool-card" },
       el("h3", {}, "Slots ", el("span", { class: "dim" }, `${d.free} of ${slots.length} free`)),
-      el("div", { class: "pool-row" }, add, refresh,
+      el("div", { class: "pool-row" }, add, refresh, validate, d.checkedAt ? el("span", { class: "dim small" }, "checked " + ago(d.checkedAt)) : "",
         el("span", { class: "pool-set" }, el("label", {}, "Start with ", size), el("label", {}, "most ", max), save)),
       slots.length >= cfg.max ? el("p", { class: "dim small" }, `The pool is at its most (${cfg.max}): raise the most to add another.`) : "",
       slots.length === 0 ? el("p", { class: "dim" }, "The pool has no slots: Add a slot.") :
         el("table", { class: "pool-table" },
-          el("thead", {}, el("tr", {}, ["Slot", "Held by", "Branch", "Behind", "Size", ""].map(h => el("th", {}, h)))),
+          el("thead", {}, el("tr", {}, ["Slot", "Held by", "Branch", "Behind", "Size", "Check", ""].map(h => el("th", {}, h)))),
           el("tbody", {}, rows)));
   };
 
@@ -148,7 +150,41 @@ async function renderWorktrees(box) {
       el("td", {}, el("code", {}, branch || "-"), claimed && s.base ? el("div", { class: "dim small" }, "from " + s.base) : ""),
       el("td", {}, s.behind === null || s.behind === undefined ? "?" : String(s.behind)),
       el("td", {}, s.size ? poolBytes(s.size) : el("span", { class: "dim" }, "not measured")),
+      el("td", {}, checkCell(s, busy)),
       el("td", {}, act1));
+  };
+
+  // ---- what Validate found for a slot, and the repairs it offers (each asks first)
+  const FIXES = {
+    "clear-lock": ["Remove stale lock", () => "Remove the lock git left behind? Nothing else changes."],
+    "prune": ["Prune", () => "Remove git's record of this missing worktree?"],
+    "restore-files": ["Restore files", s => `Restore the missing tracked files in ${s.slot}? It is free, so nothing of a feature's is touched.`],
+    "rebuild": ["Rebuild slot", s => s.state === "claimed"
+      ? `Rebuild ${s.slot}?
+
+${s.feature || "The feature"}'s branch ${s.featureBranch || s.branch} keeps its commits and the slot is made again on it, but EVERYTHING UNCOMMITTED OR UNTRACKED in ${s.slot} IS LOST. It takes a while.`
+      : `Rebuild ${s.slot}? Its folder is deleted and made again from the base branch, with a copy of the project's cache. It takes a while.`],
+  };
+  const checkCell = (s, busy) => {
+    const c = s.check;
+    if (!c) return el("span", { class: "dim" }, "not checked");
+    const chip = el("span", { class: "chip " + (c.level === "ok" ? "done" : c.level === "warn" ? "now" : "bad") }, c.level === "ok" ? "ok" : c.level === "warn" ? "look" : "broken");
+    const items = c.problems.map(p => {
+      const fix = FIXES[p.fix];
+      const btn = fix ? el("button", { class: "small", disabled: busy }, fix[0]) : "";
+      if (fix) btn.addEventListener("click", () => {
+        const text = fix[1](s);
+        if (p.fix === "rebuild" && s.state === "claimed") {
+          const typed = prompt(text + `
+
+Type ${s.slot} to go on.`);
+          if (typed !== s.slot) return;
+        } else if (!confirm(text)) return;
+        act("/api/pool/repair", { slot: s.slot, action: p.fix }, r => `${s.slot}: ${r.did}.`);
+      });
+      return el("div", { class: "pool-problem small" }, p.text, " ", btn);
+    });
+    return el("div", {}, chip, ...items);
   };
 
   await load();

@@ -1145,46 +1145,48 @@ post /api/settings '{"branchPrefix":"feature/"}' >/dev/null
 fi
 if section worktrees; then
 echo "# worktrees"
-# a feature's first Start makes a branch in a worktree of its own, beside the repo; the repo's checkout is left alone
+# Only the repo's worktree pool makes worktrees: a feature's first Start with Own worktree takes a ready slot; with no pool
+# nothing is made. The repo's checkout is left alone either way.
+POOLSH="$root/plugins/tatty/scripts/pool.sh"
 WR="$T/wtrepo"
 mkdir -p "$WR" && git -C "$WR" init -q -b main && : >"$WR/a" && git -C "$WR" add -A && git -C "$WR" $GITID commit -q -m first
 WRW=$(cd "$WR" && { pwd -W 2>/dev/null || pwd; })
-git -C "$WR" switch -q -c scratch  # main is free for a worktree below
+git -C "$WR" switch -q -c scratch  # main is free for a slot below
 printf 'dirty' >>"$WR/a"
 post /api/new-feature '{"name":"Wt One"}' >/dev/null
 get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
-has "a first Start can be given a worktree" "$T/j" '"canIsolate": true'
-has "and says where" "$T/j" 'wtrepo.worktrees/feature-Wt-One'
-has "from the branch the repo is on" "$T/j" '"baseDefault": "scratch"'
-[ ! -d "$WR.worktrees" ] && ok "looking makes nothing" || bad "looking makes nothing"
+has "a repo with no pool says so" "$T/j" '"noPool": true'
+post /api/start "{\"name\":\"Wt One\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
+has "Own worktree with no pool is refused" "$T/j" "only the pool makes worktrees"
+[ ! -d "$WR.worktrees" ] && ok "and no worktree is made" || bad "and no worktree is made"
+(cd "$WR" && bash "$POOLSH" init --size 3 >/dev/null 2>&1)
+get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
+has "with a pool Own worktree is offered" "$T/j" '"canIsolate": true'
+has "and the slots are counted" "$T/j" '"free": 3'
+hasnt "and it no longer says no pool" "$T/j" '"noPool": true'
 post /api/start "{\"name\":\"Wt One\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
 has "the Start makes the branch" "$T/j" '"branch": "feature/Wt-One"'
 has "from the branch the repo was on" "$T/j" '"base": "scratch"'
-has "in a worktree of its own" "$T/j" 'wtrepo.worktrees/feature-Wt-One"'
-has "and the session runs there" "$T/j" 'wtrepo.worktrees/feature-Wt-One && TATTY_SESSION'
+has "in a slot of the pool" "$T/j" 'wtrepo.pool/slot-1"'
+has "and the session runs there" "$T/j" 'wtrepo.pool/slot-1 && TATTY_SESSION'
 [ "$(git -C "$WR" branch --show-current)" = scratch ] && ok "the repo's checkout stays on its branch" || bad "the repo's checkout stays on its branch"
 [ -n "$(git -C "$WR" status --porcelain)" ] && ok "and keeps its uncommitted files" || bad "and keeps its uncommitted files"
-[ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "the worktree is on the branch" || bad "the worktree is on the branch"
-[ ! -s "$WR.worktrees/feature-Wt-One/a" ] && ok "without the repo's uncommitted changes" || bad "without the repo's uncommitted changes"
+[ "$(git -C "$WR.pool/slot-1" branch --show-current)" = feature/Wt-One ] && ok "the slot is on the branch" || bad "the slot is on the branch"
 has "the record keeps the worktree" "$TATTY_HOME/branches.json" '"worktree"'
 get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
 has "the Start panel then says it is isolated" "$T/j" '"isolated": true'
 post /api/new-feature '{"name":"Wt Two"}' >/dev/null
 post /api/start "{\"name\":\"Wt Two\",\"row\":0,\"project\":\"$WRW\",\"isolate\":true,\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
-has "a second feature gets a worktree of its own" "$T/j" 'wtrepo.worktrees/feature-Wt-Two"'
-[ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "the first is not disturbed" || bad "the first is not disturbed"
-get "/api/branch?name=Wt%20One&project=$WRW" >"$T/j"
-has "and neither warns about sharing a working tree" "$T/j" '"others": []'
+has "a second feature gets a slot of its own" "$T/j" 'wtrepo.pool/slot-2"'
+[ "$(git -C "$WR.pool/slot-1" branch --show-current)" = feature/Wt-One ] && ok "the first is not disturbed" || bad "the first is not disturbed"
 post /api/start "{\"name\":\"Wt One\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
 has "a later Start finds the worktree again" "$T/j" '"branchNote": "On feature/Wt-One in '
-git -C "$WR" worktree remove --force "$WR.worktrees/feature-Wt-One"
+# a slot whose folder is gone is not made again by a Start: the Worktrees page's Validate mends it
+mv "$WR.pool/slot-1" "$T/slot-1-away"
 post /api/start "{\"name\":\"Wt One\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
-has "a removed folder is made again" "$T/j" "Made the worktree"
-[ "$(git -C "$WR.worktrees/feature-Wt-One" branch --show-current)" = feature/Wt-One ] && ok "on the same branch" || bad "on the same branch"
-git -C "$WR" worktree remove --force "$WR.worktrees/feature-Wt-Two" && git -C "$WR" branch -q -D feature/Wt-Two
-post /api/start "{\"name\":\"Wt Two\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
-has "a deleted branch is made again too" "$T/j" "Made the worktree"
-git -C "$WR" show-ref --verify --quiet refs/heads/feature/Wt-Two && ok "from where it began" || bad "from where it began"
+has "a missing slot is not made again by a Start" "$T/j" "press Validate"
+[ ! -d "$WR.pool/slot-1" ] && ok "and nothing is made in its place" || bad "and nothing is made in its place"
+mv "$T/slot-1-away" "$WR.pool/slot-1"
 # the reported failure: main is checked out in another worktree (a release's leftover) and a feature's record says main
 git -C "$WR" worktree add -q "$T/mainwt" main
 post /api/new-feature '{"name":"Wt Held"}' >/dev/null
@@ -1210,24 +1212,47 @@ has "and the session runs there" "$T/j" 'handwt && TATTY_SESSION'
 post /api/new-feature '{"name":"Wt Plain"}' >/dev/null
 post /api/start "{\"name\":\"Wt Plain\",\"row\":0,\"project\":\"$WRW\",\"values\":{\"idea, spec or ticket\":\"a thing\"}}" >"$T/j"
 has "by default the branch is made in the repo's own checkout" "$T/j" '"branchNote": "Made feature/Wt-Plain from scratch.'
-hasnt "with no worktree" "$T/j" 'wtrepo.worktrees/feature-Wt-Plain'
+hasnt "with no worktree" "$T/j" 'wtrepo.pool/slot-4'
 [ "$(git -C "$WR" branch --show-current)" = feature/Wt-Plain ] && ok "the repo is on it" || bad "the repo is on it"
 git -C "$WR" checkout -q -- a; git -C "$WR" switch -q scratch
-# archive takes away a clean worktree, leaves one with work in it, and keeps the branches
-printf 'wip' >"$WR.worktrees/feature-Wt-Two/new.txt"
+# archive gives a clean slot back to the pool, leaves one with work in it, and keeps the branches
+printf 'wip' >"$WR.pool/slot-2/new.txt"
 post /api/feature/archive '{"name":"Wt One"}' >"$T/j"
-has "archiving says the clean worktree was removed" "$T/j" "Removed the worktree"
-[ ! -d "$WR.worktrees/feature-Wt-One" ] && ok "its folder is gone" || bad "its folder is gone"
+has "archiving says the slot went back to the pool" "$T/j" "back to the pool"
 git -C "$WR" show-ref --verify --quiet refs/heads/feature/Wt-One && ok "its branch is kept" || bad "its branch is kept"
 post /api/feature/archive '{"name":"Wt Two"}' >"$T/j"
 has "one with uncommitted files is left in place" "$T/j" "has uncommitted or untracked files"
-[ -d "$WR.worktrees/feature-Wt-Two" ] && ok "its folder is still there" || bad "its folder is still there"
-post /api/feature/restore '{"name":"Wt One"}' >/dev/null
-post /api/start "{\"name\":\"Wt One\",\"row\":\"workflow\",\"project\":\"$WRW\"}" >"$T/j"
-has "a restored feature gets its worktree back" "$T/j" "Made the worktree"
+[ -f "$WR.pool/slot-2/new.txt" ] && ok "its files are still there" || bad "its files are still there"
 post /api/feature/delete '{"name":"Wt Two","archived":true,"confirm":"I understand"}' >"$T/j"
-has "deleting a feature leaves a worktree with work in it too" "$T/j" "has uncommitted or untracked files"
-[ -d "$WR.worktrees/feature-Wt-Two" ] && ok "and its folder is still there" || bad "and its folder is still there"
+has "deleting a feature leaves a slot with work in it too" "$T/j" "has uncommitted or untracked files"
+[ -f "$WR.pool/slot-2/new.txt" ] && ok "and its files are still there" || bad "and its files are still there"
+# the Worktrees page is about the project on show: make this repo's project the one, and put the old one back at the end
+OLDROOT=$(cat "$TATTY_HOME/root" 2>/dev/null || true)
+post /api/hub "{\"action\":\"add\",\"name\":\"Wt Pool\",\"root\":\"$WRW.tatty\",\"repo\":\"$WRW\",\"open\":true,\"noWindow\":true}" >/dev/null
+# Validate: what the Worktrees page's button reports and mends
+post /api/pool/validate '{}' >"$T/j"
+has "Validate counts the slots" "$T/j" '"checked": 3'
+has "and they are all ok" "$T/j" '"ok": 3'
+ADMIN=$(sed 's/^gitdir: //' "$WR.pool/slot-1/.git" | tr -d '')
+rm -f "$ADMIN/index"
+post /api/pool/validate '{}' >"$T/j"
+has "a checkout that never finished is broken" "$T/j" '"broken": 1'
+get /api/pool >"$T/j"
+has "the page's list carries what was found" "$T/j" 'never finished'
+post /api/pool/repair '{"slot":"slot-1","action":"clear-lock"}' >"$T/j"
+has "a repair the slot does not need is refused" "$T/j" "doesn't need clear-lock"
+post /api/pool/repair '{"slot":"slot-1","action":"rebuild"}' >"$T/j"
+has "rebuilding a free slot mends it" "$T/j" '"level": "ok"'
+post /api/pool/repair '{"slot":"slot-1","action":"rebuild"}' >"$T/j"
+has "a slot that is fine is not rebuilt" "$T/j" "doesn't need rebuild"
+rm "$WR.pool/slot-3/a"
+post /api/pool/repair '{"slot":"slot-3","action":"rebuild"}' >"$T/j"
+has "a claimed slot can be rebuilt" "$T/j" '"did": "made the slot again on feature/Wt-Held"'
+[ "$(git -C "$WR.pool/slot-3" branch --show-current)" = feature/Wt-Held ] && ok "on its own branch" || bad "on its own branch"
+post /api/pool/repair '{"slot":"slot-9","action":"rebuild"}' >"$T/j"
+has "a slot that is not there is refused" "$T/j" "isn't a slot"
+if [ -n "$OLDROOT" ]; then printf '%s
+' "$OLDROOT" >"$TATTY_HOME/root"; else rm -f "$TATTY_HOME/root"; fi
 
 fi
 if section mergestep; then

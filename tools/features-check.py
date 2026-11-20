@@ -2190,6 +2190,21 @@ def check_pool(p):
     p.js("window.__sent = []; window.__asked = []; [...document.querySelectorAll('#pool-host .pool-table tbody tr')][2].querySelector('button').click(); 1")
     wait(p, "window.__sent.length > 0")
     res["deleted"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    # Validate: what it sends, the Check column once a result is there, and the repair a broken claimed slot offers (it asks for the slot's name)
+    p.js("window.__sent = []; window.__asked = []; [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Validate').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["validate"] = p.js("window.__sent[0]")
+    p.js("""window.__asked = []; window.__sent = []; window.__real.prompt = window.prompt; window.prompt = t => { window.__asked.push(t); return 'slot-2'; };
+            const v = window.__views.pool; v.checkedAt = Date.now() / 1000;
+            v.slots[1].check = { level: 'broken', problems: [{ code: 'no-index', text: 'The checkout never finished.', fix: 'rebuild', level: 'broken' }] };
+            v.slots[2].check = { level: 'ok', problems: [] }; window.__draw(); 1""")
+    wait(p, "!!document.querySelector('#pool-host .pool-problem')")
+    res["checked"] = p.js("""({ cells: [...document.querySelectorAll('#pool-host .pool-table tbody tr')].map(r => r.children[5].innerText.replace(/\s+/g, ' ').trim()),
+                             head: [...document.querySelectorAll('#pool-host .pool-table th')].map(h => h.textContent) })""")
+    p.js("document.querySelector('#pool-host .pool-problem button').click(); 1")
+    wait(p, "window.__sent.length > 0")
+    res["rebuilt"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
+    p.js("window.prompt = window.__real.prompt; window.__sent = []; 1")
     p.js("window.__sent = []; [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').click(); 1")
     wait(p, "window.__sent.length > 0")
     res["added"] = p.js("({ sent: window.__sent[0], asked: window.__asked[window.__asked.length - 1] })")

@@ -727,12 +727,13 @@ folders and Claude Code's own install records; see
   each other's files, and finished work mustn't sit uncommitted and forgotten.
   Neither is the toolbox's business (its skills never create a branch or commit),
   so both are Tatty's, and the toolbox is unchanged.
-  - **A worktree pool, when the repo has one.** `scripts/pool.sh` (`app/worktreepool.py`) keeps ready worktrees
+  - **A worktree pool: the only way a feature gets a worktree.** `scripts/pool.sh` (`app/worktreepool.py`) keeps ready worktrees
     (slots) at `<repo parent>/<repo name>.pool/slot-N`, each parked on `pool/slot-N`, with the config
     (`size`, `max`, `base`, `warm`) in `pool.config.json` and claims in `pool.json`. `warm` lists folders copied
     from the main checkout into each new slot (a Unity project is seeded with `Library`; any other project, none).
-    With a pool, Own worktree claims a free slot (`make_worktree` -> `Pool.claim`) instead of `git worktree add`,
-    and archive releases it (`remove_feature_worktree`, for a record marked `pooled`). A slot is never added by
+    Own worktree claims a free slot (`make_worktree` -> `Pool.claim`); with no pool nothing is made (`NO_POOL_TEXT`,
+    `branch_info` says `noPool`, the Start panel links to the Worktrees page), and `attach_worktree` never makes a
+    folder again: a missing slot is mended by Validate. Archive releases it (`remove_feature_worktree`, for a record marked `pooled`). A slot is never added by
     itself: the Start panel shows the free count and an Add a slot button (`/api/pool/add`) when 0 or 1 is free.
   - **The Worktrees page** (`#worktrees`, an Engineering nav item and home tile; `web/pool.js`, `pool.css`;
     server "the worktrees page") manages the current project's pool only (the Hub's active repo, `pool_top`).
@@ -746,7 +747,17 @@ folders and Claude Code's own install records; see
     **Free up** (`pool_release_slot`) refuses while a session runs in the slot, gives the slot back and removes
     `worktree`/`pooled` from the feature's record, so a later Start of that feature neither switches a slot that
     may be another's back to its branch nor loses the branch itself (it is always kept). Delete only takes a free slot.
-  - **A branch per workflow, in a worktree if asked.** `start_session` calls
+    **Validate** (`POST /api/pool/validate`, `Pool.validate`, one at a time like the rest) reads every slot without
+    changing it: the `.git` file and git's private folder for the worktree (HEAD, and the index git writes last: a
+    missing one is a checkout cut off), lock files older than `LOCK_AGE` (a younger one is a git command still
+    running), `git worktree list --porcelain` (`prunable`, not listed), a resolving HEAD on the expected branch, tracked
+    files missing from the folder (`ls-files -d`) and the `warm` folders. Each slot is ok, look (warn) or broken, with
+    the fix it offers, kept in `POOL_CHECK` and shown in the page's Check column. `POST /api/pool/repair` re-checks the
+    slot and refuses a fix the slot doesn't offer: `clear-lock`, `prune`, `restore-files` (free slots) and `rebuild`
+    (the folder is removed and made again; a claimed slot is made again on its claimed branch, keeping the claim and
+    the branch's commits but losing what was uncommitted, so the page asks for the slot's name and a running session
+    refuses it). `worktreepool.py validate` and `repair` do the same from a shell.
+  - **A branch per workflow, in a pool slot if asked.** `start_session` calls
     `ensure_branch` before it launches. The first Start of a feature that has no
     documents yet (New feature, a Jira ticket, a task, a lite start) makes a
     branch (`<branchPrefix><feature name>`, prefix `feature/` by default, a
@@ -755,18 +766,17 @@ folders and Claude Code's own install records; see
     opt-in** (the **Own worktree** box on the Start panel and on the Tasks and
     Jira Start section sends `isolate: true`), because it is a whole second
     checkout and a Unity project's is huge. Ticked, the branch is made
-    **in a worktree of its own**,
-    `git worktree add -b <branch> <path> <base>`, from the base picked on the
-    Start panel (default: the branch the repo is on). The worktree is
-    `<repo parent>/<repo name>.worktrees/<branch made safe for a folder>`. The
+    **in a slot of the repo's worktree pool**,
+    from the base picked on the
+    Start panel (default: the branch the repo is on); only the pool makes worktrees. The
     repo's own checkout is not touched (its uncommitted files stay there), so
     features run side by side without trampling each other, and no branch is
     ever "already checked out" in the way of a Start. `branches.json` keeps
     `repo` (the main repo) and `worktree`; `work_repo` is where git work
     (commit, review, merge, the session's own folder) happens, and `work_project`
     maps the project folder into it. A later Start finds the worktree again
-    (`attach_worktree`): it re-makes the folder if it was removed, or the branch
-    from its base if that was deleted; a branch that another worktree already
+    (`attach_worktree`): it switches the folder back to the branch if it was moved,
+    and refuses (pointing at Validate) if the folder is gone; a branch that another worktree already
     holds is used where it is, unless it is a shared branch (`main`, `master`,
     `develop`, `trunk` or origin's HEAD, `PROTECTED_BRANCHES`) or another
     feature's. Without the box ticked the branch is made and switched in the

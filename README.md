@@ -86,9 +86,11 @@ Tatty is for when you'd rather see it laid out, and be told when it needs you.
   what it is doing, what it has used, and what it is asking.
 - Several features can run side by side. Each works on a branch of its own, and
   you can tick Own worktree on the Start panel (or the Tasks / Jira Start
-  section) to give it a folder of its own next to your repo too, so it doesn't
-  trample your checkout or another feature. It is off by default: a worktree is
-  a full second checkout, which is heavy for a big project.
+  section) to give it a ready slot from the project's worktree pool, so it doesn't
+  trample your checkout or another feature. Only the pool makes worktrees: create
+  one on the Worktrees page, where Validate also finds and mends slots whose
+  checkout stopped half way. It is off by default: a worktree is a full second
+  checkout, which is heavy for a big project.
 - After a build, Tatty takes the branch through a review, puts each suggestion
   to you as a question with options, has the changes you chose made, and helps
   you commit, push and open the pull / merge request.

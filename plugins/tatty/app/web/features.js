@@ -1292,10 +1292,10 @@ function startPanel(f, row, index, close, begin) {
             el("div", { class: pool.free ? "dim" : "st missing" }, `${pool.free} of ${pool.total} slots free.`,
               pool.free === 0 ? " Start needs a free slot: add one" + (pool.canAdd ? "." : ` (the pool is at its most, ${pool.max}: raise max with pool.sh config).`) : pool.free === 1 ? " That is the last free slot: add one before the next Start." : "",
               pool.canAdd && pool.free <= 1 ? [" ", addBtn, note] : ""));
-        } else if (on()) {
+        } else if (on()) { // only the pool makes worktrees: with none, Own worktree has nothing to take
           detail.replaceChildren(
-            el("div", {}, "A new branch ", code(b.newBranch), " is made in ", code(b.newPath), " from ", base, ". The repo's own checkout is left as it is."),
-            el("div", { class: "dim" }, "A worktree is a full second checkout: a Unity project re-imports its Library there and re-pulls its LFS files."),
+            el("div", { class: "st missing" }, "This project has no worktree pool, and only the pool makes worktrees. ",
+              el("a", { href: "#worktrees" }, "Create one on the Worktrees page"), ", then tick Own worktree again."),
             b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch; the feature gets one of its own.`) : "");
         } else {
           detail.replaceChildren(b.protected && b.branch ? el("div", { class: "dim" }, `${b.branch} is a shared branch. If the repo can't switch to it (another folder has it checked out), tick Own worktree to give this feature a branch of its own.`) : "", el("span", {},
