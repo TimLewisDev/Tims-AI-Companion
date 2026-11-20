@@ -1425,6 +1425,23 @@ def provider_actions(field):
     return out
 
 
+def provider_action_error(state, action, provider=""):
+    """Why an action isn't currently advertised by a compatible toolbox, or ""."""
+    error = toolbox_capability_error(state)
+    if error:
+        return error
+    got = toolbox_run(state, LLMS, ["status", "--tsv"])
+    if not got or got[0] != 0:
+        return "Couldn't verify the toolbox's current LLM actions."
+    actions = {r[0]: provider_actions(r[5]) if len(r) > 5 else [] for r in tsv_rows(got[1], 5)}
+    advertised = action in actions.get(provider, []) if provider else any(
+        action in row for row in actions.values())
+    if advertised:
+        return ""
+    target = f" for {provider}" if provider else ""
+    return f"The toolbox doesn't currently advertise {action}{target}."
+
+
 def llms_view(state):
     got = toolbox_run(state, LLMS, ["status", "--tsv"])
     error = toolbox_capability_error(state) if got is not None else TOOLBOX_TOO_OLD
@@ -1442,6 +1459,9 @@ def llms_change(state, b):
     action, provider = str(b.get("action", "")), str(b.get("provider", ""))
     if action not in ("connect", "disconnect", "refresh") or (provider not in PROVIDERS and not (action == "refresh" and not provider)):
         return 400, {"error": "action: connect, disconnect or refresh; provider: claude, copilot or codex"}
+    error = provider_action_error(state, action, provider)
+    if error:
+        return (501 if error == TOOLBOX_TOO_OLD else 409), {"error": error}
     got = toolbox_run(state, LLMS, [action, *([provider] if provider else [])], timeout=90)
     if got is None:
         return 501, {"error": "This toolbox is too old to connect LLMs. Update the core plugin."}
@@ -1601,6 +1621,10 @@ def llm_setup_change(state, b):
         return 200, llm_setup_view(state)
     if action not in ("install", "signin", "connect", "disconnect") or provider not in LLM_TOOLS:
         return 400, {"error": "action: install, signin, connect, disconnect or check; provider: claude, copilot or codex"}
+    advertised = "sign-in" if action == "signin" else action
+    error = provider_action_error(state, advertised, provider)
+    if error:
+        return (501 if error == TOOLBOX_TOO_OLD else 409), {"error": error}
     extend_path()
     t, exe = LLM_TOOLS[provider], llm_exe(provider)
     if action == "install":

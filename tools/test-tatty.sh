@@ -775,7 +775,7 @@ git = lambda *a, cwd=None: subprocess.run(["git", *a], cwd=cwd, capture_output=T
 remote = base / "remote"; remote.mkdir()
 git("init", "-q", "-b", "main", cwd=remote); git("config", "user.email", "t@t", cwd=remote); git("config", "user.name", "t", cwd=remote)
 put(remote / "plugins/core/skills/tt-common/scripts/workflow-state.sh", "#!/usr/bin/env bash\n")
-put(remote / "plugins/core/skills/tt-connections/scripts/llms.sh", "#!/usr/bin/env bash\ncase \"$1\" in status) printf 'copilot\\tavailable\\t-\\nclaude\\tconnected\\t-\\n';; connect) echo \"connected $2\";; *) exit 1;; esac\n")
+put(remote / "plugins/core/skills/tt-connections/scripts/llms.sh", "#!/usr/bin/env bash\ncase \"$1\" in capabilities) printf 'provider-model-config-v1\\nprovider-actions-v1\\n';; status) printf 'copilot\\tavailable\\t-\\t0\\t0\\tinstall,sign-in,connect,disconnect,refresh\\nclaude\\tconnected\\t-\\t0\\t0\\tinstall,sign-in,connect,disconnect,refresh\\ncodex\\tavailable\\t-\\t0\\t0\\tinstall\\n';; connect) echo \"connected $2\";; *) exit 1;; esac\n")
 put(remote / "plugins/design/skills/x/SKILL.md", "x"); put(remote / "plugins/engineering/skills/y/SKILL.md", "y")
 git("add", "-A", cwd=remote); git("commit", "-q", "-m", "one", cwd=remote)
 print("no clone yet:", m.toolbox_core())
@@ -821,15 +821,15 @@ run = shlex.split(got["said"].splitlines()[-1])  # the path is quoted when it ha
 print("signin:", code, run[0].endswith("/copilot") and run[1:] == ["login"])
 code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
 print("connect:", code, got.get("said"))
-shutil.rmtree(tb, onerror=lambda f, p, e: (os.chmod(p, 0o700), f(p)))
-code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
-print("connect without toolbox:", code)
 os.environ["TATTY_WINGET"] = str(base / "winget-fail.sh"); put(base / "winget-fail.sh", "#!/usr/bin/env bash\necho nope >&2\nexit 5\n")
 code, got = m.llm_setup_change(st, {"action": "install", "provider": "codex"})
 for _ in range(100):
     if st.llm_jobs["codex"]["status"] != "running": break
     time.sleep(0.1)
 print("failed install:", st.llm_jobs["codex"]["status"], "exit 5" in st.llm_jobs["codex"]["message"])
+shutil.rmtree(tb, onerror=lambda f, p, e: (os.chmod(p, 0o700), f(p)))
+code, got = m.llm_setup_change(st, {"action": "connect", "provider": "copilot"})
+print("connect without toolbox:", code)
 EOF
 has "no clone, no toolbox" "$T/f" "no clone yet: None"
 has "the installer's clone is the toolbox" "$T/f" "clone found: True"
@@ -4624,6 +4624,33 @@ chk("a connected provider with no models still appears", "codex" in by and by["c
 chk("a status row lists only the known actions, once each", by["claude"]["actions"] == ["install", "refresh"], by["claude"]["actions"])
 chk("a status row of - lists none", by["copilot"]["actions"] == [] and by["codex"]["actions"] == [])
 chk("the five actions are all understood", m.provider_actions("install,sign-in,connect,disconnect,refresh") == ["install", "sign-in", "connect", "disconnect", "refresh"])
+
+fx.fresh(m)
+original_toolbox_run = m.toolbox_run
+mutations = []
+def recording_toolbox_run(state, rel, args, timeout=60):
+    if rel == m.LLMS and args not in (["capabilities", "--tsv"], ["status", "--tsv"]):
+        mutations.append(args)
+        return 0, "changed\n", ""
+    return original_toolbox_run(state, rel, args, timeout)
+m.toolbox_run = recording_toolbox_run
+code, answer = m.llms_change(st, {"action": "connect", "provider": "claude"})
+chk("the connection API refuses an unadvertised action before running it", code == 409 and not mutations, (code, answer, mutations))
+opened = []
+with patch.object(m, "llm_exe", return_value="/tools/copilot"), patch.object(
+        m, "open_in_terminal", side_effect=lambda *args: opened.append(args)):
+    code, answer = m.llm_setup_change(st, {"action": "signin", "provider": "copilot"})
+chk("the setup API refuses an unadvertised action before opening a terminal",
+    code == 409 and not opened, (code, answer, opened))
+fx.fresh(m, caps="provider-model-config-v1\n")
+code, answer = m.llms_change(st, {"action": "refresh", "provider": "claude"})
+chk("the connection API fails closed when provider-action capability is missing",
+    code == 501 and answer.get("error") == too_old, (code, answer))
+with patch.object(m, "llm_exe", return_value=None), patch.dict(os.environ, {"TATTY_WINGET": "winget"}):
+    code, answer = m.llm_setup_change(st, {"action": "install", "provider": "claude"})
+chk("the setup API fails closed before installing without provider-action capability",
+    code == 501 and answer.get("error") == too_old and not getattr(st, "llm_jobs", {}), (code, answer))
+m.toolbox_run = original_toolbox_run
 
 for name, kw in (("a missing capability", dict(caps="provider-model-config-v1\n")),
                  ("an unsupported capability version", dict(caps="provider-model-config-v2\nprovider-actions-v1\n")),
