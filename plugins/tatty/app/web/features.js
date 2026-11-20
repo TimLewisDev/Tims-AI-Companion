@@ -1972,11 +1972,13 @@ function overview(f) {
     doneText ? el("p", { class: "gate-done", id: "gate-done" }, el("span", { class: "tick", "aria-hidden": "true" }, "✓"), doneText) : "",
     typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js: the way to the Merge request page, whatever else is going on
     ...rest.filter(x => x.r.kind === "warn").map(stand1),
-    more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
     !act.node && !f.unitGate && !doneText && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
-    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "",
-    lines.length ? el("hr", { class: "sv-divider" }) : "", // the call to action and the stage tags end here; the open sessions follow, set apart
-    lines.length ? el("div", { class: "sv-lines" }, lines) : "");
+    // the call to action and the stage tags end here; below the divider, the open sessions and the other options, then
+    // (under a divider of its own) where new sessions run
+    lines.length || more.length ? el("hr", { class: "sv-divider" }) : "",
+    lines.length ? el("div", { class: "sv-lines" }, lines) : "",
+    more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
+    (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "");
   // the drawers: today's cards, one click away
   const last = !going.length && sessions[0];
   const shown = going[0] || last;

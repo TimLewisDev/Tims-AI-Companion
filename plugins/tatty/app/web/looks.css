@@ -268,7 +268,8 @@
 .sv-gate .sv-sess .go-btn { margin-left: 0; }
 .sv-gate .sv-lines { align-items: center; }
 .sv-gate .more-options { margin-top: 18px; }
-.sv-gate .project-line { margin-top: 18px; padding-top: 16px; gap: 10px; }
+.sv-gate .project-line { margin-top: 22px; padding-top: 18px; gap: 10px; border-top: 1px solid var(--line); }
+.sv-gate .sv-lines + .more-options { margin-top: 14px; }
 /* the dock */
 .sv-dock { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 0 auto; }
 .sv-dock button { font-size: 12px; padding: 4px 12px; border-radius: 999px; background: color-mix(in srgb, var(--panel) 70%, transparent);
