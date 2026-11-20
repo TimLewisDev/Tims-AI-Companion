@@ -12,7 +12,7 @@
 .pool-meter { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .pool-meter-used { height: 100%; background: var(--accent); }
 .pool-nums { display: flex; gap: 16px; flex-wrap: wrap; }
-.pool-busy { display: flex; align-items: center; gap: 8px; color: var(--accent); }
+.pool-busy { display: flex; align-items: center; gap: 8px; color: var(--accent); position: sticky; top: 0; z-index: 2; padding: 6px 0; background: var(--bg, inherit); }
 /* a plain turning ring: set explicitly, as this machine's own animation settings would otherwise leave it still */
 .pool-table { border-collapse: collapse; width: 100%; }
 .pool-table th { text-align: left; font-weight: 600; color: var(--dim); font-size: 12.5px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
@@ -20,3 +20,6 @@
 .pool-path { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; max-width: 340px; }
 .pool-free td { opacity: 0.8; }
 .pool-problem { margin-top: 4px; max-width: 46ch; }
+.pool-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--bg, #fff); font-size: 11px; line-height: 16px; text-align: center; }
+.pool-queued, .pool-done { margin: 4px 0; }
+.pool-jobs h3 .dim { font-weight: normal; font-size: 12px; }

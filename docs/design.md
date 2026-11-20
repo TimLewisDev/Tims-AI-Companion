@@ -745,11 +745,21 @@ folders and Claude Code's own install records; see
     in a thread of its own (it reads every file, so minutes on a big project) into `<repo>.pool/pool.sizes.json`,
     an estimate of the largest slot, else the checkout without `.git`. A slot's cleanliness is not read on load
     (a status of a big tree is slow): release and delete check it and refuse. `POST /api/pool/create|add|release|
-    remove|refresh|config` run one at a time per repo (`pool_run`, `POOL_BUSY`, shown and polled by the page).
+    remove|refresh|validate|repair` each start a **job** (`pool_submit`, `POOL_JOBS`) in a thread of the server's own and answer
+    at once with it (`wait: true` waits for the end, for scripts and tests). A job names the slots it works on (`*` is the
+    whole pool; a new slot's number is taken inside the lock, so two adds never share one), and jobs on different slots run side by
+    side: one slot downloading, another mended, a third checked. A job that needs a slot another job has is refused with 409
+    `{conflict, canQueue, blockedBy}`; sent again with `queue: true` it waits (`pool_pump` starts it when nothing running or
+    ahead of it on its slots remains), and a waiting job can be taken off (`/api/pool/cancel`). Validate and Refresh make a job
+    per slot and answer with the ones they could not start (`blocked`) for the page to offer to queue. Because the jobs and their
+    results (the last 20, until dismissed with `/api/pool/dismiss`) live on the server, the page lists them again when it is
+    opened after leaving, `GET /api/pool` carries them (`jobs`, and `job` on each slot), and a `pool` event drives the count on
+    the Worktrees nav item on any page. A Start never takes a slot a job is on (`pool_busy_slots`), and archive leaves a busy
+    slot as it is. Pool state files are changed under `STATE_LOCK` and fetches taken one at a time (`FETCH_LOCK`).
     **Free up** (`pool_release_slot`) refuses while a session runs in the slot, gives the slot back and removes
     `worktree`/`pooled` from the feature's record, so a later Start of that feature neither switches a slot that
     may be another's back to its branch nor loses the branch itself (it is always kept). Delete only takes a free slot.
-    **Validate** (`POST /api/pool/validate`, `Pool.validate`, one at a time like the rest) reads every slot without
+    **Validate** (`POST /api/pool/validate`, one `Pool.validate_slot` job per slot) reads every slot without
     changing it: the `.git` file and git's private folder for the worktree (HEAD, and the index git writes last: a
     missing one is a checkout cut off), lock files older than `LOCK_AGE` (a younger one is a git command still
     running), `git worktree list --porcelain` (`prunable`, not listed), a resolving HEAD on the expected branch, tracked

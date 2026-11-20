@@ -28,12 +28,15 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 DEFAULTS = {"size": 3, "max": 6, "base": "", "warm": []}
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SLOT = re.compile(r"^slot-(\d+)$")
+STATE_LOCK = threading.RLock()  # a change to pool.json or pool.warm.json is read, changed and written inside it: slots are worked on side by side
+FETCH_LOCK = threading.Lock()   # one fetch at a time: the others would only fight over the same refs
 LOCK_AGE = 300  # seconds: a git lock older than this is left over, not a command still running
 
 
@@ -174,9 +177,18 @@ class Pool:
         return data
 
     def save_state(self, data):
-        tmp = self.state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, self.state_file)
+        with STATE_LOCK:
+            tmp = self.state_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, self.state_file)
+
+    def change_claims(self, fn):
+        """Read the claims, let fn change them, write them: one change at a time, so two slots claimed or freed together keep both."""
+        with STATE_LOCK:
+            state = self.state()
+            got = fn(state["claims"])
+            self.save_state(state)
+            return got
 
     # ---------------------------------------------------------------- git facts
     def base_name(self):
@@ -202,7 +214,8 @@ class Pool:
         raise PoolError(f"{base} isn't a branch or commit of {self.repo}.")
 
     def fetch(self):
-        git(self.repo, "fetch", "--prune", "origin", check=False)  # offline or no remote: carry on with what is local
+        with FETCH_LOCK:
+            git(self.repo, "fetch", "--prune", "origin", check=False)  # offline or no remote: carry on with what is local
 
     def slot_path(self, name):
         return self.dir / name
@@ -236,14 +249,15 @@ class Pool:
 
     def warm_mark(self, name, rel=None):
         """Note that a slot's folder `rel` was copied whole (or, with no rel, forget the slot: it is being made again)."""
-        data = self.warm_done()
-        if rel is None:
-            data.pop(name, None)
-        else:
-            data.setdefault(name, {})[rel] = time.time()
-        tmp = self.dir / "pool.warm.tmp"
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, self.dir / "pool.warm.json")
+        with STATE_LOCK:
+            data = self.warm_done()
+            if rel is None:
+                data.pop(name, None)
+            else:
+                data.setdefault(name, {})[rel] = time.time()
+            tmp = self.dir / "pool.warm.tmp"
+            tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, self.dir / "pool.warm.json")
 
     def warm(self, name, resume=False):
         """Copy the config's `warm` folders from the main checkout into a slot. With resume, a folder the slot has already is
@@ -298,6 +312,18 @@ class Pool:
         made = [self.make_slot(top + i + 1) for i in range(count)]
         return {"made": [{"slot": n, "warmed": w} for n, w in made], "total": len(have) + count, "max": cfg["max"]}
 
+    def add_slot(self, number):
+        """Make slot `number`: one download, which can run beside the work on any other slot."""
+        self.need()
+        cfg = self.config()
+        if f"slot-{number}" in self.slot_names():
+            raise PoolError(f"slot-{number} exists already.")
+        if number > 999:
+            raise PoolError("That is too many slots.")
+        self.fetch()
+        name, warmed = self.make_slot(number)
+        return {"made": [{"slot": name, "warmed": warmed}], "total": len(self.slot_names()), "max": cfg["max"]}
+
     def find(self, what):
         """The slot named `what`, or the one claimed for the branch `what`."""
         if what in self.slot_names():
@@ -307,14 +333,15 @@ class Pool:
                 return slot
         raise PoolError(f"{what} isn't a slot or a claimed branch of this pool.")
 
-    def claim(self, branch, base="", owner=""):
+    def claim(self, branch, base="", owner="", skip=()):
+        """Take a free slot for `branch`. Slots named in `skip` (being made, mended or freed just now) are not taken."""
         self.need()
         if not branch or branch.startswith("-") or git(self.repo, "check-ref-format", "--branch", branch, check=False)[0] != 0:
             raise PoolError(f"{branch or '(none)'} isn't a name git allows for a branch.", 2)
         if git(self.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False)[0] == 0:
             raise PoolError(f"The branch {branch} exists already: choose another name.")
         claims = self.state()["claims"]
-        free = [n for n in self.slot_names() if n not in claims and self.is_clean(self.slot_path(n))]
+        free = [n for n in self.slot_names() if n not in claims and n not in skip and self.is_clean(self.slot_path(n))]
         if not free:
             raise PoolError("No slot is free: add one (add), or release one.", 4)
         name = free[0]
@@ -322,9 +349,7 @@ class Pool:
         ref = self.base_ref(base)
         path = self.slot_path(name)
         git(path, "switch", "-c", branch, "--no-track", ref)
-        state = self.state()
-        state["claims"][name] = {"branch": branch, "owner": owner, "base": ref, "at": time.time()}
-        self.save_state(state)
+        self.change_claims(lambda c: c.__setitem__(name, {"branch": branch, "owner": owner, "base": ref, "at": time.time()}))
         left = len(free) - 1
         return {"slot": name, "path": path.as_posix(), "branch": branch, "base": ref, "free": left,
                 "total": len(self.slot_names()), "needAdd": left == 0}
@@ -335,14 +360,25 @@ class Pool:
         path = self.slot_path(name)
         if not self.is_clean(path):
             raise PoolError(f"{path.as_posix()} has uncommitted or untracked files: left as it is.")
-        state = self.state()
-        claim = state["claims"].get(name, {})
+        claim = self.state()["claims"].get(name, {})
         self.fetch()
         git(path, "switch", f"pool/{name}")
         git(path, "reset", "--hard", self.base_ref())
-        state["claims"].pop(name, None)
-        self.save_state(state)
+        self.change_claims(lambda c: c.pop(name, None))
         return {"slot": name, "path": path.as_posix(), "branchKept": claim.get("branch", "")}
+
+    def refresh_slot(self, name, ref=None):
+        """Bring one free slot up to the base. A claimed or unclean one is left alone, and says so."""
+        self.need()
+        if name in self.state()["claims"]:
+            return {"slot": name, "result": "claimed: left alone"}
+        path = self.slot_path(name)
+        if not self.is_clean(path):
+            return {"slot": name, "result": "has uncommitted or untracked files: left alone"}
+        ref = ref or self.base_ref()
+        git(path, "switch", f"pool/{name}")
+        git(path, "reset", "--hard", ref)
+        return {"slot": name, "result": f"at {ref}"}
 
     def refresh(self):
         self.need()
@@ -383,7 +419,7 @@ class Pool:
             if key == "worktree":
                 cur = found.setdefault(Path(val).as_posix().lower(), {"prunable": "", "locked": False, "detached": False})
             elif cur is not None and key in ("prunable", "locked", "detached"):
-                cur[key] = (val or True) if key == "prunable" else True
+                cur[key] = (val or True) if key in ("prunable", "locked") else True
         return found
 
     def _admin_dir(self, path):
@@ -437,7 +473,9 @@ class Pool:
         elif info and info["prunable"]:
             why = "its folder is gone" if info["prunable"] is True else info["prunable"]
             bad("prunable", f"git says this worktree can be pruned: {why}.", "prune")
-        if any(p["code"] in ("no-git", "no-admin", "no-head", "not-listed") for p in probs):
+        if info and info["locked"] == "initializing":  # git holds a new worktree locked while it is made: still locked and nothing running = it was cut off
+            bad("initializing", "git still has this worktree marked as being made: its download was cut off.", "rebuild")
+        if any(p["code"] in ("no-git", "no-admin", "no-head", "not-listed", "initializing") for p in probs):
             return self._level(name, claim, probs)
         want = (claim or {}).get("branch") or f"pool/{name}"
         if git_try(path, "rev-parse", "--verify", "--quiet", "HEAD")[0] != 0:

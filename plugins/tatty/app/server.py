@@ -4601,7 +4601,7 @@ def make_worktree(feature, repo, here, base, old, wanted=""):
     pool = pool_of(repo)
     if pool:  # a ready slot: the branch is a switch, and a big untracked cache is already warm
         try:
-            got = pool.claim(name, base=base, owner=feature)
+            got = pool.claim(name, base=base, owner=feature, skip=pool_busy_slots(repo))
         except worktreepool.PoolError as e:
             return False, {"error": f"{e} (the worktree pool of {repo})", **({"poolFull": True} if e.code == 4 else {})}
         rec = {"repo": repo, "branch": name, "base": base, "worktree": got["path"], "created": time.time(), "merge": {}, "pooled": True,
@@ -10313,12 +10313,160 @@ def forget_feature_records(name):
 # The Worktrees page (web/pool.js, engineering mode): the current project's worktree pool (worktreepool.py): its
 # slots, which feature holds each, the disk they take and what one more would, and the buttons to create the pool,
 # add a slot, free one a feature no longer needs and delete a free one. Only the current project's repo is shown.
-# What takes minutes (making slots, deleting them, measuring) says so in POOL_BUSY, which the page shows and polls.
+# What takes minutes (making slots, deleting them, checking, mending) is a job on the server (POOL_JOBS, below): it goes on
+# whatever page is open, and the page lists it again when it is shown.
 
 POOL_LOCK = threading.Lock()
-POOL_BUSY = {}  # main repo -> what is being done to its pool now
 POOL_MEASURING = set()
-POOL_CHECK = {}  # main repo -> the last Validate: {at, slots: {slot: {level, problems}}}
+POOL_CHECK = {}  # pool key -> the last Validate: {at, slots: {slot: {level, problems}}}
+POOL_JOBS = {}  # pool key -> {"seq": n, "jobs": [job]}: what is running, waiting and finished on a pool
+POOL_EVENTS = [None]  # the server state, so a job can tell the page it moved (set by the first pool request)
+POOL_KEEP = 20  # finished jobs kept for the page to show (until the person dismisses them)
+
+# Work on the pool is done as jobs, on the server, in threads of their own: the page only asks for one and looks at the list,
+# so a job goes on whatever page is open, and the list is there again when the person comes back. A job names the slots it
+# works on ("*" is the whole pool). Jobs on different slots run side by side (download one slot, mend another, check a third);
+# one that needs a slot another job is using is refused with who has it, and the person may queue it: it starts when the ones
+# ahead of it on that slot are done.
+
+
+def pool_key(repo):
+    return Path(str(repo)).as_posix().lower()
+
+
+def pool_state(key):
+    return POOL_JOBS.setdefault(key, {"seq": 0, "jobs": []})
+
+
+def pool_clash(a, b):
+    return "*" in a or "*" in b or bool(set(a) & set(b))
+
+
+def pool_job_view(j):
+    return {k: j.get(k) for k in ("id", "kind", "label", "slots", "state", "at", "started", "finished", "note", "bad", "waitingFor")}
+
+
+def pool_busy_slots(repo):
+    """The slots a job is working on or waiting to work on now: a Start must not take one of them."""
+    with POOL_LOCK:
+        jobs = [j for j in pool_state(pool_key(repo))["jobs"] if j["state"] in ("running", "queued")]
+    return {s for j in jobs for s in j["slots"]}
+
+
+def pool_tell(key):
+    st = POOL_EVENTS[0]
+    if st:
+        try:
+            st.emit("pool", running=sum(j["state"] == "running" for j in pool_state(key)["jobs"]),
+                    queued=sum(j["state"] == "queued" for j in pool_state(key)["jobs"]))
+        except Exception:  # a page that can't be told is told by its next look
+            pass
+
+
+def pool_job_thread(key, top, job):
+    def work():
+        try:
+            res = job["fn"](worktreepool.Pool(top), job)
+            job["note"], job["bad"], job["result"] = job["say"](res) if job.get("say") else "", False, res
+        except worktreepool.PoolError as e:
+            job["note"], job["bad"], job["result"] = str(e), True, {"error": str(e)}
+        except Exception as e:  # a job that fails for any reason says so, and the pool goes on
+            job["note"], job["bad"], job["result"] = f"{job['label']} failed: {e}", True, {"error": str(e)}
+        with POOL_LOCK:
+            job["state"], job["finished"] = "done", time.time()
+            jobs = pool_state(key)["jobs"]
+            done = [j for j in jobs if j["state"] == "done"]
+            for old in done[:-POOL_KEEP]:
+                jobs.remove(old)
+        job["event"].set()
+        pool_pump(key, top)
+        pool_tell(key)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def pool_pump(key, top):
+    """Start each waiting job whose slots nothing running (or waiting ahead of it) is using."""
+    with POOL_LOCK:
+        jobs = pool_state(key)["jobs"]
+        for j in jobs:
+            if j["state"] != "queued":
+                continue
+            ahead = [x for x in jobs if x is not j and (x["state"] == "running" or (x["state"] == "queued" and jobs.index(x) < jobs.index(j)))]
+            if any(pool_clash(j["slots"], x["slots"]) for x in ahead):
+                continue
+            j["state"], j["started"], j["waitingFor"] = "running", time.time(), []
+            pool_job_thread(key, top, j)
+
+
+def pool_submit(kind, label, slots, fn, say=None, queue=False):
+    """Start a job, or queue it, or say who has the slots. (http code, answer): 200 {job} when it runs or waits; 409 {conflict,
+    canQueue, blockedBy} when it would have to wait and `queue` wasn't asked for. `slots` is a list, or a function of the
+    pool's job list that makes one (a new slot's number is taken inside the lock, so two adds never take the same)."""
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    key = pool_key(top)
+    with POOL_LOCK:
+        S = pool_state(key)
+        try:
+            want = list(slots(S, top) if callable(slots) else slots)
+        except worktreepool.PoolError as e:
+            return 409, {"error": str(e)}
+        if not want:
+            return 409, {"error": f"{label}: there is nothing to do it on."}
+        blockers = [j for j in S["jobs"] if j["state"] in ("running", "queued") and pool_clash(want, j["slots"])]
+        if blockers and not queue:
+            return 409, {"error": f"{label} can't start yet: " + "; ".join(f"{j['label']} ({', '.join(j['slots'])}) is {'running' if j['state'] == 'running' else 'waiting'}" for j in blockers) + ".",
+                         "conflict": True, "canQueue": True, "blockedBy": [pool_job_view(j) for j in blockers]}
+        S["seq"] += 1
+        job = {"id": f"j{S['seq']}", "kind": kind, "label": label, "slots": want, "state": "queued" if blockers else "running", "at": time.time(),
+               "started": None if blockers else time.time(), "finished": None, "note": "", "bad": False, "fn": fn, "say": say,
+               "event": threading.Event(), "waitingFor": [j["id"] for j in blockers]}
+        S["jobs"].append(job)
+        if not blockers:
+            pool_job_thread(key, top, job)
+    pool_tell(key)
+    return 200, {"ok": True, "job": pool_job_view(job), "_job": job}
+
+
+def pool_wait(job, seconds=3600):
+    """The finished job's answer, in the shape the page used to get from a request that ran it. (http code, answer)"""
+    job["event"].wait(seconds)
+    if job["state"] != "done":
+        return 202, {"ok": True, "job": pool_job_view(job)}
+    if job["bad"]:
+        return 409, {"error": job["note"]}
+    return 200, {"ok": True, **(job.get("result") or {}), "note": job["note"]}
+
+
+def pool_cancel(job_id):
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    key = pool_key(top)
+    with POOL_LOCK:
+        jobs = pool_state(key)["jobs"]
+        j = next((x for x in jobs if x["id"] == job_id), None)
+        if not j:
+            return 404, {"error": "No such job."}
+        if j["state"] != "queued":
+            return 409, {"error": "Only a job that is still waiting can be taken off: one that has started goes on until it ends."}
+        jobs.remove(j)
+    j["event"].set()
+    pool_pump(key, top)
+    pool_tell(key)
+    return 200, {"ok": True}
+
+
+def pool_dismiss(job_id):
+    """Clear the finished jobs (one, or all with no id) from the page's list."""
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    with POOL_LOCK:
+        S = pool_state(pool_key(top))
+        S["jobs"] = [j for j in S["jobs"] if j["state"] != "done" or (job_id and j["id"] != job_id)]
+    return 200, {"ok": True}
 
 
 def pool_project_repo():
@@ -10359,7 +10507,10 @@ def pool_view():
     except OSError:
         disk = {}
     sizes = pool.read_sizes() if pool.dir.is_dir() else {}
-    out = {"repo": top.as_posix(), "dir": pool.dir.as_posix(), "exists": pool.exists(), "busy": POOL_BUSY.get(str(top), ""),
+    with POOL_LOCK:
+        jobs = [pool_job_view(j) for j in pool_state(pool_key(top))["jobs"]]
+    active = {sl: j for j in jobs if j["state"] in ("running", "queued") for sl in j["slots"]}
+    out = {"jobs": jobs, "busy": next((j["label"] for j in jobs if j["state"] == "running"), ""), "repo": top.as_posix(), "dir": pool.dir.as_posix(), "exists": pool.exists(),
            "measuring": str(top) in POOL_MEASURING, "disk": disk, "sizes": sizes, "seed": pool.seed_config()}
     per = list((sizes.get("slots") or {}).values())
     if per:
@@ -10381,12 +10532,19 @@ def pool_view():
             held[Path(rec["worktree"]).as_posix().lower()] = (key, rec)
     rows = []
     for name in pool.slot_names():
-        row = pool.slot_info(name, ref, check_clean=False)  # a status of a big tree is slow: a release or delete checks it
+        mine = active.get(name) or active.get("*")
+        if mine and mine["kind"] in ("add", "create") or (mine and mine["kind"] == "repair" and mine["label"] == "Rebuilding"):
+            # being made again: its files are in motion, so git is not asked about it
+            row = {"slot": name, "path": pool.slot_path(name).as_posix(), "state": "claimed" if name in claims else "free", "branch": "",
+                   "claimedFor": claims.get(name, {}).get("branch", ""), "behind": None, "clean": None}
+        else:
+            row = pool.slot_info(name, ref, check_clean=False)  # a status of a big tree is slow: a release or delete checks it
+        row["job"] = mine
         hit = held.get(row["path"].lower())
         claim = claims.get(name, {})
         feat = str(claim.get("owner") or "") or (hit[0] if hit else "")  # the owner keeps the name's own case; a record's key is lower-cased
         folder = feature_dir(feat) if feat else None
-        row["check"] = (POOL_CHECK.get(str(top)) or {}).get("slots", {}).get(name)
+        row["check"] = (POOL_CHECK.get(pool_key(top)) or {}).get("slots", {}).get(name)
         row.update(feature=folder.name if folder else feat, featureExists=bool(folder),
                    featureBranch=hit[1].get("branch", "") if hit else claim.get("branch", ""),
                    base=hit[1].get("base", "") if hit else claim.get("base", ""),
@@ -10395,18 +10553,18 @@ def pool_view():
         rows.append(row)
     out["slots"] = rows
     out["free"] = sum(r["state"] == "free" for r in rows)
-    out["checkedAt"] = (POOL_CHECK.get(str(top)) or {}).get("at")
+    out["checkedAt"] = (POOL_CHECK.get(pool_key(top)) or {}).get("at")
     return 200, out
 
 
-def pool_validate():
-    """POST /api/pool/validate: look at every slot (read-only) and keep what was found for the page. (http code, answer)"""
-    def run(pool):
-        found = pool.validate()
-        POOL_CHECK[str(pool.repo)] = found
-        levels = [r["level"] for r in found["slots"].values()]
-        return {"checked": len(levels), **{k: levels.count(k) for k in ("ok", "warn", "broken")}, "at": found["at"]}
-    return pool_run("Checking the slots: this reads every slot's files, so a big project takes a minute or two.", run)
+def pool_check_slot(pool, name):
+    """One slot's check, kept for the page (and for the next page load)."""
+    found = pool.validate_slot(name)
+    with POOL_LOCK:
+        keep = POOL_CHECK.setdefault(pool_key(pool.repo), {"at": time.time(), "slots": {}})
+        keep["slots"][name] = found
+        keep["at"] = time.time()
+    return {"slot": name, "level": found["level"]}
 
 
 def pool_repair_slot(state, pool, slot, action):
@@ -10425,28 +10583,100 @@ def pool_repair_slot(state, pool, slot, action):
     else:
         got = pool.repair(slot, action)
     after = pool.validate_slot(slot)  # what the page shows now, without waiting for another Validate
-    check = POOL_CHECK.setdefault(str(pool.repo), {"at": time.time(), "slots": {}})
-    check["slots"][slot] = after
+    with POOL_LOCK:
+        keep = POOL_CHECK.setdefault(pool_key(pool.repo), {"at": time.time(), "slots": {}})
+        keep["slots"][slot] = after
     return {**got, "check": after}
 
 
-def pool_run(label, fn):
-    """Run one pool change, one at a time per repo, with `label` shown on the page meanwhile. (http code, answer)"""
+def pool_each(kind, label, names, fn, say, queue):
+    """One job per slot. Slots a job is using are not started: they come back in `blocked` for the person to queue. (http code, answer)"""
+    started, waiting, blocked, jobs = [], [], [], []
+    for n in names:
+        code, ans = pool_submit(kind, label, [n], fn, say, queue)
+        if code == 200:
+            jobs.append(ans["_job"])
+            (waiting if ans["_job"]["state"] == "queued" else started).append(n)
+        elif ans.get("conflict"):
+            blocked.append({"slot": n, "by": ans["blockedBy"][0]["label"], "state": ans["blockedBy"][0]["state"]})
+        else:
+            return code, ans
+    return 200, {"ok": True, "started": started, "queued": waiting, "blocked": blocked, "_jobs": jobs}
+
+
+def pool_wait_each(jobs, answer):
+    for j in jobs:
+        j["event"].wait(3600)
+    levels = [(j.get("result") or {}).get("level") for j in jobs if j["state"] == "done" and not j["bad"]]
+    return {**answer, "checked": len(levels), **{k: levels.count(k) for k in ("ok", "warn", "broken")}}
+
+
+def pool_slot_arg(b):
+    slot = str(b.get("slot") or "")
+    return slot if worktreepool.SLOT.match(slot) else ""
+
+
+def pool_add_job(queue=False):
+    def slots(S, top):
+        pool = worktreepool.Pool(top)
+        pool.need()
+        pending = {s for j in S["jobs"] if j["kind"] == "add" and j["state"] in ("running", "queued") for s in j["slots"]}
+        every = set(pool.slot_names()) | pending
+        most = pool.config()["max"]
+        if len(every) >= most:
+            raise worktreepool.PoolError(f"The pool has {len(every)} slots, the most the config allows ({most}): raise max first.")
+        return [f"slot-{max([int(worktreepool.SLOT.match(n).group(1)) for n in every] + [0]) + 1}"]
+    return pool_submit("add", "Adding a slot", slots, lambda p, j: p.add_slot(int(j["slots"][0][5:])),
+                       lambda r: f"Added {r['made'][0]['slot']}.", queue)
+
+
+def pool_create_job(size, queue=False):
+    return pool_submit("create", f"Making the pool of {size}", ["*"], lambda p, j: p.init(size),
+                       lambda r: f"Made {len(r['made'])} slot{'s' if len(r['made']) != 1 else ''}.", queue)
+
+
+def pool_release_job(st, slot, queue=False):
+    return pool_submit("release", "Freeing", [slot], lambda p, j: pool_release_slot(st, p, slot),
+                       lambda r: f"{slot} is free again" + (f" (the branch {r['branchKept']} is kept)." if r.get("branchKept") else "."), queue)
+
+
+def pool_remove_job(slot, queue=False):
+    return pool_submit("remove", "Deleting", [slot], lambda p, j: p.remove(slot), lambda r: f"{slot} deleted.", queue)
+
+
+def pool_repair_job(st, slot, action, queue=False):
+    label = {"rebuild": "Rebuilding", "warm": "Copying the cache into"}.get(action, "Mending")
+    return pool_submit("repair", label, [slot], lambda p, j: pool_repair_slot(st, p, slot, action), lambda r: f"{slot}: {r['did']}.", queue)
+
+
+def pool_validate_jobs(names, queue=False):
     top = pool_top()
     if not top:
         return 404, {"error": "This project isn't in a git repository."}
-    key = str(top)
-    with POOL_LOCK:
-        if POOL_BUSY.get(key):
-            return 409, {"error": f"Wait: {POOL_BUSY[key]}"}
-        POOL_BUSY[key] = label
-    try:
-        return 200, {"ok": True, **fn(worktreepool.Pool(top))}
-    except worktreepool.PoolError as e:
-        return 409, {"error": str(e)}
-    finally:
-        with POOL_LOCK:
-            POOL_BUSY.pop(key, None)
+    pool = worktreepool.Pool(top)
+    if not pool.exists():
+        return 409, {"error": f"No worktree pool for {top}."}
+    with POOL_LOCK:  # a slot still being downloaded counts: it is there to ask about, and blocked until it is done
+        coming = {x for j in pool_state(pool_key(top))["jobs"] if j["kind"] == "add" and j["state"] in ("running", "queued") for x in j["slots"]}
+    every = sorted(set(pool.slot_names()) | coming, key=lambda n: int(worktreepool.SLOT.match(n).group(1)))
+    names = [n for n in (names or every) if n in every]
+    return pool_each("validate", "Checking", names, lambda p, j: pool_check_slot(p, j["slots"][0]), lambda r: f"{r['slot']}: {r['level']}", queue)
+
+
+def pool_refresh_jobs(queue=False):
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    pool = worktreepool.Pool(top)
+    if not pool.exists():
+        return 409, {"error": f"No worktree pool for {top}."}
+    claims = pool.state()["claims"]
+    names = [n for n in pool.slot_names() if n not in claims]
+
+    def one(p, j):
+        p.fetch()
+        return p.refresh_slot(j["slots"][0])
+    return pool_each("refresh", "Updating", names, one, lambda r: f"{r['slot']}: {r['result']}", queue)
 
 
 def pool_release_slot(state, pool, slot):
@@ -10505,6 +10735,8 @@ def remove_feature_worktree(name):
             return f"{wt} isn't a worktree of {repo} any more: left alone."
         pool = pool_of(repo) if rec.get("pooled") else None
         if pool and same_folder(str(pool.dir), str(Path(wt).parent)):  # a pool slot goes back to the pool, not away
+            if Path(wt).name in pool_busy_slots(repo) or "*" in pool_busy_slots(repo):
+                return f"The slot {wt} is being worked on in the Worktrees page: left as it is."
             try:
                 got = pool.release(Path(wt).name)
             except worktreepool.PoolError as e:
@@ -13544,6 +13776,7 @@ class Handler(BaseHTTPRequestHandler):
             code, answer = diagram_view(st, q)
             return self.send(code, answer)
         if path == "/api/pool":
+            POOL_EVENTS[0] = st
             code, answer = pool_view()
             return self.send(code, answer)
         if path == "/api/review":
@@ -14013,45 +14246,60 @@ class Handler(BaseHTTPRequestHandler):
             project = str(b.get("project") or "").strip() or feature_project(folder, docs_of(folder))[0]
             code, answer = set_branch(folder, project, b.get("branch"), feature_project(folder, docs_of(folder))[0])
             return self.send(code, answer)
-        if path == "/api/pool/add":  # the person said yes to one more slot (the pool never grows by itself)
-            code, answer = pool_run("Adding a slot: it copies the project's cache, so this takes a while.", lambda p: p.add(1))
-            return self.send(code, answer)
-        if path == "/api/pool/create":
-            size = b.get("size")
-            if isinstance(size, bool) or not isinstance(size, int) or size < 1:
-                return self.send(400, {"error": "size: a whole number of 1 or more"})
-            code, answer = pool_run(f"Making the pool of {size}: each slot is a checkout and a copy of the project's cache, so this takes a while.", lambda p: p.init(size))
-            return self.send(code, answer)
-        if path in ("/api/pool/release", "/api/pool/remove"):
-            slot = str(b.get("slot") or "")
-            if not worktreepool.SLOT.match(slot):
-                return self.send(400, {"error": "slot: a slot name such as slot-1"})
-            if path == "/api/pool/release":
-                code, answer = pool_run(f"Freeing {slot}.", lambda p: pool_release_slot(st, p, slot))
-            else:
-                code, answer = pool_run(f"Deleting {slot}: a slot is a whole checkout, so this takes a while.", lambda p: p.remove(slot))
-            return self.send(code, answer)
-        if path == "/api/pool/refresh":
-            code, answer = pool_run("Bringing the free slots up to date.", lambda p: p.refresh())
-            return self.send(code, answer)
-        if path == "/api/pool/config":
-            pairs = [f"{k}={b[k]}" for k in ("size", "max") if isinstance(b.get(k), int) and not isinstance(b.get(k), bool)]
-            code, answer = pool_run("Saving the pool's settings.", lambda p: {"config": p.set_config(pairs)})
-            return self.send(code, answer)
         if path == "/api/pool/measure":
             code, answer = pool_measure_start()
             return self.send(code, answer)
-        if path == "/api/pool/validate":
-            code, answer = pool_validate()
-            return self.send(code, answer)
-        if path == "/api/pool/repair":
-            slot, action = str(b.get("slot") or ""), str(b.get("action") or "")
-            if not worktreepool.SLOT.match(slot):
-                return self.send(400, {"error": "slot: a slot name such as slot-1"})
-            if action not in ("clear-lock", "prune", "warm", "restore-files", "rebuild"):
-                return self.send(400, {"error": "action: clear-lock, prune, warm, restore-files or rebuild"})
-            label = f"Rebuilding {slot}: a whole checkout and a copy of the project's cache, so this takes a while." if action == "rebuild" else f"Copying the project's cache into {slot}: this takes a while." if action == "warm" else f"Mending {slot}."
-            code, answer = pool_run(label, lambda p: pool_repair_slot(st, p, slot, action))
+        if path.startswith("/api/pool/") and path != "/api/pool/measure":
+            POOL_EVENTS[0] = st
+            queue, wait = bool(b.get("queue")), bool(b.get("wait"))
+            if path == "/api/pool/cancel":
+                code, answer = pool_cancel(str(b.get("job") or ""))
+                return self.send(code, answer)
+            if path == "/api/pool/dismiss":
+                code, answer = pool_dismiss(str(b.get("job") or ""))
+                return self.send(code, answer)
+            if path == "/api/pool/config":
+                top = pool_top()
+                if not top:
+                    return self.send(404, {"error": "This project isn't in a git repository."})
+                pairs = [f"{k}={b[k]}" for k in ("size", "max") if isinstance(b.get(k), int) and not isinstance(b.get(k), bool)]
+                try:
+                    return self.send(200, {"ok": True, "config": worktreepool.Pool(top).set_config(pairs)})
+                except worktreepool.PoolError as e:
+                    return self.send(409, {"error": str(e)})
+            slot = pool_slot_arg(b)
+            if path == "/api/pool/add":  # the person said yes to one more slot (the pool never grows by itself)
+                code, answer = pool_add_job(queue)
+            elif path == "/api/pool/create":
+                size = b.get("size")
+                if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+                    return self.send(400, {"error": "size: a whole number of 1 or more"})
+                code, answer = pool_create_job(size, queue)
+            elif path in ("/api/pool/release", "/api/pool/remove", "/api/pool/repair"):
+                if not slot:
+                    return self.send(400, {"error": "slot: a slot name such as slot-1"})
+                if path == "/api/pool/release":
+                    code, answer = pool_release_job(st, slot, queue)
+                elif path == "/api/pool/remove":
+                    code, answer = pool_remove_job(slot, queue)
+                else:
+                    action = str(b.get("action") or "")
+                    if action not in ("clear-lock", "prune", "warm", "restore-files", "rebuild"):
+                        return self.send(400, {"error": "action: clear-lock, prune, warm, restore-files or rebuild"})
+                    code, answer = pool_repair_job(st, slot, action, queue)
+            elif path in ("/api/pool/validate", "/api/pool/refresh"):
+                names = [n for n in (b.get("slots") or []) if isinstance(n, str) and worktreepool.SLOT.match(n)] if isinstance(b.get("slots"), list) else []
+                code, answer = pool_validate_jobs(names, queue) if path == "/api/pool/validate" else pool_refresh_jobs(queue)
+            else:
+                return self.send(404, {"error": "no such pool action"})
+            one, many = answer.get("_job"), answer.get("_jobs")
+            if code == 200 and wait:
+                if many is not None:
+                    answer = pool_wait_each(many, answer)
+                elif one is not None:
+                    code, answer = pool_wait(one)
+            answer.pop("_job", None)
+            answer.pop("_jobs", None)
             return self.send(code, answer)
         if path == "/api/merge":
             folder = feature_dir(str(b.get("name", "")))

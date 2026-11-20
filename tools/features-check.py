@@ -2205,13 +2205,21 @@ def check_pool(p):
     wait(p, "window.__sent.length > 0")
     res["rebuilt"] = p.js("({ sent: window.__sent[0], asked: window.__asked[0] })")
     p.js("window.prompt = window.__real.prompt; window.__sent = []; 1")
+    # a press shows its banner and turns the buttons off at once, while the request is still waiting (held open here)
+    p.js("""window.__release = null; window.__was = window.api; const was = window.__was;
+            window.api = (path, body) => path === '/api/pool/validate' ? new Promise(r => { window.__release = () => r({ ok: true, checked: 3, ok_: 0, warn: 0, broken: 0 }); }) : was(path, body);
+            [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Validate').click(); 1""")
+    res["pressed"] = p.js("""({ banner: (document.querySelector('#pool-host .pool-busy') || {}).innerText || 'none',
+                              off: [...document.querySelectorAll('#pool-host button')].every(b => b.disabled) })""")
+    p.js("window.__release && window.__release(); window.api = window.__was; 1")
     p.js("window.__sent = []; [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').click(); 1")
     wait(p, "window.__sent.length > 0")
     res["added"] = p.js("({ sent: window.__sent[0], asked: window.__asked[window.__asked.length - 1] })")
-    p.js("window.__views.pool.busy = 'Adding a slot.'; window.__draw(); 1")
+    p.js("window.__views.pool.jobs = [{ id: 'j1', kind: 'add', label: 'Adding a slot', slots: ['slot-4'], state: 'running', started: Date.now() / 1000 }, { id: 'j2', kind: 'validate', label: 'Checking', slots: ['slot-4'], state: 'queued', waitingFor: ['j1'] }, { id: 'j3', kind: 'repair', label: 'Mending', slots: ['slot-1'], state: 'done', note: 'slot-1: removed the stale lock.', bad: false, finished: Date.now() / 1000 }]; window.__draw(); 1")
     wait(p, "!!document.querySelector('#pool-host .pool-busy')")
+    res["jobs"] = p.js("({ rows: [...document.querySelectorAll('#pool-host .pool-jobs > div')].map(d => d.innerText.replace(/\\s+/g, ' ').trim()) })")
     res["busy"] = p.js("({ text: document.querySelector('#pool-host .pool-busy').innerText, addOff: [...document.querySelectorAll('#pool-host button')].find(b => b.textContent === 'Add a slot').disabled })")
-    p.js("document.querySelector('#pool-host').remove(); window.__view = 'pool'; window.__views.pool.busy = ''; location.hash = '#worktrees'; 1")
+    p.js("document.querySelector('#pool-host').remove(); window.__view = 'pool'; window.__views.pool.jobs = []; location.hash = '#worktrees'; 1")
     wait(p, "!!document.querySelector('#page-worktrees .pool-table')")
     res["route"] = p.js("""({ on: document.querySelector('#page-worktrees').classList.contains('on'), mode: document.body.dataset.mode || '',
                              nav: (document.querySelector('.pnav a[data-page=worktrees]') || {}).className || 'missing',

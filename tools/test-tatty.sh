@@ -1413,26 +1413,26 @@ has "deleting a feature leaves a slot with work in it too" "$T/j" "has uncommitt
 OLDROOT=$(cat "$TATTY_HOME/root" 2>/dev/null || true)
 post /api/hub "{\"action\":\"add\",\"name\":\"Wt Pool\",\"root\":\"$WRW.tatty\",\"repo\":\"$WRW\",\"open\":true,\"noWindow\":true}" >/dev/null
 # Validate: what the Worktrees page's button reports and mends
-post /api/pool/validate '{}' >"$T/j"
+post /api/pool/validate '{"wait":true}' >"$T/j"
 has "Validate counts the slots" "$T/j" '"checked": 3'
 has "and they are all ok" "$T/j" '"ok": 3'
 ADMIN=$(sed 's/^gitdir: //' "$WR.pool/slot-1/.git" | tr -d '')
 rm -f "$ADMIN/index"
-post /api/pool/validate '{}' >"$T/j"
+post /api/pool/validate '{"wait":true}' >"$T/j"
 has "a checkout that never finished is broken" "$T/j" '"broken": 1'
 get /api/pool >"$T/j"
 has "the page's list carries what was found" "$T/j" 'never finished'
-post /api/pool/repair '{"slot":"slot-1","action":"clear-lock"}' >"$T/j"
+post /api/pool/repair '{"slot":"slot-1","action":"clear-lock","wait":true}' >"$T/j"
 has "a repair the slot does not need is refused" "$T/j" "doesn't need clear-lock"
-post /api/pool/repair '{"slot":"slot-1","action":"rebuild"}' >"$T/j"
+post /api/pool/repair '{"slot":"slot-1","action":"rebuild","wait":true}' >"$T/j"
 has "rebuilding a free slot mends it" "$T/j" '"level": "ok"'
-post /api/pool/repair '{"slot":"slot-1","action":"rebuild"}' >"$T/j"
+post /api/pool/repair '{"slot":"slot-1","action":"rebuild","wait":true}' >"$T/j"
 has "a slot that is fine is not rebuilt" "$T/j" "doesn't need rebuild"
 rm "$WR.pool/slot-3/a"
-post /api/pool/repair '{"slot":"slot-3","action":"rebuild"}' >"$T/j"
+post /api/pool/repair '{"slot":"slot-3","action":"rebuild","wait":true}' >"$T/j"
 has "a claimed slot can be rebuilt" "$T/j" '"did": "made the slot again on feature/Wt-Held"'
 [ "$(git -C "$WR.pool/slot-3" branch --show-current)" = feature/Wt-Held ] && ok "on its own branch" || bad "on its own branch"
-post /api/pool/repair '{"slot":"slot-9","action":"rebuild"}' >"$T/j"
+post /api/pool/repair '{"slot":"slot-9","action":"rebuild","wait":true}' >"$T/j"
 has "a slot that is not there is refused" "$T/j" "isn't a slot"
 if [ -n "$OLDROOT" ]; then printf '%s
 ' "$OLDROOT" >"$TATTY_HOME/root"; else rm -f "$TATTY_HOME/root"; fi

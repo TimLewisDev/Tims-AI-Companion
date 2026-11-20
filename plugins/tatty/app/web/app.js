@@ -47,8 +47,10 @@ async function api(path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!r.ok) {
-    const e = new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    const body = await r.json().catch(() => ({}));
+    const e = new Error(body.error || r.statusText);
     e.status = r.status;
+    e.data = body; // what else the server said (a pool job that has to wait says who has the slot)
     throw e;
   }
   return r.json();
@@ -778,6 +780,7 @@ function feedEvent(ev) {
   else if (ev.type === "milestone") { feed.append(milestoneCard(ev)); if (ev.ts * 1000 >= pageOpened - 5000) confetti(ev.tier); }
   else if (ev.type === "gate") { if (ev.ts * 1000 >= pageOpened - 5000) gateSeen(ev); }
   else if (ev.type === "status") setMod(!!ev.mod);
+  else if (ev.type === "pool" && typeof poolBadge === "function") poolBadge(ev);
   scrollFeed();
 }
 
