@@ -1253,7 +1253,7 @@ function startPanel(f, row, index, close, begin) {
   // so features run side by side without touching each other or the repo's checkout) on its first Start; the box
   // opts out, and a feature under way can take one too. Without a worktree the repo is switched to the branch.
   const branchLine = el("div", { class: "small branch-line" });
-  const wt = { on: null, base: "" }; // what the person chose on this panel; null = the server's suggestion
+  const wt = { on: null, base: "", slot: "" }; // what the person chose on this panel; null = the server's suggestion
   const showBranch = async () => {
     branchLine.replaceChildren();
     if (!f.project) return;
@@ -1266,7 +1266,19 @@ function startPanel(f, row, index, close, begin) {
         wt.fields = () => ({});
         return;
       }
-      const on = () => wt.on === true; // opt in: a worktree is a whole second checkout
+      let choices = { has: false, slots: [] }; // the pool's slots (a repo with a pool takes one for the branch)
+      try { choices = await api("/api/pool/choices?project=" + encodeURIComponent(f.project)); } catch { /* none: the panel says so */ }
+      // Ticked by default when the repo has a pool (a ready slot is cheap); otherwise opt in, a worktree is a whole second checkout.
+      const on = () => (wt.on === null ? !!choices.has : wt.on === true);
+      const slotSel = el("select", { class: "branch-select", "aria-label": "worktree slot", title: "Which free slot takes the new branch" });
+      slotSel.append(el("option", { value: "" }, "first free slot"));
+      for (const s of choices.slots || []) {
+        const o = el("option", { value: s.slot }, s.free ? s.slot : `${s.slot} (${s.branch || "in use"})`);
+        o.disabled = !s.free;
+        slotSel.append(o);
+      }
+      if (wt.slot && [...slotSel.options].some(o => o.value === wt.slot && !o.disabled)) slotSel.value = wt.slot;
+      slotSel.addEventListener("change", () => { wt.slot = slotSel.value; });
       const box = el("input", { type: "checkbox", id: "own-worktree", "aria-label": "own worktree" });
       box.checked = on();
       const base = el("select", { class: "branch-select", "aria-label": "base branch", title: "The new branch starts from this" });
@@ -1275,7 +1287,7 @@ function startPanel(f, row, index, close, begin) {
       for (const n of start && !bases.includes(start) ? [start, ...bases] : bases) base.append(el("option", { value: n }, n));
       base.value = start;
       base.addEventListener("change", () => { wt.base = base.value; });
-      wt.fields = () => (on() ? { isolate: true, ...(base.value ? { base: base.value } : {}) } : {});
+      wt.fields = () => (on() ? { isolate: true, ...(base.value ? { base: base.value } : {}), ...(choices.has && slotSel.value ? { slot: slotSel.value } : {}) } : {});
       const detail = el("div", {});
       const paint = () => {
         const shared = b.others.length ? el("div", { class: "st missing" }, `Other workflows have branches in this repo (${b.others.join(", ")}): they share its working tree, so run one at a time.`) : "";
@@ -1289,6 +1301,7 @@ function startPanel(f, row, index, close, begin) {
           });
           detail.replaceChildren(
             el("div", {}, "A ready slot from the worktree pool is taken for a new branch ", code(b.newBranch), " from ", base, ". The repo's own checkout is left as it is."),
+            el("div", {}, "Slot ", slotSel),
             el("div", { class: pool.free ? "dim" : "st missing" }, `${pool.free} of ${pool.total} slots free.`,
               pool.free === 0 ? " Start needs a free slot: add one" + (pool.canAdd ? "." : ` (the pool is at its most, ${pool.max}: raise max with pool.sh config).`) : pool.free === 1 ? " That is the last free slot: add one before the next Start." : "",
               pool.canAdd && pool.free <= 1 ? [" ", addBtn, note] : ""));

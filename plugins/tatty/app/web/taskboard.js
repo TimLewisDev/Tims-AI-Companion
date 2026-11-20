@@ -550,27 +550,51 @@ function makeTaskBoard(o) {
     // is made in the repo's own checkout. Off by default: a worktree is a whole second checkout. Ignored when the project isn't in a git repository.
     const own = el("input", { type: "checkbox", id: o.item + "-worktree", "aria-label": "own worktree" });
     own.checked = false;
+    // The repo's worktree pool, when it has one: Own worktree is then ticked for the person (until they tick it themselves)
+    // and a dropdown picks which free slot takes the branch. Read again when the project or the work folder changes.
+    const slotSel = el("select", { class: "branch-select", id: o.item + "-slot", "aria-label": "worktree slot", title: "Which free slot takes the new branch" });
+    const poolNote = el("span", { class: "dim" });
+    const slotRow = el("span", { hidden: true }, " Slot ", slotSel, " ", poolNote);
+    let touched = false, poolSeq = 0;
+    own.addEventListener("change", () => { touched = true; });
+    const loadPool = async () => {
+      const seq = ++poolSeq;
+      let ch = { has: false, slots: [] };
+      if (project) { try { ch = await api("/api/pool/choices?project=" + encodeURIComponent(project) + (workdir ? "&workdir=" + encodeURIComponent(workdir) : "")); } catch { /* no pool shown */ } }
+      if (seq !== poolSeq) return; // a later choice of folder is already being read
+      const keep = slotSel.value;
+      slotSel.replaceChildren(el("option", { value: "" }, "first free slot"));
+      for (const x of ch.slots || []) {
+        const op = el("option", { value: x.slot }, x.free ? x.slot : `${x.slot} (${x.branch || "in use"})`);
+        op.disabled = !x.free;
+        slotSel.append(op);
+      }
+      if (keep && [...slotSel.options].some(op => op.value === keep && !op.disabled)) slotSel.value = keep;
+      slotRow.hidden = !ch.has;
+      poolNote.textContent = ch.has ? `${ch.free} of ${ch.total} slots free.` + (ch.free === 0 ? " Start needs a free slot: add one on the Worktrees page." : "") : "";
+      if (!touched) own.checked = !!ch.has;
+    };
     const drawWhere = () => {
       where.replaceChildren(project ? copyable(project) : el("strong", { class: "st missing" }, "no project chosen yet"));
       whereWork.replaceChildren(workdir ? copyable(workdir) : el("span", { class: "dim" }, "the project itself"));
       go.disabled = goLite.disabled = !project || !name.value.trim();
     };
     const choose = el("button", { type: "button", onclick: async () => {
-      try { const p = await pickFolder(`Choose the project (repo) for ${c.id}`, project); if (p) { project = p; drawWhere(); } }
+      try { const p = await pickFolder(`Choose the project (repo) for ${c.id}`, project); if (p) { project = p; drawWhere(); loadPool(); } }
       catch (e) { alert(e.message || e); }
     } }, "Choose…");
     const chooseWork = el("button", { type: "button", id: o.item + "-workdir", onclick: async () => {
-      try { const p = await pickFolder(`Choose the folder ${c.id} is worked on in`, workdir || project); if (p) { workdir = p; drawWhere(); } }
+      try { const p = await pickFolder(`Choose the folder ${c.id} is worked on in`, workdir || project); if (p) { workdir = p; drawWhere(); loadPool(); } }
       catch (e) { alert(e.message || e); }
     } }, "Choose…");
-    const clearWork = el("button", { type: "button", onclick: () => { workdir = ""; drawWhere(); } }, "Clear");
+    const clearWork = el("button", { type: "button", onclick: () => { workdir = ""; drawWhere(); loadPool(); } }, "Clear");
     name.addEventListener("input", drawWhere);
     const begin = mode => async () => {
       go.disabled = goLite.disabled = true;
       result.replaceChildren(el("span", { class: "dim small" }, "Making the feature and opening a session…"));
       tell("allow-foreground");
       try {
-        const r = await c.send({ id: c.id, project, workdir, mode, feature: name.value.trim(), ...(own.checked ? { isolate: true } : {}), ...picker.fields() });
+        const r = await c.send({ id: c.id, project, workdir, mode, feature: name.value.trim(), ...(own.checked ? { isolate: true, ...(slotSel.value && !slotRow.hidden ? { slot: slotSel.value } : {}) } : {}), ...picker.fields() });
         if (r.ok) {
           c.close(true);
           location.hash = featureHref(r.feature); // its page shows the session as it runs
@@ -587,13 +611,14 @@ function makeTaskBoard(o) {
     go.addEventListener("click", begin("full"));
     goLite.addEventListener("click", begin("lite"));
     drawWhere();
+    loadPool();
     return el("div", { class: "start-panel" },
       el("div", { class: "start-title" }, `Start a workflow from this ${o.noun}`),
       el("label", { class: "jname" }, el("span", { class: "dim small" }, "Feature folder"), name),
       el("div", { class: "project-line small" }, "Linked project (the session runs here) ", where, " ", choose),
       el("div", { class: "project-line small" }, "Works in ", whereWork, " ", chooseWork, " ", clearWork),
-      el("label", { class: "own-worktree small" }, own, " Own worktree (a branch in a free slot of the worktree pool, so other workflows can run at the same time)"),
-      el("div", { class: "small dim" }, "Only the worktree pool makes worktrees (create one on the Worktrees page). Off unless you tick it: unticked, the branch is made in the checkout as it is."),
+      el("div", { class: "own-worktree small" }, el("label", {}, own, " Own worktree (a branch in a free slot of the worktree pool, so other workflows can run at the same time)"), slotRow),
+      el("div", { class: "small dim" }, "Only the worktree pool makes worktrees (create one on the Worktrees page). Ticked for you when the project has a pool; unticked, the branch is made in the checkout as it is."),
       picker.node,
       el("div", { class: "small dim" }, `Writes the ${o.noun} into the feature's folder as its Ticket and opens a new Claude session. `,
         "Start workflow plans it in full; Start lite writes a one-page brief for a small change. ",

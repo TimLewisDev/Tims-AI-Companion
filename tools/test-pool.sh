@@ -44,6 +44,20 @@ check "a dirty slot isn't released" 1 bash "$POOL" release feat/one
 rm "$T/u.pool/slot-1/new.txt"
 check "a clean slot is released" 0 bash "$POOL" release feat/one
 has "and its branch is kept" "feat/one is kept"
+# a Start may pick the slot (worktreepool.Pool.claim(slot=...))
+pyslot() { (cd "$T/u" && PYTHONPATH="$here/../plugins/tatty/app" python -I -c "
+import sys; sys.path.insert(0, sys.argv[1])
+import worktreepool as w
+try:
+    print(w.Pool(sys.argv[2]).claim(sys.argv[3], slot=sys.argv[4])['slot'])
+except w.PoolError as e:
+    print('error', e.code, e); sys.exit(e.code)
+" "$here/../plugins/tatty/app" "$T/u" "$1" "$2"); }
+check "a claimed slot can't be picked" 4 pyslot feat/pick slot-2
+check "a slot that isn't there can't be picked" 4 pyslot feat/pick slot-9
+check "a free slot can be picked" 0 pyslot feat/pick slot-1
+has "and it is that slot" "slot-1"
+check "and released again" 0 bash "$POOL" release feat/pick
 check "max stops add" 0 bash "$POOL" config max=3
 check "add past max is refused" 1 bash "$POOL" add
 check "a claimed slot isn't removed" 1 bash "$POOL" remove slot-2

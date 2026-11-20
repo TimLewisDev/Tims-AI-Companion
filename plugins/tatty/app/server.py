@@ -4585,10 +4585,23 @@ def pool_summary(repo):
     return pool.counts() if pool else {}
 
 
+def pool_choices(project, workdir=""):
+    """The slots a Start in this project could take ({"has": False} when its repo has no pool), from files alone:
+    each slot with whether it is free, and what holds it. A slot a pool job is working on is not offered."""
+    repo = repo_of(project, workdir) if project or workdir else ""
+    pool = pool_of(repo) if repo else None
+    if not pool:
+        return {"has": False, "repo": repo}
+    busy, claims = pool_busy_slots(repo), pool.state()["claims"]
+    slots = [{"slot": n, "free": n not in claims and n not in busy, "branch": (claims.get(n) or {}).get("branch", ""),
+              "owner": (claims.get(n) or {}).get("owner", "")} for n in pool.slot_names()]
+    return {"has": bool(slots), "repo": repo, **pool.counts(), "slots": slots}
+
+
 NO_POOL_TEXT = "This project has no worktree pool, and only the pool makes worktrees: create one on the Worktrees page, then Start again."
 
 
-def make_worktree(feature, repo, here, base, old, wanted=""):
+def make_worktree(feature, repo, here, base, old, wanted="", slot=""):
     """Give a feature a new branch in a worktree: a ready slot of the repo's pool, from `base` (else the branch the repo
     is on). Only the pool makes worktrees; with none, nothing is made. The repo's own checkout is not touched.
     (ok, info); BRANCH_LOCK held."""
@@ -4601,7 +4614,7 @@ def make_worktree(feature, repo, here, base, old, wanted=""):
     pool = pool_of(repo)
     if pool:  # a ready slot: the branch is a switch, and a big untracked cache is already warm
         try:
-            got = pool.claim(name, base=base, owner=feature, skip=pool_busy_slots(repo))
+            got = pool.claim(name, base=base, owner=feature, skip=pool_busy_slots(repo), slot=slot)
         except worktreepool.PoolError as e:
             return False, {"error": f"{e} (the worktree pool of {repo})", **({"poolFull": True} if e.code == 4 else {})}
         rec = {"repo": repo, "branch": name, "base": base, "worktree": got["path"], "created": time.time(), "merge": {}, "pooled": True,
@@ -4612,7 +4625,7 @@ def make_worktree(feature, repo, here, base, old, wanted=""):
     return False, {"error": NO_POOL_TEXT, "noPool": True}
 
 
-def ensure_branch(folder, project, workdir, fresh, isolate=None, base="", wanted=""):
+def ensure_branch(folder, project, workdir, fresh, isolate=None, base="", wanted="", slot=""):
     """Give a feature its branch, in its own worktree if asked, before a session starts. (ok, info):
     by default (isolate not True) the first Start of an unstarted feature makes the branch in the
     repo's own checkout, and a later Start switches it back, because a worktree is a whole second
@@ -4632,7 +4645,7 @@ def ensure_branch(folder, project, workdir, fresh, isolate=None, base="", wanted
         if mine and rec.get("worktree"):
             return attach_worktree(feature, repo, rec)
         if isolate is True:
-            return make_worktree(feature, repo, here, base or (rec["branch"] if mine else ""), rec, wanted)
+            return make_worktree(feature, repo, here, base or (rec["branch"] if mine else ""), rec, wanted, slot)
         if mine:
             want = rec["branch"]
             if here == want:
@@ -6733,7 +6746,8 @@ def start_session(state, folder, body):
     isolate = body["isolate"] if isinstance(body.get("isolate"), bool) else None
     ok_branch, branch = (True, {}) if review else ensure_branch(folder, project, workdir, bool(rows) and rows[0].get("phase") == "empty",
                                                                  isolate, str(body.get("base") or "").strip(),
-                                                                 str(body.get("branchName") or "").strip())
+                                                                 str(body.get("branchName") or "").strip(),
+                                                                 str(body.get("slot") or "").strip())
     if not ok_branch:
         return 400, {"error": branch["error"]}
     if branch.get("worktree"):  # the session runs in the feature's worktree: the project's folder as it is there
@@ -9976,7 +9990,7 @@ def card_start_session(state, feature, name, doc, said, note, project, workdir, 
         go = {"row": 0 if first else "workflow", "values": values}
     code, answer = start_session(state, feature, {**go, "project": project, "workdir": workdir, **model_fields(body),
                                                   **({"isolate": body["isolate"]} if isinstance(body.get("isolate"), bool) else {}),
-                                                  **{k: body[k].strip() for k in ("base", "branchName")
+                                                  **{k: body[k].strip() for k in ("base", "branchName", "slot")
                                                      if isinstance(body.get(k), str) and body[k].strip()}})
     return code, {**answer, "feature": name, "ticket": doc.name}
 
@@ -12772,7 +12786,7 @@ def intake_start_work(state, c, body):
     if task["kind"] == "bug":
         extra = {"project": project, "workdir": workdir, **model_fields(body),
                  **({"isolate": body["isolate"]} if isinstance(body.get("isolate"), bool) else {}),
-                 **{k: body[k].strip() for k in ("base", "branchName") if isinstance(body.get(k), str) and body[k].strip()}}
+                 **{k: body[k].strip() for k in ("base", "branchName", "slot") if isinstance(body.get(k), str) and body[k].strip()}}
         code, answer = start_session(state, feature, {"begin": "lite", "kind": "bug", "idea": what + (f". {note}" if note else ""), **extra})
         answer = {**answer, "feature": name, "ticket": doc.name}
     else:
@@ -13778,6 +13792,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/diagram":
             code, answer = diagram_view(st, q)
             return self.send(code, answer)
+        if path == "/api/pool/choices":  # the Start panels: the slots a Start could take, for the repo the project (or work folder) is in
+            return self.send(200, pool_choices(q.get("project", [""])[0].strip(), q.get("workdir", [""])[0].strip()))
         if path == "/api/pool":
             POOL_EVENTS[0] = st
             code, answer = pool_view()

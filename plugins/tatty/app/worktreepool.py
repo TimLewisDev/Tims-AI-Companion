@@ -333,7 +333,7 @@ class Pool:
                 return slot
         raise PoolError(f"{what} isn't a slot or a claimed branch of this pool.")
 
-    def claim(self, branch, base="", owner="", skip=()):
+    def claim(self, branch, base="", owner="", skip=(), slot=""):
         """Take a free slot for `branch`. Slots named in `skip` (being made, mended or freed just now) are not taken."""
         self.need()
         if not branch or branch.startswith("-") or git(self.repo, "check-ref-format", "--branch", branch, check=False)[0] != 0:
@@ -344,7 +344,10 @@ class Pool:
         free = [n for n in self.slot_names() if n not in claims and n not in skip and self.is_clean(self.slot_path(n))]
         if not free:
             raise PoolError("No slot is free: add one (add), or release one.", 4)
-        name = free[0]
+        if slot and slot not in free:
+            raise PoolError(f"{slot} can't be taken: " + ("it isn't a slot of this pool." if slot not in self.slot_names() else
+                            "it is in use, being worked on, or has uncommitted files."), 4)
+        name = slot or free[0]
         self.fetch()
         ref = self.base_ref(base)
         path = self.slot_path(name)
