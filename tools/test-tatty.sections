@@ -12,7 +12,7 @@ notoolbox	-	2
 clone	-	13
 selfupdate	-	3
 views	-	7
-features	-	90
+features	views	90
 editdoc	-	8
 newfeature	-	2
 project	features	27
@@ -41,7 +41,7 @@ stories	tasks	196
 whiteboards	features,project	7
 models	features,project	324
 llms	features,project	289
-chats	-	33
+chats	features	33
 intake	features	40
 compactchat	-	3
 archive	tasks	25

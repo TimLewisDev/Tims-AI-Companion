@@ -493,6 +493,7 @@ function onEvent(ev) {
   feedEvent(ev);
   // after the feed, so an answer is already recorded when a session panel hears of it
   document.dispatchEvent(new CustomEvent("tt-event", { detail: ev }));
+  if (ev.type === "models") document.dispatchEvent(new CustomEvent("tt-models-changed", { detail: ev }));
 }
 
 // ------------------------------------------------------- what is calling

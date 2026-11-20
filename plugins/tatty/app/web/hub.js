@@ -10,6 +10,10 @@
 "use strict";
 
 let hubDraw = 0;
+let hubLlmRefresh = null;
+let hubCatalogRefreshTimer = 0;
+let hubCatalogRefreshPending = false;
+let hubCatalogRefreshRunning = false;
 
 // Where the window goes once a project is open: the mode's home page, or the landing page.
 function leaveHub() {
@@ -139,56 +143,128 @@ function hubNewForm(data, msg, redraw) {
   el("button", { type: "submit", class: "primary" }, "Create and open"));
 }
 
-// The "Connect an LLM" card. Tatty needs no LLM to run; the agentic features do. Per tool:
-// install (winget), sign in (the tool's own login in a terminal), then connect.
+// The "Connect an LLM" card. Tatty needs no LLM to run; the agentic features do.
 async function hubLlmCard(msg, firstRun) {
   const card = el("div", { class: "card hub-llm", id: "hub-llm" });
   let timer = 0;
   const say = (text, bad) => { msg.className = "home-note small" + (bad ? " st missing" : " dim"); msg.textContent = text; };
+  const actionInfo = {
+    install: { label: "Install", path: "/api/llm-setup", action: "install", title: "Install it with winget" },
+    "sign-in": { label: "Sign in", path: "/api/llm-setup", action: "signin", title: "Opens a terminal window running the tool's own sign-in" },
+    connect: { label: "Connect", path: "/api/llms", action: "connect", title: "Let Tatty use it" },
+    disconnect: { label: "Disconnect", path: "/api/llms", action: "disconnect" },
+    refresh: { label: "Refresh", path: "/api/llms", action: "refresh" }
+  };
+  const readInventory = async () => {
+    const [inventory, setup] = await Promise.all([
+      loadModels(true),
+      api("/api/llm-setup", { action: "check" })
+    ]);
+    return { inventory, setup };
+  };
   const act = async (action, provider, busy) => {
+    const operation = actionInfo[action];
+    if (!operation) return;
     say(busy || "Working…");
     try {
-      const got = await api("/api/llm-setup", { action, provider });
-      say(got.said || "");
-      draw(got);
+      const result = await api(operation.path, { action: operation.action, provider });
+      const { inventory, setup } = await readInventory();
+      say(result.said || inventory.said || "");
+      draw(inventory, setup);
     } catch (e) { say(String(e.message || e), true); }
   };
-  const row = t => {
-    const job = t.job;
+  const row = (provider, setupTools) => {
+    const setup = setupTools.get(provider.provider);
+    const job = setup && setup.job;
     const running = job && job.status === "running";
-    const state = t.connected ? el("span", { class: "chip now" }, "connected")
-      : t.installed ? el("span", { class: "dim small" }, t.signedIn === false ? "installed · not signed in" : t.signedIn ? "installed · signed in" : "installed")
-      : el("span", { class: "dim small" }, "not installed");
-    const btn = (label, action, cls, title) => el("button", { type: "button", class: cls || "", id: `llm-${action}-${t.provider}`, title: title || "",
-      onclick: () => act(action, t.provider, label + "…") }, label);
-    const buttons = [];
-    if (!t.installed) buttons.push(running ? el("button", { type: "button", disabled: true, id: `llm-install-${t.provider}` }, "Installing…") : btn("Install", "install", "primary", "Install it with winget"));
-    else if (t.connected) { if (t.provider !== "claude") buttons.push(btn("Disconnect", "disconnect")); }
-    else {
-      if (t.signedIn !== true) buttons.push(btn("Sign in", "signin", t.signedIn === false ? "primary" : "", "Opens a terminal window running the tool's own sign-in"));
-      buttons.push(btn("Connect", "connect", t.signedIn === true ? "primary" : "", "Let Tatty use it"));
-    }
-    return el("div", { class: "hub-llm-row", "data-llm": t.provider },
-      el("strong", {}, t.label), state, el("div", { class: "actions" }, ...buttons),
+    const state = provider.state === "connected" ? el("span", { class: "chip now" }, "connected")
+      : provider.state === "missing" ? el("span", { class: "st missing small" }, "unavailable · connected account, local CLI missing")
+      : setup && setup.installed ? el("span", { class: "dim small" },
+        setup.signedIn === false ? "installed · not signed in" : setup.signedIn === true ? "installed · signed in" : "installed")
+      : el("span", { class: "dim small" }, provider.state === "available" ? "installed · not connected" : provider.state || "unknown");
+    const buttons = (provider.actions || []).filter(action => actionInfo[action]).map(action => {
+      const operation = actionInfo[action];
+      const primary = action === "install" || (action === "sign-in" && setup && setup.signedIn === false)
+        || (action === "connect" && setup && setup.signedIn === true);
+      if (action === "install" && running) {
+        return el("button", { type: "button", disabled: true, id: `llm-install-${provider.provider}` }, "Installing…");
+      }
+      return el("button", { type: "button", class: primary ? "primary" : "",
+        id: `llm-${operation.action}-${provider.provider}`, title: operation.title || "",
+        onclick: () => act(action, provider.provider, operation.label + "…") }, operation.label);
+    });
+    return el("div", { class: "hub-llm-row", "data-llm": provider.provider },
+      el("strong", {}, (setup && setup.label) || provider.provider), state, el("div", { class: "actions" }, ...buttons),
       job && job.status === "error" ? el("div", { class: "st missing small hub-llm-note" }, job.message) : "");
   };
-  function draw(d) {
+  function draw(d, setup) {
     clearTimeout(timer);
-    const running = d.tools.some(t => t.job && t.job.status === "running");
-    if (running && card.isConnected) timer = setTimeout(() => act("check", "", ""), 3000);
+    const tools = new Map((setup && setup.tools || []).map(t => [t.provider, t]));
+    const running = [...tools.values()].some(t => t.job && t.job.status === "running");
+    if (running && card.isConnected) timer = setTimeout(async () => {
+      try {
+        const got = await readInventory();
+        draw(got.inventory, got.setup);
+      } catch (e) { say(String(e.message || e), true); }
+    }, 3000);
+    const messages = [
+      setup && setup.toolbox === false
+        ? el("p", { class: "st missing small" }, "The Tatty toolbox isn't installed, so connecting is unavailable. Run the installer's Repair.")
+        : "",
+      d.compatible === false && (!setup || setup.toolbox !== false)
+        ? el("p", { class: "st missing small" }, d.error || "This toolbox is too old to connect LLMs. Update the core plugin.")
+        : d.compatible !== false && (!d.catalog || !d.catalog.usable)
+          ? el("p", { class: "st missing small" }, d.error || "The model catalog is unavailable. Refresh a provider and try again.")
+          : d.compatible !== false && Array.isArray(d.models) && !d.models.length
+            ? el("p", { class: "dim small" }, "The model catalog is empty. Connect a provider and refresh it.")
+            : "",
+      setup && !setup.winget ? el("p", { class: "dim small" }, "winget isn't available here: install a tool yourself.") : ""
+    ];
     card.replaceChildren(
       el("h3", {}, firstRun ? "Step 1: connect an LLM (optional for now)" : "LLMs"),
       el("p", { class: "dim small" }, "Tatty runs without one. Agentic features (writing designs, running tasks, headless runs) use an LLM tool signed in on this machine. Install one, sign in, then connect it."),
-      !d.toolbox ? el("p", { class: "st missing small" }, "The Tatty toolbox isn't installed, so connecting is unavailable. Run the installer's Repair.") : "",
-      !d.winget ? el("p", { class: "dim small" }, "winget isn't available here: install a tool yourself, then press Check again.") : "",
-      el("div", { class: "hub-llm-list" }, d.tools.map(row)),
-      el("div", { class: "actions" }, el("button", { type: "button", id: "llm-check", onclick: () => act("check", "", "Checking…") }, "Check again")));
+      ...messages,
+      el("div", { class: "hub-llm-list" }, (d.providers || []).map(provider => row(provider, tools))));
   }
-  try { draw(await api("/api/llm-setup")); } catch (e) {
+  hubLlmRefresh = async () => {
+    if (!card.isConnected || !pageEls.hub.classList.contains("on")) return;
+    if (card.contains(document.activeElement)) { hubCatalogRefreshPending = true; return; }
+    try {
+      const { inventory, setup } = await readInventory();
+      if (card.isConnected && !card.contains(document.activeElement)) draw(inventory, setup);
+      else hubCatalogRefreshPending = true;
+    } catch (e) { say(String(e.message || e), true); }
+  };
+  try {
+    const { inventory, setup } = await readInventory();
+    draw(inventory, setup);
+  } catch (e) {
     card.replaceChildren(el("p", { class: "st missing small" }, "LLM setup didn't load: " + String(e.message || e)));
   }
   return card;
 }
+
+function queueHubCatalogRefresh() {
+  if (!pageEls.hub.classList.contains("on")) return;
+  hubCatalogRefreshPending = true;
+  clearTimeout(hubCatalogRefreshTimer);
+  hubCatalogRefreshTimer = setTimeout(async () => {
+    if (!hubCatalogRefreshPending || hubCatalogRefreshRunning || !hubLlmRefresh) return;
+    if (document.activeElement && document.activeElement.closest("#hub-llm")) return;
+    hubCatalogRefreshPending = false;
+    hubCatalogRefreshRunning = true;
+    try { await hubLlmRefresh(); }
+    finally {
+      hubCatalogRefreshRunning = false;
+      if (hubCatalogRefreshPending && (!document.activeElement || !document.activeElement.closest("#hub-llm"))) queueHubCatalogRefresh();
+    }
+  }, 120);
+}
+
+document.addEventListener("tt-models-changed", queueHubCatalogRefresh);
+document.addEventListener("focusout", () => {
+  if (hubCatalogRefreshPending) queueHubCatalogRefresh();
+});
 
 // The projects' windows are opened and closed on their own, so while the Hub is on show it looks which are
 // open every few seconds, and draws the cards again only if that changed (and not while the person is in the
