@@ -689,10 +689,12 @@ folders and Claude Code's own install records; see
   - The model and effort come from the picker on the Start panel (also on a
     Jira ticket's and a task's Start), which starts on the toolbox's `session`
     setting. A running session can't be switched, so they are forced only at
-    launch. Only models the toolbox marks runnable are accepted (today claude's);
+    launch. Only models the toolbox marks runnable are accepted (today claude's;
+    Codex and Copilot session execution is deferred);
     the feature's chats then answer on the same model (`session-models.json`).
     Settings holds the connections (`llms.sh`), the session default and the
-    step models (`model-config.sh`).
+    step models (`model-config.sh`); "Model settings" below says how a choice is
+    named, defaulted, migrated and refused.
   - It sets `TATTY_SESSION=<tag>` in the launcher script, because a new
     Windows Terminal tab doesn't inherit environment variables.
   - From a checkout it also passes `--plugin-dir`, so the new session loads the
@@ -1025,8 +1027,8 @@ contract's "Chats" section; how it is built:
   (`conversation_exists`), `--resume <uuid>` after, so it outlives a restart.
   `--tools Read,Glob,Grep,Skill` with the same allowed and `--permission-mode
   dontAsk`; `--setting-sources user`, `--strict-mcp-config` (no MCP servers),
-  `--max-budget-usd` (`TATTY_CHAT_BUDGET`, 2), `--model` from `chatModel` when
-  set; `--plugin-dir` for Tatty from a checkout (for `/tatty:side-chat`) and for
+  `--max-budget-usd` (`TATTY_CHAT_BUDGET`, 2),   `--model` from `chatModel` (default `claude:sonnet`, given to
+    `claude` as its bare id); `--plugin-dir` for Tatty from a checkout (for `/tatty:side-chat`) and for
   the toolbox plugins found only in a checkout (`from_checkout`, shared with the
   stories run). `TATTY_SESSION` and `TATTY_JOIN` are stripped, so the mod there
   stays out. The first message of a side chat is `/tatty:side-chat`, the context
@@ -1345,7 +1347,7 @@ doesn't use Jira, Trello or the like. The toolbox has no part in it.
   that doesn't exist yet and a hand edit during the run is the usual rev
   conflict. Criteria are written under a `###` heading inside the Description,
   since the Description ends at the next `##` and the form edits only it. Stop,
-  closing the panel and leaving the page end the run. `TATTY_TASKS_MODEL`,
+  closing the panel and leaving the page end the run.   `tasksModel` (default `claude:haiku`),
   `TATTY_TASKS_BUDGET`, `TATTY_TASKS_BUDGET_PROJECT` and `TATTY_TASKS_TIMEOUT`
   tune it.
 - **Completed:** the total, this week, this month, the best week and the streak
@@ -1565,7 +1567,7 @@ written but through `bug.sh` and `test.sh`; the model only drafts.
   with a filter (Open, All, or one status). **New bug** is at the top.
 - **A bug** (`#qa/bug/new`, `#qa/bug/<ID>`). The tester describes it in their
   own words, and **Draft it with Claude** (`POST /api/qa/bug/draft`) fills the
-  form: a headless `claude -p` with no tools (haiku, `TATTY_QA_MODEL`), whose
+  form: a headless `claude -p` with no tools (`claude:haiku`, the `qaModel` setting), whose
   system prompt asks for one JSON object (title, severity, summary, steps,
   expected, actual, environment, evidence, and `notStated`, the facts the
   description left out, shown as chips under the box). The draft is a form
@@ -1580,8 +1582,8 @@ written but through `bug.sh` and `test.sh`; the model only drafts.
   project's closest. The new key is kept on the bug (`bug.sh set jira`).
 - **A feature's plan** (`#qa/test/<feature>`, from the features Tatty lists).
   With no areas it offers **Break it into areas with Claude**: a headless run
-  that may read the feature's own documents (Read, Glob, Grep; haiku is not
-  the default here: `TATTY_QA_MODEL_PLAN`, budget `TATTY_QA_BUDGET_PLAN`) and
+  that may read the feature's own documents   (Read, Glob, Grep; the `qaPlanModel` setting, `claude:haiku` unless
+    changed, budget `TATTY_QA_BUDGET_PLAN`) and
   answers with areas, items and the things the documents don't say. The server
   writes them through `test.sh`, as a **Draft**, and the page edits them from
   there (add an area, add an item, edit, remove). **Plan it in a Claude
@@ -1739,6 +1741,61 @@ unchanged greyed.
 - **Links:** with more than 40 boxes drawn each keeps its three strongest links, and hovering or clicking a box
   shows all of its own (the rest step back); a link with neither end in the group opened last is faint; counts
   show on a hovered box's links only. Legend chips turn kinds off. Search marks the boxes it finds; Enter frames them.
+
+## Model settings
+
+Every model Tatty runs is chosen in Settings and checked on the server, not only
+in the page. The policy lives in one region of `server.py`; Settings, the Hub and
+every picker read the same provider and model state from it.
+
+- **Identity.** A choice is `provider:model-id` (`claude:sonnet`) in settings, API
+  payloads and the toolbox's configuration. The same id from two providers is two
+  choices, grouped by provider in the pickers. Only at the point a Claude process
+  starts is it cut down to the bare native id; any other provider is refused there.
+  Models of a connected provider that Tatty can't run yet are listed, disabled.
+  Running Codex or Copilot sessions is deferred, not shipped.
+- **Providers.** Rows and buttons come from `llms.sh status --tsv` and each row's
+  supported-action IDs (`install`, `sign-in`, `connect`, `disconnect`, `refresh`),
+  each mapped to a fixed action. A connected provider with no models still shows.
+  Enabling is Tatty's own `providerEnabled` map in settings.json (no key means on),
+  separate from connection; a toggle patches one key under the shared settings
+  lock so a stale tab can't undo another. Only connected, enabled providers are
+  offered. Turning one off leaves running sessions and their steps alone.
+- **Defaults and ownership.** Each surface has its own default, used when its
+  choice is blank: Start and sessions `claude:sonnet`, kept by the toolbox in its
+  `session` role; chat (`chatModel`) `claude:sonnet`; Jira (`jiraModel`) and the
+  helpers `claude:haiku`. The helpers are Tatty settings, with the same name in the
+  API: `storiesModel` (User Stories), `tasksModel` (writing a task), `qaModel`
+  (drafting a bug) and `qaPlanModel` (breaking a plan into areas). Settings has a
+  picker for each, as it has for the family versions.
+- **Migration.** Each owner migrates its own values once. The toolbox qualifies its
+  bare values; Tatty does its settings and remembered choices. A bare value is
+  qualified only when exactly one catalog model matches it. The old
+  `TATTY_STORIES_MODEL`, `TATTY_TASKS_MODEL`, `TATTY_QA_MODEL` and
+  `TATTY_QA_MODEL_PLAN` are read once the same way: a unique match becomes the
+  setting, anything else leaves the surface's default. After that the environment
+  is never read for a model. A value that can't be mapped stays visible as
+  unresolved until it is chosen again.
+- **The catalog.** It is rescanned on demand after 15 seconds, one scan at a time
+  per process. There are no built-in rows: a missing script, a failed scan or an
+  empty result is shown as an error. If a scan fails after a good one, the last rows
+  stay on screen for information and every process blocks new choices and starts
+  until a scan succeeds; a cold start counts as stale until the first scan. A
+  settings lock and a generation marker in Tatty's home tell the other servers,
+  which look at most every second and send the page the usual event, so open
+  Settings, Hub and picker views refetch.
+- **The toolbox first.** Tatty needs `llms.sh capabilities --tsv` to list
+  `provider-model-config-v1` and `provider-actions-v1` (see toolbox-contract.md).
+  An older toolbox is blocked with "update the core plugin", and no model or
+  provider feature appears.
+- **Refusals.** A new Start, chat turn, Jira run, helper run, compact-chat turn or
+  intake is checked before anything is recorded: no folder, chat, message, summary
+  or run is made if it fails. It is refused with a message saying what to do when
+  the provider is disabled, disconnected or `missing`, the model is not runnable,
+  the choice is unresolved, the catalog is stale, or a blank choice has no usable
+  default. Nothing is switched to another model or provider. Family pins are kept
+  while Claude is unavailable and shown as unavailable; changing one, and any
+  operation that needs `family env`, is blocked.
 
 ## Tests
 

@@ -391,7 +391,7 @@ toolbox has no part in it. What it does, and the limits it keeps:
   `transitionJiraIssue` alone. The run loads only that server
   (`--strict-mcp-config`, its entry copied from Claude Code's
   `~/.claude.json`), with a short system prompt and no slash commands, on a
-  small model (`jiraModel`, `haiku`). That keeps each turn's context to about
+  small model (`jiraModel`, `claude:haiku`). That keeps each turn's context to about
   16k tokens, most of them cached: a board refresh comes to about 60k over its
   turns, about $0.04. Without that entry the run loads the person's servers as
   any session would.
@@ -466,8 +466,9 @@ has no part in it:
   headless `claude -p` write a task's Description from its title and a rough
   line (`--tools ""`, or `Read,Glob,Grep` with `--add-dir <folder>` when the
   person lets it read the project; `--setting-sources user`, no session kept).
-  The answer goes to the page, not to the file. Env: `TATTY_TASKS_MODEL` (default
-  haiku for the no-tools run), `TATTY_TASKS_BUDGET` (default 1),
+  The answer goes to the page, not to the file. The model is the `tasksModel`
+    setting (default `claude:haiku`; the old `TATTY_TASKS_MODEL` is imported once, see
+    design.md). Env: `TATTY_TASKS_BUDGET` (default 1),
   `TATTY_TASKS_BUDGET_PROJECT` (default 2) and `TATTY_TASKS_TIMEOUT`.
 - **One document written for the toolbox.** **Start workflow** makes
   `<root>/features/<ID>` (refused if it exists and isn't empty) and
@@ -518,9 +519,62 @@ scripts, on a person's click, by argv:
 | `tt-common/scripts/model-config.sh family list --tsv`, `family set <family> <id\|->`, `family env`; `tt-connections/scripts/llms.sh versions --tsv` | the version each family name (sonnet, opus, haiku, fable) means: the Model versions table under the Step models, and the `ANTHROPIC_DEFAULT_<FAMILY>_MODEL=<id>` lines Tatty exports when it starts a session (and a headless `claude -p`) |
 
 The Start panels offer the connected, runnable models, starting from the
-`session` setting. A toolbox without `llms.sh` is treated as offering Claude's
-four aliases (sonnet, opus, haiku, fable) and nothing else; one without
-`model-config.sh list --tsv` shows no step table.
+`session` setting. Tatty has no built-in model list: a toolbox without `llms.sh`,
+with a catalog that can't be scanned, or with one that scans to no models offers
+nothing, and Settings says why; one without `model-config.sh list --tsv` shows no
+step table.
+
+**The versioned contract.** Tatty uses the model settings and provider actions
+only when `tt-connections/scripts/llms.sh capabilities --tsv` prints both of these
+exact tokens, one per line:
+
+| Token | Meaning |
+|---|---|
+| `provider-model-config-v1` | model configuration is provider-qualified and checked against the runnable catalog |
+| `provider-actions-v1` | provider status rows carry the supported-actions field |
+
+A missing script, a failed command, a missing token or an unsupported version
+(say `provider-actions-v2` alone) makes the toolbox too old: Tatty shows "update
+the core plugin" and offers no model or provider feature. It never infers support
+from provider status or catalog rows.
+
+**Supported actions.** `llms.sh status --tsv` keeps its earlier columns and
+appends one last field per provider: the actions it supports, comma-separated, or
+`-` for none. The only IDs are `install`, `sign-in`, `connect`, `disconnect` and
+`refresh`. Tatty maps each to a fixed button and toolbox verb and shows only the
+ones listed, so Claude has Disconnect when its row says so; it never runs command
+text taken from the metadata. A provider reported `missing` (connected, but its
+CLI is gone) is not available for models or new work until the CLI is installed.
+
+**Provider-qualified identity.** A model choice is one string,
+`provider:model-id` (`claude:sonnet`), in `model-config.sh` arguments and output,
+the role registry, the shipped modes and the family pins. The same id from two
+providers is two choices. `set`, `use` and `args` accept a value only if the
+runnable catalog has that exact row; there is no static alias fallback. The
+runtime-facing `get`, `args`, `stage-note` and `family env` give Claude choices as
+the bare native id and refuse any other provider. The shipped `session` role is
+`claude:sonnet`.
+
+**Migration and failure.** A saved bare value is qualified only when exactly one
+catalog row matches it. One that matches none or several stays visible in `list`
+as unresolved; `get`, `args` and `stage-note` fail with a message asking for a new
+choice, and `save` won't copy it into a mode. `model-config.sh args` fails when
+there is no runnable catalog, and every caller stops with that message rather than
+launch `claude` without model flags.
+
+**Families.** `family set <family> claude:<id>` stores the qualified pin and
+`family list` shows it; `family env` prints only the bare id, and a non-Claude
+value is refused. While Claude is unavailable a pin is kept and shown as
+unavailable, `family set` is refused, and anything that needs `family env` (a
+Start, a headless run) is blocked.
+
+**Tatty's own choices.** The toolbox keeps only the `session` role and the step
+models. Tatty keeps the rest in its settings, in the same `provider:model-id`
+form, each checked against this catalog: `chatModel`, `jiraModel`, `storiesModel`,
+`tasksModel`, `qaModel` and `qaPlanModel`.
+
+Not part of this contract: running a Codex or Copilot session. Their models are
+listed, disabled, and stay that way until the toolbox can run them.
 
 `llms.sh models --tsv` may carry a sixth column, the scope: `any` for an alias,
 `session` for a specific version (Sonnet 5.5, Sonnet 4.5, ...), which `claude
