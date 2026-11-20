@@ -519,6 +519,17 @@ function llmSettings() {
         const listed = here.length ? here.map(m => m.id).join(", ") : "none";
         const buttons = (p.actions || []).filter(action => actionInfo[action]).map(action =>
           el("button", { type: "button", id: `llm-${action}-${p.provider}`, onclick: () => act(action, p.provider) }, actionInfo[action].label));
+        const enabled = el("input", { type: "checkbox", "aria-label": `Enable ${p.provider} in Tatty` });
+        enabled.checked = settingsNow.providerEnabled[p.provider] !== false;
+        enabled.addEventListener("change", async () => {
+          enabled.disabled = true;
+          try {
+            settingsNow = await api("/api/settings", { providerEnabled: { [p.provider]: enabled.checked } });
+            queueSettingsCatalogRefresh();
+          } catch (e) { enabled.checked = !enabled.checked; alert(e.message || e); }
+          finally { enabled.disabled = false; }
+        });
+        buttons.push(el("label", { class: "opt-row" }, enabled, "Enabled in Tatty"));
         return el("tr", { class: p.state === "connected" ? "current" : "", id: "llm-" + p.provider },
           el("td", {}, p.provider), el("td", {}, LLM_STATE[p.state] || p.state), el("td", { class: "dim small" }, p.version || "-"),
           el("td", { class: "dim small" }, `${listed}${here.some(m => !m.runnable) ? " (not yet runnable)" : ""}`),
