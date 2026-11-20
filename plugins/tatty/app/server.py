@@ -11354,7 +11354,7 @@ def chat_model_choice(state, feature):
     model, why = surface_model(state, "chatModel")
     if why:
         return None, why
-    return model_choice(state, model, started.get("effort", "") if started else "")
+    return model_choice(state, f"claude:{model}", started.get("effort", "") if started else "")
 
 
 def model_summary(state, c, model):
