@@ -246,7 +246,6 @@
 .sv-gate .stand p { margin: 0 0 12px; font-size: 15px; line-height: 1.5; }
 .sv-gate .stand .start-actions { margin-top: 8px; }
 .sv-gate .gate-done:last-child { margin-bottom: 0; }
-.sv-lines.first { margin: 0 0 6px; }
 .sv-gate .mr-gate { margin: 4px 0 8px; gap: 12px; }
 .sv-gate .mr-gate-sum { gap: 8px; }
 .sv-gate .mr-gate-chip { padding: 2px 12px; }

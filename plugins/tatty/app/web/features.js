@@ -1963,13 +1963,11 @@ function overview(f) {
     const stage = (s.name || "").split(" : ").pop();
     return el("div", { class: "sv-sess live-link" }, el("span", { class: "pulse" }), el("strong", { title: s.name }, stage || s.name), status, go);
   });
-  const sessionsFirst = lines.length > 0 && !act.node && !f.unitGate;
   const gate = el("section", { class: "card sv-gate" },
     el("h4", { class: "sv-gate-h" }, "Where it stands"),
     f.phase === "complete" ? el("div", { class: "sv-steps" }, reviewChips(f)) : "", // the stage tags sit right under the label
     f.toolbox ? "" : el("p", { class: "st missing" }, "Tatty can't find the TT toolbox, so it can't say where this feature stands."),
     unitGateCard(f), commitCard(f), // unitgate.js, commit.js
-    sessionsFirst ? el("div", { class: "sv-lines first" }, lines) : "", // a session is the one thing to press: it leads
     act.node,
     doneText ? el("p", { class: "gate-done", id: "gate-done" }, el("span", { class: "tick", "aria-hidden": "true" }, "✓"), doneText) : "",
     typeof mrGateButton === "function" ? mrGateButton(f) : "", // mr.js: the way to the Merge request page, whatever else is going on
@@ -1977,8 +1975,8 @@ function overview(f) {
     more.length ? el("details", { class: "more-options" }, el("summary", {}, "More options"), more) : "",
     !act.node && !f.unitGate && !doneText && !more.length && !lines.length && !rest.length ? el("p", { class: "dim" }, "Nothing to report.") : "",
     (f.rows || []).some(r => command(r)) ? projectLine(f, redraw) : "",
-    lines.length && !sessionsFirst && (act.node || f.unitGate || f.phase === "complete" || more.length) ? el("hr", { class: "sv-divider" }) : "", // the call to action ends here; the open sessions follow
-    lines.length && !sessionsFirst ? el("div", { class: "sv-lines" }, lines) : "");
+    lines.length ? el("hr", { class: "sv-divider" }) : "", // the call to action and the stage tags end here; the open sessions follow, set apart
+    lines.length ? el("div", { class: "sv-lines" }, lines) : "");
   // the drawers: today's cards, one click away
   const last = !going.length && sessions[0];
   const shown = going[0] || last;
