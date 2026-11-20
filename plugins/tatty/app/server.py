@@ -6687,6 +6687,8 @@ def start_session(state, folder, body):
     flags, why = session_model_choice(state, body)
     if flags is None:
         return 400, {"error": why}
+    model = "claude:" + flags[flags.index("--model") + 1]
+    effort = flags[flags.index("--effort") + 1] if "--effort" in flags else ""
     rows = workflow_rows(state, folder)
     begun = {}
     try:
