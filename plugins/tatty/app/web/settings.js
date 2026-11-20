@@ -674,7 +674,7 @@ function stepSettings() {
       if (!box.isConnected) { settingsCatalogRenderers.delete(refresh); return; }
       const values = new Map([...body.querySelectorAll("input, select, textarea")].map(control => [control.id, control.value]));
       now = { ...(modelConfig || now), inventory: freshInventory,
-        models: freshInventory.models || (modelConfig && modelConfig.models) || now.models };
+        models: (freshInventory.models || (modelConfig && modelConfig.models) || now.models).filter(m => m.scope !== "session") };
       draw();
       for (const [id, value] of values) {
         const control = [...body.querySelectorAll("input, select, textarea")].find(item => item.id === id);
