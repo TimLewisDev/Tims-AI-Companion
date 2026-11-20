@@ -39,7 +39,8 @@ class Hooks:
     """What the compact chat takes from the server."""
     home: Callable[[], Path]
     claude_path: Callable[[], str]
-    argv: Callable[[str], list]  # session id -> the claude command for one turn
+    preflight: Callable[[], tuple]  # (http code, {"model": native id} or {"error": why})
+    argv: Callable[[str, str], list]  # session id, native model -> the claude command for one turn
     git_bash_path: Callable[[], str]
     kill_tree: Callable[[object], None]
     step_label: Callable[[dict], str]  # a tool call -> a line for the page
@@ -152,6 +153,10 @@ class CompactChat:
         text = str(b.get("text", "")).strip()
         if not text or len(text) > MAX_MESSAGE:
             return 400, {"error": f"Say something (at most {MAX_MESSAGE} characters)."}
+        status, payload = self.hooks.preflight()
+        if status != 200:
+            return status, payload
+        model = payload["model"]
         claude = self.hooks.claude_path()
         if not claude:
             return 501, {"error": self.hooks.no_claude}
@@ -161,7 +166,7 @@ class CompactChat:
                 return 409, {"error": "The chat is still answering."}
             self.runs[key] = {"step": "Starting", "proc": None, "cancelled": False}
         c = self.change(project, lambda c: c["messages"].append({"role": "you", "text": text, "ts": time.time()}))
-        argv = self.hooks.argv(c["claudeSession"])
+        argv = self.hooks.argv(c["claudeSession"], model)
         if not read_only_argv(argv):
             with self.state.cond:
                 self.runs.pop(key, None)

@@ -76,9 +76,12 @@ skip the Hub. From a shell: `tatty.sh hub list`, `hub add --name N [--root DIR]
 
 ## What Tatty needs
 
-- **The TT toolbox,** installed (its `core` and `engineering` plugins). Tatty
-  shows the toolbox's workflow, so without it there's nothing to show. See the
-  toolbox's own install guide.
+- **The TT toolbox,** installed (its `core` and `engineering` plugins), and
+  updated first. Tatty shows the toolbox's workflow, so without it there's nothing
+  to show. Its model settings and provider actions need a toolbox whose
+  `llms.sh capabilities --tsv` lists `provider-model-config-v1` and
+  `provider-actions-v1`; with an older one Tatty blocks them and says to update
+  the core plugin, and offers no models. See the toolbox's own install guide.
 - **Claude Code** 2.1.275 or later. Tatty's Claude Code side is a plugin with a
   hooks module (a "mod").
 - **Python 3.8 or later** on the PATH. The window's server uses the standard
@@ -279,6 +282,27 @@ button's icon and restoring from that button are still checked by eye.
 A rebuild needs the running companion to stop first, because it won't build over
 its own locked exe: **tray → Quit Tatty**, or `tatty.sh close` and a few seconds
 for it to notice.
+
+## Models after you install
+
+- **Defaults.** A fresh install needs no setup: Start and sessions use
+  `claude:sonnet` (the toolbox's `session` setting), chats `claude:sonnet`, and
+  Jira and the helpers (`jiraModel`, `storiesModel`, `tasksModel`, `qaModel`,
+  `qaPlanModel`) `claude:haiku`. Settings changes any of them.
+- **Upgrading.** A saved bare model name is qualified (`sonnet` becomes
+  `claude:sonnet`) only if exactly one model in the catalog matches; otherwise it
+  stays in Settings marked unresolved until you choose again. If you set
+  `TATTY_STORIES_MODEL`, `TATTY_TASKS_MODEL`, `TATTY_QA_MODEL` or
+  `TATTY_QA_MODEL_PLAN`, each is imported once on a unique match, else the default
+  applies; after that, change them in Settings, because the variables are no
+  longer read.
+- **When something is unavailable.** Tatty refuses to start the work and says why,
+  and never picks another model for you: the provider is disabled in Settings,
+  disconnected or `missing` its CLI; the model can't be run by Tatty yet (Codex and
+  Copilot sessions are not supported); the catalog can't be scanned or went stale;
+  the saved choice is unresolved; or a blank choice has no usable default. Running
+  sessions are not interrupted. Fix it in Settings (connect, enable, choose a
+  model, refresh) and try again.
 
 ## Settings
 

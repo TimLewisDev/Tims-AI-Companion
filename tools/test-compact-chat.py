@@ -87,16 +87,18 @@ class State:
                         and e["project"] == Path(project).as_posix()])
 
 
-def worker(home, fake_dir, state, tools="Read,Glob,Grep,Skill", allowed=("Read", "Glob", "Grep", "Skill"), claude=True):
+def worker(home, fake_dir, state, tools="Read,Glob,Grep,Skill", allowed=("Read", "Glob", "Grep", "Skill"),
+           claude=True, preflight=None):
     script = Path(fake_dir) / "fake-claude.py"
 
-    def argv(sid):
+    def argv(sid, model):
         resumed = (Path(fake_dir) / ("conversation-" + sid)).exists()
         return [sys.executable, str(script), "-p", "--resume" if resumed else "--session-id", sid,
-                "--tools", tools, "--allowedTools", *allowed, "--permission-mode", "dontAsk"]
+                "--model", model, "--tools", tools, "--allowedTools", *allowed, "--permission-mode", "dontAsk"]
 
     hooks = compact_chat.Hooks(
-        home=lambda: Path(home), claude_path=lambda: sys.executable if claude else "", argv=argv,
+        home=lambda: Path(home), claude_path=lambda: sys.executable if claude else "",
+        preflight=preflight or (lambda: (200, {"model": "sonnet"})), argv=argv,
         git_bash_path=lambda: "", kill_tree=lambda p: p.kill(), step_label=lambda b: "Reading " + str(b["input"]["file_path"]),
         no_claude="No claude here.", timeout=60.0)
     return compact_chat.CompactChat(state, hooks)
@@ -161,6 +163,9 @@ def part_one():
         code, ans = w.say({"project": str(a), "text": "What is this?"})
         check("a message starts a turn", code == 202 and ans["busy"] is True, ans)
         check("the turn ends", wait_for(lambda: state.done(a) == 1))
+        first_runs = runs_of(fake)
+        check("the passing model is sent as a native ID",
+              bool(first_runs) and flag(first_runs[0]["args"], "--model") == "sonnet", first_runs)
         code, got = w.get(str(a))
         check("the message and the answer are kept",
               [(m["role"], m["text"]) for m in got["messages"]] == [("you", "What is this?"), ("claude", "It reads the README.")], got)
@@ -212,6 +217,19 @@ def part_one():
         missing = worker(home, fake, State(cwd=str(a)), claude=False)
         code, ans = missing.say({"project": str(a), "text": "Hi"})
         check("without claude it says so", code == 501 and ans["error"] == "No claude here.", ans)
+
+        blocked_state = State(cwd=str(a))
+        blocked = worker(home, fake, blocked_state,
+                         preflight=lambda: (409, {"error": "Choose an available model in Settings."}))
+        before_messages = blocked.get(str(a))[1]["messages"]
+        before_runs = len(runs_of(fake))
+        code, ans = blocked.say({"project": str(a), "text": "This must not be stored"})
+        check("a blocked model returns its actionable error",
+              code == 409 and ans["error"] == "Choose an available model in Settings.", ans)
+        check("a blocked turn leaves the saved chat unchanged",
+              blocked.get(str(a))[1]["messages"] == before_messages)
+        check("a blocked turn registers no run or child process",
+              not blocked.runs and len(runs_of(fake)) == before_runs)
 
         (fake / "slow").write_text("")
         code, ans = w.say({"project": str(a), "text": "Slowly"})

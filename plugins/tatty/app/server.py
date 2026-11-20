@@ -37,6 +37,7 @@ Exit: 0 ok, 1 not open, 2 usage, 5 no answer yet, 6 declined (ask in the termina
 """
 
 import collections
+import contextlib
 import copy
 import datetime
 import hashlib
@@ -351,10 +352,17 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      # the Jira board (see "Jira" below): what it shows, through which MCP server and model,
                      # on which site when the sign-in reaches several, and the project and work folder last started in
                      "jiraJql": "assignee = currentUser() AND sprint in openSprints() ORDER BY Rank",
-                     "jiraServer": "atlassian", "jiraModel": "haiku", "jiraSite": "", "jiraProject": "", "jiraWorkdir": "",
+                     "jiraServer": "atlassian", "jiraModel": "claude:haiku", "jiraSite": "", "jiraProject": "", "jiraWorkdir": "",
                      # chats (see "chats" below): who writes a side chat's summary of what it is about
-                     # (tatty: Tatty itself, no tokens; model: a small model), and the model chats use ("" Claude's own)
-                     "chatSummary": "tatty", "chatModel": "",
+                     # (tatty: Tatty itself, no tokens; model: a small model), and the model chats use
+                     "chatSummary": "tatty", "chatModel": "claude:sonnet",
+                     # the models of the other helpers (stories, task writing, QA bug and plan drafting)
+                     "storiesModel": "claude:haiku", "tasksModel": "claude:haiku",
+                     "qaModel": "claude:haiku", "qaPlanModel": "claude:haiku",
+                     # per provider (claude, copilot, codex): false once switched off in Tatty; no key means on
+                     "providerEnabled": {},
+                     # set once the model choices above and the old helper environment variables were carried over
+                     "modelsMigrated": False,
                      # branches (see "branches and merging" below): what a workflow's new branch name starts with
                      "branchPrefix": "feature/",
                      # the merge request page (see "the merge request page"): the model that looks into a comment ("" = sonnet)
@@ -376,13 +384,94 @@ def load_settings():
         stored = {}
     if not isinstance(stored, dict):
         stored = {}
-    return {k: stored[k] if isinstance(stored.get(k), type(v)) else v for k, v in SETTINGS_DEFAULTS.items()}
+    out = {k: stored[k] if isinstance(stored.get(k), type(v)) else v for k, v in SETTINGS_DEFAULTS.items()}
+    out["providerEnabled"] = {p: v for p, v in out["providerEnabled"].items() if p in PROVIDERS and isinstance(v, bool)}
+    return out
+
+
+QUALIFIED_MODEL = re.compile(r"(claude|copilot|codex):[A-Za-z0-9._:/-]+\Z")
+MODEL_KEYS = ("chatModel", "jiraModel", "storiesModel", "tasksModel", "qaModel", "qaPlanModel")
+
+
+def unresolved_models(settings):
+    """The model settings still holding a choice that names no provider (carried over from before, and not
+    matched to one model): they stay as they are until chosen again."""
+    return [k for k in MODEL_KEYS if settings[k].strip() and not QUALIFIED_MODEL.match(settings[k].strip())]
+
+
+_settings_thread_lock = threading.RLock()
+_settings_lock_depth = [0]
+
+
+def _file_lock(f, lock):
+    f.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB if lock else fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def settings_lock(timeout=10.0):
+    """One reader-merger-writer of the settings and the shared catalog state at a time, across threads and
+    across every Tatty server process (a lock file in Tatty's home). Re-entrant in a thread."""
+    with _settings_thread_lock:
+        if _settings_lock_depth[0]:
+            _settings_lock_depth[0] += 1
+            try:
+                yield
+            finally:
+                _settings_lock_depth[0] -= 1
+            return
+        home().mkdir(parents=True, exist_ok=True)
+        with open(home() / "settings.lock", "a+b") as f:
+            end = time.time() + timeout
+            while True:
+                try:
+                    _file_lock(f, True)
+                    break
+                except OSError:
+                    if time.time() > end:
+                        raise TimeoutError("Tatty's settings are busy. Try again.")
+                    time.sleep(0.05)
+            _settings_lock_depth[0] = 1
+            try:
+                yield
+            finally:
+                _settings_lock_depth[0] = 0
+                try:
+                    _file_lock(f, False)
+                except OSError:
+                    pass
 
 
 def save_settings(changes):
-    """Keep the known keys of `changes` that have the right type; returns all the settings."""
+    """Keep the known keys of `changes` that have the right type; returns all the settings. Raises ValueError
+    for a model that names no provider or a provider switch that isn't one named provider set to true or false."""
+    with settings_lock():
+        return _save_settings(changes)
+
+
+def _save_settings(changes, internal=False):
     now = load_settings()
-    now.update({k: v for k, v in changes.items() if k in now and isinstance(v, type(now[k]))})
+    changes = dict(changes)
+    if not internal:
+        changes.pop("modelsMigrated", None)
+    enabled = changes.pop("providerEnabled", None)
+    if enabled is not None:
+        if (not isinstance(enabled, dict) or len(enabled) != 1 or next(iter(enabled)) not in PROVIDERS
+                or not isinstance(next(iter(enabled.values())), bool)):
+            raise ValueError("Switch one provider on or off at a time: claude, copilot or codex, true or false.")
+        now["providerEnabled"] = {**now["providerEnabled"], **enabled}
+    for k in MODEL_KEYS:
+        v = changes.get(k)
+        if isinstance(v, str) and v.strip() != now[k].strip() and v.strip() and not QUALIFIED_MODEL.match(v.strip()):
+            raise ValueError(f"{k} is a provider and a model, like claude:sonnet. Choose it from the list.")
+        if isinstance(v, str):
+            changes[k] = v.strip()
+    now.update({k: v for k, v in changes.items() if k in now and k != "providerEnabled" and isinstance(v, type(now[k]))})
     if now["chatSummary"] not in ("tatty", "model"):
         now["chatSummary"] = "tatty"
     now["mrsPoll"] = max(0, min(1440, now["mrsPoll"])) if not isinstance(now["mrsPoll"], bool) else 5
@@ -941,11 +1030,19 @@ LLMS = "tt-connections/scripts/llms.sh"
 MODEL_CONFIG = "tt-common/scripts/model-config.sh"
 PROVIDERS = ("claude", "copilot", "codex")
 DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
-# What claude offers when the toolbox has no llms.sh (an older install).
-BUILTIN_MODELS = [{"provider": "claude", "id": a, "label": a, "efforts": DEFAULT_EFFORTS, "runnable": True, "scope": "any"}
-                  for a in ("sonnet", "opus", "haiku", "fable")]
 MODEL_WORD = re.compile(r"[A-Za-z0-9._:/-]+\Z")
-_models = {"at": 0.0, "rows": None}
+# What the toolbox must say it supports before Tatty offers any model or provider feature.
+TOOLBOX_CAPABILITIES = ("provider-model-config-v1", "provider-actions-v1")
+TOOLBOX_TOO_OLD = "This toolbox is too old for Tatty's model settings. Update the core plugin."
+# The provider actions a toolbox may list; each maps to one fixed action, never to command text.
+PROVIDER_ACTIONS = ("install", "sign-in", "connect", "disconnect", "refresh")
+MODELS_TTL = 15  # seconds a scan of the catalog is trusted
+CATALOG_POLL = 1.0  # seconds between looks at the shared generation
+# The catalog of this process. state: cold (never scanned), fresh, stale (a scan failed after a good one:
+# `rows` are the last good ones, to show but not to use) or error (no good scan yet).
+_models = {"at": 0.0, "rows": None, "state": "cold", "error": "", "flight": None}
+_models_lock = threading.Lock()
+_catalog_seen = {"generation": None}
 
 
 def toolbox_run(state, rel, args, timeout=60):
@@ -967,42 +1064,290 @@ def tsv_rows(text, n):
 
 
 def llm_models(state, fresh=False):
-    """The models of the connected LLMs: dicts of provider, id, label, efforts (a
+    """The models that can be used now: dicts of provider, id, label, efforts (a
     list, empty when none is offered), runnable (a skill or session can use it) and
     scope: "any", or "session" for a specific version (sonnet 5.5, ...) that only a
     session can use, as the Agent tool behind a step takes the aliases only. A
     toolbox from before versions has five columns, all "any".
-    Cached for a few seconds, as a Start asks for them."""
-    if not fresh and _models["rows"] is not None and time.time() - _models["at"] < 15:
-        return _models["rows"]
+    Empty unless the catalog is fresh (see llm_catalog)."""
+    got = llm_catalog(state, fresh)
+    return got["rows"] if got["usable"] else []
+
+
+def toolbox_capability_error(state):
+    """"" when the toolbox lists every capability Tatty needs, else why it can't be used."""
+    got = toolbox_run(state, LLMS, ["capabilities", "--tsv"])
+    if got is None or got[0] != 0:
+        return TOOLBOX_TOO_OLD
+    have = {line.strip() for line in got[1].splitlines()}
+    return "" if all(t in have for t in TOOLBOX_CAPABILITIES) else TOOLBOX_TOO_OLD
+
+
+def scan_catalog(state):
+    """One scan of the toolbox's models: (rows, "") or (None, why there are none)."""
+    bad = toolbox_capability_error(state)
+    if bad:
+        return None, bad
     got = toolbox_run(state, LLMS, ["models", "--tsv"])
-    rows = []
-    if got and got[0] == 0:
-        rows = [{"provider": r[0], "id": r[1], "label": r[2], "efforts": [] if r[3] in ("", "-") else r[3].split(","),
-                 "runnable": r[4].strip() == "yes", "scope": "session" if len(r) > 5 and r[5].strip() == "session" else "any"}
-                for r in tsv_rows(got[1], 5)]
-    _models.update(at=time.time(), rows=rows or BUILTIN_MODELS)
-    return _models["rows"]
+    if got is None:
+        return None, "The toolbox has no model catalog. Update the core plugin."
+    if got[0] != 0:
+        return None, (got[2] or got[1]).strip() or "The model scan failed."
+    rows = [{"provider": r[0], "id": r[1], "label": r[2], "efforts": [] if r[3] in ("", "-") else r[3].split(","),
+             "runnable": r[4].strip() == "yes", "scope": "session" if len(r) > 5 and r[5].strip() == "session" else "any"}
+            for r in tsv_rows(got[1], 5)]
+    if not rows:
+        return None, "The scan found no models. Connect a provider in Settings."
+    return rows, ""
+
+
+def coordination_file():
+    return home() / "catalog-state.json"
+
+
+def coordination_read():
+    """The freshness ("fresh" or "stale"), generation and catalog signature every Tatty process shares."""
+    got = read_json(coordination_file(), {})
+    gen = got.get("generation")
+    return {"freshness": "fresh" if got.get("freshness") == "fresh" else "stale",
+            "generation": gen if isinstance(gen, int) and gen >= 0 else 0,
+            "signature": got.get("signature") if isinstance(got.get("signature"), str) else ""}
+
+
+def coordination_update(freshness=None, signature=None, changed=False):
+    """Record a change under the settings lock: (the state, whether the generation moved). The generation
+    moves only when the freshness or the catalog's signature differs, or `changed` says provider data did."""
+    with settings_lock():
+        cur = coordination_read()
+        new = dict(cur)
+        if freshness in ("fresh", "stale"):
+            new["freshness"] = freshness
+        if signature is not None:
+            new["signature"] = signature
+        if new["freshness"] == cur["freshness"] and new["signature"] == cur["signature"] and not changed:
+            return cur, False
+        new["generation"] = cur["generation"] + 1
+        write_json(coordination_file(), new)
+        return new, True
+
+
+def coordination_note(state, **kw):
+    """coordination_update, then tell this process's own pages when something changed."""
+    try:
+        cur, moved = coordination_update(**kw)
+    except (OSError, TimeoutError):
+        return
+    if moved:
+        with _models_lock:
+            if _catalog_seen["generation"] == cur["generation"] - 1:
+                _catalog_seen["generation"] = cur["generation"]
+        state.emit("models", generation=cur["generation"])
+
+
+def catalog_refresh(state, flight):
+    """Scan, record the outcome here and for every process, and release the callers waiting on `flight`."""
+    rows, error, signature = None, "", None
+    try:
+        rows, error = scan_catalog(state)
+        if rows is not None:
+            signature = hashlib.sha1(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()
+    finally:
+        with _models_lock:
+            if rows is not None:
+                _models.update(rows=rows, state="fresh", error="")
+            else:
+                _models.update(state="stale" if _models["rows"] is not None else "error",
+                               error=error or "The model scan failed.")
+            _models.update(at=time.time(), flight=None)
+        flight.set()
+    if rows is not None:
+        coordination_note(state, freshness="fresh", signature=signature)
+    else:
+        coordination_note(state, freshness="stale")
+
+
+def catalog_snapshot():
+    shared = coordination_read()
+    with _models_lock:
+        got = dict(_models)
+    status, error = got["state"], got["error"]
+    if status == "fresh" and shared["freshness"] != "fresh":
+        status, error = "stale", "The model list couldn't be refreshed. Try again in a moment."
+    return {"state": status, "usable": status == "fresh", "rows": got["rows"] or [], "error": error,
+            "at": got["at"], "generation": shared["generation"]}
+
+
+def llm_catalog(state, fresh=False):
+    """The catalog and whether it can be used: state, usable, rows (the last good ones when stale, to
+    show only), error, at, generation. Trusted for MODELS_TTL seconds; callers that find it expired
+    share one scan."""
+    with _models_lock:
+        flight = _models["flight"]
+        mine = False
+        if flight is None:
+            cached = (not fresh and _models["state"] != "cold" and time.time() - _models["at"] < MODELS_TTL
+                      and (_models["state"] != "fresh" or coordination_read()["freshness"] == "fresh"))
+            if not cached:
+                flight = _models["flight"] = threading.Event()
+                mine = True
+    if mine:
+        catalog_refresh(state, flight)
+    elif flight is not None:
+        flight.wait(120)
+    return catalog_snapshot()
+
+
+def watch_catalog(state):
+    """Mark the shared catalog stale (this process hasn't scanned yet), scan once, then look at the
+    shared generation every second: a new one expires this process's catalog and tells its pages."""
+    try:
+        coordination_update(freshness="stale")
+        with _models_lock:
+            _catalog_seen["generation"] = coordination_read()["generation"]
+    except (OSError, TimeoutError):
+        pass
+    try:
+        llm_catalog(state, fresh=True)
+    except Exception:
+        pass
+    while True:
+        time.sleep(CATALOG_POLL)
+        try:
+            migrate_settings(state)
+        except Exception:
+            pass
+        try:
+            gen = coordination_read()["generation"]
+        except Exception:
+            continue
+        with _models_lock:
+            if gen == _catalog_seen["generation"]:
+                continue
+            _catalog_seen["generation"] = gen
+            _models["at"] = 0.0
+        state.emit("models", generation=gen)
+
+
+PROVIDER_STATE_TTL = 5  # seconds a look at the providers' states is trusted
+_provider_states = {"at": 0.0, "states": {}}
+# The environment variables that used to choose the helpers' models; read once, when the settings are carried over.
+LEGACY_MODEL_ENV = {"storiesModel": "TATTY_STORIES_MODEL", "tasksModel": "TATTY_TASKS_MODEL",
+                    "qaModel": "TATTY_QA_MODEL", "qaPlanModel": "TATTY_QA_MODEL_PLAN"}
+
+
+def split_model(value):
+    """("claude", "sonnet") for "claude:sonnet", or None when the value names no provider."""
+    value = str(value or "").strip()
+    m = QUALIFIED_MODEL.match(value)
+    return (m.group(1), value[len(m.group(1)) + 1:]) if m else None
+
+
+def unique_match(rows, bare):
+    """"provider:id" when exactly one model of the catalog has this id, else "" (none or several)."""
+    got = [r for r in rows if r["id"] == bare]
+    return f"{got[0]['provider']}:{got[0]['id']}" if len(got) == 1 else ""
+
+
+def migrate_settings(state):
+    """Once, when there is a catalog to match against: give each saved model choice its provider where exactly
+    one model has that id, and import the old helper environment variables the same way (else the helper's
+    shipped default). A choice that matches none or several stays as it is, unresolved, until chosen again."""
+    if load_settings()["modelsMigrated"]:
+        return
+    catalog = llm_catalog(state)
+    if not catalog["usable"]:
+        return
+    with settings_lock():
+        if load_settings()["modelsMigrated"]:
+            return
+        raw = read_json(home() / "settings.json", {})
+        raw = raw if isinstance(raw, dict) else {}
+        changes = {"modelsMigrated": True}
+        for key in MODEL_KEYS:
+            stored = raw.get(key)
+            if isinstance(stored, str) and stored.strip():
+                if not QUALIFIED_MODEL.match(stored.strip()):
+                    changes[key] = unique_match(catalog["rows"], stored.strip()) or stored.strip()
+            elif key in LEGACY_MODEL_ENV and os.environ.get(LEGACY_MODEL_ENV[key], "").strip():
+                changes[key] = (unique_match(catalog["rows"], os.environ[LEGACY_MODEL_ENV[key]].strip())
+                                or SETTINGS_DEFAULTS[key])
+        _save_settings(changes, internal=True)
+
+
+def provider_states(state):
+    """{provider: state} from the toolbox's status (missing, connected, ...), looked at every few seconds."""
+    if time.time() - _provider_states["at"] > PROVIDER_STATE_TTL:
+        got = toolbox_run(state, LLMS, ["status", "--tsv"])
+        _provider_states.update(at=time.time(), states={r[0]: r[1] for r in tsv_rows(got[1], 2)}
+                                if got and got[0] == 0 else {})
+    return dict(_provider_states["states"])
+
+
+def provider_unavailable(state, provider):
+    """Why a provider's models can't be used now, or "": switched off in Tatty, or its command is missing."""
+    if not load_settings()["providerEnabled"].get(provider, True):
+        return f"{provider} is switched off in Settings. Switch it on, or choose another model."
+    if provider_states(state).get(provider) == "missing":
+        return f"{provider} is connected, but its command isn't installed here. Install it in Settings."
+    return ""
+
+
+def resolve_model(state, value, allow_bare=False):
+    """The native id (what Claude's --model takes) of a "provider:model-id" choice that can run now: (id, "")
+    or ("", why not, with what to do). A bare id is taken only with allow_bare, and only when one model has it."""
+    value = str(value or "").strip()
+    catalog = llm_catalog(state)
+    if not catalog["usable"]:
+        return "", catalog["error"] or "The model list isn't available. Refresh the connections in Settings."
+    if not MODEL_WORD.match(value):
+        return "", "That isn't a model name."
+    if not split_model(value):
+        if allow_bare and unique_match(catalog["rows"], value):
+            value = unique_match(catalog["rows"], value)
+        else:
+            return "", f"{value} doesn't say which provider it is from. Choose it again in Settings."
+    provider, native = split_model(value)
+    row = next((m for m in catalog["rows"] if m["provider"] == provider and m["id"] == native), None)
+    if not row:
+        return "", f"{value} isn't one of the models Tatty knows. Choose another in Settings, or refresh the connections."
+    why = provider_unavailable(state, provider)
+    if why:
+        return "", why
+    if not row["runnable"]:
+        return "", f"{value} is connected, but can't run here yet. Choose another model."
+    if provider != "claude":
+        return "", f"{value} can't run here yet: only Claude models do. Choose a Claude model."
+    return native, ""
+
+
+def surface_model(state, key):
+    """The native model of a configured surface choice: (id, "") or ("", why)."""
+    value = load_settings()[key].strip()
+    if not value:
+        return "", f"The {key} model isn't set. Choose one in Settings."
+    return resolve_model(state, value)
 
 
 def model_choice(state, model, effort):
     """Check a model and effort a session may start on: ([claude flags], "") or
-    (None, why not). Blank or "-" leaves that choice to Claude Code."""
+    (None, why not). Blank or "-" leaves that choice to Claude Code. A model is "provider:model-id"
+    (a bare id only when one model has it) and goes to Claude as its native id."""
     model, effort = str(model or "").strip(), str(effort or "").strip()
     model = "" if model == "-" else model
     effort = "" if effort == "-" else effort
     flags, allowed = [], DEFAULT_EFFORTS
     if model:
-        if not MODEL_WORD.match(model):
-            return None, "That isn't a model name."
-        known = [m for m in llm_models(state) if m["id"] == model]
-        found = next((m for m in known if m["runnable"]), known[0] if known else None)
-        if not found:
-            return None, f"{model} isn't one of the models Tatty knows. Refresh the connections in Settings."
-        if not found["runnable"]:
-            return None, f"{model} ({found['provider']}) is connected, but can't run a workflow session yet."
-        allowed = found["efforts"] or allowed
-        flags += ["--model", model]
+        native, why = resolve_model(state, model, allow_bare=True)
+        if why:
+            return None, why
+        qualified = model if split_model(model) else unique_match(llm_catalog(state)["rows"], model)
+        found = next((m for m in llm_catalog(state)["rows"] if f"{m['provider']}:{m['id']}" == qualified), None)
+        allowed = (found and found["efforts"]) or allowed
+        flags += ["--model", native]
+    else:
+        why = provider_unavailable(state, "claude")
+        if why:
+            return None, why
     if effort:
         if effort not in allowed:
             return None, f"{model or 'The session model'} doesn't take the effort {effort} (it takes {', '.join(allowed)})."
@@ -1017,11 +1362,23 @@ def model_fields(body):
 
 
 def model_fields_error(state, body):
-    """Why the model and effort a body chose won't do, or "". Checked before a Start
-    makes a feature folder, so a bad choice leaves nothing behind."""
-    if "model" not in body and "effort" not in body:
-        return ""
-    return model_choice(state, body.get("model"), body.get("effort"))[1]
+    """Why a Start's chosen or configured model and effort won't run, or ""."""
+    return session_model_choice(state, body)[1]
+
+
+def session_model_choice(state, body):
+    """Resolve a Start's choice through the toolbox session role before creating anything."""
+    if "model" in body or "effort" in body:
+        model = str(body.get("model") or "").strip()
+        effort = str(body.get("effort") or "").strip()
+        if not model or model == "-":
+            model = session_default(state)["model"]
+    else:
+        default = session_default(state)
+        model, effort = default["model"], default["effort"]
+    if not model or model == "-":
+        return None, "The toolbox session model isn't set. Choose an available model in the toolbox Settings."
+    return model_choice(state, model, effort)
 
 
 def kv_pairs(text):
@@ -1061,11 +1418,24 @@ def remember_feature_model(feature, model, effort):
     write_json(feature_models_file(), data)
 
 
+def provider_actions(field):
+    """The actions a status row lists (comma separated, "-" for none), only the known ones."""
+    out = []
+    for a in field.strip().split(","):
+        if a in PROVIDER_ACTIONS and a not in out:
+            out.append(a)
+    return out
+
+
 def llms_view(state):
     got = toolbox_run(state, LLMS, ["status", "--tsv"])
-    providers = [{"provider": r[0], "state": r[1], "version": r[2], "models": int(r[3] or 0), "runnable": int(r[4] or 0)}
+    error = toolbox_capability_error(state) if got is not None else TOOLBOX_TOO_OLD
+    providers = [{"provider": r[0], "state": r[1], "version": r[2], "models": int(r[3] or 0), "runnable": int(r[4] or 0),
+                  "actions": provider_actions(r[-1]) if len(r) > 5 and not error else []}
                  for r in tsv_rows(got[1], 5)] if got and got[0] == 0 else []
-    return {"available": got is not None, "providers": providers, "models": llm_models(state, fresh=True),
+    catalog = llm_catalog(state, fresh=True)
+    return {"available": got is not None, "compatible": not error, "error": error or catalog["error"], "providers": providers,
+            "models": catalog["rows"], "catalog": {k: catalog[k] for k in ("state", "usable", "at", "generation")},
             "session": session_default(state)}
 
 
@@ -1077,9 +1447,11 @@ def llms_change(state, b):
     got = toolbox_run(state, LLMS, [action, *([provider] if provider else [])], timeout=90)
     if got is None:
         return 501, {"error": "This toolbox is too old to connect LLMs. Update the core plugin."}
-    _models["rows"] = None
+    with _models_lock:
+        _models["at"] = 0.0
     if got[0] != 0:
         return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
+    coordination_note(state, changed=True)
     return 200, {**llms_view(state), "said": got[1].strip()}
 
 
@@ -1263,14 +1635,27 @@ FAMILY_NAMES = ("sonnet", "opus", "haiku", "fable")
 FAMILY_VAR = re.compile(r"ANTHROPIC_DEFAULT_[A-Z]+_MODEL\Z")
 
 
+def qualified_family_model(value):
+    """Keep family choices provider-qualified across the API and toolbox configuration."""
+    value = str(value or "").strip()
+    if not value or value == "-":
+        return ""
+    if split_model(value) or ":" in value:
+        return value
+    return f"claude:{value}" if MODEL_WORD.fullmatch(value) else value
+
+
 def family_view(state):
     """Which version each alias (sonnet, opus, haiku, fable) means, from the toolbox's `model-config.sh family list`:
     dicts of family, chosen ("" = none pinned), effective, label, source (chosen, own or newest) and versions
-    (id and label, newest first). None when this toolbox can't say (an older one). The sixth column of a row is
-    the versions, `id=label;id=label`."""
+    (provider-qualified id and label, newest first). None when this toolbox can't say (an older one). The sixth
+    column of a row is the versions, `id=label;id=label`."""
     got = toolbox_run(state, MODEL_CONFIG, ["family", "list", "--tsv"])
     if not got or got[0] != 0:
         return None
+    catalog = llm_catalog(state)
+    connected = provider_states(state).get("claude") == "connected"
+    unavailable = bool(provider_unavailable(state, "claude") or not connected or not catalog["usable"])
     out = []
     for r in tsv_rows(got[1], 5):
         if r[0] not in FAMILY_NAMES:
@@ -1278,9 +1663,12 @@ def family_view(state):
         versions = []
         for part in (r[5].strip().split(";") if len(r) > 5 and r[5].strip() else []):
             vid, _, label = part.partition("=")
-            versions.append({"id": vid.strip(), "label": label.strip() or vid.strip()})
-        out.append({"family": r[0], "chosen": "" if r[1] in ("", "-") else r[1], "effective": "" if r[2] == "-" else r[2],
-                    "label": "" if r[3] == "-" else r[3], "source": r[4].strip(), "versions": versions})
+            value = qualified_family_model(vid)
+            if split_model(value) and split_model(value)[0] == "claude":
+                versions.append({"id": value, "label": label.strip() or value})
+        out.append({"family": r[0], "chosen": qualified_family_model(r[1]), "effective": qualified_family_model(r[2]),
+                    "label": "" if r[3] == "-" else r[3], "source": r[4].strip(), "versions": versions,
+                    "unavailable": unavailable})
     return out
 
 
@@ -1299,6 +1687,11 @@ def family_exports(state):
     out = {}
     for line in (got[1].splitlines() if got and got[0] == 0 else []):
         k, _, v = line.strip().partition("=")
+        model = split_model(v)
+        if model:
+            if model[0] != "claude":
+                continue
+            v = model[1]
         if FAMILY_VAR.match(k) and MODEL_WORD.match(v):
             out[k] = v
     _family_env.update(at=time.time(), env=out)
@@ -1344,6 +1737,8 @@ def model_config_change(state, b):
         if role not in {r["role"] for r in now["roles"]}:
             return 400, {"error": "no such step"}
         args = ["set", role, str(b.get("model") or "-").strip() or "-", str(b.get("effort") or "-").strip() or "-"]
+        if args[2] != "-" and not QUALIFIED_MODEL.match(args[2]):
+            return 400, {"error": "A step's model is a provider and a model, like claude:sonnet. Choose it from the list."}
     elif action in ("use", "reset", "delete"):
         mode = str(b.get("mode", ""))
         if mode not in names:
@@ -1355,7 +1750,20 @@ def model_config_change(state, b):
             return 400, {"error": "no such family"}
         if now["families"] is None:
             return 501, {"error": "This toolbox is too old to choose model versions. Update the core plugin."}
-        args = ["family", "set", family, str(b.get("model") or "-").strip() or "-"]
+        why = provider_unavailable(state, "claude")
+        catalog = llm_catalog(state)
+        provider_connected = provider_states(state).get("claude") == "connected"
+        if why or not provider_connected or not catalog["usable"]:
+            why = why or ("Claude isn't connected. Connect it in Settings."
+                          if not provider_connected else catalog["error"] or "The model catalog is unavailable. Refresh the connections.")
+            return 409, {"error": f"Model versions can't be changed now: {why}"}
+        model = str(b.get("model") or "-").strip() or "-"
+        if model != "-":
+            split = split_model(model)
+            versions = {v["id"] for f in now["families"] if f["family"] == family for v in f["versions"]}
+            if not split or split[0] != "claude" or not MODEL_WORD.fullmatch(model) or model not in versions:
+                return 400, {"error": "Choose a Claude model version from the list."}
+        args = ["family", "set", family, model]
     elif action == "save":
         name = str(b.get("name", "")).strip()
         if not re.match(r"[a-z0-9][a-z0-9_-]*\Z", name):
@@ -1366,6 +1774,8 @@ def model_config_change(state, b):
     if any(not MODEL_WORD.match(a) for a in args):
         return 400, {"error": "model and effort are single words"}
     got = toolbox_run(state, MODEL_CONFIG, args)
+    if got is None:
+        return 501, {"error": "This toolbox is too old to configure models. Update the core plugin."}
     if got[0] != 0:
         return 409 if got[0] == 1 else 400, {"error": (got[2] or got[1]).strip() or "that didn't work"}
     _family_env["env"] = None  # (a version chosen applies to the next session started)
@@ -6252,6 +6662,9 @@ def launch(state, project, name, prompt, tag, workdir="", flags=()):
 def start_session(state, folder, body):
     """Open a new Claude session in the feature's project, started with one of
     its next commands (Tatty's own launcher). Returns (http code, answer)."""
+    flags, why = session_model_choice(state, body)
+    if flags is None:
+        return 400, {"error": why}
     rows = workflow_rows(state, folder)
     begun = {}
     try:
@@ -6309,16 +6722,6 @@ def start_session(state, folder, body):
         return 400, {"error": f"no such folder: {workdir}"}
     if not review:  # (what tt-workflow did whenever it read the state; a review only reads, in a repo that may not be the feature's)
         reconcile_ledger(state, folder, project)
-    # The model and effort the session starts on: what the page sent (blank = Claude
-    # Code's own), else the toolbox's `session` setting.
-    if "model" in body or "effort" in body:
-        model, effort = str(body.get("model") or "").strip(), str(body.get("effort") or "").strip()
-    else:
-        default = session_default(state)
-        model, effort = default["model"], default["effort"]
-    flags, why = model_choice(state, model, effort)
-    if flags is None:
-        return 400, {"error": why}
     # The work goes on a branch of the feature's own (see "branches and merging"), made on its first Start.
     # A review only reads: it never makes or switches a branch, nor records one for the feature.
     # The branch is made in the repo's own checkout unless the person opted in to a worktree of its own (body "isolate": true);
@@ -6906,8 +7309,11 @@ def jira_claude(state, prompt, tools, schema):
     claude = os.environ.get("TATTY_CLAUDE") or shutil.which("claude")
     if not claude:
         return None, None, NO_CLAUDE
+    model, why = surface_model(state, "jiraModel")
+    if why:
+        return None, None, why
     argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
-    argv += ["-p", prompt, "--system-prompt", JIRA_SYSTEM, "--model", settings["jiraModel"],
+    argv += ["-p", prompt, "--system-prompt", JIRA_SYSTEM, "--model", model,
              "--output-format", "json", "--json-schema", json.dumps(schema), "--tools", "",
              "--setting-sources", "user", "--disable-slash-commands", "--no-session-persistence",
              "--allowedTools", *[f"mcp__{server}__{t}" for t in tools]]
@@ -7176,6 +7582,9 @@ def jira_start(state, body):
     that is another folder, and the ticket moved to In Progress once the session
     is open. The ticket says which feature it became before the session starts, so
     a second Start is refused. (http code, answer)."""
+    _, why = surface_model(state, "jiraModel")
+    if why:
+        return 409, {"error": why}
     key = str(body.get("key", "")).strip()
     issue = next((i for i in jira_board()["issues"] if i["key"] == key), None) if JIRA_KEY.match(key) else None
     if not issue:
@@ -8059,6 +8468,9 @@ def start_stories_run(state, folder, b):
     claude = claude_path()
     if not claude:
         return 501, {"error": NO_CLAUDE}
+    model, why = surface_model(state, "storiesModel")
+    if why:
+        return 409, {"error": why}
     intake = design_intake(folder, doc)
     sid, note = str(b.get("id", "")), str(b.get("note", "")).strip()
     run_dir = home() / "runs" / secrets.token_hex(4)
@@ -8087,8 +8499,7 @@ def start_stories_run(state, folder, b):
              "--allowedTools", "Read", "Glob", "Grep", "Skill", "Bash(bash *stories.sh*)",
              "--permission-mode", "dontAsk", "--setting-sources", "user", "--no-session-persistence",
              "--strict-mcp-config", "--max-budget-usd", STORIES_BUDGET, "--add-dir", run_dir.as_posix()]
-    if os.environ.get("TATTY_STORIES_MODEL"):
-        argv += ["--model", os.environ["TATTY_STORIES_MODEL"]]
+    argv += ["--model", model]
     design = toolbox_plugin("design")
     if design and from_checkout(design):
         # found only in a checkout: load it (and core) into the run
@@ -10312,16 +10723,17 @@ def task_write_start(state, folder, b, client):
     argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
     argv += ["-p", "--output-format", "stream-json", "--verbose", "--system-prompt", TASK_WRITE_SYSTEM,
              "--setting-sources", "user", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
-    model = os.environ.get("TATTY_TASKS_MODEL", "")
+    model, why = surface_model(state, "tasksModel")
+    if why:
+        return 409, {"error": why}
     if context == "project":
         argv += ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--permission-mode", "dontAsk",
                  "--max-budget-usd", os.environ.get("TATTY_TASKS_BUDGET_PROJECT", "2"), "--add-dir", Path(where).as_posix()]
         timeout, cwd = TASK_WRITE_TIMEOUT, where
     else:
         argv += ["--tools", "", "--max-budget-usd", os.environ.get("TATTY_TASKS_BUDGET", "1")]
-        model, timeout, cwd = model or "haiku", min(TASK_WRITE_TIMEOUT, 120.0), str(folder)
-    if model:
-        argv += ["--model", model]
+        timeout, cwd = min(TASK_WRITE_TIMEOUT, 120.0), str(folder)
+    argv += ["--model", model]
     with state.cond:
         if run_id in state.task_writes:
             return 409, {"error": "That one is already being written."}
@@ -10721,17 +11133,20 @@ def diff_more(state, b):
     task = str(b.get("task", ""))
     if task not in {r["id"] for r in build_task_rows(folder)}:
         return 400, {"error": "no such task on the task board"}
+    model, why = resolve_model(state, "claude:haiku")
+    if why:
+        return 409, {"error": why}
     pair = (folder.as_posix(), task)
     with state.diff_lock:
         if pair in state.diff_runs:
             return 409, {"error": "already writing one"}
         state.diff_runs.add(pair)
-    threading.Thread(target=model_more_info, args=(state, folder, task), daemon=True).start()
+    threading.Thread(target=model_more_info, args=(state, folder, task, model), daemon=True).start()
     state.emit("diff", name=folder.name, task=task)
     return 200, {"ok": True}
 
 
-def model_more_info(state, folder, task):
+def model_more_info(state, folder, task, model):
     """Have a small model explain a task's changes (see DIFF_MORE_SYSTEM). Runs on a
     thread of its own; the answer, or the note that it couldn't, is kept with the
     changes, and the task is no longer busy."""
@@ -10749,7 +11164,7 @@ def model_more_info(state, folder, task):
         claude = claude_path()
         if claude:
             argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
-            argv += ["-p", prompt, "--system-prompt", DIFF_MORE_SYSTEM, "--model", "haiku",
+            argv += ["-p", prompt, "--system-prompt", DIFF_MORE_SYSTEM, "--model", model,
                      "--output-format", "json", "--tools", "", "--setting-sources", "user", "--disable-slash-commands",
                      "--no-session-persistence", "--strict-mcp-config"]
             env = claude_child_env(state)
@@ -10907,7 +11322,18 @@ def context_block(ctx):
     return "<context>\n" + "\n".join(rows) + "\n</context>"
 
 
-def model_summary(state, c):
+def chat_model_choice(state, feature):
+    """Resolve the saved feature choice, or the chat setting when it has none."""
+    started = feature_model(feature)
+    if started and str(started.get("model") or "").strip() not in ("", "-"):
+        return model_choice(state, started["model"], started.get("effort", ""))
+    model, why = surface_model(state, "chatModel")
+    if why:
+        return None, why
+    return model_choice(state, model, started.get("effort", "") if started else "")
+
+
+def model_summary(state, c, model):
     """Have a small model summarise a side chat's context (the chatSummary setting
     "model"); Tatty's own summary stays when it can't. Runs on a thread of its own."""
     ctx = c["context"]
@@ -10915,7 +11341,7 @@ def model_summary(state, c):
     claude = claude_path()
     if claude:
         argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
-        argv += ["-p", context_block(ctx), "--system-prompt", SUMMARY_SYSTEM, "--model", "haiku",
+        argv += ["-p", context_block(ctx), "--system-prompt", SUMMARY_SYSTEM, "--model", model,
                  "--output-format", "json", "--tools", "", "--setting-sources", "user", "--disable-slash-commands",
                  "--no-session-persistence", "--strict-mcp-config"]
         env = claude_child_env(state)
@@ -10959,12 +11385,20 @@ def chat_new(state, b):
         project = intake_project(state)
     if not project or not os.path.isdir(project):
         return 400, {"error": "Choose the project this chat works in."}
+    flags, why = chat_model_choice(state, feature)
+    if flags is None:
+        return 409, {"error": why}
     ctx = None
     if kind == "side":
         ctx = clean_context(b.get("context"))
         if not ctx:
             return 400, {"error": "A side chat needs the text it is about."}
         ctx["summary"] = chat_context_summary(ctx)
+    summary_model = ""
+    if ctx and load_settings()["chatSummary"] == "model":
+        summary_model, why = resolve_model(state, "claude:haiku")
+        if why:
+            return 409, {"error": why}
     cid = "c-" + secrets.token_hex(4)
     first = " ".join(ctx["selected"].split())[:40] if ctx else ""
     c = {"id": cid, "kind": kind, "title": f"About: {first}" if ctx else ("New task" if kind == "intake" else "Chat"),
@@ -10982,7 +11416,7 @@ def chat_new(state, b):
     if ctx and load_settings()["chatSummary"] == "model":
         with state.cond:
             state.chat_runs[cid] = {"step": "Summarising", "proc": None, "cancelled": False}
-        threading.Thread(target=model_summary, args=(state, c), daemon=True).start()
+        threading.Thread(target=model_summary, args=(state, c, summary_model), daemon=True).start()
     state.emit("chat", id=cid, busy=cid in state.chat_runs, new=True)
     return 200, chat_view(state, c)
 
@@ -11002,7 +11436,7 @@ def conversation_exists(session_id):
     return any((config_dir() / "projects").glob(f"*/{session_id}.jsonl"))
 
 
-def chat_argv(state, claude, c):
+def chat_argv(state, claude, c, model_flags=None):
     sid = c["claudeSession"]
     argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
     argv += ["-p", "--output-format", "stream-json", "--verbose",
@@ -11013,11 +11447,16 @@ def chat_argv(state, claude, c):
              "--max-budget-usd", CHAT_BUDGET]
     # The model and effort the feature's workflow was started on, else the chat model setting.
     started = feature_model(c.get("feature", ""))
-    flags = model_choice(state, started["model"], started["effort"])[0] if started else None
-    if flags:
-        argv += flags
-    elif load_settings()["chatModel"].strip():
-        argv += ["--model", load_settings()["chatModel"].strip()]
+    if model_flags is not None:
+        argv += model_flags
+    elif started:
+        flags = model_choice(state, started["model"], started["effort"])[0]
+        if flags:
+            argv += flags
+    else:
+        model, _ = surface_model(state, "chatModel")
+        if model:
+            argv += ["--model", model]
     if c.get("mr") and MRS_KEY.match(str(c["mr"])) and mrs_file(c["mr"], "files").is_dir():  # the request's files, and only those
         argv += ["--add-dir", mrs_file(c["mr"], "files").as_posix()]
     if not installed():
@@ -11042,6 +11481,9 @@ def chat_say(state, b):
     claude = claude_path()
     if not claude:
         return 501, {"error": NO_CLAUDE}
+    model_flags, why = chat_model_choice(state, c.get("feature", ""))
+    if model_flags is None:
+        return 409, {"error": why}
     if not os.path.isdir(c["project"]):
         return 400, {"error": f"The chat's project isn't there any more: {c['project']}"}
     with state.cond:
@@ -11061,7 +11503,8 @@ def chat_say(state, b):
         if c["kind"] == "intake":
             c["task"] = None  # a reply to what it understood: it understands again, or not
     c = change_chat(state, cid, said)
-    threading.Thread(target=chat_turn_work, args=(state, c, chat_argv(state, claude, c), prompt), daemon=True).start()
+    threading.Thread(target=chat_turn_work, args=(state, c, chat_argv(state, claude, c, model_flags), prompt),
+                     daemon=True).start()
     state.emit("chat", id=cid, busy=True, step="Starting")
     return 202, chat_view(state, c)
 
@@ -11631,6 +12074,9 @@ def qa_bug_draft(st, b):
         return 400, {"error": "Describe the bug first."}
     if len(text) > MAX_NOTE:
         return 400, {"error": f"Keep the description under {MAX_NOTE} characters."}
+    model, why = surface_model(st, "qaModel")
+    if why:
+        return 409, {"error": why}
     if not qa_script(QA_BUG_SCRIPT):
         return 501, {"error": QA_MISSING}
     if not claude_path():
@@ -11641,7 +12087,7 @@ def qa_bug_draft(st, b):
 
     def work(r):
         final, error = qa_claude(st, r, QA_BUG_SYSTEM, prompt, str(qa_root().parent), None, QA_TIMEOUT_BUG,
-                                 os.environ.get("TATTY_QA_BUDGET", "1"), os.environ.get("TATTY_QA_MODEL", "haiku"))
+                                 os.environ.get("TATTY_QA_BUDGET", "1"), model)
         cost = float((final or {}).get("total_cost_usd") or 0)
         if error:
             return None, error, cost
@@ -11710,6 +12156,9 @@ def qa_plan_draft(st, b):
     feature = qa_feature_name(b.get("feature"))
     if not feature:
         return 404, {"error": "no such feature"}
+    model, why = surface_model(st, "qaPlanModel")
+    if why:
+        return 409, {"error": why}
     if not (qa_script(QA_TEST_SCRIPT)):
         return 501, {"error": QA_MISSING}
     if not claude_path():
@@ -11729,7 +12178,7 @@ def qa_plan_draft(st, b):
 
     def work(r):
         final, error = qa_claude(st, r, QA_PLAN_SYSTEM, prompt, str(folder), ("Read", "Glob", "Grep"), QA_TIMEOUT_PLAN,
-                                 os.environ.get("TATTY_QA_BUDGET_PLAN", "3"), os.environ.get("TATTY_QA_MODEL_PLAN", ""),
+                                 os.environ.get("TATTY_QA_BUDGET_PLAN", "3"), model,
                                  add_dir=str(folder.resolve()))
         cost = float((final or {}).get("total_cost_usd") or 0)
         if error:
@@ -11862,12 +12311,11 @@ def qa_session(st, b):
             return 404, {"error": "This feature has no test plan yet."}
         else:
             cmd = f'{QA_SKILLS[kind]} "{plan}" "{bugs}"'
-    qa_root().mkdir(parents=True, exist_ok=True)
-    project = (feature_project(folder, docs_of(folder))[0] if folder else "") or tatty_root()[0].as_posix()
-    default = session_default(st)
-    flags, why = model_choice(st, str(b.get("model") or default["model"]).strip(), str(b.get("effort") or default["effort"]).strip())
+    flags, why = session_model_choice(st, b)
     if flags is None:
         return 400, {"error": why}
+    qa_root().mkdir(parents=True, exist_ok=True)
+    project = (feature_project(folder, docs_of(folder))[0] if folder else "") or tatty_root()[0].as_posix()
     label = {"bug": "Bug", "plan": "Test plan", "run": "Testing"}[kind]
     name = session_name(f"QA {label}" + (f" : {feature}" if feature else ""))
     tag = "s-" + secrets.token_hex(4)
@@ -11994,6 +12442,9 @@ def intake_start(state, body):
     """Confirm the card: make the feature for the task, write its Ticket, branch and start the session on
     the route the effort level means. (http code, answer): the answer is Start's, with the feature's name
     and the Ticket's file. Once only: a second try is refused while the first runs and after it worked."""
+    _, why = session_model_choice(state, body)
+    if why:
+        return 400, {"error": why}
     cid = str(body.get("chat", ""))
     with state.chat_lock:
         c = read_chat(cid)
@@ -12075,9 +12526,17 @@ def intake_start_work(state, c, body):
 
 
 def compact_hooks(state):
+    def preflight():
+        flags, why = chat_model_choice(state, "")
+        if flags is None:
+            return 409, {"error": why}
+        return 200, {"model": flags[flags.index("--model") + 1]}
+
     return compact_chat.Hooks(
         home=home, claude_path=claude_path,
-        argv=lambda sid: chat_argv(state, claude_path(), {"claudeSession": sid, "feature": ""}),
+        preflight=preflight,
+        argv=lambda sid, model: chat_argv(state, claude_path(), {"claudeSession": sid, "feature": ""},
+                                         ["--model", model]),
         git_bash_path=lambda: git_bash_path(state), kill_tree=kill_tree, step_label=chat_step,
         no_claude=NO_CLAUDE, no_window=NO_WINDOW, timeout=CHAT_TIMEOUT)
 
@@ -12932,7 +13391,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/root":
             return self.send(200, root_info())
         if path == "/api/settings":
-            return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+            return self.send(200, {**load_settings(), "unresolvedModels": unresolved_models(load_settings()),
+                                   "version": plugin_version(), "update": update_view(st)})
         if path == "/api/llms":
             return self.send(200, llms_view(st))
         if path == "/api/llm-setup":
@@ -13270,8 +13730,16 @@ class Handler(BaseHTTPRequestHandler):
             code, answer = llm_setup_change(st, b if isinstance(b, dict) else {})
             return self.send(code, answer)
         if path == "/api/settings":
-            save_settings(b if isinstance(b, dict) else {})
-            return self.send(200, {**load_settings(), "version": plugin_version(), "update": update_view(st)})
+            try:
+                save_settings(b if isinstance(b, dict) else {})
+            except ValueError as e:
+                return self.send(400, {"error": str(e)})
+            except (OSError, TimeoutError) as e:
+                return self.send(409, {"error": f"Tatty couldn't save the settings: {e}"})
+            if isinstance(b, dict) and "providerEnabled" in b:
+                coordination_note(st, changed=True)
+            return self.send(200, {**load_settings(), "unresolvedModels": unresolved_models(load_settings()),
+                                   "version": plugin_version(), "update": update_view(st)})
         if path in ("/api/llms", "/api/model-config"):
             # The toolbox's own scripts change its connections and its model choices;
             # only on a click in Settings.
@@ -13318,6 +13786,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, answer or jira_view(st))
         if path in ("/api/jira/refresh", "/api/jira/issue", "/api/jira/move"):
             # Each spends tokens (a headless claude run), so only ever on a click.
+            _, why = surface_model(st, "jiraModel")
+            if why:
+                return self.send(409, {"error": why})
             if path == "/api/jira/refresh":
                 job, work, args = "board", jira_refresh_work, ()
             else:
@@ -13661,6 +14132,7 @@ def serve(cwd, bash):
     threading.Thread(target=watch_designs, args=(state,), daemon=True).start()
     threading.Thread(target=watch_tasks, args=(state,), daemon=True).start()
     threading.Thread(target=watch_mrs, args=(state,), daemon=True).start()
+    threading.Thread(target=watch_catalog, args=(state,), daemon=True).start()
     threading.Thread(target=replace_old_companion, daemon=True).start()
     try:
         httpd.serve_forever(poll_interval=0.5)

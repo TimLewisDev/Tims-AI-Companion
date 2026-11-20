@@ -12,6 +12,59 @@
 
 let settingsBox = null; // the page's element while it is on screen
 let settingsNow = null; // the last /api/settings answer
+const settingsModelControls = new Set();
+const settingsCatalogRenderers = new Set();
+let settingsCatalogRefreshTimer = 0;
+let settingsCatalogRefreshPending = false;
+let settingsCatalogRefreshRunning = false;
+let settingsCatalogRefreshRevision = 0;
+
+function queueSettingsCatalogRefresh() {
+  if (!settingsBox || !settingsBox.classList.contains("on")) return;
+  settingsCatalogRefreshRevision++;
+  settingsCatalogRefreshPending = true;
+  clearTimeout(settingsCatalogRefreshTimer);
+  settingsCatalogRefreshTimer = setTimeout(refreshSettingsCatalog, 120);
+}
+
+async function refreshSettingsCatalog() {
+  if (settingsCatalogRefreshRunning) return;
+  if (!settingsCatalogRefreshPending || !settingsBox || !settingsBox.classList.contains("on")) return;
+  if (settingsBox.contains(document.activeElement)) return;
+  const revision = settingsCatalogRefreshRevision;
+  settingsCatalogRefreshPending = false;
+  settingsCatalogRefreshRunning = true;
+  try {
+    const [inventory, settings, modelConfig] = await Promise.all([
+      loadModels(true), api("/api/settings"), api("/api/model-config")
+    ]);
+    if (!inventory || !inventory.models) throw new Error("The model catalog is unavailable.");
+    if (!settingsBox || !settingsBox.classList.contains("on")) return;
+    if (settingsBox.contains(document.activeElement)) {
+      settingsCatalogRefreshPending = true;
+      return;
+    }
+    settingsNow = { ...settingsNow, ...settings };
+    for (const control of settingsModelControls) {
+      if (!control.select.isConnected) { settingsModelControls.delete(control); continue; }
+      control.refreshed = true;
+      const saved = control.touched ? control.select.value : (settingsNow[control.key] || "");
+      control.select.replaceChildren(...settingsModelOptions(inventory, saved, control.first));
+      control.select.value = saved;
+    }
+    for (const render of settingsCatalogRenderers) render(inventory, modelConfig);
+  } catch {
+    settingsCatalogRefreshPending = settingsCatalogRefreshRevision !== revision;
+  } finally {
+    settingsCatalogRefreshRunning = false;
+    if (settingsCatalogRefreshPending && !settingsBox.contains(document.activeElement)) queueSettingsCatalogRefresh();
+  }
+}
+
+document.addEventListener("tt-models-changed", queueSettingsCatalogRefresh);
+document.addEventListener("focusout", () => {
+  if (settingsCatalogRefreshPending) queueSettingsCatalogRefresh();
+});
 
 // The gear shows a dot when there is something to do about an update.
 function markGear(update) {
@@ -75,6 +128,7 @@ function drawSettings() {
     mrSettings(s),
     mrsSettings(s),
     jiraSettings(s),
+    helperModelSettings(s),
     debugSettings()));
 }
 
@@ -233,10 +287,7 @@ function chatSettings(s) {
     });
     return el("label", { class: "opt-row" }, input, el("span", {}, el("strong", {}, label), el("br"), el("span", { class: "dim small" }, hint)));
   };
-  const model = el("input", { id: "set-chatModel", value: s.chatModel, "aria-label": "Model" });
-  model.addEventListener("change", async () => {
-    try { settingsNow = await api("/api/settings", { chatModel: model.value.trim() }); } catch (e) { alert(String(e)); }
-  });
+  const model = settingsModelSelect("chatModel", s.chatModel, "Claude Code's own");
   return el("section", { id: "chat-settings" },
     el("h3", {}, "Chats"),
     el("p", { class: "dim small" }, "A side chat starts with what you picked out of a workflow and a summary of it, put in front of your first message."),
@@ -334,6 +385,62 @@ function mrsSettings(s) {
     el("label", { class: "field-row" }, el("strong", {}, "Model"), model, el("span", { class: "dim small" }, "The model that reviews and answers about a request. Blank: sonnet.")));
 }
 
+function settingsModelOptions(data, saved, first) {
+  const providers = new Map((data.providers || []).map(p => [p.provider, p]));
+  const catalogUsable = data.available !== false && data.compatible !== false
+    && (!data.catalog || data.catalog.usable);
+  const models = catalogUsable ? (data.models || []).filter(m => {
+    const provider = providers.get(m.provider);
+    return provider && provider.state === "connected" && settingsNow.providerEnabled[m.provider] !== false;
+  }) : [];
+  const options = modelOptions(models, first);
+  if (!saved) return options;
+  const value = saved;
+  const candidate = models.find(m => modelValue(m) === value);
+  const existing = options.flatMap(group => group.tagName === "OPTGROUP" ? [...group.children] : [group])
+    .find(option => option.value === value);
+  if (candidate && candidate.runnable && existing) {
+    existing.selected = true;
+  } else if (existing) {
+    existing.disabled = true;
+    existing.selected = true;
+    existing.textContent = `${candidate ? candidate.label : saved} (unavailable)`;
+  } else {
+    const known = (data.models || []).find(m => modelValue(m) === value);
+    options.push(el("option", { value, disabled: true, selected: true },
+      `${known ? known.label : saved} (unavailable)`));
+  }
+  return options;
+}
+
+function retainEffort(select, models, model, saved, first) {
+  const list = effortsOf(models, model);
+  const options = effortOptions(list, first);
+  if (saved && !list.includes(saved)) {
+    options.push(el("option", { value: saved, disabled: true, selected: true }, `${saved} (unavailable)`));
+  }
+  select.replaceChildren(...options);
+  select.value = saved || "";
+}
+
+function settingsModelSelect(key, saved, first = "Tatty's default") {
+  const select = el("select", { id: "set-" + key, "aria-label": key === "chatModel" ? "Model" : `${key} model` },
+    el("option", { value: "" }, first));
+  const control = { key, select, first, refreshed: false, touched: false };
+  settingsModelControls.add(control);
+  select.addEventListener("change", async () => {
+    control.touched = true;
+    try { settingsNow = await api("/api/settings", { [key]: select.value }); }
+    catch (e) { alert(String(e)); }
+  });
+  loadModels().then(d => {
+    if (!select.isConnected || control.refreshed) return;
+    select.replaceChildren(...settingsModelOptions(d || {}, saved, first));
+    select.value = saved || "";
+  });
+  return select;
+}
+
 // The Jira board's reading (jira.js): which tickets, through which MCP server
 // and model. Each is saved when the box is left; the next Refresh uses it.
 function jiraSettings(s) {
@@ -344,13 +451,28 @@ function jiraSettings(s) {
     });
     return el("label", { class: "field-row" }, el("strong", {}, label), input, el("span", { class: "dim small" }, hint));
   };
+  const model = settingsModelSelect("jiraModel", s.jiraModel);
   return el("section", {},
     el("h3", {}, "Jira"),
     el("p", { class: "dim small" }, "The production mode's board reads your tickets through Claude, using the Atlassian MCP server you signed in to with /mcp."),
     field("jiraJql", "Tickets (JQL)", "Which tickets the board shows.", true),
     field("jiraServer", "MCP server", "Its name in claude mcp list."),
     field("jiraSite", "Site", "Only when your sign-in reaches several, e.g. example.atlassian.net. Blank: the first."),
-    field("jiraModel", "Model", "The model that reads Jira; a small one keeps it cheap."));
+    el("label", { class: "field-row" }, el("strong", {}, "Model"), model,
+      el("span", { class: "dim small" }, "The model that reads Jira; a small one keeps it cheap.")));
+}
+
+function helperModelSettings(s) {
+  const rows = [
+    ["storiesModel", "Stories model", "The model used to write stories."],
+    ["tasksModel", "Tasks model", "The model used to write tasks."],
+    ["qaModel", "QA model", "The model used to investigate QA findings."],
+    ["qaPlanModel", "QA planning model", "The model used to plan QA work."]
+  ];
+  return el("section", { id: "helper-model-settings" },
+    el("h3", {}, "Helper models"),
+    ...rows.map(([key, label, hint]) => el("label", { class: "field-row" },
+      el("strong", {}, label), settingsModelSelect(key, s[key]), el("span", { class: "dim small" }, hint))));
 }
 
 // The LLM tools: claude, copilot and codex. Connecting one lists the models it
@@ -367,38 +489,52 @@ function llmSettings() {
   const body = el("div", {});
   const note = el("p", { class: "dim small", id: "llm-note" });
   box.append(body, note);
+  const actionInfo = {
+    install: { label: "Install", path: "/api/llm-setup", action: "install" },
+    "sign-in": { label: "Sign in", path: "/api/llm-setup", action: "signin" },
+    connect: { label: "Connect", path: "/api/llms", action: "connect" },
+    disconnect: { label: "Disconnect", path: "/api/llms", action: "disconnect" },
+    refresh: { label: "Refresh", path: "/api/llms", action: "refresh" }
+  };
   const act = async (action, provider) => {
     note.textContent = "Working…";
     try {
-      const d = await api("/api/llms", { action, provider });
-      note.textContent = d.said || "";
-      loadModels(true);
+      const operation = actionInfo[action];
+      const result = await api(operation.path, { action: operation.action, provider });
+      const [d] = await Promise.all([api("/api/llms"), loadModels(true)]);
+      note.textContent = result.said || d.said || "";
       draw(d);
     } catch (e) { note.textContent = ""; alert(e.message || e); }
   };
   const draw = d => {
-    if (!d.available) {
-      body.replaceChildren(el("p", { class: "dim small" }, "This toolbox is too old to connect LLMs, so Tatty offers Claude's models only. Update the core plugin."));
-      return;
-    }
+    const message = d.compatible === false
+      ? "This toolbox is too old to connect LLMs. Update the core plugin."
+      : !d.catalog || !d.catalog.usable
+        ? d.error || "The model catalog is unavailable. Refresh the connections and try again."
+        : "";
     body.replaceChildren(el("table", { class: "plugins", id: "llm-table" },
       el("tr", {}, el("th", {}, "Tool"), el("th", {}, "State"), el("th", {}, "Version"), el("th", {}, "Models"), el("th", {})),
-      d.providers.map(p => {
+      (d.providers || []).map(p => {
         const here = d.models.filter(m => m.provider === p.provider);
         const listed = here.length ? here.map(m => m.id).join(", ") : "none";
-        const buttons = [];
-        if (p.state === "available") buttons.push(el("button", { type: "button", id: `llm-connect-${p.provider}`, onclick: () => act("connect", p.provider) }, "Connect"));
-        if (p.state === "connected" || p.state === "missing") {
-          buttons.push(el("button", { type: "button", id: `llm-refresh-${p.provider}`, onclick: () => act("refresh", p.provider) }, "Refresh models"));
-          if (p.provider !== "claude") buttons.push(" ", el("button", { type: "button", id: `llm-disconnect-${p.provider}`, onclick: () => act("disconnect", p.provider) }, "Disconnect"));
-        }
+        const buttons = (p.actions || []).filter(action => actionInfo[action]).map(action =>
+          el("button", { type: "button", id: `llm-${action}-${p.provider}`, onclick: () => act(action, p.provider) }, actionInfo[action].label));
         return el("tr", { class: p.state === "connected" ? "current" : "", id: "llm-" + p.provider },
           el("td", {}, p.provider), el("td", {}, LLM_STATE[p.state] || p.state), el("td", { class: "dim small" }, p.version || "-"),
-          el("td", { class: "dim small" }, `${listed}${p.provider !== "claude" && here.length ? " (not yet runnable)" : ""}`),
+          el("td", { class: "dim small" }, `${listed}${here.some(m => !m.runnable) ? " (not yet runnable)" : ""}`),
           el("td", {}, buttons));
-      })));
+      })),
+      message ? el("p", { class: "dim small", id: "llm-catalog-message" }, message) : null);
   };
-  loadModels(true).then(d => { if (d) draw(d); else body.replaceChildren(el("p", { class: "dim small" }, "Can't read the connections.")); });
+  const refresh = inventory => {
+    if (!box.isConnected) { settingsCatalogRenderers.delete(refresh); return; }
+    draw(inventory);
+  };
+  settingsCatalogRenderers.add(refresh);
+  loadModels(true).then(d => {
+    if (d) draw(d);
+    else body.replaceChildren(el("p", { class: "dim small" }, "Can't read the connections or model catalog."));
+  });
   return box;
 }
 
@@ -409,13 +545,11 @@ function sessionSettings() {
     el("p", { class: "dim small" }, "The model and effort Start launches the main Claude session with, for /tt-workflow and /tt-workflow-lite. A running session can't be switched, so this is set when it starts; each Start can still choose its own. A family name (sonnet) follows its latest model; the versions listed under it pin one."));
   loadModels(true).then(d => {
     if (!d || !d.models) { box.append(el("p", { class: "dim small" }, "Can't read the models.")); return; }
-    const model = el("select", { id: "set-sessionModel", "aria-label": "Model" }, modelOptions(d.models));
+    const model = el("select", { id: "set-sessionModel", "aria-label": "Model" },
+      ...settingsModelOptions(d, d.session.model, "Claude Code's own"));
     const effort = el("select", { id: "set-sessionEffort", "aria-label": "Effort" });
-    const fillEfforts = () => {
-      const list = effortsOf(d.models, model.value), was = effort.value;
-      effort.replaceChildren(...effortOptions(list));
-      effort.value = list.includes(was) ? was : "";
-    };
+    const fillEfforts = saved => retainEffort(effort, d.models, model.value,
+      saved === undefined ? effort.value : saved);
     const save = async () => {
       try {
         const r = await api("/api/model-config", { action: "set", role: "session", model: model.value || "-", effort: effort.value || "-" });
@@ -426,11 +560,20 @@ function sessionSettings() {
     };
     model.addEventListener("change", () => { fillEfforts(); save(); });
     effort.addEventListener("change", save);
-    model.value = d.models.some(m => m.id === d.session.model && m.runnable) ? d.session.model : "";
-    fillEfforts();
-    if (effortsOf(d.models, model.value).includes(d.session.effort)) effort.value = d.session.effort;
+    model.value = d.session.model || "";
+    fillEfforts(d.session.effort);
     box.append(el("label", { class: "field-row" }, el("strong", {}, "Model"), model, el("span", { class: "dim small" }, "Blank: Claude Code's own choice.")),
       el("label", { class: "field-row" }, el("strong", {}, "Effort"), effort, el("span", { class: "dim small" }, "How hard it thinks.")));
+    const refresh = (inventory, modelConfig) => {
+      if (!box.isConnected) { settingsCatalogRenderers.delete(refresh); return; }
+      const selectedModel = model.value, selectedEffort = effort.value;
+      d = { ...d, ...(modelConfig || {}), models: inventory.models || d.models,
+        session: (modelConfig && modelConfig.session) || d.session };
+      model.replaceChildren(...settingsModelOptions({ ...inventory, models: d.models }, selectedModel, "Claude Code's own"));
+      model.value = selectedModel;
+      fillEfforts(selectedEffort);
+    };
+    settingsCatalogRenderers.add(refresh);
   });
   return box;
 }
@@ -459,7 +602,15 @@ function stepSettings() {
       const sel = el("select", { id: "family-" + f.family, "aria-label": `${f.family} version` },
         el("option", { value: "" }, f.source === "own" ? `Your own setting (${f.label || f.effective})` : `Newest${newest ? ` (${newest.label})` : ""}`),
         f.versions.map(v => el("option", { value: v.id }, v.label)));
-      sel.value = f.chosen;
+      const selected = f.versions.find(v => v.id === f.chosen);
+      if (f.chosen && !selected) sel.append(el("option", { value: f.chosen, disabled: true }, `${f.chosen} (unavailable)`));
+      if (f.unavailable && selected) {
+        const option = [...sel.options].find(item => item.value === f.chosen);
+        option.disabled = true;
+        option.textContent = `${selected.label} (unavailable)`;
+      }
+      sel.value = f.chosen || "";
+      sel.disabled = !!f.unavailable;
       sel.addEventListener("change", () => act({ action: "family", family: f.family, model: sel.value || "-" }));
       return el("tr", { id: "family-row-" + f.family, class: f.chosen ? "current" : "" },
         el("td", {}, f.family), el("td", {}, sel), el("td", { class: "dim small" }, f.label || f.effective || "-"));
@@ -485,13 +636,11 @@ function stepSettings() {
       active.kind === "shipped, edited" ? el("button", { type: "button", id: "step-reset", onclick: () => act({ action: "reset", mode: now.mode }) }, "Reset edits") : null,
       active.kind === "saved" ? el("button", { type: "button", id: "step-delete", onclick: () => act({ action: "delete", mode: now.mode }) }, "Delete mode") : null);
     const row = r => {
-      const model = el("select", { id: `step-${r.role}-model`, "aria-label": `${r.role} model` }, modelOptions(now.models, "Session's own"));
+      const model = el("select", { id: `step-${r.role}-model`, "aria-label": `${r.role} model` },
+        ...settingsModelOptions({ ...now.inventory, models: now.models }, r.model === "-" ? "" : r.model, "Session's own"));
       const effort = el("select", { id: `step-${r.role}-effort`, "aria-label": `${r.role} effort` });
-      const fill = () => {
-        const list = effortsOf(now.models, model.value), was = effort.value;
-        effort.replaceChildren(...effortOptions(list, "Default"));
-        effort.value = list.includes(was) ? was : "";
-      };
+      const fill = saved => retainEffort(effort, now.models, model.value,
+        saved === undefined ? effort.value : saved, "Default");
       model.value = r.model === "-" ? "" : r.model;
       fill();
       effort.value = r.effort === "-" ? "" : r.effort;
@@ -507,7 +656,35 @@ function stepSettings() {
       el("tr", {}, el("th", {}, "Step"), el("th", {}, "What it does"), el("th", {}, "Model"), el("th", {}, "Effort")),
       now.roles.filter(r => r.role !== "session").map(row)));
   };
-  api("/api/model-config").then(d => { now = d; draw(); }).catch(() => body.replaceChildren(el("p", { class: "dim small" }, "Can't read the step models.")));
+  Promise.all([api("/api/model-config"), loadModels()]).then(([d, inventory]) => {
+    now = { ...d, inventory };
+    draw();
+    const refresh = (freshInventory, modelConfig) => {
+      if (!box.isConnected) { settingsCatalogRenderers.delete(refresh); return; }
+      const values = new Map([...body.querySelectorAll("input, select, textarea")].map(control => [control.id, control.value]));
+      now = { ...(modelConfig || now), inventory: freshInventory,
+        models: freshInventory.models || (modelConfig && modelConfig.models) || now.models };
+      draw();
+      for (const [id, value] of values) {
+        const control = [...body.querySelectorAll("input, select, textarea")].find(item => item.id === id);
+        if (!control) continue;
+        if (/-model$/.test(id)) {
+          control.replaceChildren(...settingsModelOptions({ ...now.inventory, models: now.models }, value, "Session's own"));
+          control.value = value;
+        } else if (/-effort$/.test(id)) {
+          const role = id.slice("step-".length, -"-effort".length);
+          const selectedModel = [...body.querySelectorAll("select")].find(item => item.id === `step-${role}-model`);
+          retainEffort(control, now.models, selectedModel && selectedModel.value, value, "Default");
+        } else if (id.startsWith("family-")) {
+          if (value && ![...control.options].some(option => option.value === value)) {
+            control.append(el("option", { value, disabled: true, selected: true }, `${value} (unavailable)`));
+          }
+          control.value = value;
+        } else control.value = value;
+      }
+    };
+    settingsCatalogRenderers.add(refresh);
+  }).catch(() => body.replaceChildren(el("p", { class: "dim small" }, "Can't read the step models.")));
   return box;
 }
 

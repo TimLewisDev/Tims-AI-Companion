@@ -80,6 +80,7 @@ echo "$*" >>"$(dirname "$0")/claude.log"
 # the explanation a small model writes of one task's code changes (after the failing case above, so it can fail)
 if [ "${1:-}" = -p ]; then case "$*" in *"who is reviewing them"*)
 	[ -f "$(dirname "$0")/claude-diff-slow" ] && sleep 3
+	printf '%s\n' "$@" >"$d/diff.args"
 	echo '{"type":"result","is_error":false,"result":"An addendum by the model.","total_cost_usd":0.001}'
 	exit 0 ;; esac; fi
 # A headless run for the Jira board: which job it is shows in the one MCP tool
@@ -126,6 +127,114 @@ finish() { bash "$W" close >/dev/null 2>&1; echo; echo "$pass passed, $fail fail
 # (a section's own state, such as a feature or a repository, is made by the section, and named in tools/test-tatty.sections).
 HAVE_LLMS=""
 [ -n "${TATTY_TOOLBOX:-}" ] && [ -f "$TATTY_TOOLBOX/plugins/core/skills/tt-connections/scripts/llms.sh" ] && HAVE_LLMS=1
+# A fake toolbox for the model checks: its llms.sh answers from files in $FX/ctl, which fxhelp.py (used by the
+# python checks in the models and llms sections) writes, so each answer is chosen by the check.
+fx_toolbox() {
+	FX="$T/fx"
+	local s="$FX/tb/plugins/core/skills"
+	mkdir -p "$s/tt-common/scripts" "$s/tt-connections/scripts" "$FX/ctl"
+	: >"$s/tt-common/scripts/workflow-state.sh"
+	cat >"$s/tt-connections/scripts/llms.sh" <<'EOS'
+#!/usr/bin/env bash
+d="$FAKE_LLMS"
+case "$1" in
+	capabilities) [ -f "$d/caps-fail" ] && exit 1; cat "$d/caps" ;;
+	status) cat "$d/status" ;;
+	models) [ -f "$d/models-fail" ] && { echo "scan broke" >&2; exit 1; }; cat "$d/models" ;;
+	*) exit 1 ;;
+esac
+EOS
+	cat >"$FX/fxhelp.py" <<'EOS'
+import importlib.util, os, pathlib, shutil, sys, time
+
+FX = pathlib.Path(__file__).resolve().parent
+CTL = FX / "ctl"
+TAB = "\t"
+
+
+def row(*cols):
+    return TAB.join(cols) + "\n"
+
+
+GOOD_CAPS = "provider-model-config-v1\nprovider-actions-v1\n"
+GOOD_MODELS = (row("claude", "sonnet", "Sonnet", "low,high", "yes", "any") + row("claude", "haiku", "Haiku", "-", "yes", "any")
+               + row("copilot", "gpt-5", "GPT-5", "-", "no", "any") + row("copilot", "shared", "Shared", "-", "no", "any")
+               + row("claude", "shared", "Shared", "-", "yes", "any"))
+GOOD_STATUS = (row("claude", "connected", "1.0", "3", "3", "install,bogus,refresh,install")
+               + row("copilot", "available", "-", "2", "0", "-") + row("codex", "connected", "-", "0", "0", "-"))
+
+
+def write(name, text):
+    with open(CTL / name, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def flag(name, on):
+    if on:
+        write(name, "x")
+    elif (CTL / name).exists():
+        (CTL / name).unlink()
+
+
+def fake(caps=GOOD_CAPS, models=GOOD_MODELS, status=GOOD_STATUS, caps_fail=False):
+    write("caps", caps)
+    write("models", models)
+    write("status", status)
+    flag("caps-fail", caps_fail)
+    flag("models-fail", False)
+
+
+class State:
+    cwd = "."
+    bash = shutil.which("bash") or "bash"
+
+    def emit(self, kind, **kw):
+        pass
+
+
+def load(srv):
+    os.environ["TATTY_TOOLBOX"] = (FX / "tb").as_posix()
+    os.environ["FAKE_LLMS"] = CTL.as_posix()
+    os.environ["TATTY_HOME"] = (FX / "home").as_posix()
+    for v in ("TATTY_STORIES_MODEL", "TATTY_TASKS_MODEL", "TATTY_QA_MODEL", "TATTY_QA_MODEL_PLAN"):
+        os.environ.pop(v, None)
+    spec = importlib.util.spec_from_file_location("srv", srv)
+    m = importlib.util.module_from_spec(spec)
+    sys.dont_write_bytecode = True
+    spec.loader.exec_module(m)
+    return m
+
+
+def fresh(m, **kw):
+    """Nothing scanned, no saved settings, the fake toolbox answering as given."""
+    shutil.rmtree(FX / "home", ignore_errors=True)
+    with m._models_lock:
+        m._models.update(at=0.0, rows=None, state="cold", error="", flight=None)
+        m._catalog_seen["generation"] = None
+    m._provider_states.update(at=0.0, states={})
+    fake(**kw)
+
+
+def raises(f):
+    try:
+        f()
+    except ValueError:
+        return True
+    return False
+
+
+def check(name, cond, detail=""):
+    print("ok" + TAB + name if cond else "FAIL" + TAB + name + TAB + str(detail).replace("\n", " ")[:300])
+EOS
+}
+# fx_report <file>: turn the python checks' "ok<TAB>name" and "FAIL<TAB>name<TAB>detail" lines into results
+fx_report() {
+	local v n d
+	[ -s "$1" ] || bad "the fake toolbox checks ran" "no output"
+	while IFS=$'\t' read -r v n d; do
+		case "$v" in ok) ok "$n" ;; FAIL) bad "$n" "$d" ;; *) bad "the fake toolbox checks ran" "$v $n $d" ;; esac
+	done <"$1"
+}
 save() { post /api/doc/save "{\"name\":\"Draft\",\"file\":\"$1\",\"expected\":$2,\"text\":$3}"; }
 milestone() {
 	$PY -c "import json, sys
@@ -148,6 +257,26 @@ section() {
 ' "$1" "$SECONDS" >>"$TATTY_TIMES"
 	case " ${TATTY_SECTIONS:-all} " in *" all "*|*" $1 "*) return 0;; esac
 	return 1
+}
+
+prepare_feature_fixture() {
+	[ "${FX_READY:-0}" = 1 ] && return
+	FX="$T/fxroot"; cp -r "$root/tools/fixtures/tatty-root" "$FX"
+	FX=$(cd "$FX" && { pwd -W 2>/dev/null || pwd; })
+	FX_READY=1
+}
+
+prepare_model_feature_project() {
+	prepare_feature_fixture
+	DEMO=$($PY -c "import sys, pathlib; print(pathlib.Path(sys.argv[1]).resolve().as_posix())" "$FX/features/Demo")
+	post /api/root "{\"path\":\"$FX\"}" >/dev/null
+	GITID="-c user.name=t -c user.email=t@example.com"
+	mkdir -p "$T/proj/plugins/tatty" && git -C "$T/proj" init -q -b main && : >"$T/proj/plugins/tatty/x" &&
+		git -C "$T/proj" add -A && git -C "$T/proj" $GITID commit -q -m first
+	HERE=$(cd "$T/proj" && { pwd -W 2>/dev/null || pwd; })
+	mkdir -p "$TT_WORKFLOW_HOME"
+	printf '%s\t%s\t2026-10-20\n' "$HERE" "$FX/features/Demo" >"$TT_WORKFLOW_HOME/links.tsv"
+	post /api/project "{\"name\":\"Draft\",\"path\":\"$HERE\"}" >/dev/null
 }
 
 echo "# tatty.sh"
@@ -359,6 +488,10 @@ has "a title makes a file name" "$T/tf" "file name: T-0003 - What A quick one 2 
 fi
 if section hub; then
 echo "# the Hub"
+[ "$(code "$U/static/hub.js")" = 200 ] && ok "hub.js served" || bad "hub.js served"
+get /static/hub.js >"$T/js"
+has "the open Hub inventory refreshes on catalog events" "$T/js" "tt-models-changed"
+has "provider controls follow advertised actions" "$T/js" "filter(action => actionInfo[action])"
 # Several projects, each its own Tatty root; its own TATTY_HOME so the checks below keep the root unset.
 HH="$T/hubhome"; mkdir -p "$HH"
 wpath() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
@@ -778,20 +911,47 @@ has "no network is an error, not a crash" "$T/f" "offline: error"
 has "a checkout is not updated that way" "$T/f" "a checkout isn't the installer's copy: False"
 
 fi
-[ "$TOOLBOX" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
+MODEL_CHECKS_ONLY=0
+if [ -n "${TATTY_SECTIONS:-}" ]; then
+	MODEL_CHECKS_ONLY=1
+	case " $TATTY_SECTIONS " in
+		*" models "*|*" llms "*) ;;
+		*) MODEL_CHECKS_ONLY=0 ;;
+	esac
+	for selected_section in $TATTY_SECTIONS; do
+		case "$selected_section" in
+			clone|selfupdate|features|project|views|models|llms) ;;
+			*) MODEL_CHECKS_ONLY=0; break ;;
+		esac
+	done
+fi
+[ "$TOOLBOX" = 1 ] || [ "$MODEL_CHECKS_ONLY" = 1 ] || { echo "skip  the workflow pages: no TT toolbox (set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout)"; finish; }
 
 if section views; then
 echo "# toolbox views"
-FX="$T/fxroot"; cp -r "$root/tools/fixtures/tatty-root" "$FX"
-FX=$(cd "$FX" && { pwd -W 2>/dev/null || pwd; })
+prepare_feature_fixture
+if [ "$MODEL_CHECKS_ONLY" != 1 ] || [ "$TOOLBOX" = 1 ]; then
 D=$(cd "$FX/features/Demo" && { pwd -W 2>/dev/null || pwd; })
 get "/api/view/where?dir=$($PY -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$D")" >"$T/view"
 has "where view runs workflow-state" "$T/view" 'Demo\tprimary\t'
 get "/api/view/hello" >"$T/view"
 has "hello view runs the toolbox's banner" "$T/view" '"exit": 0'
+fi
 
 fi
+case " ${TATTY_SECTIONS:-} " in
+	*" models "*|*" llms "*)
+		case " ${TATTY_SECTIONS} " in
+			*" views "*) ;;
+			*) prepare_feature_fixture ;;
+		esac
+		;;
+esac
+if [ "$MODEL_CHECKS_ONLY" = 1 ] && [ "$TOOLBOX" != 1 ]; then
+	prepare_model_feature_project
+fi
 if section features; then
+if [ "$MODEL_CHECKS_ONLY" != 1 ] || [ "$TOOLBOX" = 1 ]; then
 echo "# features pages"
 DEMO=$($PY -c "import sys, pathlib; print(pathlib.Path(sys.argv[1]).resolve().as_posix())" "$FX/features/Demo")
 mkdir -p "$TT_EVENTS_HOME"
@@ -876,6 +1036,7 @@ has "a link to a working note" "$T/j" '"file": ".tt/Demo - Task Status/step-log.
 [ "$(code -H "X-TT-Token: $K" "$U/api/resolve?name=Draft&target=No%20Such%20Doc")" = 404 ] && ok "a link to nothing: 404" || bad "a link to nothing: 404"
 
 fi
+fi
 if section editdoc; then
 echo "# editing a document"
 CH="$FX/features/Draft/Draft - Challenges.md"
@@ -954,6 +1115,7 @@ get /api/features >"$T/j"
 
 fi
 if section project; then
+if [ "$MODEL_CHECKS_ONLY" != 1 ] || [ "$TOOLBOX" = 1 ]; then
 echo "# the project a feature is started in"
 # a throwaway git repository, not the one these tests run from: a first Start makes a branch in it
 GITID="-c user.name=t -c user.email=t@example.com"
@@ -969,6 +1131,7 @@ printf '%s\t%s\t2026-10-20\n' "$HERE" "$FX/features/Demo" >"$TT_WORKFLOW_HOME/li
 get "/api/feature?name=Demo" >"$T/j"
 has "project from the tt-workflow link" "$T/j" '"projectFrom": "link"'
 post /api/project "{\"name\":\"Draft\",\"path\":\"$HERE\"}" >/dev/null # (the other feature the sections below start is in the same project)
+fi
 fi
 if section startstep; then
 echo "# starting the next step"
@@ -1037,6 +1200,26 @@ has "a project can be chosen" "$T/j" '"projectFrom": "chosen"'
 	ok "no such step" || bad "no such step"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Nope","row":0}' "$U/api/start")" = 404 ] &&
 	ok "no such feature" || bad "start: no such feature"
+start_files=$(find "$FX/features/Demo" -print | sort | while IFS= read -r path; do
+	if [ -f "$path" ]; then cksum "$path"; else printf '%s\n' "$path"; fi
+done | cksum)
+get "/api/feature?name=Demo" >"$T/start-before"
+start_sessions=$(pick "$T/start-before" "len(d['sessions'])")
+start_model_state=$(if [ -f "$TATTY_HOME/session-models.json" ]; then cksum "$TATTY_HOME/session-models.json"; else echo absent; fi)
+start_code=$(curl -s -o "$T/start-response" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' \
+	-d '{"name":"Demo","row":0,"model":"claude:stale"}' "$U/api/start")
+[ "$start_code" = 400 ] && ok "a stale model is refused before a session starts" ||
+	bad "a stale model is refused before a session starts" "HTTP $start_code: $(head -c 300 "$T/start-response")"
+has "the blocked Start explains how to recover" "$T/start-response" "Choose another in Settings, or refresh the connections."
+[ "$(find "$FX/features/Demo" -print | sort | while IFS= read -r path; do
+	if [ -f "$path" ]; then cksum "$path"; else printf '%s\n' "$path"; fi
+done | cksum)" = "$start_files" ] &&
+	ok "a blocked Start leaves the feature unchanged" || bad "a blocked Start leaves the feature unchanged"
+get "/api/feature?name=Demo" >"$T/start-after"
+[ "$(pick "$T/start-after" "len(d['sessions'])")" = "$start_sessions" ] &&
+	ok "a blocked Start creates no session" || bad "a blocked Start creates no session"
+[ "$(if [ -f "$TATTY_HOME/session-models.json" ]; then cksum "$TATTY_HOME/session-models.json"; else echo absent; fi)" = "$start_model_state" ] &&
+	ok "a blocked Start leaves the saved feature choice unchanged" || bad "a blocked Start leaves the saved feature choice unchanged"
 
 fi
 if section branches; then
@@ -2292,6 +2475,8 @@ cp "$T/claude.log" "$T/claude.log.before" 2>/dev/null || : >"$T/claude.log.befor
 	ok "code diff: more info is started" || bad "code diff: more info is started"
 diff_wait "An addendum by the model." && ok "code diff: more info is stored" || bad "code diff: more info is stored" "$(head -c 400 "$T/dj")"
 diff_wait '"busy": []' || bad "code diff: the first more info run finished"
+[ "$($PY -c "import sys; a=open(sys.argv[1], encoding='utf-8').read().splitlines(); print(a[a.index('--model')+1])" "$T/diff.args")" = haiku ] &&
+	ok "code diff: passes the bare default model" || bad "code diff: passes the bare default model" "$(cat "$T/diff.args")"
 [ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"name":"Demo","task":"T99"}' "$U/api/diff-more")" = 400 ] &&
 	ok "code diff: more info for a task not on the board is refused" || bad "code diff: more info for a task not on the board is refused"
 touch "$T/claude-fail"
@@ -2938,6 +3123,8 @@ has "the board run may search" "$T/jira-board.args" "mcp__atlassian__searchJiraI
 hasnt "but not move tickets" "$T/jira-board.args" "mcp__atlassian__transitionJiraIssue"
 has "with no built-in tools" "$T/jira-board.args" "--tools"
 has "on the small model" "$T/jira-board.args" "haiku"
+[ "$($PY -c "import sys; a=open(sys.argv[1], encoding='utf-8').read().splitlines(); print(a[a.index('--model')+1])" "$T/jira-board.args")" = haiku ] &&
+	ok "Jira passes the bare default model" || bad "Jira passes the bare default model" "$(cat "$T/jira-board.args")"
 has "loading only the Jira server" "$T/jira-board.args" '{"mcpServers": {"atlassian": {"type": "http", "url": "https://mcp.example/v1/mcp"}}}'
 has "and only that" "$T/jira-board.args" "--strict-mcp-config"
 has "with the JQL from Settings" "$T/jira-board.args" "sprint in openSprints()"
@@ -3434,6 +3621,8 @@ has "write: and asks for the criteria" "$T/tw-prompt" "### Acceptance criteria"
 has "write: no tools without the project" "$T/tw-args" "--tools"
 hasnt "write: no folder is added" "$T/tw-args" "--add-dir"
 has "write: a small model by default" "$T/tw-args" "haiku"
+[ "$($PY -c "import sys; a=open(sys.argv[1], encoding='utf-8').read().splitlines(); print(a[a.index('--model')+1])" "$T/tw-args")" = haiku ] &&
+	ok "write: passes the bare default model" || bad "write: passes the bare default model" "$(cat "$T/tw-args")"
 cmp -s "$T/t3.before" "$(taskfile T-0003)" && ok "write: the task's file is not touched" || bad "write: the task's file is not touched"
 [ "$(tw "{\"name\":\"Game\",\"runId\":\"run-proj-3\",\"title\":\"Task 3\",\"shape\":\"detail\",\"context\":\"project\",\"folder\":\"$GRW\"}")" = 202 ] &&
 	ok "write: a run that reads the project starts" || bad "write: a run that reads the project starts" "$(cat "$T/tw")"
@@ -3500,6 +3689,7 @@ cat >"$T/claude-qa.sh" <<'EOS'
 #!/usr/bin/env bash
 d=$(dirname "$0")
 echo "$*" >>"$d/claude-qa.log"
+printf '%s\n' "$@" >"$d/qa-args"
 case "$*" in
 *"You turn a tester"*) cat "$d/qa-bug.out" ;;
 *"You break a feature"*) cat "$d/qa-plan.out" ;;
@@ -3544,6 +3734,8 @@ get "/api/qa/bug?id=BUG-9" >"$T/j"; has "an unknown bug is said so" "$T/j" "no s
 # a bug drafted from plain words: the fields come back in an event, nothing is saved
 [ "$(qb bug/draft '{"runId":"bugdraft01","description":"login retry does nothing","client":"t"}')" = 202 ] && ok "a draft starts" || bad "a draft starts" "$(cat "$T/qa")"
 qaev '"kind": "bugdraft"' && ok "the draft answers" || bad "the draft answers"
+[ "$($PY -c "import sys; a=open(sys.argv[1], encoding='utf-8').read().splitlines(); print(a[a.index('--model')+1])" "$T/qa-args")" = haiku ] &&
+	ok "bug drafting passes the bare default model" || bad "bug drafting passes the bare default model" "$(cat "$T/qa-args")"
 $PY -c "
 import json, sys
 e = [x for x in json.load(open(sys.argv[1], encoding='utf-8')) if x.get('kind') == 'bugdraft'][0]
@@ -3596,6 +3788,8 @@ get /api/qa >"$T/j"
 [ "$(qb plan '{"feature":"Lite","op":"start"}')" = 200 ] && ok "a second feature's plan" || bad "a second feature's plan"
 [ "$(qb plan/draft '{"runId":"plandraft2","feature":"Lite","client":"t"}')" = 202 ] && ok "its areas are drafted" || bad "its areas are drafted" "$(cat "$T/qa")"
 qaev '"kind": "plandraft"' && ok "the draft answers" || bad "the draft answers"
+[ "$($PY -c "import sys; a=open(sys.argv[1], encoding='utf-8').read().splitlines(); print(a[a.index('--model')+1])" "$T/qa-args")" = haiku ] &&
+	ok "plan drafting passes the bare default model" || bad "plan drafting passes the bare default model" "$(cat "$T/qa-args")"
 $PY -c "
 import json, sys
 e = [x for x in json.load(open(sys.argv[1], encoding='utf-8')) if x.get('kind') == 'plandraft'][0]
@@ -3698,6 +3892,8 @@ has "headless, streaming" "$T/claude-p-args" "-p --output-format stream-json --v
 has "only stories.sh may run" "$T/claude-p-args" "Bash(bash *stories.sh*)"
 has "nothing prompts" "$T/claude-p-args" "--permission-mode dontAsk"
 has "the run isn't one of Tatty's sessions" "$T/claude-p-session" "none"
+[ "$($PY -c "import shlex,sys; a=shlex.split(open(sys.argv[1], encoding='utf-8').read()); print(a[a.index('--model')+1])" "$T/claude-p-args")" = haiku ] &&
+	ok "Stories passes the bare default model" || bad "Stories passes the bare default model" "$(cat "$T/claude-p-args")"
 pick "$T/ev" "'\n'.join(e.get('run', {}).get('step', '') for e in d if e['type'] == 'stories' and e.get('run'))" >"$T/f"
 has "each tool call is a step on the page" "$T/f" "Writing a story"
 pick "$T/ev" "[e for e in d if e['type'] == 'stories' and e.get('done')][-1]" >"$T/f"
@@ -3965,18 +4161,381 @@ if [ -n "$HAVE_LLMS" ]; then
 	has "what a feature was started on is remembered for its chats" "$TATTY_HOME/session-models.json" '"Demo"'
 fi
 [ "$(code "$U/static/models.js")" = 200 ] && ok "models.js served" || bad "models.js served"
+get /static/models.js >"$T/js"
+has "model options use provider-qualified values" "$T/js" "function modelValue(m)"
+has "duplicate IDs receive distinct qualified values" "$T/js" '`${m.provider}:${m.id}`'
+has "non-runnable rows remain disabled" "$T/js" "disabled: !m.runnable"
+has "saved choices remain visible when unavailable" "$T/js" "(unavailable)"
+has "open Start pickers refresh on catalog events" "$T/js" "tt-models-changed"
+get /static/app.js >"$T/js"
+has "catalog events reach open model surfaces" "$T/js" "tt-models-changed"
+echo "# model and provider settings"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"providerEnabled":{"claude":"yes"}}' "$U/api/settings")" = 400 ] && ok "a provider switch that isn't true or false is refused" || bad "a provider switch that isn't true or false is refused"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"providerEnabled":{"gemini":true}}' "$U/api/settings")" = 400 ] && ok "an unknown provider can't be switched" || bad "an unknown provider can't be switched"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"providerEnabled":{"claude":true,"copilot":false}}' "$U/api/settings")" = 400 ] && ok "one provider is switched at a time" || bad "one provider is switched at a time"
+[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"chatModel":"sonnet"}' "$U/api/settings")" = 400 ] && ok "a model choice names its provider" || bad "a model choice names its provider"
+post /api/settings '{"providerEnabled":{"copilot":false}}' >"$T/j"
+[ "$(pick "$T/j" "d['providerEnabled']")" = "{'copilot': False}" ] && ok "a provider is switched off" || bad "a provider is switched off" "$(head -c 300 "$T/j")"
+post /api/settings '{"providerEnabled":{"codex":false}}' >"$T/j"
+[ "$(pick "$T/j" "sorted(d['providerEnabled'].items())")" = "[('codex', False), ('copilot', False)]" ] && ok "a toggle leaves the other providers' choices alone" || bad "a toggle leaves the other providers' choices alone" "$(head -c 300 "$T/j")"
+post /api/settings '{"providerEnabled":{"copilot":true}}' >/dev/null
+post /api/settings '{"providerEnabled":{"codex":true}}' >"$T/j"
+[ "$(pick "$T/j" "sorted(d['providerEnabled'].items())")" = "[('codex', True), ('copilot', True)]" ] && ok "and back on" || bad "and back on" "$(head -c 300 "$T/j")"
+fx_toolbox
+$PY - "$SRV" "$FX" >"$T/fx.out" 2>&1 <<'EOF'
+import json, os, subprocess, sys
+sys.path.insert(0, sys.argv[2])
+import fxhelp as fx
+m = fx.load(sys.argv[1])
+st = fx.State()
+chk = fx.check
+home = fx.FX / "home"
+
+fx.fresh(m)
+s = m.load_settings()
+chk("fresh settings: chat is claude:sonnet", s["chatModel"] == "claude:sonnet", s["chatModel"])
+chk("fresh settings: Jira and the other helpers are claude:haiku",
+    all(s[k] == "claude:haiku" for k in ("jiraModel", "storiesModel", "tasksModel", "qaModel", "qaPlanModel")), s)
+chk("fresh settings: no provider is switched off, and nothing is migrated yet", s["providerEnabled"] == {} and s["modelsMigrated"] is False)
+
+# earlier choices and helper environment variables are carried over once, by a unique match in the catalog
+home.mkdir(parents=True, exist_ok=True)
+(home / "settings.json").write_text(json.dumps({"chatModel": "gpt-5", "jiraModel": "shared"}), encoding="utf-8")
+os.environ["TATTY_STORIES_MODEL"] = "gpt-5"
+os.environ["TATTY_TASKS_MODEL"] = "shared"
+os.environ["TATTY_QA_MODEL"] = "nonesuch"
+m.migrate_settings(st)
+s = m.load_settings()
+chk("migration: a saved bare id that one model has gets its provider", s["chatModel"] == "copilot:gpt-5", s["chatModel"])
+chk("migration: a helper variable matching one model is imported", s["storiesModel"] == "copilot:gpt-5", s["storiesModel"])
+chk("migration: an ambiguous helper variable falls back to the shipped default", s["tasksModel"] == "claude:haiku", s["tasksModel"])
+chk("migration: an unmatched helper variable falls back to the shipped default", s["qaModel"] == "claude:haiku", s["qaModel"])
+chk("migration: a helper with no variable keeps its default", s["qaPlanModel"] == "claude:haiku", s["qaPlanModel"])
+chk("migration: an ambiguous saved choice stays visible, unresolved", s["jiraModel"] == "shared" and m.unresolved_models(s) == ["jiraModel"], s["jiraModel"])
+chk("migration: it is recorded as done", s["modelsMigrated"] is True)
+why = m.resolve_model(st, s["jiraModel"])
+chk("an unresolved choice is refused when something runs", why[0] == "" and "which provider" in why[1], why)
+os.environ["TATTY_TASKS_MODEL"] = "gpt-5"
+os.environ["TATTY_QA_MODEL"] = "sonnet"
+m.migrate_settings(st)
+s = m.load_settings()
+chk("migration: the helper variables are ignored afterwards", s["tasksModel"] == "claude:haiku" and s["qaModel"] == "claude:haiku", s)
+m.save_settings({"theme": "dark"})
+chk("saving another setting keeps the unresolved choice", m.load_settings()["jiraModel"] == "shared")
+m.save_settings({"modelsMigrated": False})
+chk("a save can't ask for the migration to run again", m.load_settings()["modelsMigrated"] is True)
+
+chk("a model choice without a provider is refused", fx.raises(lambda: m.save_settings({"chatModel": "sonnet"})))
+chk("a model choice with a provider is kept", m.save_settings({"chatModel": "claude:haiku"})["chatModel"] == "claude:haiku")
+chk("a provider switch that isn't a boolean is refused", fx.raises(lambda: m.save_settings({"providerEnabled": {"claude": "yes"}})))
+chk("an unknown provider can't be switched", fx.raises(lambda: m.save_settings({"providerEnabled": {"gemini": False}})))
+chk("two providers can't be switched in one save", fx.raises(lambda: m.save_settings({"providerEnabled": {"claude": False, "codex": False}})))
+m.save_settings({"providerEnabled": {"copilot": False}})
+m.save_settings({"providerEnabled": {"claude": False}})
+m.save_settings({"providerEnabled": {"copilot": True}})
+chk("a toggle patch leaves the other providers' keys intact", m.load_settings()["providerEnabled"] == {"claude": False, "copilot": True}, m.load_settings()["providerEnabled"])
+
+# Each operation checks availability before creating its record, run, or process.
+from unittest.mock import patch
+policy_toolbox_run = m.toolbox_run
+operation_model = {"choice": "claude:sonnet"}
+def operation_toolbox_run(state, rel, args, timeout=60):
+    if rel == m.MODEL_CONFIG and args == ["get", "session"]:
+        return 0, f"model={operation_model['choice']} effort=-\n", ""
+    return policy_toolbox_run(state, rel, args, timeout)
+m.toolbox_run = operation_toolbox_run
+operation_root = fx.FX / "operations"
+project = operation_root / "project"
+feature = operation_root / "feature"
+board = operation_root / "board"
+design = operation_root / "design"
+for path in (project, feature, board, design):
+    path.mkdir(parents=True, exist_ok=True)
+(feature / "Notes.md").write_text("Notes", encoding="utf-8")
+blocked_settings = {"providerEnabled": {"claude": False}, "chatModel": "claude:sonnet",
+                    "jiraModel": "claude:haiku", "storiesModel": "claude:haiku",
+                    "tasksModel": "claude:haiku", "qaModel": "claude:haiku",
+                    "qaPlanModel": "claude:haiku"}
+
+def blocked_state():
+    fx.fresh(m)
+    m.save_settings(blocked_settings)
+    return m.State(str(project), fx.State.bash)
+
+def without_worker(call):
+    started = []
+    real_start = m.threading.Thread.start
+
+    def start(thread):
+        if getattr(thread._target, "__name__", "") == "_readerthread":
+            return real_start(thread)
+        started.append(thread)
+
+    with patch.object(m.threading.Thread, "start", new=start):
+        result = call()
+    return result, not started
+
+st = blocked_state()
+((code, answer), no_worker) = without_worker(lambda: m.start_session(st, feature, {}))
+chk("Start creates nothing when its model is unavailable", code == 400 and "switched off" in answer["error"]
+    and not st.sessions and not (feature / "routes.json").exists() and no_worker, answer)
+st = blocked_state()
+((code, answer), no_worker) = without_worker(lambda: m.intake_start(st, {}))
+chk("typed intake creates nothing when its model is unavailable",
+    code == 400 and "switched off" in answer["error"] and not st.chat_runs and no_worker
+    and not (operation_root / "features").exists(), answer)
+st = blocked_state()
+((code, answer), no_worker) = without_worker(
+    lambda: m.chat_new(st, {"kind": "side", "project": str(project), "context": {}}))
+chk("side-chat creation blocks before saving a chat or starting summary work",
+    code == 409 and "switched off" in answer["error"] and not list((m.home() / "chats").glob("*.json"))
+    and not st.chat_runs and no_worker, answer)
+st = blocked_state()
+chat = {"id": "c-deadbeef", "kind": "side", "project": project.as_posix(), "feature": "",
+        "claudeSession": "session", "messages": [], "context": {"selected": "text"}, "cost": 0.0, "closed": False}
+m.write_chat(chat)
+with patch.object(m, "claude_path", return_value="claude"):
+    (code, answer), no_worker = without_worker(
+        lambda: m.chat_say(st, {"id": chat["id"], "text": "Do not save"}))
+stored = m.read_chat(chat["id"])
+chk("chat turns block before storing a message or registering work",
+    code == 409 and "switched off" in answer["error"] and not stored["messages"] and not st.chat_runs
+    and no_worker, answer)
+
+class Request:
+    path = "/api/jira/refresh"
+    state = None
+    gate = lambda self: (self.path, {})
+    body = lambda self: {}
+    send = lambda self, code, payload: (code, payload)
+
+st = blocked_state()
+request = Request()
+request.state = st
+((code, answer), no_worker) = without_worker(lambda: m.Handler.do_POST_inner(request))
+chk("Jira refresh blocks before registering a run", code == 409 and "switched off" in answer["error"]
+    and not st.jira_busy and no_worker and not (m.home() / "jira").exists(), answer)
+st = blocked_state()
+doc = design / "User Stories.md"
+doc.write_text("# Stories\n", encoding="utf-8")
+with patch.object(m, "stories_doc", return_value=doc), patch.object(m, "stories_script", return_value=True), \
+     patch.object(m, "claude_path", return_value="claude"):
+    (code, answer), no_worker = without_worker(lambda: m.start_stories_run(st, design, {"mode": "draft"}))
+chk("Stories blocks before creating its run or temporary folder",
+    code == 409 and "switched off" in answer["error"] and st.stories_run is None
+    and not (m.home() / "runs").exists() and no_worker, answer)
+st = blocked_state()
+with patch.object(m, "claude_path", return_value="claude"), patch.object(m, "task_write_prompt", return_value="prompt"):
+    (code, answer), no_worker = without_worker(
+        lambda: m.task_write_start(st, board, {"runId": "run-blocked-1", "title": "Task"}, "client"))
+chk("task writing blocks before registering a run", code == 409 and "switched off" in answer["error"]
+    and not st.task_writes and no_worker and not (m.home() / "runs").exists(), answer)
+st = blocked_state()
+((code, answer), no_worker) = without_worker(
+    lambda: m.qa_bug_draft(st, {"runId": "bug-blocked-1", "description": "A bug"}))
+chk("QA bug drafting blocks before registering a run", code == 409 and "switched off" in answer["error"]
+    and not st.qa_runs and no_worker and not (m.home() / "runs").exists(), answer)
+st = blocked_state()
+with patch.object(m, "qa_feature_name", return_value="Demo"):
+    (code, answer), no_worker = without_worker(
+        lambda: m.qa_plan_draft(st, {"runId": "plan-blocked-1", "feature": "Demo"}))
+chk("QA plan drafting blocks before registering a run", code == 409 and "switched off" in answer["error"]
+    and not st.qa_runs and no_worker and not (m.home() / "runs").exists(), answer)
+st = blocked_state()
+with patch.object(m, "feature_dir", return_value=feature), patch.object(m, "build_task_rows", return_value=[{"id": "task-one"}]):
+    (code, answer), no_worker = without_worker(lambda: m.diff_more(st, {"name": "Demo", "task": "task-one"}))
+chk("diff help blocks before registering a run", code == 409 and "switched off" in answer["error"]
+    and not st.diff_runs and no_worker, answer)
+
+NON_RUNNABLE_MODELS = (fx.row("claude", "sonnet", "Sonnet", "low,high", "no", "any")
+                       + fx.row("claude", "haiku", "Haiku", "-", "no", "any"))
+DISCONNECTED_MODELS = fx.row("copilot", "gpt-5", "GPT-5", "-", "no", "any")
+blocked_choices = {
+    "disconnected": ("claude:sonnet", dict(models=DISCONNECTED_MODELS,
+                                           status=fx.row("claude", "available", "-", "0", "0", "connect"))),
+    "disabled": ("claude:sonnet", {}),
+    "missing": ("claude:sonnet", dict(status=fx.row("claude", "missing", "-", "0", "0", "install"))),
+    "non-runnable": ("claude:haiku", dict(models=NON_RUNNABLE_MODELS)),
+    "unresolved": ("shared", {}),
+    "stale": ("claude:stale", {}),
+}
+blocked_guidance = {
+    "disconnected": "isn't one of the models",
+    "disabled": "switched off",
+    "missing": "isn't installed",
+    "non-runnable": "can't run here yet",
+    "unresolved": "doesn't say which provider",
+    "stale": "isn't one of the models",
+}
+
+def blocked_state_for(name):
+    choice, fixture = blocked_choices[name]
+    fx.fresh(m, **fixture)
+    operation_model["choice"] = choice
+    settings = {key: choice for key in ("chatModel", "jiraModel", "storiesModel", "tasksModel", "qaModel", "qaPlanModel")}
+    if name == "disabled":
+        settings["providerEnabled"] = {"claude": False}
+    if name == "unresolved":
+        m.home().mkdir(parents=True, exist_ok=True)
+        (m.home() / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    else:
+        m.save_settings(settings)
+    return m.State(str(project), fx.State.bash)
+
+def check_blocked_operation(name, operation, invoke, unchanged):
+    st = blocked_state_for(name)
+    (code, answer), no_worker = without_worker(lambda: invoke(st))
+    chk(f"{operation} refuses {name} models before side effects",
+        code in (400, 409) and blocked_guidance[name] in answer.get("error", "")
+        and no_worker and unchanged(st), answer)
+
+for blocked_name in ("disconnected", "disabled", "missing", "non-runnable", "unresolved", "stale"):
+    check_blocked_operation(
+        blocked_name, "Start",
+        lambda state: m.start_session(state, feature, {}),
+        lambda state: not state.sessions and not (feature / "routes.json").exists())
+    check_blocked_operation(
+        blocked_name, "typed intake",
+        lambda state: m.intake_start(state, {}),
+        lambda state: not state.chat_runs and not (operation_root / "features").exists())
+    check_blocked_operation(
+        blocked_name, "side-chat creation",
+        lambda state: m.chat_new(state, {"kind": "side", "project": str(project), "context": {}}),
+        lambda state: not list((m.home() / "chats").glob("*.json")) and not state.chat_runs)
+
+    turn_chat = {"id": "c-deadbeef", "kind": "side", "project": project.as_posix(), "feature": "",
+                 "claudeSession": "session", "messages": [], "context": {"selected": "text"},
+                 "cost": 0.0, "closed": False}
+    def invoke_chat_turn(state):
+        m.write_chat(turn_chat)
+        with patch.object(m, "claude_path", return_value="claude"):
+            return m.chat_say(state, {"id": turn_chat["id"], "text": "Do not save"})
+    check_blocked_operation(
+        blocked_name, "side-chat turns", invoke_chat_turn,
+        lambda state: not m.read_chat(turn_chat["id"])["messages"] and not state.chat_runs)
+
+    request = Request()
+    def invoke_jira(state):
+        request.state = state
+        return m.Handler.do_POST_inner(request)
+    check_blocked_operation(
+        blocked_name, "Jira refresh", invoke_jira,
+        lambda state: not state.jira_busy and not (m.home() / "jira").exists())
+
+    stories_doc_path = design / "User Stories.md"
+    stories_doc_path.write_text("# Stories\n", encoding="utf-8")
+    def invoke_stories(state):
+        with patch.object(m, "stories_doc", return_value=stories_doc_path), \
+             patch.object(m, "stories_script", return_value=True), \
+             patch.object(m, "claude_path", return_value="claude"):
+            return m.start_stories_run(state, design, {"mode": "draft"})
+    check_blocked_operation(
+        blocked_name, "Stories", invoke_stories,
+        lambda state: state.stories_run is None and not (m.home() / "runs").exists())
+
+    task_start_effects = {"feature_created": False}
+    def invoke_task_start(state):
+        board_data = {"started": {}, "options": {}}
+        task_data = {"id": "T-1", "feature": "", "status": "Backlog"}
+        def unexpected_feature(*args):
+            task_start_effects["feature_created"] = True
+            return 400, {"error": "unexpected feature creation"}
+        with patch.object(m, "task_store", return_value={"lock": m.threading.RLock()}), \
+             patch.object(m, "task_board", return_value=board_data), \
+             patch.object(m, "task_index", return_value=[]), \
+             patch.object(m, "task_ids", return_value=({"T-1": task_data}, [])), \
+             patch.object(m, "new_feature", side_effect=unexpected_feature):
+            return m.task_start(state, board, {"id": "T-1", "project": str(project)}, "client")
+    check_blocked_operation(
+        blocked_name, "Tasks workflow start", invoke_task_start,
+        lambda state: not task_start_effects["feature_created"])
+
+    def invoke_task_write(state):
+        with patch.object(m, "claude_path", return_value="claude"), \
+             patch.object(m, "task_write_prompt", return_value="prompt"):
+            return m.task_write_start(state, board, {"runId": "run-blocked-1", "title": "Task"}, "client")
+    check_blocked_operation(
+        blocked_name, "task writing", invoke_task_write,
+        lambda state: not state.task_writes and not (m.home() / "runs").exists())
+    check_blocked_operation(
+        blocked_name, "QA bug drafting",
+        lambda state: m.qa_bug_draft(state, {"runId": "bug-blocked-1", "description": "A bug"}),
+        lambda state: not state.qa_runs and not (m.home() / "runs").exists())
+
+    def invoke_qa_plan(state):
+        with patch.object(m, "qa_feature_name", return_value="Demo"):
+            return m.qa_plan_draft(state, {"runId": "plan-blocked-1", "feature": "Demo"})
+    check_blocked_operation(
+        blocked_name, "QA plan drafting", invoke_qa_plan,
+        lambda state: not state.qa_runs and not (m.home() / "runs").exists())
+
+
+diff_help_fixtures = {
+    "disconnected": dict(models=DISCONNECTED_MODELS,
+                         status=fx.row("claude", "available", "-", "0", "0", "connect")),
+    "disabled": {},
+    "missing": dict(status=fx.row("claude", "missing", "-", "0", "0", "install")),
+    "non-runnable": dict(models=NON_RUNNABLE_MODELS),
+    "stale": dict(models=fx.row("claude", "sonnet", "Sonnet", "low,high", "yes", "any")),
+}
+for diff_state, fixture in diff_help_fixtures.items():
+    fx.fresh(m, **fixture)
+    if diff_state == "disabled":
+        m.save_settings({"providerEnabled": {"claude": False}})
+    st = m.State(str(project), fx.State.bash)
+
+    def invoke_diff_help(state):
+        with patch.object(m, "feature_dir", return_value=feature), \
+             patch.object(m, "build_task_rows", return_value=[{"id": "task-one"}]):
+            return m.diff_more(state, {"name": "Demo", "task": "task-one"})
+
+    (code, answer), no_worker = without_worker(lambda: invoke_diff_help(st))
+    chk(f"diff help refuses unavailable fixed model when {diff_state} before side effects",
+        code == 409 and blocked_guidance[diff_state] in answer.get("error", "")
+        and no_worker and not st.diff_runs, answer)
+
+# Summary launches use their fixed model and have no unresolved saved choice.
+summary_fixtures = {
+    "disconnected": dict(models=DISCONNECTED_MODELS,
+                         status=fx.row("claude", "available", "-", "0", "0", "connect")),
+    "disabled": {},
+    "missing": dict(status=fx.row("claude", "missing", "-", "0", "0", "install")),
+    "non-runnable": dict(models=NON_RUNNABLE_MODELS),
+    "stale": dict(models=fx.row("claude", "sonnet", "Sonnet", "low,high", "yes", "any")),
+}
+for summary_state, fixture in summary_fixtures.items():
+    fx.fresh(m, **fixture)
+    if summary_state == "disabled":
+        m.save_settings({"providerEnabled": {"claude": False}})
+    m.save_settings({"chatSummary": "model", "chatModel": "claude:sonnet"})
+    st = m.State(str(project), fx.State.bash)
+    with patch.object(m, "chat_model_choice", return_value=(["--model", "sonnet"], "")), \
+         patch.object(m, "clean_context", return_value={"selected": "text"}), \
+         patch.object(m, "chat_context_summary", return_value="Summary"):
+        (code, answer), no_worker = without_worker(
+            lambda: m.chat_new(st, {"kind": "side", "project": str(project), "context": {}}))
+    chk(f"a summary refuses {summary_state} models before side effects",
+        code == 409 and blocked_guidance[summary_state] in answer.get("error", "") and no_worker
+        and not list((m.home() / "chats").glob("*.json")) and not st.chat_runs, answer)
+EOF
+fx_report "$T/fx.out"
 
 fi
 if section llms; then
 echo "# LLM connections and step models"
 if [ -n "$HAVE_LLMS" ]; then
 	get /api/llms >"$T/j"
+	[ "$(code "$U/static/settings.js")" = 200 ] && ok "settings.js served" || bad "settings.js served"
+	get /static/settings.js >"$T/js"
+	has "open Settings controls refresh on catalog events" "$T/js" "tt-models-changed"
+	has "Settings waits while a control is being edited" "$T/js" "settingsBox.contains(document.activeElement)"
 	[ "$(pick "$T/j" "[p['provider'] + ':' + p['state'] for p in d['providers']]")" = "['claude:connected', 'copilot:available', 'codex:available']" ] &&
 		ok "claude is connected; copilot and codex are installed but not" || bad "connections" "$(head -c 400 "$T/j")"
 	[ "$(pick "$T/j" "sorted(m['id'] for m in d['models'] if m['runnable'] and m['scope'] == 'any')")" = "['fable', 'haiku', 'opus', 'sonnet']" ] && ok "claude's aliases are runnable" || bad "claude's models" "$(head -c 400 "$T/j")"
 		[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'claude'][:3]")" = "['sonnet', 'claude-sonnet-5-5', 'claude-sonnet-5']" ] && ok "an alias comes first, then its versions" || bad "an alias comes first, then its versions" "$(head -c 400 "$T/j")"
 		[ "$(pick "$T/j" "all(m['runnable'] and m['scope'] == 'session' for m in d['models'] if m['id'].startswith('claude-'))")" = True ] && ok "a version is runnable, for a session" || bad "a version is runnable, for a session"
 	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"connect","provider":"gemini"}' "$U/api/llms")" = 400 ] && ok "an unknown tool is refused" || bad "an unknown tool is refused"
+	[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"invent","provider":"claude"}' "$U/api/llms")" = 400 ] && ok "an unadvertised action is refused" || bad "an unadvertised action is refused"
 	post /api/llms '{"action":"connect","provider":"copilot"}' >"$T/j"
 	[ "$(pick "$T/j" "[m['id'] for m in d['models'] if m['provider'] == 'copilot']")" = "['gpt-5', 'claude-sonnet-4.5', 'o4-mini']" ] && ok "connecting lists the tool's models" || bad "connect copilot" "$(head -c 400 "$T/j")"
 	[ "$(pick "$T/j" "any(m['runnable'] for m in d['models'] if m['provider'] == 'copilot')")" = False ] && ok "which can't run yet" || bad "copilot models are not runnable"
@@ -4010,8 +4569,9 @@ if [ -n "$HAVE_LLMS" ]; then
 		post /api/model-config "{\"action\":\"family\",\"family\":\"sonnet\",\"model\":\"$OLDEST\"}" >"$T/j"
 		[ "$(pick "$T/j" "d['families'][0]['chosen']")" = "$OLDEST" ] && ok "a family is pinned to a version" || bad "a family is pinned to a version" "$(head -c 300 "$T/j")"
 		[ "$(pick "$T/j" "d['families'][0]['source']")" = chosen ] && ok "and says it was chosen" || bad "and says it was chosen"
+		OLDEST_NATIVE=${OLDEST#claude:}
 		post /api/start '{"name":"Demo","row":0}' >"$T/j"
-		has "a started session is given the pinned version" "$T/j" "ANTHROPIC_DEFAULT_SONNET_MODEL=$OLDEST"
+		has "a started session is given the pinned version" "$T/j" "ANTHROPIC_DEFAULT_SONNET_MODEL=$OLDEST_NATIVE"
 		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"cat","model":"-"}' "$U/api/model-config")" = 400 ] && ok "an unknown family is refused" || bad "an unknown family is refused"
 		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"sonnet","model":"claude-nonsense-9"}' "$U/api/model-config")" = 400 ] && ok "so is a version it doesn't have" || bad "so is a version it doesn't have"
 		[ "$(code -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d '{"action":"family","family":"sonnet","model":"x; rm -rf /"}' "$U/api/model-config")" = 400 ] && ok "a version is a single word" || bad "a version is a single word"
@@ -4020,9 +4580,252 @@ if [ -n "$HAVE_LLMS" ]; then
 	else
 		ok "this toolbox can't say which version a family means (skipped)"
 	fi
+	get /api/settings >"$T/set"
+	PROVIDER_ENABLED=$(pick "$T/set" "d.get('providerEnabled', {}).get('claude', True)")
+	[ "$PROVIDER_ENABLED" = "True" ] && PROVIDER_ENABLED=true || PROVIDER_ENABLED=false
+	get /api/events >"$T/ev"
+	MODEL_EVENT_SINCE=$(pick "$T/ev" "len(d)")
+	(curl -sN --max-time 4 "$U/events?token=$K&since=$MODEL_EVENT_SINCE" >"$T/models-stream" 2>/dev/null || true) &
+	MODEL_STREAM_PID=$!
+	sleep 0.2
+	post /api/settings "{\"providerEnabled\":{\"claude\":$PROVIDER_ENABLED}}" >/dev/null
+	wait "$MODEL_STREAM_PID" 2>/dev/null || true
+	grep -q '"type": "models"' "$T/models-stream" && ok "a live catalog generation reaches the event stream" || bad "a live catalog generation reaches the event stream" "$(head -c 400 "$T/models-stream")"
 else
 	ok "the LLM connection checks need a toolbox checkout (TATTY_TOOLBOX) with llms.sh (skipped)"
 fi
+echo "# LLM capabilities and providers (a fake toolbox)"
+fx_toolbox
+$PY - "$SRV" "$FX" >"$T/fx.out" 2>&1 <<'EOF'
+import json, os, subprocess, sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[2])
+import fxhelp as fx
+m = fx.load(sys.argv[1])
+st = fx.State()
+chk = fx.check
+too_old = m.TOOLBOX_TOO_OLD
+home = fx.FX / "home"
+operation_root = fx.FX / "operations"
+project = operation_root / "project"
+feature = operation_root / "feature"
+for path in (project, feature):
+    path.mkdir(parents=True, exist_ok=True)
+
+fx.fresh(m)
+chk("a toolbox listing both capabilities is accepted", m.toolbox_capability_error(st) == "")
+v = m.llms_view(st)
+chk("it is compatible, with its models", v["compatible"] and v["error"] == "" and len(v["models"]) == 5, v["error"])
+shared = [f"{model['provider']}:{model['id']}" for model in v["models"] if model["id"] == "shared"]
+chk("matching model IDs from different providers remain distinct", sorted(shared) == ["claude:shared", "copilot:shared"], shared)
+chk("non-runnable provider models remain in the catalog", any(model["provider"] == "copilot" and model["id"] == "gpt-5" and not model["runnable"] for model in v["models"]))
+by = {p["provider"]: p for p in v["providers"]}
+chk("a connected provider with no models still appears", "codex" in by and by["codex"]["models"] == 0 and by["codex"]["state"] == "connected", list(by))
+chk("a status row lists only the known actions, once each", by["claude"]["actions"] == ["install", "refresh"], by["claude"]["actions"])
+chk("a status row of - lists none", by["copilot"]["actions"] == [] and by["codex"]["actions"] == [])
+chk("the five actions are all understood", m.provider_actions("install,sign-in,connect,disconnect,refresh") == ["install", "sign-in", "connect", "disconnect", "refresh"])
+
+for name, kw in (("a missing capability", dict(caps="provider-model-config-v1\n")),
+                 ("an unsupported capability version", dict(caps="provider-model-config-v2\nprovider-actions-v1\n")),
+                 ("a failing capabilities command", dict(caps_fail=True)),
+                 ("no capability output", dict(caps=""))):
+    fx.fresh(m, **kw)
+    v = m.llms_view(st)
+    chk(f"{name}: asks for the core plugin to be updated", not v["compatible"] and v["error"] == too_old, v["error"])
+    chk(f"{name}: offers no models, and no built-in Claude rows", v["models"] == [] and m.llm_models(st) == [], v["models"])
+    chk(f"{name}: offers no actions", all(p["actions"] == [] for p in v["providers"]))
+
+STATUS_MISSING = fx.row("claude", "missing", "-", "0", "0", "install") + fx.row("copilot", "connected", "-", "1", "0", "-")
+fx.fresh(m, status=STATUS_MISSING)
+why = m.resolve_model(st, "claude:sonnet")
+chk("a provider whose command is missing can't run a model", why[0] == "" and "isn't installed" in why[1], why)
+fx.fresh(m)
+m.save_settings({"chatModel": "claude:sonnet"})
+m.save_settings({"providerEnabled": {"claude": False}})
+chk("a disabled provider keeps its saved model choice", m.load_settings()["chatModel"] == "claude:sonnet")
+why = m.resolve_model(st, "claude:sonnet")
+chk("a provider switched off in Tatty can't run a model", why[0] == "" and "switched off" in why[1], why)
+chk("nor can a session start without a model", "switched off" in m.model_choice(st, "", "")[1])
+m.save_settings({"providerEnabled": {"claude": True}})
+chk("switched on again, it can", m.resolve_model(st, "claude:sonnet") == ("sonnet", ""), m.resolve_model(st, "claude:sonnet"))
+
+DISCONNECTED_MODELS = fx.row("copilot", "gpt-5", "GPT-5", "-", "no", "any")
+fx.fresh(m, models=DISCONNECTED_MODELS, status=fx.row("claude", "available", "-", "0", "0", "connect"))
+m.save_settings({"chatModel": "claude:sonnet"})
+chk("a disconnected provider keeps its saved model choice", m.load_settings()["chatModel"] == "claude:sonnet")
+flags, why = m.model_choice(st, "claude:sonnet", "")
+chk("a disconnected provider's saved model is refused for new work", flags is None and "isn't one of the models" in why, why)
+
+fx.fresh(m)
+family = {"chosen": "claude:sonnet-5-5", "args": None, "env_requests": 0}
+family_versions = ["claude:sonnet-5-5=Sonnet 5.5", "claude:sonnet-5=Sonnet 5"]
+original_toolbox_run = m.toolbox_run
+def family_toolbox_run(state, rel, args, timeout=60):
+    if rel != m.MODEL_CONFIG:
+        return original_toolbox_run(state, rel, args, timeout)
+    if args == ["family", "list", "--tsv"]:
+        versions = ";".join(family_versions)
+        return 0, "\t".join(("sonnet", family["chosen"], family["chosen"], "Sonnet", "chosen", versions)) + "\n", ""
+    if args == ["family", "set", "sonnet", "claude:sonnet-5"]:
+        family["args"] = list(args)
+        family["chosen"] = args[3]
+        return 0, "pinned\n", ""
+    if args == ["family", "env"]:
+        family["env_requests"] += 1
+        return 0, "ANTHROPIC_DEFAULT_SONNET_MODEL=" + family["chosen"] + "\n", ""
+    if args == ["list", "--tsv"]:
+        return 0, fx.row("coder", "sub", "4", "workflow", "Coder", "claude:sonnet", "-", "claude:sonnet", "-"), ""
+    if args == ["modes"]:
+        return 0, "* recommended (shipped)\n", ""
+    if args == ["get", "session"]:
+        return 0, "model=claude:sonnet effort=-\n", ""
+    return 1, "", "unsupported fake model-config command"
+
+m.toolbox_run = family_toolbox_run
+m._family_env.update(at=0.0, env=None)
+family_view = m.model_config_view(st)["families"][0]
+chk("family versions and the saved pin use qualified Claude identities",
+    family_view["chosen"] == "claude:sonnet-5-5" and family_view["effective"] == "claude:sonnet-5-5"
+    and all(v["id"].startswith("claude:") for v in family_view["versions"]), family_view)
+code, answer = m.model_config_change(st, {"action": "family", "family": "sonnet", "model": "claude:sonnet-5"})
+chk("the family API accepts and persists a qualified pin",
+    code == 200 and family["args"] == ["family", "set", "sonnet", "claude:sonnet-5"]
+    and answer["families"][0]["chosen"] == "claude:sonnet-5", answer)
+chk("the qualified family pin becomes a bare runtime model",
+    m.family_exports(st).get("ANTHROPIC_DEFAULT_SONNET_MODEL") == "sonnet-5",
+    m.family_exports(st))
+code, _ = m.model_config_change(st, {"action": "family", "family": "sonnet", "model": "copilot:shared"})
+chk("the family API rejects a pin from another provider", code == 400, code)
+code, _ = m.model_config_change(st, {"action": "family", "family": "sonnet", "model": "sonnet-5"})
+chk("the family API rejects a bare pin", code == 400, code)
+
+fx.fake(status=fx.row("claude", "available", "-", "0", "0", "connect"))
+m._provider_states.update(at=0.0, states={})
+family_view = m.model_config_view(st)["families"][0]
+chk("a disconnected Claude keeps its qualified pin visible as unavailable",
+    family_view["chosen"] == "claude:sonnet-5" and family_view["unavailable"], family_view)
+m.save_settings({"providerEnabled": {"claude": False}})
+family_after_disable = m.model_config_view(st)["families"][0]
+chk("switching Claude off leaves its saved family pin unchanged",
+    family_after_disable["chosen"] == "claude:sonnet-5", family_after_disable)
+code, _ = m.model_config_change(st, {"action": "family", "family": "sonnet", "model": "claude:sonnet-5-5"})
+chk("an unavailable Claude family cannot be changed", code == 409, code)
+
+for name, fixture, guidance in (
+    ("disconnected", dict(models=DISCONNECTED_MODELS,
+                          status=fx.row("claude", "available", "-", "0", "0", "connect")),
+     "isn't one of the models"),
+    ("disabled", {}, "switched off"),
+):
+    fx.fresh(m, **fixture)
+    if name == "disabled":
+        m.save_settings({"providerEnabled": {"claude": False}})
+    m._provider_states.update(at=0.0, states={})
+    m._family_env.update(at=0.0, env=None)
+    family["chosen"] = "claude:sonnet-5"
+    family["env_requests"] = 0
+    launches = []
+    st = m.State(str(project), fx.State.bash)
+    def record_launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        return True, "started"
+    with patch.object(m, "launch", side_effect=record_launch):
+        code, answer = m.start_session(st, feature, {})
+    chk(f"a new session blocks {name} Claude before requesting family env or launching",
+        code == 400 and guidance in answer.get("error", "") and family["env_requests"] == 0
+        and not launches and family["chosen"] == "claude:sonnet-5", answer)
+
+fx.fresh(m)
+m._provider_states.update(at=0.0, states={})
+m._family_env.update(at=0.0, env=None)
+st = m.State(str(project), fx.State.bash)
+available_model, availability_error = m.resolve_model(st, "claude:sonnet")
+child = subprocess.Popen(
+    [sys.executable, "-c",
+     "import sys; print('ready', flush=True); sys.stdin.readline(); print('complete', flush=True)"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    env={**os.environ, **m.claude_child_env(st)})
+child_ready = child_running = child_result = ""
+child_status = None
+try:
+    child_ready = child.stdout.readline().strip()
+    m.save_settings({"providerEnabled": {"claude": False}})
+    child_running = child.poll() is None
+    try:
+        child.stdin.write("continue\n")
+        child.stdin.flush()
+    except BrokenPipeError:
+        pass
+    child_result = child.stdout.readline().strip()
+    child_status = child.wait(timeout=5)
+finally:
+    if child.poll() is None:
+        child.stdin.write("continue\n")
+        child.stdin.flush()
+        child.wait(timeout=5)
+chk("disabling Claude leaves a running helper process alive to complete",
+    available_model == "sonnet" and not availability_error and child_ready == "ready"
+    and child_running and child_result == "complete" and child_status == 0,
+    (available_model, availability_error, child_ready, child_running, child_result, child_status))
+
+# Each surface keeps its own configured default and projects only a native ID to Claude.
+fx.fresh(m)
+session_model = {"value": "claude:sonnet"}
+policy_toolbox_run = m.toolbox_run
+def operation_toolbox_run(state, rel, args, timeout=60):
+    if rel == m.MODEL_CONFIG and args == ["get", "session"]:
+        return 0, f"model={session_model['value']} effort=-\n", ""
+    return policy_toolbox_run(state, rel, args, timeout)
+m.toolbox_run = operation_toolbox_run
+flags, why = m.session_model_choice(st, {})
+chk("Start resolves its session default to a bare model", flags == ["--model", "sonnet"] and not why, (flags, why))
+for key, expected in (("chatModel", "sonnet"), ("jiraModel", "haiku"), ("storiesModel", "haiku"),
+                      ("tasksModel", "haiku"), ("qaModel", "haiku"), ("qaPlanModel", "haiku")):
+    native, why = m.surface_model(st, key)
+    chk(f"{key} resolves its own default to a bare model", native == expected and not why, (native, why))
+home.mkdir(parents=True, exist_ok=True)
+(home / "session-models.json").write_text(json.dumps({"Demo": {"model": "claude:stale", "effort": ""}}), encoding="utf-8")
+feature_flags, feature_why = m.chat_model_choice(st, "Demo")
+chk("an unavailable saved feature model is not replaced by the chat default",
+    feature_flags is None and "isn't one of the models" in feature_why, feature_why)
+m.save_settings({"modelsMigrated": True})
+for name in ("TATTY_STORIES_MODEL", "TATTY_TASKS_MODEL", "TATTY_QA_MODEL", "TATTY_QA_MODEL_PLAN"):
+    os.environ[name] = "claude:sonnet"
+chk("runtime helper defaults ignore legacy environment values",
+    all(m.surface_model(st, key)[0] == "haiku" for key in ("storiesModel", "tasksModel", "qaModel", "qaPlanModel")))
+native, why = m.resolve_model(st, "copilot:gpt-5")
+chk("an unsupported-provider default fails explicitly", not native and "can't run" in why, why)
+for name in ("TATTY_STORIES_MODEL", "TATTY_TASKS_MODEL", "TATTY_QA_MODEL", "TATTY_QA_MODEL_PLAN"):
+    os.environ.pop(name, None)
+
+# Resolver failures remain actionable across the provider states a saved choice can encounter.
+failure_cases = (
+    ("disconnected", dict(models=DISCONNECTED_MODELS,
+                          status=fx.row("claude", "available", "-", "0", "0", "connect"))),
+    ("disabled", dict()),
+    ("missing", dict(status=fx.row("claude", "missing", "-", "0", "0", "install"))),
+    ("non-runnable", dict()),
+    ("unresolved", dict()),
+    ("stale", dict()),
+)
+for name, fixture in failure_cases:
+    fx.fresh(m, **fixture)
+    if name == "disabled":
+        m.save_settings({"providerEnabled": {"claude": False}})
+        choice = "claude:sonnet"
+    elif name == "non-runnable":
+        choice = "copilot:gpt-5"
+    elif name == "unresolved":
+        choice = "shared"
+    elif name == "stale":
+        choice = "claude:stale"
+    else:
+        choice = "claude:sonnet"
+    native, why = m.resolve_model(st, choice)
+    chk(f"{name} choices are refused with guidance", not native and bool(why), why)
+
+EOF
+fx_report "$T/fx.out"
 fi
 if section chats; then
 echo "# chats"
@@ -4109,6 +4912,11 @@ if [ -n "$HAVE_LLMS" ]; then
 	[ "$(after --model)" = opus ] && ok "a chat uses its feature's model" || bad "a chat uses its feature's model" "$(cat "$T/chat.args")"
 	[ "$(after --effort)" = high ] && ok "and its effort" || bad "and its effort"
 	rm -f "$TATTY_HOME/session-models.json"
+	cpost /api/chat/new "{\"kind\":\"main\",\"project\":\"$CP\"}" >/dev/null
+	C5=$(pick "$T/j" "d['id']")
+	[ "$(cpost /api/chat/say "{\"id\":\"$C5\",\"text\":\"Use the chat default\"}")" = 202 ] && chat_done "$C5" 1
+	[ "$(after --model)" = sonnet ] && ok "a chat without a feature uses its bare default model" ||
+		bad "a chat without a feature uses its bare default model" "$(cat "$T/chat.args")"
 fi
 get /api/events >"$T/ev"
 [ "$(pick "$T/ev" "len([e for e in d if e['type'] == 'chat' and 'tag' in e])")" = 0 ] && ok "a chat's events carry no tag" || bad "a chat's events carry no tag"
@@ -4148,12 +4956,21 @@ chat_done "$C3" 1 && ok "the summary is written" || bad "the summary is written"
 get "/api/chat?id=$C3" >"$T/c"
 [ "$(pick "$T/c" "(d['context']['summary'], d['context']['summaryBy'])")" = "('A summary by the model.', 'model')" ] && ok "by the model" || bad "by the model" "$(head -c 400 "$T/c")"
 has "a small one" "$T/summary.args" "haiku"
+[ "$($PY -c "import sys; a=open(sys.argv[1], encoding='utf-8').read().splitlines(); print(a[a.index('--model')+1])" "$T/summary.args")" = haiku ] &&
+	ok "a side-chat summary passes the bare default model" || bad "a side-chat summary passes the bare default model" "$(cat "$T/summary.args")"
 has "with nothing to do but write" "$T/summary.args" "--no-session-persistence"
 post /api/settings '{"chatSummary":"tatty"}' >/dev/null
 # one turn at a time; Stop ends it
 touch "$T/chat-slow"
 cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Slowly\"}" >/dev/null
 sleep 0.5
+if [ -n "$HAVE_LLMS" ]; then
+	post /api/settings '{"providerEnabled":{"claude":false}}' >/dev/null
+	get "/api/chat?id=$C1" >"$T/c"
+	[ "$(pick "$T/c" "d['busy']")" = True ] && ok "switching Claude off leaves an existing chat turn running" ||
+		bad "switching Claude off leaves an existing chat turn running" "$(head -c 300 "$T/c")"
+	post /api/settings '{"providerEnabled":{"claude":true}}' >/dev/null
+fi
 [ "$(cpost /api/chat/say "{\"id\":\"$C1\",\"text\":\"Again\"}")" = 409 ] && ok "one turn at a time" || bad "one turn at a time"
 [ "$(cpost /api/chat/say "{\"id\":\"$C2\",\"text\":\"Meanwhile\"}")" = 202 ] && ok "but another chat may answer meanwhile" || bad "but another chat may answer meanwhile"
 post /api/chat/stop "{\"id\":\"$C1\"}" >"$T/c"
@@ -4211,6 +5028,8 @@ get /api/chats >"$T/c"
 hasnt "it has no tab" "$T/c" "$I1"
 intake_reply "Which dialog do you mean? 1. Where does it live?"
 [ "$(cpost /api/chat/say "{\"id\":\"$I1\",\"text\":\"add a Retry button to the upload failed dialog\"}")" = 202 ] && chat_done "$I1" 1 && ok "the first message starts a turn" || bad "the first message starts a turn" "$(cat "$T/j")"
+[ -n "$HAVE_LLMS" ] && [ "$(after --model)" = sonnet ] && ok "the intake chat uses its bare default model" ||
+	{ [ -z "$HAVE_LLMS" ] && ok "the intake model check needs the toolbox (skipped)" || bad "the intake chat uses its bare default model" "$(cat "$T/chat.args")"; }
 [ "$(head -n 1 "$T/chat.prompt")" = "/tatty:intake" ] && ok "it goes to the intake skill" || bad "it goes to the intake skill" "$(head -n 3 "$T/chat.prompt")"
 has "after the facts" "$T/chat.prompt" "<facts>"
 has "which say where it works" "$T/chat.prompt" "Repository: "

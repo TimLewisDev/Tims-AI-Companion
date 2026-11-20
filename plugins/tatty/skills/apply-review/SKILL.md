@@ -82,6 +82,16 @@ Tatty and stop.
    `bash ~/.claude/tt-plugins/core/skills/tt-common/scripts/model-config.sh get coder`
    (a `-` means leave it out). Give each subagent short instructions: the
    document's path, its ids, these rules, and the script to record results.
+   Toolbox compatibility: Tatty requires the toolbox's `llms.sh capabilities --tsv`
+   to report both exact lines `provider-model-config-v1` and
+   `provider-actions-v1`. A missing line, an unsupported version or a failed
+   command means the toolbox is incompatible and the person must update the core
+   plugin. Model values are provider-qualified (`provider:model-id`);
+   `model-config.sh get coder` returns the native model ID for supported Claude
+   choices, and on an unresolved or unavailable choice it fails with guidance to
+   reselect. When `get coder` fails, do not use the grouped-subagent path: report
+   the error and do not launch a subagent without model flags or with an implicit
+   default.
 6. **Check the work.** Run the repository's own checks the way its `AGENTS.md` /
    `CLAUDE.md` say (at least a compile or lint check). Fix what your changes broke;
    report what was already failing.
