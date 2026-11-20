@@ -65,7 +65,12 @@ $errors = $null
 Check 'build-installer.ps1 parses' ($errors.Count -eq 0) ($errors | Out-String)
 Check 'build-installer.ps1 passes the version to Inno Setup' ($build -match '/DAppVersion')
 Check 'build-installer.ps1 stages the plugin for the installer' ($build.Contains("Join-Path `$dist 'plugin'"))
-Check 'release workflow exists' (Test-Path (Join-Path $repo '.github\workflows\release-installer.yml'))
+$wfPath = Join-Path $repo '.github\workflows\release-installer.yml'
+Check 'release workflow exists' (Test-Path $wfPath)
+$wf = Get-Content $wfPath -Raw
+Check 'release workflow refuses a commit that is not on main' (($wf -match 'merge-base --is-ancestor "\$GITHUB_SHA" origin/main') -and ($wf -match 'fetch-depth: 0'))
+$wfCheck = $wf.IndexOf('is-ancestor'); $wfBuild = $wf.IndexOf('build-installer.ps1')
+Check 'the on-main check runs before the build' (($wfCheck -ge 0) -and ($wfCheck -lt $wfBuild))
 
 Write-Host ''
 Write-Host "$pass passed, $fail failed"

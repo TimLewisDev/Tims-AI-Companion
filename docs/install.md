@@ -35,7 +35,8 @@ projects' folders and chats) stays.
 
 The installer isn't code-signed, so SmartScreen may warn about it. To build it yourself:
 `tools\build-installer.ps1` (needs the .NET 9 SDK and Inno Setup 6). The release workflow
-(`.github/workflows/release-installer.yml`) builds and attaches it for a `v*` tag.
+(`.github/workflows/release-installer.yml`) builds and attaches it for a `v*` tag, and stops
+first unless the tagged commit is on `main`.
 
 The prebuilt exes are the ones built from this version's sources. When the .NET SDK is
 present, Tatty still rebuilds from the plugin's sources (they may be newer than the
