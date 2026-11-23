@@ -756,6 +756,13 @@ folders and Claude Code's own install records; see
     opened after leaving, `GET /api/pool` carries them (`jobs`, and `job` on each slot), and a `pool` event drives the count on
     the Worktrees nav item on any page. A Start never takes a slot a job is on (`pool_busy_slots`), and archive leaves a busy
     slot as it is. Pool state files are changed under `STATE_LOCK` and fetches taken one at a time (`FETCH_LOCK`).
+    **Open in Unity** (`POST /api/pool/unity`, `app/unityopen.py`) is a button on a claimed slot that starts a new Editor on the slot's
+    project (`-projectPath`; the project is found by `ProjectSettings/ProjectVersion.txt` in the slot or a level or two below, and the Editor
+    is the Hub install of the version that file names: the `unityEditorsRoot` setting, `UNITY_EDITORS_ROOT`, the Hub's secondary install path,
+    then the default; the setting has its own Unity box on the Settings page, saved when the box is left). Nothing opens by itself, and a press is never in place of another Editor: Unity allows one Editor per project folder,
+    so one per slot, several slots at once. `Temp/UnityLockfile` says whether the project is open (held: the button is off and the row says
+    "Unity open"; left behind: the press asks, then sends `force`). Free up and a rebuild refuse while an Editor has the slot open
+    (`pool_unity_guard`). Tests: `tools/test-unityopen.py` and the Unity section of `tools/test-pool-page.py`.
     **Free up** (`pool_release_slot`) refuses while a session runs in the slot, gives the slot back and removes
     `worktree`/`pooled` from the feature's record, so a later Start of that feature neither switches a slot that
     may be another's back to its branch nor loses the branch itself (it is always kept). Delete only takes a free slot.

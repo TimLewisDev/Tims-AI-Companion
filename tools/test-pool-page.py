@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory() as tmp:
     sh("init", "-q", "-b", "main", "origin", cwd=tmp)
     origin = tmp / "origin"
     (origin / "ProjectSettings").mkdir()
-    (origin / "ProjectSettings" / "ProjectVersion.txt").write_text("v")
+    (origin / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 2022.3.10f1\n")
     (origin / "a.txt").write_text("x")
     (origin / ".gitignore").write_text("Library/\n")
     sh("add", "-A", cwd=origin)
@@ -80,6 +80,33 @@ with tempfile.TemporaryDirectory() as tmp:
     check("a claimed slot shows its feature", held["slot-1"]["state"] == "claimed" and held["slot-1"]["feature"] == "Widget" and held["slot-1"]["featureExists"], held["slot-1"])
     check("a free slot shows none", held["slot-2"]["state"] == "free" and held["slot-2"]["feature"] == "")
     check("one of two is free", v["free"] == 1)
+
+    # Open in Unity: only a claimed slot has a project to open; no Editor is started here (none is installed in the test)
+    check("a claimed slot shows its Unity project", held["slot-1"]["unity"]["project"].endswith("slot-1") and held["slot-1"]["unity"]["state"] == "closed", held["slot-1"]["unity"])
+    check("a free slot offers none", held["slot-2"]["unity"]["state"] == "none")
+    code, v = server.pool_open_unity("slot-2")
+    check("a free slot is refused", code == 409 and "free" in v["error"], v)
+    code, v = server.pool_open_unity("slot-9")
+    check("an unknown slot is refused", code == 404, v)
+    server.load_settings = lambda: {"unityEditorsRoot": str(tmp / "no-editors")}
+    code, v = server.pool_open_unity("slot-1")
+    check("a missing Editor says where it looked", code == 409 and "isn't installed" in v["error"] and "no-editors" in v["error"], v)
+    lock = Path(got["path"]) / "Temp" / "UnityLockfile"
+    lock.parent.mkdir(exist_ok=True)
+    lock.write_bytes(b"")
+    code, v = server.pool_open_unity("slot-1")
+    check("a stale lock needs force", code == 409 and v.get("canForce") is True, v)
+    if sys.platform == "win32":  # held the way Unity holds it: no sharing
+        import ctypes
+        ctypes.windll.kernel32.CreateFileW.restype = ctypes.c_void_p
+        handle = ctypes.windll.kernel32.CreateFileW(str(lock), 0xC0000000, 0, None, 3, 0x80, None)
+        code, v = server.pool_open_unity("slot-1")
+        check("an open Editor is not opened twice", code == 409 and "already" in v["error"] and not v.get("canForce"), v)
+        code, v = pool_run("free", lambda p: server.pool_release_slot(type("S", (), {"cond": threading.Condition(), "sessions": {}})(), p, "slot-1"))
+        check("and its slot is not freed", code == 409 and "Unity Editor" in v["error"], v)
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+    lock.unlink()
+    lock.parent.rmdir()
 
     class State:
         cond = threading.Condition()

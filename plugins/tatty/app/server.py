@@ -69,6 +69,7 @@ import mrpost  # noqa: E402  the only writer to a merge request's host, after a 
 import compact_chat  # noqa: E402  the compact window's chat, one per project
 import diagram as dg  # noqa: E402  reading C# into generated diagrams
 import worktreepool  # noqa: E402  ready worktrees to claim, so a feature starts on a branch switch
+import unityopen  # noqa: E402  open a worktree's Unity project in an Editor of its own
 WEB = HERE / "web"
 STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "text/javascript",
           "models.js": "text/javascript", "hub.js": "text/javascript", "hub.css": "text/css",
@@ -349,6 +350,8 @@ class State:
 # What the person has chosen in the Settings page, one JSON file in Tatty's home.
 # An unknown or mistyped key is ignored, so a hand-edited file can't break Tatty.
 SETTINGS_DEFAULTS = {"autoUpdate": True,
+                     # where the Unity Hub keeps its Editors (the Worktrees page's Open in Unity); "" looks in the usual places
+                     "unityEditorsRoot": "",
                      # the Jira board (see "Jira" below): what it shows, through which MCP server and model,
                      # on which site when the sign-in reaches several, and the project and work folder last started in
                      "jiraJql": "assignee = currentUser() AND sprint in openSprints() ORDER BY Rank",
@@ -479,6 +482,7 @@ def _save_settings(changes, internal=False):
         now["theme"] = ""
     if now["themeBase"] not in ("none", "", "light", "dark"):
         now["themeBase"] = "none"
+    now["unityEditorsRoot"] = now["unityEditorsRoot"].strip().strip('"')[:400]  # a path pasted with its quotes still works
     if not re.fullmatch(r"(?:[A-Za-z0-9_-]+/)*", now["branchPrefix"]) or len(now["branchPrefix"]) > 30:
         now["branchPrefix"] = SETTINGS_DEFAULTS["branchPrefix"]
     home().mkdir(parents=True, exist_ok=True)
@@ -10765,6 +10769,7 @@ def pool_view():
         else:
             row = pool.slot_info(name, ref, check_clean=False)  # a status of a big tree is slow: a release or delete checks it
         row["job"] = mine
+        row["unity"] = unityopen.status(row["path"]) if name in claims and not mine else {"project": "", "state": "none"}
         hit = held.get(row["path"].lower())
         claim = claims.get(name, {})
         feat = str(claim.get("owner") or "") or (hit[0] if hit else "")  # the owner keeps the name's own case; a record's key is lower-cased
@@ -10804,6 +10809,7 @@ def pool_repair_slot(state, pool, slot, action):
                         and s["feature"].lower() in keys and state.session_view(s)["status"] in ("starting", "running")]
             if live:
                 raise worktreepool.PoolError(f"{live[0]['feature']} has a session running in {slot}: stop it first.")
+            pool_unity_guard(pool, slot)
             got = pool.repair(slot, action)
     else:
         got = pool.repair(slot, action)
@@ -10904,6 +10910,31 @@ def pool_refresh_jobs(queue=False):
     return pool_each("refresh", "Updating", names, one, lambda r: f"{r['slot']}: {r['result']}", queue)
 
 
+def pool_unity_guard(pool, slot):
+    """A slot whose project an Editor has open is not freed or rebuilt: the Editor would lose its folder."""
+    if unityopen.status(pool.slot_path(slot))["state"] == "open":
+        raise worktreepool.PoolError(f"A Unity Editor has {slot}'s project open: close it first.")
+
+
+def pool_open_unity(slot, force=False):
+    """Open a slot's Unity project in a new Editor (never in place of another). (http code, answer)"""
+    top = pool_top()
+    if not top:
+        return 404, {"error": "This project isn't in a git repository."}
+    pool = worktreepool.Pool(top)
+    if not pool.exists() or slot not in pool.slot_names():
+        return 404, {"error": f"No slot {slot} in this project's pool."}
+    if slot not in pool.state()["claims"]:
+        return 409, {"error": f"{slot} is free: there is no feature's work in it to open."}
+    if slot in pool_busy_slots(top) or "*" in pool_busy_slots(top):
+        return 409, {"error": f"{slot} is being worked on by a job: wait for it to end."}
+    try:
+        got = unityopen.open_project(pool.slot_path(slot), load_settings().get("unityEditorsRoot", ""), force)
+    except unityopen.UnityError as e:
+        return 409, {"error": str(e), "canForce": "lock file" in str(e)}
+    return 200, {"ok": True, **got, "note": f"Opening {slot} in Unity {got['version']}."}
+
+
 def pool_release_slot(state, pool, slot):
     """Give a slot back and cut the link from the feature that held it, so a later Start of that feature doesn't
     switch the slot (maybe another feature's by then) back to its branch. Refused while a session runs in it."""
@@ -10916,6 +10947,7 @@ def pool_release_slot(state, pool, slot):
                     and s["feature"].lower() in keys and state.session_view(s)["status"] in ("starting", "running")]
         if live:
             raise worktreepool.PoolError(f"{live[0]['feature']} has a session running in {slot}: stop it first.")
+        pool_unity_guard(pool, slot)
         got = pool.release(slot)
         for k, r in mine:
             save_branch(k, {x: v for x, v in r.items() if x not in ("worktree", "pooled")})
@@ -14496,6 +14528,11 @@ class Handler(BaseHTTPRequestHandler):
                 except worktreepool.PoolError as e:
                     return self.send(409, {"error": str(e)})
             slot = pool_slot_arg(b)
+            if path == "/api/pool/unity":
+                if not slot:
+                    return self.send(400, {"error": "slot: a slot name such as slot-1"})
+                code, answer = pool_open_unity(slot, bool(b.get("force")))
+                return self.send(code, answer)
             if path == "/api/pool/add":  # the person said yes to one more slot (the pool never grows by itself)
                 code, answer = pool_add_job(queue)
             elif path == "/api/pool/create":

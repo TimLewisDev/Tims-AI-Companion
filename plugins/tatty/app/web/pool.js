@@ -43,6 +43,7 @@ async function renderWorktrees(box) {
     "/api/pool/measure": "Measuring: this reads every file, so a big project takes minutes.",
     "/api/pool/validate": "Checking the slots: this reads every slot's files, so a big project takes a minute or two.",
     "/api/pool/repair": "Mending the slot: a rebuild or a cache copy takes a while.",
+    "/api/pool/unity": "Starting Unity: the Editor window takes a moment to appear.",
   };
   // A press asks the server for a job and is done: the job runs there, whatever page is open, and the list below shows it
   // (again) whenever the page is. A press that needs a slot a job is using is told who has it and may queue.
@@ -219,6 +220,14 @@ async function renderWorktrees(box) {
         act("/api/pool/remove", { slot: s.slot }, () => `${s.slot} deleted.`);
       }
     });
+    // Open in Unity: a new Editor on this slot's project, only when pressed (one Editor per slot; several slots may be open together)
+    const un = s.unity || {}, unityBtn = un.project ? el("button", { class: "small", disabled: busy || un.state === "open",
+      title: un.state === "open" ? "An Editor already has this project open" : `Open ${s.slot}'s Unity project in a new Editor` }, "Open in Unity") : "";
+    if (unityBtn) unityBtn.addEventListener("click", () => {
+      const force = un.state === "stale";
+      if (force && !confirm(`${s.slot} has a lock file left by an Editor that is no longer running. Open it in Unity anyway?`)) return;
+      act("/api/pool/unity", { slot: s.slot, force }, r => r.note || `Opening ${s.slot} in Unity.`);
+    });
     return el("tr", { class: claimed ? "" : "pool-free" },
       el("td", {}, el("strong", {}, s.slot), el("div", { class: "dim small pool-path", title: s.path }, s.path)),
       el("td", {}, who, claimed && s.merge ? el("span", { class: "chip " + (s.merge === "merged" ? "done" : "now"), title: "the merge request" }, s.merge) : ""),
@@ -226,7 +235,7 @@ async function renderWorktrees(box) {
       el("td", {}, s.behind === null || s.behind === undefined ? "?" : String(s.behind)),
       el("td", {}, s.size ? poolBytes(s.size) : el("span", { class: "dim" }, "not measured")),
       el("td", {}, checkCell(s, busy)),
-      el("td", {}, act1));
+      el("td", {}, unityBtn, " ", un.state === "open" ? el("span", { class: "chip now", title: "An Editor has this project open" }, "Unity open") : "", " ", act1));
   };
 
   // ---- what Validate found for a slot, and the repairs it offers (each asks first)

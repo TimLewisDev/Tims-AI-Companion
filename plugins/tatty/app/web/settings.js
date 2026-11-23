@@ -124,6 +124,7 @@ function drawSettings() {
     stepSettings(),
     chatSettings(s),
     branchSettings(s),
+    unitySettings(s),
     mergeSkillSettings(),
     mrSettings(s),
     mrsSettings(s),
@@ -310,6 +311,21 @@ function branchSettings(s) {
     el("p", { class: "dim small" }, "A workflow started from Tatty works on a new branch of its own, made when it first starts, so two workflows don't trample each other. Tatty switches branches, and commits only when you press Commit on a feature's page: pushing and opening the request are yours (the Review step's merge phase helps)."),
     el("label", { class: "field-row" }, el("strong", {}, "Branch prefix"), input,
       el("span", { class: "dim small" }, "Letters, digits, - and _, each part ending in /: feature/ gives feature/ABC-12-fix-the-thing.")));
+}
+
+// Unity (see "Open in Unity" on the Worktrees page): the folder the Unity Hub installs its Editors into, when it
+// isn't the usual one. Each Editor is a folder named for its version inside it. Saved when the box is left.
+function unitySettings(s) {
+  const input = el("input", { id: "set-unityEditorsRoot", value: s.unityEditorsRoot || "", placeholder: "Usual places", "aria-label": "Unity Editors folder", autocomplete: "off" });
+  input.addEventListener("change", async () => {
+    try { settingsNow = await api("/api/settings", { unityEditorsRoot: input.value.trim() }); input.value = settingsNow.unityEditorsRoot; }
+    catch (e) { alert(String(e)); }
+  });
+  return el("section", { id: "unity-settings" },
+    el("h3", {}, "Unity"),
+    el("p", { class: "dim small" }, "The Worktrees page's Open in Unity starts the Editor version a project was saved with. Tatty looks in the Unity Hub's usual folders; if your Editors are somewhere else, say where."),
+    el("label", { class: "field-row" }, el("strong", {}, "Editors folder"), input,
+      el("span", { class: "dim small" }, "The folder that holds a folder per version, such as D:\\Unity\\Editor (which has 2022.3.10f1 inside). Blank: the usual places.")));
 }
 
 // Merge request (see "the skill that opens a feature's merge request" in the server): which of your skills
