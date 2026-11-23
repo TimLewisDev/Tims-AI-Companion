@@ -110,6 +110,12 @@ Tatty is for when you'd rather see it laid out, and be told when it needs you.
   review. Pick lines in a diff and ask Tatty about them, or have it review the
   whole request. It reads the changed files (nothing else, and nothing it can
   run or change), and its findings wait as drafts you keep, edit or drop.
+- When you have left comments and the author answers or changes the file, the
+  Review tab offers **Re-review addressed comments**. It looks only at your own
+  threads that were answered or whose file changed since you commented, and only
+  at whether each concern is dealt with (the change since your comment, near it
+  first, and the conversation). It raises nothing new. Each verdict comes with a
+  suggested reply waiting in the thread's reply box and a Resolve to confirm.
 - Tatty sends nothing on its own. A comment, a reply or a resolve goes only
   from a confirm sheet that shows the exact text and where it lands, and the
   server checks that sheet's hash again before it sends. The comments go as one

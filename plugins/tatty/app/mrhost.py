@@ -11,7 +11,7 @@ the host (see `normal`), so the page never knows which host it is looking at:
      "milestone", "created", "updated", "commits", "stats": {"add", "del", "files"},
      "mergeable": {"status": ok|conflicts|blocked|checking|"", "reasons": [text]}, "approvals": {"have", "need"},
      "checks": [{"name", "status": passed|failed|running|skipped, "url", "note"}],
-     "threads": [{"id", "url", "path", "line", "resolved", "outdated", "hunk", "notes": [{"id", "author", "body", "created", "url"}]}]}
+     "threads": [{"id", "url", "path", "line", "resolved", "outdated", "hunk", "sha" (the commit it was made on, or ""), "notes": [{"id", "author", "body", "created", "url"}]}]}
 
 and `diffs`, {path: the file's unified diff text}. A thread with no path is a general comment. Nothing here
 resolves, approves or merges anything, and no reply is made but the one it is handed.
@@ -221,7 +221,7 @@ def gitlab(run, project, iid):
             "path": str(pos.get("new_path") or pos.get("old_path") or ""),
             "line": pos.get("new_line") or pos.get("old_line") or 0,
             "resolved": bool(resolvable) and all(n.get("resolved") for n in resolvable),
-            "resolvable": bool(resolvable), "outdated": False, "hunk": "",
+            "resolvable": bool(resolvable), "outdated": False, "hunk": "", "sha": str(pos.get("head_sha") or ""),
             "notes": [{"id": str(n.get("id")), "author": person(n.get("author")), "body": clip(n.get("body")),
                        "created": str(n.get("created_at") or ""), "url": f"{url}#note_{n.get('id')}" if url else ""}
                       for n in notes[:MAX_NOTES]]})
@@ -286,7 +286,7 @@ def gitlab(run, project, iid):
 
 GRAPHQL = ("query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){"
            "reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine "
-           "comments(first:50){nodes{id author{login} body createdAt url diffHunk}}}} "
+           "comments(first:50){nodes{id author{login} body createdAt url diffHunk originalCommit{oid}}}}} "
            "comments(first:100){nodes{id author{login} body createdAt url}}}}}")
 
 
@@ -312,6 +312,7 @@ def github(run, owner, name, number):
             "id": t["id"], "url": str(notes[0].get("url") or ""), "path": str(t.get("path") or ""),
             "line": t.get("line") or t.get("originalLine") or 0, "resolved": bool(t.get("isResolved")), "resolvable": True,
             "outdated": bool(t.get("isOutdated")), "hunk": clip(notes[0].get("diffHunk"), 4000),
+            "sha": str(((notes[0].get("originalCommit") or {}).get("oid")) or ""),
             "notes": [{"id": str(n.get("id")), "author": person(n.get("author")), "body": clip(n.get("body")),
                        "created": str(n.get("createdAt") or ""), "url": str(n.get("url") or "")} for n in notes[:MAX_NOTES]]})
         if len(threads) >= MAX_THREADS:

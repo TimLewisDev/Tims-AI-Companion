@@ -5779,8 +5779,9 @@ def mrs_state_load(key):
     for k, empty in (("replies", {}), ("pending", []), ("chats", [])):
         if not isinstance(got.get(k), type(empty)):
             got[k] = empty
-    if not isinstance(got.get("review"), dict):
-        got["review"] = None
+    for k in ("review", "rereview"):
+        if not isinstance(got.get(k), dict):
+            got[k] = None
     return got
 
 
@@ -5831,7 +5832,9 @@ def mrs_one(state, key, force=False):
     inbox = read_json(mrs_dir() / "inbox.json", {})
     it = next((i for i in inbox.get("items") or [] if i.get("key") == key), {})
     data = mrs_state_load(key)
-    return {"mr": mr, "why": why, "state": {k: data[k] for k in ("replies", "pending", "review", "chats")}, "busy": list(runs), "step": runs,
+    me = inbox.get("me", "") if inbox.get("path") and mr and inbox.get("kind") == mr.get("kind") else ""
+    return {"mr": mr, "why": why, "state": {k: data[k] for k in ("replies", "pending", "review", "rereview", "chats")}, "busy": list(runs), "step": runs,
+            "again": mrs_again(mr, data, me) if mr else [],
             "repo": mrs_repo(), "kind": (mr or {}).get("kind", ""), "roles": it.get("roles", []), "asked": bool(it.get("asked")),
             "snapshot": mrs_file(key, "files").is_dir(), "link": (mr or {}).get("url", "") or it.get("url", "")}
 
@@ -5991,13 +5994,18 @@ def mrs_work(state, key, tid, r, mr, ctx, prompt, system, tools, budget, model, 
     try:
         step("Fetching the code")
         folder, note = mrs_snapshot(state, key, mr, ctx)
-        if note:
+        if callable(prompt):  # (a prompt that needs the fetched code: None means there is nothing to ask)
+            prompt = prompt(note)
+        elif note:
             prompt += f"\nNote: {note}\n"
-        step("Starting")
-        claude = claude_path()
-        argv = mrs_argv(state, claude, system, MRS_SCHEMA if tid == "review" else MR_SCHEMA, tools, budget, model, folder)
-        final, error = mrs_agent(state, r, argv, prompt, str(folder), step)
-        if not error:
+        if prompt is None:
+            got = {}
+        else:
+            step("Starting")
+            claude = claude_path()
+            argv = mrs_argv(state, claude, system, {"review": MRS_SCHEMA, "rereview": MRS_AGAIN_SCHEMA}.get(tid, MR_SCHEMA), tools, budget, model, folder)
+            final, error = mrs_agent(state, r, argv, prompt, str(folder), step)
+        if not error and prompt is not None:
             got = final.get("structured_output") if isinstance(final.get("structured_output"), dict) else qa_json(final.get("result"))
             if not got:
                 error = "The agent's answer wasn't in the shape asked for."
@@ -6038,7 +6046,7 @@ def mrs_recommend_start(state, key, b):
     tid = str(b.get("tid", ""))
     mr, why = mrs_load(state, key)
     thread = next((t for t in (mr or {}).get("threads") or [] if t.get("id") == tid), None)
-    if not mrhost.good_id(tid) or tid == "review" or not thread:
+    if not mrhost.good_id(tid) or tid in ("review", "rereview") or not thread:
         return 400, {"error": "No such comment: refresh the page."}
     ctx = mrs_context(state)
     if not ctx["repo"]:
@@ -6148,6 +6156,187 @@ def mrs_review_start(state, key, b):
                      daemon=True).start()
     state.emit("mrs", key=key, tid="review", busy=True)
     return 202, {"ok": True}
+
+
+# ---- looking again at the comments the person made
+
+MRS_AGAIN_VERDICTS = ("addressed", "partly", "not-addressed", "unclear")
+MRS_AGAIN_SCHEMA = {"type": "object", "properties": {"results": {"type": "array", "items": {"type": "object", "properties": {
+    "tid": {"type": "string"}, "verdict": {"type": "string", "enum": list(MRS_AGAIN_VERDICTS)}, "summary": {"type": "string"},
+    "reply": {"type": "string"}}, "required": ["tid", "verdict", "summary", "reply"]}}}, "required": ["results"]}
+MRS_SYSTEM_AGAIN = (
+    "You are checking, for the engineer reading a colleague's merge request with you, whether the author has dealt with the "
+    "review comments the engineer made earlier. You can read the changed files (Read, Glob, Grep) in your working folder "
+    "and nothing else. For each comment thread in the prompt you get the whole conversation and what changed in that file "
+    "since the engineer commented. Judge ONLY whether that thread's concern has been dealt with, by the change or by what the "
+    "author answered. Do not review the rest of the merge request, do not raise any new issue, and do not comment on code "
+    "the thread isn't about, even if you see a problem there. The code may have moved: follow it with Read, Grep or Glob "
+    "when the change shows the concern was handled somewhere else, and never name a file or line you did not see. For each "
+    "thread give a verdict: addressed (the concern is dealt with, or the author's answer is convincing), partly (some of "
+    "it is), not-addressed (nothing changes the concern), or unclear (only the engineer can say, for example the author "
+    "disagrees and the reasons need a judgment). Give a one or two sentence summary of what you found, and a reply the "
+    "engineer could post on the thread: short, polite and specific, saying what is now fine or what is still outstanding "
+    "(empty when no reply is needed). Answer with the JSON asked for and nothing else." + MRS_UNTRUSTED)
+MRS_AGAIN_WINDOW = 40  # lines either side of the comment that count as "the area"
+MRS_AGAIN_CAP = 9000  # characters of change shown for one thread
+
+
+def mrs_again(mr, data, me):
+    """The comment threads the person began (their first note) that the author may have dealt with since, and that
+    haven't been looked at again in exactly this state: [{tid, path, line, why: replied|changed|resolved, base}].
+    base is the commit the person last looked at the thread on: the commit it was made on, or the one a re-review
+    judged it at."""
+    if not me:
+        return []
+    head = str(mr.get("sha") or "")
+    last = {r.get("tid"): r for r in ((data.get("rereview") or {}).get("results") or []) if isinstance(r, dict)}
+    out = []
+    for t in mr.get("threads") or []:
+        notes = t.get("notes") or []
+        if not notes or str(notes[0].get("author") or "") != me:
+            continue
+        prev = last.get(t["id"]) or {}
+        if prev and prev.get("sha") == head and prev.get("notes") == len(notes):
+            continue
+        base = str(prev.get("sha") or t.get("sha") or "")
+        why = []
+        if str(notes[-1].get("author") or "") != me:
+            why.append("replied")
+        if t.get("path") and head and base and base != head:
+            why.append("changed")
+        if not why:
+            continue
+        if t.get("resolved"):
+            why.append("resolved")
+        out.append({"tid": t["id"], "path": t.get("path") or "", "line": t.get("line") or 0, "why": why, "base": base})
+    return out
+
+
+def mrs_area(repo, ref, base, path, line):
+    """(the change to the file since base, near the comment first, as text, or None when it can't be had, a note)."""
+    args = ["diff", "--no-ext-diff", "-U3", base, ref, "--", path]
+    code, out, _ = git_run(repo, args, timeout=60)
+    if code != 0:  # the older commit may not be here any more: ask the remote for it once
+        git_run(repo, ["fetch", "--no-tags", "--quiet", os.environ.get("TATTY_MRS_REMOTE") or "origin", base], timeout=120)
+        code, out, _ = git_run(repo, args, timeout=60)
+    if code != 0:
+        return None, "The version of this file that the comment was made on isn't available, so the change since can't be shown."
+    hunks, binary = mrhost.parse_unified(out)
+    if binary:
+        return "(a binary file changed)", ""
+    near, rest = [], []
+    for h in hunks:
+        lo = h["oldStart"]
+        (near if line and lo - MRS_AGAIN_WINDOW <= line <= lo + max(h["oldLines"], 1) + MRS_AGAIN_WINDOW else rest).append(h)
+    text = ""
+    for label, group in (("near the comment", near), ("elsewhere in the file", rest)):
+        for h in group:
+            block = f"@@ -{h['oldStart']},{h['oldLines']} +{h['newStart']},{h['newLines']} @@ ({label})\n" + "\n".join(h["lines"]) + "\n"
+            if len(text) + len(block) > MRS_AGAIN_CAP:
+                return text + "(more changes in this file are cut: read it from your folder)\n", ""
+            text += block
+    return text, ""
+
+
+def mrs_again_clean(got, asked, sha, counts):
+    """The agent's answer kept to the threads it was asked about, one each, in a shape that is safe to keep."""
+    seen, out = set(), []
+    for x in (got.get("results") if isinstance(got, dict) and isinstance(got.get("results"), list) else []):
+        if not isinstance(x, dict) or x.get("tid") not in asked or x["tid"] in seen:
+            continue
+        seen.add(x["tid"])
+        verdict = x.get("verdict") if x.get("verdict") in MRS_AGAIN_VERDICTS else "unclear"
+        out.append({"tid": x["tid"], "verdict": verdict, "summary": str(x.get("summary") or "")[:1500], "reply": str(x.get("reply") or "").strip()[:3000],
+                    "resolve": verdict == "addressed", "sha": sha, "notes": counts.get(x["tid"], 0), "ts": int(time.time())})
+    for tid in asked:
+        if tid not in seen:
+            out.append({"tid": tid, "verdict": "unclear", "summary": "Tatty gave no answer for this comment: look at it yourself.", "reply": "",
+                        "resolve": False, "sha": sha, "notes": counts.get(tid, 0), "ts": int(time.time())})
+    return out
+
+
+def mrs_again_start(state, key, b):
+    """Look again at the comments the person made on a colleague's request that the author may have dealt with: only
+    their threads, only the change to the files they are on since the person commented. Nothing is posted: the
+    verdicts are kept, and a suggested reply waits in the thread's reply box. (http code, answer)"""
+    mr, why = mrs_load(state, key, force=True)  # (the head and the threads must be current)
+    if not mr:
+        return 404, {"error": why or "The merge request couldn't be read."}
+    ctx = mrs_context(state)
+    if not ctx["repo"]:
+        return 400, {"error": ctx["why"]}
+    me = read_json(mrs_dir() / "inbox.json", {}).get("me", "")
+    cands = mrs_again(mr, mrs_state_load(key), me)
+    if isinstance(b.get("tids"), list):
+        cands = [c for c in cands if c["tid"] in {str(t) for t in b["tids"]}]
+    if not cands:
+        return 400, {"error": "None of your comments has been answered or had its code changed since you looked."}
+    code, answer, r = mrs_start(state, key, "rereview")
+    if r is None:
+        return code, answer
+    head, model = str(mr.get("sha") or ""), mrs_model()
+    byid = {t["id"]: t for t in mr.get("threads") or []}
+    counts = {c["tid"]: len(byid[c["tid"]].get("notes") or []) for c in cands}
+    ref = f"refs/tatty/mr/{mrs_number(key)}"
+    quiet = {}  # tid -> why nothing was asked about it
+
+    def prompt(note):
+        lines = [f"Merge request: {mr.get('title', '')}", f"By {mr.get('author', '')}: branch {mr.get('source', '')} into {mr.get('target', '')}",
+                 f"The code in your folder is the request's head, commit {head[:10]}. The engineer is {me}: the first comment of each thread below is theirs.",
+                 "Judge only these threads, only whether each concern is dealt with.", ""]
+        asked, used = [], 0
+        for c in cands:
+            t = byid[c["tid"]]
+            area, cant = "", ""
+            if t.get("path") and c["base"]:
+                area, cant = mrs_area(ctx["repo"], ref, c["base"], t["path"], int(t.get("line") or 0))
+            elif t.get("path"):
+                area, cant = None, "The commit this comment was made on isn't known, so the change since can't be shown."
+            if "replied" not in c["why"] and area == "":
+                quiet[c["tid"]] = "Nothing has changed in that file since you commented."
+                continue
+            notes = [f"- {n.get('author', '')}: {str(n.get('body') or '')[:1500]}" for n in (t.get("notes") or [])[-8:]]
+            block = [f"### Thread {c['tid']}" + (f" on {t['path']}:{t.get('line') or ''}" if t.get("path") else " (the conversation)")
+                     + (f", made on commit {c['base'][:10]}" if c["base"] else "") + (" (marked resolved)" if "resolved" in c["why"] else ""), "The conversation:", *notes,
+                     "The change to this file since:" if t.get("path") else "", (f"```diff\n{area}```" if area else cant or "No change to this file since.") if t.get("path") else ""]
+            text = "\n".join(x for x in block if x) + "\n"
+            if used + len(text) > 70000:
+                quiet[c["tid"]] = "Too much to look at in one go: run it again for this one."
+                continue
+            used += len(text)
+            lines.append(text)
+            asked.append(c["tid"])
+        prompt.asked = asked
+        if note:
+            lines.append(f"Note: {note}")
+        return "\n".join(lines) + "\n" if asked else None
+    prompt.asked = []
+
+    def accept(got, cost):
+        asked = prompt.asked
+        new = mrs_again_clean(got, asked, head, counts) if asked else []
+        for tid, text in quiet.items():
+            new.append({"tid": tid, "verdict": "nochange", "summary": text, "reply": "", "resolve": False, "sha": head, "notes": counts.get(tid, 0), "ts": int(time.time())})
+        fresh = {x["tid"] for x in new}
+
+        def how(data):
+            old = [x for x in ((data.get("rereview") or {}).get("results") or []) if isinstance(x, dict) and x.get("tid") not in fresh and x.get("tid") in byid]
+            data["rereview"] = {"ts": int(time.time()), "sha": head, "model": model, "cost": cost, "error": "", "results": (old + new)[:MRS_PENDING_MAX]}
+            for x in new:
+                if x["reply"] and x["verdict"] != "nochange":
+                    d = data["replies"].setdefault(x["tid"], {"text": "", "edited": False, "recommendation": None})
+                    if not d.get("edited") and not d.get("text"):
+                        d["text"] = x["reply"]
+        mrs_change(key, how)
+
+    def fail(error):
+        def how(data):
+            data["rereview"] = {**(data["rereview"] or {}), "error": error}
+        mrs_change(key, how)
+    threading.Thread(target=mrs_work, args=(state, key, "rereview", r, mr, ctx, prompt, MRS_SYSTEM_AGAIN, ("Read", "Glob", "Grep"),
+                                            os.environ.get("TATTY_MRS_BUDGET", "1.5"), model, accept, fail), daemon=True).start()
+    state.emit("mrs", key=key, tid="rereview", busy=True)
+    return 202, {"ok": True, "threads": len(cands)}
 
 
 def mrs_cancel(state, key, b):
@@ -14135,6 +14324,7 @@ class Handler(BaseHTTPRequestHandler):
             todo = {"/api/mrs/seen": lambda: mrs_seen(st, key), "/api/mrs/recommend": lambda: mrs_recommend_start(st, key, b),
                     "/api/mrs/cancel": lambda: mrs_cancel(st, key, b), "/api/mrs/draft": lambda: mrs_draft_set(key, b),
                     "/api/mrs/comment": lambda: mrs_comment(key, b), "/api/mrs/review": lambda: mrs_review_start(st, key, b),
+                    "/api/mrs/again": lambda: mrs_again_start(st, key, b),
                     "/api/mrs/preview": lambda: mrs_preview(st, key, b), "/api/mrs/post": lambda: mrs_post(st, key, b),
                     "/api/mrs/chat": lambda: mrs_chat(st, key, b)}.get(path)
             if not todo:

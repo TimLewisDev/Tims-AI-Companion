@@ -1796,6 +1796,7 @@ def check_mrs(p):
                 messages: [{ role: 'you', text: 'Any feedback?', ts: 1 }, { role: 'claude', ts: 2, text: 'One thing.\\n\\n```tatty-comment\\n{"path":"src/widget.txt","line":4,"body":"From the chat."}\\n```' }] };
               if (path === '/api/mrs/seen' || path === '/api/mrs/draft' || path === '/api/mrs/cancel') { window.__sent.push([path, body]); return { ok: true }; }
               if (path === '/api/mrs/recommend') { window.__sent.push([path, body]); return { ok: true }; }
+              if (path === '/api/mrs/again') { window.__sent.push([path, body]); return { ok: true, threads: 1 }; }
               if (path === '/api/mrs/chat') { window.__sent.push([path, body]); return { chat: { id: 'c-test', kind: 'mr', mr: body.key, messages: [], busy: false }, reused: false }; }
               if (path === '/api/mrs/comment') {
                 window.__sent.push([path, body]);
@@ -1895,6 +1896,23 @@ def check_mrs(p):
     wait(p, "!document.querySelector('.mrs-sheet')")
     res["posted"] = p.js("""({ sent: window.__sent.filter(x => x[0] === '/api/mrs/post').map(x => [x[1].confirm, x[1].items.map(i => i.kind)]),
                               left: document.querySelectorAll('#mrs-host .mrs-pending').length })""")
+    # looking again at the comments the person made: the card offers the answered threads, runs only the ticked, shows each verdict with its reply box
+    p.js("""(() => { const o = window.__one; o.mr.threads.push({ id: 'd3', url: '', path: 'src/widget.txt', line: 2, resolved: false, resolvable: true, outdated: false, hunk: '', sha: 'old',
+              notes: [{ id: 'n3', author: 'me', body: 'Why capital B?', created: '', url: '' }, { id: 'n4', author: 'bob', body: 'On purpose.', created: '', url: '' }] });
+            o.again = [{ tid: 'd3', path: 'src/widget.txt', line: 2, why: ['replied', 'changed'], base: 'old' }];
+            o.state.rereview = { ts: 1, sha: 'abc', model: 'sonnet', cost: 0.05, error: '', results: [{ tid: 'd3', verdict: 'addressed', summary: 'Now deliberate.', reply: 'Thanks.', resolve: true, sha: 'abc', notes: 2 }] };
+            o.state.replies = { d3: { text: 'Thanks.', edited: false } };
+            document.querySelector('#mrs-refresh').click(); return 1; })()""")
+    wait(p, "!!document.querySelector('#mrs-again')")
+    res["again"] = p.js("""({ label: document.querySelector('#mrs-again').textContent, why: [...document.querySelectorAll('.mrs-again-row .chip')].map(c => c.textContent),
+                            tab: document.querySelector('#mrs-host .mr-tabs button[data-tab=review]').textContent, verdict: document.querySelector('.mrs-again-card .chip').textContent,
+                            reply: document.querySelector('.mrs-again-card textarea').value, resolveIsPrimary: document.querySelector('.mrs-again-resolve').classList.contains('primary') })""")
+    p.js("document.querySelector('#mrs-again').click(); 1")
+    wait(p, "window.__sent.some(x => x[0] === '/api/mrs/again')")
+    res["againSent"] = p.js("window.__sent.filter(x => x[0] === '/api/mrs/again').map(x => x[1].tids)")
+    p.js("document.querySelector('.mrs-again-resolve').click(); 1")
+    wait(p, "!!document.querySelector('.mrs-sheet')")
+    p.js("document.querySelector('#mrs-cancel').click(); 1")
     shots = os.environ.get("TATTY_SHOTS")
     if shots:  # pictures through the real route, with the stand-in api still in place: TATTY_SHOTS=<folder>
         import base64
@@ -1947,6 +1965,12 @@ def check_mrs(p):
         bad.append("the confirm sheet's where")
     if not res["posted"]["sent"] or res["posted"]["sent"][0][0] != "dig123":
         bad.append("the post carries the sheet's hash")
+    if res["again"]["label"] != "Re-review 1 addressed comment" or res["again"]["why"] != ["the author replied", "the file changed"] or "1 to re-check" not in res["again"]["tab"]:
+        bad.append("the re-review card offers the answered thread")
+    if res["again"]["verdict"] != "addressed" or res["again"]["reply"] != "Thanks." or res["again"]["resolveIsPrimary"] is not True:
+        bad.append("a re-review verdict with its reply and a Resolve to confirm")
+    if res["againSent"] != [["d3"]]:
+        bad.append("Re-review sends only the ticked threads")
     res["problems"] = bad
     return res
 

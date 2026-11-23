@@ -15,6 +15,8 @@ const MRS_GROUP = {
   watching: ["Watching", "Ones you have looked at, are assigned or mentioned in, that don't need you now."],
 };
 const MRS_SEV = { blocker: "bad", major: "bad", minor: "todo", nit: "todo" };
+const MRS_AGAIN_VERDICT = { addressed: ["addressed", "done"], partly: ["partly addressed", "todo"], "not-addressed": ["not addressed", "bad"], unclear: ["your call", "route"], nochange: ["nothing changed", "route"] };
+const MRS_AGAIN_WHY = { replied: "the author replied", changed: "the file changed", resolved: "marked resolved" };
 let mrsView = null; // the page on screen
 let mrsSoon = 0;
 
@@ -349,6 +351,57 @@ async function mrsDetail(box, key, tab0) {
       threads.length ? threads.map(t => card(t, n++)) : el("p", { class: "dim pad" }, mr.threads.length ? "Every thread is resolved." : "No comments yet."));
   };
 
+  // ---- looking again at the comments you made: only the threads you began that the author answered or changed code for
+  const againCard = () => {
+    const d = view.data, threads = d.mr.threads, cands = d.again || [], running = busy("rereview");
+    const results = ((d.state.rereview || {}).results || []).filter(x => threads.some(t => t.id === x.tid));
+    if (!cands.length && !results.length && !running) return "";
+    const thread = tid => threads.find(t => t.id === tid) || {};
+    const whereBtn = tid => { const t = thread(tid); return t.path ? el("button", { type: "button", class: "mr-where", onclick: () => { view.tab = "files"; view.file = t.path; draw(); } }, `${t.path}:${t.line || ""}`) : el("span", { class: "chip route" }, "general"); };
+    const picks = new Map();
+    const label = n => running ? "Looking again…" : n ? `Re-review ${n} addressed comment${n === 1 ? "" : "s"}` : "Nothing ticked";
+    const go = el("button", { type: "button", class: "primary", id: "mrs-again", disabled: running || !cands.length, onclick: async () => {
+      const tids = [...picks].filter(([, b]) => b.checked).map(([t]) => t);
+      try { await api1("again", { tids }); } catch (e) { alert(mrsErr(e)); }
+      reload(false);
+    } }, label(cands.length));
+    const rows = cands.map(c => {
+      const box = el("input", { type: "checkbox", class: "mrs-again-pick", "aria-label": "Re-review this comment" });
+      box.checked = true;
+      box.addEventListener("change", () => { const n = [...picks.values()].filter(b => b.checked).length; go.disabled = running || !n; go.textContent = label(n); });
+      picks.set(c.tid, box);
+      return el("div", { class: "mrs-again-row" }, box, whereBtn(c.tid), c.why.map(w => el("span", { class: "chip route" }, MRS_AGAIN_WHY[w] || w)),
+        el("span", { class: "dim small" }, ((thread(c.tid).notes || [])[0] || {}).body ? ((thread(c.tid).notes[0].body).split("\n")[0].slice(0, 90)) : ""));
+    });
+    const card = x => {
+      const st = d.state.replies[x.tid] || {};
+      const [word, chip] = MRS_AGAIN_VERDICT[x.verdict] || MRS_AGAIN_VERDICT.unclear;
+      const reply = el("textarea", { class: "mr-draft", rows: 3, "aria-label": "Your reply", spellcheck: "true", placeholder: "Your reply to this thread" });
+      reply.value = st.text || "";
+      let saving = 0;
+      reply.addEventListener("input", () => { clearTimeout(saving); saving = setTimeout(() => api1("draft", { tid: x.tid, text: reply.value }).catch(() => {}), 500); });
+      const send = el("button", { type: "button", class: "mrs-again-reply", onclick: async () => {
+        await api1("draft", { tid: x.tid, text: reply.value });
+        if (await sheet([{ kind: "reply", tid: x.tid }], "Send this reply")) reload(true);
+      } }, "Post reply…");
+      const t = thread(x.tid);
+      const resolve = el("button", { type: "button", class: x.resolve && !t.resolved ? "primary mrs-again-resolve" : "mrs-again-resolve", onclick: async () => {
+        if (await sheet([{ kind: "resolve", tid: x.tid, on: !t.resolved }], t.resolved ? "Reopen this thread" : "Resolve this thread")) reload(true);
+      } }, t.resolved ? "Reopen…" : "Resolve…");
+      return el("div", { class: "card mrs-again-card", "data-tid": x.tid }, el("div", { class: "mrs-pending-head" }, whereBtn(x.tid), el("span", { class: "chip " + chip }, word),
+        t.resolved ? el("span", { class: "chip route" }, "resolved") : ""), x.summary ? el("p", {}, x.summary) : "",
+        x.verdict === "nochange" ? "" : el("div", { class: "mr-reply" }, reply, el("div", { class: "start-actions" }, send, resolve)));
+    };
+    const res = d.state.rereview || {};
+    return el("div", { class: "card mrs-again", id: "mrs-again-card" }, el("div", { class: "mr-rec-head" }, el("strong", {}, "Your comments, again")),
+      el("p", { class: "dim small" }, "The comments you made that the author has answered, or whose file has changed since. Tatty looks only at those threads and only at whether each one is dealt with: it doesn't review anything else. Nothing is sent until you confirm."),
+      rows.length ? el("div", { class: "mrs-again-list" }, rows) : "",
+      el("div", { class: "start-actions" }, go, running ? el("button", { type: "button", onclick: () => api1("cancel", { tid: "rereview" }) }, "Stop") : "",
+        running ? el("span", { class: "dim small mr-step", "data-step": "rereview" }, view.steps.rereview || "Starting") : "",
+        res.model && !running ? el("span", { class: "dim small" }, `${res.model}${res.cost ? " · $" + res.cost.toFixed(2) : ""}`) : ""),
+      res.error ? el("p", { class: "st missing" }, res.error) : "", results.map(card));
+  };
+
   // ---- the review
   const reviewTab = () => {
     const d = view.data, rev = d.state.review, running = busy("review");
@@ -383,7 +436,7 @@ async function mrsDetail(box, key, tab0) {
       if (items.length && await sheet(items, `Send ${items.length} comment${items.length === 1 ? "" : "s"} as one review`)) { view.ticked = null; reload(true); }
     } }, label(initial));
     const failedOnes = drafts.filter(p => p.status === "failed");
-    return el("div", {}, run, summary,
+    return el("div", {}, run, againCard(), summary,
       el("div", { class: "mr-bar-top" }, el("strong", {}, `${drafts.length} comment${drafts.length === 1 ? "" : "s"} waiting`), drafts.length ? sendBtn : ""),
       failedOnes.length ? el("p", { class: "st missing" }, `${failedOnes.length} didn't go: ${failedOnes[0].error || "the host refused it"}. They are still here.`) : "",
       drafts.length ? list : el("p", { class: "dim pad" }, "No comments waiting. Pick lines on the Files tab and press Comment, or run a review."));
@@ -415,7 +468,7 @@ async function mrsDetail(box, key, tab0) {
           mr.updated ? ` · updated ${mrWhen(mr.updated)}` : "")),
       el("div", { class: "mr-signals", id: "mrs-signals" }, mrSignals(mr, true)));
     const nPend = pending().length;
-    const tabs = [["overview", "Overview"], ["files", `Files · ${mr.files.length}`], ["discussion", `Discussion · ${mr.threads.filter(mrOpen).length}`], ["review", `Review${nPend ? " · " + nPend + " draft" + (nPend === 1 ? "" : "s") : ""}`]];
+    const tabs = [["overview", "Overview"], ["files", `Files · ${mr.files.length}`], ["discussion", `Discussion · ${mr.threads.filter(mrOpen).length}`], ["review", `Review${nPend ? " · " + nPend + " draft" + (nPend === 1 ? "" : "s") : ""}${(d.again || []).length ? " · " + d.again.length + " to re-check" : ""}`]];
     const body = view.tab === "files" ? filesTab() : view.tab === "discussion" ? discussion() : view.tab === "review" ? reviewTab()
       : el("div", {}, el("div", { class: "card" }, mrPeopleBlock(mr)), mrOverviewTab(mr));
     const main = el("div", { class: "mrs-main-col" }, el("a", { href: "#mrs", class: "small" }, "← Merge requests"), hero,

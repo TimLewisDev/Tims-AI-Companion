@@ -66,6 +66,8 @@ cat >"$T/claude.sh" <<'EOS'
 [ "${1:-}" = -p ] && case "$*" in *"review comment on their merge request"*) exec bash "$(dirname "$0")/claude-mr.sh" "$@" ;; esac
 # the Merge requests page's review of a colleague's request (it names its job in the system prompt): the stand-in is claude-mrs.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"You review a colleague"*) exec bash "$(dirname "$0")/claude-mrs.sh" "$@" ;; esac
+# the same page's second look at the comments the person made (it names its job in the system prompt): the stand-in is claude-again.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *"whether the author has dealt with"*) exec bash "$(dirname "$0")/claude-again.sh" "$@" ;; esac
 # the QA mode's drafts (they name their job in the system prompt) and Jira's answer to a create: the stand-in is claude-qa.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"You turn a tester"*|*"You break a feature"*|*mcp__atlassian__createJiraIssue*) exec bash "$(dirname "$0")/claude-qa.sh" "$@" ;; esac
 # a chat's turn (it names its conversation): the stand-in is claude-chat.sh, made with its tests
@@ -2162,6 +2164,42 @@ pick "$T/mw" "(d['state']['replies']['d2']['recommendation']['action'], d['state
 has "its recommendation is kept and the reply drafted (not sent)" "$T/f" "('act', 'Good catch: I will guard it.')"
 [ "$(mrsp recommend "{\"key\":\"$K7\",\"tid\":\"nope\"}")" = 400 ] && ok "a thread that isn't there" || bad "no such thread"
 [ "$(wc -l <"$T/glab.writes")" = "$W1" ] && ok "and still nothing was written to the host" || bad "still nothing written"
+# looking again at the comments the person made: only their threads, only what changed in those files
+cat >"$T/claude-again.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0"); prompt=$(cat); printf '%s\n' "$@" >"$d/again.args"; printf '%s' "$prompt" >"$d/again.prompt"; echo x >>"$d/again.runs"
+printf '{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":0.05,"structured_output":{"results":[{"tid":"d3","verdict":"addressed","summary":"The capital B is now deliberate.","reply":"Thanks, that sorts it."},{"tid":"zz","verdict":"addressed","summary":"not asked","reply":"nope"}]}}\n'
+EOS
+MSBASE=$(git -C "$MS" rev-parse main)
+cp "$T/mrs-disc.json" "$T/mrs-disc.keep"
+printf '%s' '[{"id":"d1","notes":[{"id":11,"system":false,"body":"Please guard against null here.","author":{"username":"sam"},"created_at":"2026-11-01T10:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":2}}]},{"id":"d3","notes":[{"id":31,"system":false,"body":"Why capital B?","author":{"username":"me"},"created_at":"2026-11-01T12:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":2,"head_sha":"'"$MSBASE"'"}},{"id":32,"system":false,"body":"It is deliberate, see the doc.","author":{"username":"bob"},"created_at":"2026-11-02T09:00:00Z","resolvable":true,"resolved":false}]},{"id":"d4","notes":[{"id":41,"system":false,"body":"A comment made on the latest commit.","author":{"username":"me"},"created_at":"2026-11-02T10:00:00Z","resolvable":true,"resolved":false,"position":{"new_path":"src/widget.txt","new_line":3,"head_sha":"abc123"}}]},{"id":"d5","notes":[{"id":51,"system":false,"body":"Mention this in the readme.","author":{"username":"me"},"created_at":"2026-11-01T12:30:00Z","resolvable":true,"resolved":false,"position":{"new_path":"README.md","new_line":1,"head_sha":"'"$MSBASE"'"}}]}]' >"$T/mrs-disc.json"
+get "/api/mrs/one?key=$K7&force=1" >"$T/j"
+pick "$T/j" "[(a['tid'], a['why'], a['base'] == '$MSBASE') for a in d['again']]" >"$T/f"
+has "the threads the author may have dealt with: answered or in a file that changed" "$T/f" "[('d3', ['replied', 'changed'], True), ('d5', ['changed'], True)]"
+hasnt "never someone else's thread" "$T/f" "d1"
+hasnt "nor one made on the latest commit with no answer" "$T/f" "d4"
+W3=$(wc -l <"$T/glab.writes"); rm -f "$T/again.runs"
+[ "$(mrsp again "{\"key\":\"$K7\",\"tids\":[\"d1\"]}")" = 400 ] && ok "a thread that isn't one of those is refused" || bad "again: someone else's thread" "$(cat "$T/mj")"
+[ "$(mrsp again "{\"key\":\"$K7\"}")" = 202 ] && ok "Re-review starts the agent" || bad "again starts" "$(cat "$T/mj")"
+mrswait && ok "and it finishes" || bad "again finishes"
+pick "$T/mw" "[(x['tid'], x['verdict'], x['resolve']) for x in d['state']['rereview']['results']]" >"$T/f"
+has "each thread gets a verdict (and an unasked one is dropped)" "$T/f" "[('d3', 'addressed', True), ('d5', 'nochange', False)]"
+[ "$(pick "$T/mw" "(d['state']['replies']['d3']['text'], d['state']['rereview']['cost'], d['state']['rereview']['error'])")" = "('Thanks, that sorts it.', 0.05, '')" ] && ok "its reply waits in the thread's reply box" || bad "again reply drafted" "$(pick "$T/mw" "d['state']['rereview']")"
+[ "$(wc -l <"$T/glab.writes")" = "$W3" ] && ok "and nothing was written to the host" || bad "again wrote to the host"
+has "it was shown the thread's conversation" "$T/again.prompt" "It is deliberate, see the doc."
+has "and what changed in the file since the comment" "$T/again.prompt" "+B"
+hasnt "not another person's thread" "$T/again.prompt" "Please guard against null"
+hasnt "and not a file that didn't change" "$T/again.prompt" "README"
+has "it is told to judge only those threads" "$T/again.args" "Do not review the rest of the merge request"
+has "it may only read" "$T/again.args" "Read,Glob,Grep"
+hasnt "it has no way to run a command" "$T/again.args" "Bash"
+[ "$(pick "$T/mw" "d['again']")" = "[]" ] && ok "a thread looked at in this state isn't offered again" || bad "again offered twice"
+[ "$(mrsp again "{\"key\":\"$K7\"}")" = 400 ] && ok "so there is nothing to re-review until something changes" || bad "again with nothing"
+[ "$(wc -l <"$T/again.runs")" = 1 ] && ok "(one run, not two)" || bad "again run count"
+sed -i 's/"body":"It is deliberate, see the doc.","author":{"username":"bob"}/"body":"It is deliberate, see the doc.","author":{"username":"bob"}},{"id":33,"system":false,"body":"And I added a test.","author":{"username":"bob"}/' "$T/mrs-disc.json"
+get "/api/mrs/one?key=$K7&force=1" >"$T/j"
+[ "$(pick "$T/j" "[a['tid'] for a in d['again']]")" = "['d3']" ] && ok "a new answer on it offers it again" || bad "again after a new answer" "$(pick "$T/j" "d['again']")"
+cp "$T/mrs-disc.keep" "$T/mrs-disc.json"; get "/api/mrs/one?key=$K7&force=1" >"$T/j"
 # the chat about it
 [ "$(mrsp chat "{\"key\":\"$K7\",\"context\":{\"path\":\"src/widget.txt\",\"lines\":\"2\",\"hunk\":\"+B\"}}")" = 200 ] && ok "Ask Tatty opens a chat" || bad "Ask Tatty" "$(cat "$T/mj")"
 CH=$(pick "$T/mj" "d['chat']['id']")
