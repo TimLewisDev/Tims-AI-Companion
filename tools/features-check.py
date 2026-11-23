@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --notepad | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --notepad | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -51,6 +51,8 @@ files, so only ever on a throwaway root.
 --whiteboard only the whiteboard: a new blank board with text, a comment and a
 line, then a story added on the first User Stories board. It writes too: a
 throwaway root and home only.
+--notepad only a feature's notepad (the Demo feature's): real mouse and keys on the floating formatting bar, the preview
+and its checkboxes, a reload, a save conflict. It writes Notepad.md: a throwaway root and home only.
 Prints one JSON object of what it found at each step.
 """
 
@@ -1315,6 +1317,147 @@ def whiteboard_steps(p, res):
     else:
         res["feature"] = "no document cards"
     return res
+
+
+def check_notepad(p):
+    """The feature's notepad, with real mouse and keys: the rail item after Whiteboard, text typed,
+    words selected so the formatting bar floats up (inside the pad), Bold, a font size from its menu,
+    centre, a checkbox line continued with Enter, saved by itself; then the preview (sizes, alignment,
+    checkboxes, one ticked with the mouse), the same after a reload, the text edited on disk meanwhile
+    (a second window's save: "Load the disk version" and "Overwrite with mine"), what the preview
+    refuses to turn into tags, and the pure edits on plain strings. It writes Notepad.md in the Demo
+    feature's folder: a throwaway root and home only. `failed` lists the checks that did not hold."""
+    res = {"checks": {}}
+    try:
+        notepad_steps(p, res)
+    except Exception as e:  # report how far it got
+        res["error"] = str(e)[:400]
+    res["failed"] = [k for k, v in res["checks"].items() if not v]
+    return res
+
+
+def notepad_steps(p, res):
+    ck = res["checks"]
+    ed, bar = "#fnote-edit", "#fnote-bar"
+    val = lambda: p.js(f"document.querySelector('{ed}').value")
+    synced = f"(async () => (await api('/api/notepad?name=Demo')).text === document.querySelector('{ed}').value)()"
+    where = lambda sel: p.js(f"(() => {{ const r = document.querySelector({json.dumps(sel)}).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; }})()")
+
+    def select(a, b):
+        p.js(f"(() => {{ const t = document.querySelector('{ed}'); t.focus(); t.setSelectionRange({a}, {b}); return 1; }})()")
+        key(p, "Shift", 16)  # a key up: the pad looks again at where the selection is
+        wait(p, f"!document.querySelector('{bar}').hidden")
+
+    def press(sel):
+        click(p, *where(sel))
+        time.sleep(0.25)
+
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    p.js("localStorage.removeItem('tt-notepad-mode'); location.hash = '#feature/Demo/notepad'; 1")
+    ck["opens"] = wait(p, f"!!document.querySelector('{ed}')", 120)
+    rail = p.js("[...document.querySelectorAll('.fnav > .fnav-item > span:first-child')].map(s => s.textContent)")
+    ck["rail: Notepad follows Whiteboard"] = "Whiteboard" in rail and rail.index("Notepad") == rail.index("Whiteboard") + 1 if "Notepad" in rail else False
+    ck["the rail item is on"] = p.js("!!document.querySelector('.fnav-item.on[href$=\"/notepad\"]')")
+    ck["the caret is in the pad"] = p.js(f"document.activeElement === document.querySelector('{ed}')")
+    ck["no file for an unused notepad"] = p.js("(async () => (await api('/api/notepad?name=Demo')).exists === false)()")
+    p.call("Input.insertText", text="hello world")
+    # Bold on a selected word, with the bar floating inside the pad
+    select(6, 11)
+    geo = p.js(f"""(() => {{ const b = document.querySelector('{bar}').getBoundingClientRect(), pd = document.querySelector('.np-pad').getBoundingClientRect();
+                   return {{ inside: b.left >= pd.left - 1 && b.right <= pd.right + 1 && b.top >= pd.top - 1 && b.bottom <= pd.bottom + 1,
+                            w: b.width, h: b.height, above: b.top < pd.top + 60 }}; }})()""")
+    res["bar"] = geo
+    ck["the bar floats inside the pad"] = geo["inside"] and geo["w"] > 100
+    press(f"{bar} [data-act=bold]")
+    ck["bold wraps the word"] = val() == "hello **world**"
+    select(0, 5)
+    press(f"{bar} [data-act=size]")
+    ck["the size menu opens"] = p.js("!document.querySelector('#fnote-menu').hidden")
+    press("#fnote-menu [data-size='24']")
+    ck["a size is a span"] = val().startswith('<span style="font-size:24px">hello</span>')
+    select(2, 2)
+    press(f"{bar} [data-act=center]")
+    ck["centre wraps the paragraph"] = val().startswith('<div align="center">\n\n<span style="font-size:24px">hello</span> **world**\n\n</div>')
+    # a checkbox line, continued by Enter
+    p.js(f"(() => {{ const t = document.querySelector('{ed}'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); return 1; }})()")
+    p.call("Input.insertText", text="\n\nTo do")
+    key(p, "Shift", 16)
+    wait(p, f"!document.querySelector('{bar}').hidden")
+    press(f"{bar} [data-act=checkbox]")
+    key(p, "Enter", 13)
+    p.call("Input.insertText", text="Second")
+    ck["Enter continues a checkbox list"] = val().endswith("- [ ] To do\n- [ ] Second")
+    ck["saved by itself"] = wait(p, synced, 40)
+    ck["the status says so"] = p.js("document.querySelector('.np-status').textContent") == "Saved"
+    # the preview
+    press(".np-top [data-mode=view]")
+    seen = p.js("""({ shown: !document.querySelector('#fnote-view').hidden, bar: document.querySelector('#fnote-bar').hidden,
+                      size: document.querySelectorAll('#fnote-view .np-s24').length, centre: document.querySelectorAll('#fnote-view .np-align.np-center').length,
+                      strong: (document.querySelector('#fnote-view strong') || {}).textContent, boxes: document.querySelectorAll('#fnote-view .np-task input').length,
+                      attrs: document.querySelectorAll('#fnote-view [style]').length })""")
+    res["preview"] = seen
+    ck["the preview draws sizes, alignment, bold, two boxes"] = (seen["shown"] and seen["bar"] and seen["size"] == 1 and seen["centre"] == 1
+                                                                 and seen["strong"] == "world" and seen["boxes"] == 2)
+    ck["no style attributes (the CSP)"] = seen["attrs"] == 0
+    press("#fnote-view .np-task input")
+    ck["a checkbox ticked in the preview is ticked in the text"] = "- [x] To do\n- [ ] Second" in val()
+    ck["and saved"] = wait(p, synced, 40)
+    # a reload brings it all back, in the mode it was left in
+    p.js("location.reload(); 1")
+    time.sleep(1.5)
+    ck["after a reload"] = wait(p, "!!document.querySelector('#fnote-view') && document.querySelectorAll('#fnote-view .np-task input').length === 2", 120)
+    ck["it is still the preview"] = p.js("!document.querySelector('#fnote-view').hidden && document.querySelector('#fnote-edit').hidden")
+    ck["the tick is still there"] = p.js("document.querySelector('#fnote-view .np-task input').checked")
+    ck["not among the documents"] = p.js("(async () => !(await api('/api/feature?name=Demo')).docList.some(d => d.file === 'Notepad.md'))()")
+    press(".np-top [data-mode=edit]")
+    ck["Edit brings the text area back and focuses it"] = p.js(f"document.activeElement === document.querySelector('{ed}')")
+    # edited elsewhere while this window has unsaved words: asked, never overwritten
+    for pick, label in (("Load the disk version", "load"), ("Overwrite with mine", "overwrite")):
+        p.js(f"(() => {{ const t = document.querySelector('{ed}'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); return 1; }})()")
+        p.call("Input.insertText", text=f" {label}")
+        p.js("""(async () => { const now = await api('/api/notepad?name=Demo');
+                 await api('/api/notepad', { name: 'Demo', text: 'THEIRS ' + Date.now(), expected: now.updated, client: 'someone-else' }); return 1; })()""")
+        ck[f"{label}: a conflict is shown"] = wait(p, "document.querySelectorAll('.np-fix button').length === 2", 60)
+        ck[f"{label}: nothing was overwritten meanwhile"] = p.js("(async () => (await api('/api/notepad?name=Demo')).text.startsWith('THEIRS'))()")
+        p.js(f"[...document.querySelectorAll('.np-fix button')].find(b => b.textContent === {json.dumps(pick)}).click(); 1")
+        if label == "load":
+            ck["load: the disk version is shown"] = wait(p, f"document.querySelector('{ed}').value.startsWith('THEIRS')")
+        else:
+            ck["overwrite: mine is kept"] = wait(p, f"(async () => (await api('/api/notepad?name=Demo')).text.endsWith(' overwrite'))()", 40)
+    # what the preview will and won't turn into tags
+    hostile = p.js("""(() => { const d = document.createElement('div');
+        d.innerHTML = notepadRender('<img src=x onerror=alert(1)>\\n\\n<script>x</script>\\n\\n<span style="font-size:999px">big</span> </span> ~~gone~~ `<span style="font-size:18px">x</span>` <span style="font-size:18px">ok</span>');
+        return { bad: d.querySelectorAll('img, script, [onerror]').length, big: d.querySelectorAll('[class*=np-s999]').length, strike: d.querySelectorAll('s').length,
+                 code: (d.querySelector('code') || {}).textContent, sized: d.querySelectorAll('.np-s18').length, attrs: d.querySelectorAll('[style]').length }; })()""")
+    res["hostile"] = hostile
+    ck["the preview makes tags only of its own forms"] = (hostile["bad"] == 0 and hostile["big"] == 0 and hostile["strike"] == 1
+                                                          and hostile["code"] == '<span style="font-size:18px">x</span>' and hostile["sized"] == 1 and hostile["attrs"] == 0)
+    ops = [
+        ("NotepadOps.bold('**a**', 2, 3).t", "a"),
+        ("NotepadOps.bold('a b', 2, 2).t", "a **b**"),
+        ("NotepadOps.italic('**a**', 2, 3).t", "***a***"),
+        ("NotepadOps.italic('*a*', 1, 2).t", "a"),
+        ("NotepadOps.heading('x', 0, 0).t", "# x"),
+        ("NotepadOps.heading('### x', 0, 0).t", "x"),
+        ("NotepadOps.numbered('- a\\n- b', 0, 7).t", "1. a\n2. b"),
+        ("NotepadOps.checkbox('- [ ] a', 0, 0).t", "a"),
+        ("NotepadOps.bullet('a\\n\\nb', 0, 4).t", "- a\n\n- b"),
+        ("NotepadOps.quote('a', 0, 1).t", "> a"),
+        ("NotepadOps.size('<span style=\"font-size:24px\">a</span>', 29, 30, 14).t", "a"),
+        ("NotepadOps.align('p\\n\\nq', 0, 0, 'right').t", '<div align="right">\n\np\n\n</div>\n\nq'),
+        ("NotepadOps.align('<div align=\"right\">\\n\\np\\n\\n</div>', 20, 20, 'left').t", "p"),
+        ("NotepadOps.enter('1. a', 4, 4).t", "1. a\n2. "),
+        ("NotepadOps.enter('- [x] a', 7, 7).t", "- [x] a\n- [ ] "),
+        ("NotepadOps.enter('- ', 2, 2).t", ""),
+        ("NotepadOps.toggleTask('- [ ] a\\n- [x] b', 1)", "- [ ] a\n- [ ] b"),
+    ]
+    bad = []
+    for expr, want in ops:
+        got = p.js(expr)
+        if got != want:
+            bad.append({"expr": expr, "got": got, "want": want})
+    res["opsWrong"] = bad
+    ck["the edits on plain strings"] = not bad
 
 
 def center(p, sel):
@@ -3170,9 +3313,9 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--pool", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--notepad", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--pool", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
-                                "--whiteboard": check_whiteboard, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
+                                "--whiteboard": check_whiteboard, "--notepad": check_notepad, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
                                 "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--mrs": check_mrs, "--pool": check_pool, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
             print(json.dumps(out, indent=1))
             return 0

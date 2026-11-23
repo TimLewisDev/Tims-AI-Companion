@@ -4185,6 +4185,50 @@ ls "$TATTY_HOME/boards/"*.json >/dev/null 2>&1 && ok "in <home>/boards" || bad "
 
 
 fi
+if section notepad; then
+echo "# notepad"
+for f in notepad.js notepad.css; do [ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"; done
+# a folder of its own: the other sections compare what is in Demo's
+NPD="$FX/features/Pad"
+mkdir -p "$NPD"
+npc() { curl -s -o "$T/np" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$1" "$U/api/notepad"; }
+get "/api/notepad?name=Pad" >"$T/j"
+[ "$(pick "$T/j" "(d['exists'], d['text'], d['updated'])")" = "(False, '', 0)" ] && ok "a new notepad is empty" || bad "a new notepad is empty" "$(head -c 300 "$T/j")"
+[ ! -e "$NPD/Notepad.md" ] && ok "opening it makes no file" || bad "opening it makes no file"
+[ "$(npc '{"name":"Pad","text":"  ","expected":0}')" = 200 ] && [ ! -e "$NPD/Notepad.md" ] && ok "an empty first save makes no file" || bad "an empty first save makes no file"
+[ "$(code -H "X-TT-Token: $K" "$U/api/notepad?name=Nope")" = 404 ] && ok "an unknown feature (read)" || bad "an unknown feature (read)"
+[ "$(npc '{"name":"Nope","text":"x","expected":0}')" = 404 ] && ok "an unknown feature (write)" || bad "an unknown feature (write)"
+[ "$(npc '{"name":"Pad","text":"x"}')" = 400 ] && ok "expected is required" || bad "expected is required"
+[ "$(npc '{"name":"Pad","text":5,"expected":0}')" = 400 ] && ok "text must be text" || bad "text must be text"
+[ "$(npc '{"name":"Pad","text":"# Notes\n- [ ] one\n- [x] two","expected":0}')" = 200 ] && ok "the first save makes Notepad.md" || bad "the first save makes Notepad.md" "$(cat "$T/np")"
+[ -f "$NPD/Notepad.md" ] && ok "in the feature's folder" || bad "in the feature's folder"
+UPD=$(pick "$T/np" "d['updated']")
+get "/api/notepad?name=Pad" >"$T/j"
+[ "$(pick "$T/j" "(d['exists'], d['text'].splitlines())")" = "(True, ['# Notes', '- [ ] one', '- [x] two'])" ] && ok "read back" || bad "read back" "$(head -c 300 "$T/j")"
+[ "$(npc '{"name":"Pad","text":"mine","expected":0}')" = 409 ] && ok "a stale copy is refused" || bad "a stale copy is refused" "$(cat "$T/np")"
+has "the refusal says what is on disk now" "$T/np" '"updated"'
+get "/api/notepad?name=Pad" >"$T/j"
+[ "$(pick "$T/j" "d['text'].splitlines()[0]")" = "# Notes" ] && ok "and changes nothing" || bad "and changes nothing"
+[ "$(npc "{\"name\":\"Pad\",\"text\":\"# Notes\\n- [x] one\",\"expected\":$UPD}")" = 200 ] && ok "a save with the current stamp" || bad "a save with the current stamp" "$(cat "$T/np")"
+# someone (Obsidian) edits it on disk, with Windows line ends: the page's text is kept in them
+printf '# Notes\r\nby hand\r\n' >"$NPD/Notepad.md"
+get "/api/notepad?name=Pad" >"$T/j"
+UPD=$(pick "$T/j" "d['updated']")
+[ "$(npc "{\"name\":\"Pad\",\"text\":\"# Notes\\nby page\",\"expected\":$UPD}")" = 200 ] && ok "saved over a hand edit" || bad "saved over a hand edit" "$(cat "$T/np")"
+[ "$($PY -c "import sys; print(b'\r\n' in open(sys.argv[1], 'rb').read())" "$NPD/Notepad.md")" = True ] && ok "its line ends are kept" || bad "its line ends are kept"
+$PY -c "import json; print(json.dumps({'name': 'Pad', 'text': 'x' * 600000, 'expected': 0}))" >"$T/big"
+[ "$(curl -s -o "$T/np" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d @"$T/big" "$U/api/notepad")" = 413 ] && ok "a notepad has a size limit" || bad "a notepad has a size limit" "$(head -c 200 "$T/np")"
+get /api/events >"$T/ev"
+has "a save is an event" "$T/ev" '"type": "notepad"'
+# it is not one of the feature's documents (it has a page of its own), but it can be opened as one
+printf '# A document\n' >"$NPD/Pad - Notes.md"
+get "/api/whiteboard?kind=feature&ref=Pad" >"$T/j"
+[ "$(pick "$T/j" "[x['file'] for x in d['docs']]")" = "['Pad - Notes.md']" ] && ok "not listed among the documents" || bad "not listed among the documents" "$(head -c 300 "$T/j")"
+rm -f "$NPD/Notepad.md"
+[ "$(npc '{"name":"Pad","text":"again","expected":5}')" = 409 ] && ok "a notepad removed meanwhile is a conflict" || bad "a notepad removed meanwhile is a conflict" "$(cat "$T/np")"
+[ "$(npc '{"name":"Pad","text":"again","expected":0}')" = 200 ] && [ -f "$NPD/Notepad.md" ] && ok "and is made again by a save of 0" || bad "and is made again by a save of 0"
+rm -rf "$NPD"
+fi
 if section models; then
 echo "# model and effort at start"
 post /api/start '{"name":"Demo","row":0}' >"$T/j"

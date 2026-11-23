@@ -139,7 +139,7 @@ window.addEventListener("hashchange", closeSidePanel);
 
 // ------------------------------------------------------------- routing
 // #modes · #mode · #home · #workflows/<session tag>[/ask/<question id>] · #chats/<chat id> (chat.js)
-// · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/code-diff (diff.js)
+// · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/notepad · #feature/<name>/code-diff (diff.js)
 // · #feature/<name>/diagram[/plan|/review] · #diagram (the Project diagram; diagram.js)
 // · #toolbox · #settings · #shop (shop.js) · #jira
 // · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
@@ -150,7 +150,7 @@ function parseRoute() {
   const parts = location.hash.replace(/^#/, "").split("/").map(p => { try { return decodeURIComponent(p); } catch { return p; } });
   if (parts[0] === "feature" && parts[1]) {
     const doc = parts[2] === "doc" ? parts[3] : null;
-    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", diff: parts[2] === "code-diff", commit: parts[2] === "commit", mr: parts[2] === "merge-request", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate",
+    return { page: "feature", name: parts[1], doc, at: doc && parts[4] === "at" ? parts[5] : null, board: parts[2] === "whiteboard", notepad: parts[2] === "notepad", diff: parts[2] === "code-diff", commit: parts[2] === "commit", mr: parts[2] === "merge-request", suggestions: parts[2] === "review", decide: parts[2] === "decide", validate: parts[2] === "validate",
       diagram: parts[2] === "diagram" ? (parts[3] === "plan" || parts[3] === "review" ? parts[3] : "any") : "" };
   }
   if (parts[0] === "diagram") return { page: "diagram" };
@@ -188,6 +188,7 @@ const onFeatureList = () => { const r = parseRoute(); return r.page === "home" &
 const featureHref = (name, doc, at) => "#feature/" + encodeURIComponent(name) +
   (doc ? "/doc/" + encodeURIComponent(doc) + (at ? "/at/" + encodeURIComponent(at) : "") : "");
 const featureBoardHref = name => "#feature/" + encodeURIComponent(name) + "/whiteboard";
+const featureNotepadHref = name => "#feature/" + encodeURIComponent(name) + "/notepad";
 const featureValidateHref = name => "#feature/" + encodeURIComponent(name) + "/validate";
 const featureDiffHref = name => "#feature/" + encodeURIComponent(name) + "/code-diff";
 const featureDiagramHref = (name, kind) => "#feature/" + encodeURIComponent(name) + "/diagram" + (kind ? "/" + kind : "");
@@ -241,7 +242,7 @@ async function route() {
       clearInterval(homeTimer);
       homeTimer = setInterval(() => { if (!document.hidden && onFeatureList()) renderHome(true); }, 30000);
     }
-  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate, r.diagram, r.mr);
+  } else if (r.page === "feature") await renderFeature(r.name, r.doc, r.at, r.board, r.commit, r.suggestions, r.diff, r.decide, r.validate, r.diagram, r.mr, r.notepad);
   else if (r.page === "diagram") {
     // A server started before an update serves the new pages but not a new script of theirs.
     if (typeof renderProjectDiagram === "function") renderProjectDiagram(pageEls.diagram);
@@ -715,7 +716,7 @@ function rootSetup(r) {
 
 let shown = null; // the document on screen: { name, file, main }
 
-async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate, diagram, mr) {
+async function renderFeature(name, doc, at, board, commit, suggestions, diff, decide, validate, diagram, mr, notepad) {
   const box = pageEls.feature;
   // The same document, another part of it ([[#Heading]], or Back): just scroll.
   const same = doc && shown && shown.name === name && shown.file === doc && shown.main.isConnected;
@@ -743,8 +744,8 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     if (mine !== routeSeq) return; // (the person has gone elsewhere while it was read)
   }
   const main = el("div", { class: "fmain" });
-  const opts = { commit, suggestions, diff, decide, validate, diagram, mr };
-  const isOverview = !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram && !mr;
+  const opts = { commit, suggestions, diff, decide, validate, diagram, mr, notepad };
+  const isOverview = !doc && !board && !commit && !suggestions && !diff && !decide && !validate && !diagram && !mr && !notepad;
   box.replaceChildren(el("div", { class: "fpage" }, documentsRail(featureNav(f, doc, board, opts), f.name, isOverview), main));
   featureView = { name, doc, board, opts, overview: isOverview, sig: decideSig(f) };
   // What is drawn is what was read last time; it is read again behind the page, and the page is
@@ -760,6 +761,7 @@ async function renderFeature(name, doc, at, board, commit, suggestions, diff, de
     else main.replaceChildren(el("p", { class: "pad st missing" }, "The merge request page didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
   }
   else if (board) await featureBoard(f, main);
+  else if (notepad) await featureNotepad(f, main);
   else if (diagram) {
     if (typeof featureDiagram === "function") await featureDiagram(f, main, diagram); // diagram.js
     else main.replaceChildren(el("p", { class: "pad st missing" }, "The diagram didn't load: restart Tatty (tray menu → Close Tatty's window, then open it again)."));
@@ -846,7 +848,7 @@ function waitingItems(f) {
 // The Merge request rail item shows once the feature has a branch and its build is complete (or a request exists).
 const mrNavShown = f => !!(f.merge && f.merge.branch && (f.phase === "complete" || f.merge.url)) && typeof featureMrHref === "function";
 const mrNavSub = m => m.mr ? `${m.mr.open} open${m.number ? " · " + (m.host === "github" ? "#" : "!") + m.number : ""}` : m.state || "";
-const NAV_ICONS = { Overview: "◎", Whiteboard: "▦", Diagram: "◇", "Code Diff": "±", Commit: "✓", "Merge request": "⇄", "Review suggestions": "✎", Decisions: "?", Validation: "☑" };
+const NAV_ICONS = { Overview: "◎", Whiteboard: "▦", Notepad: "▤", Diagram: "◇", "Code Diff": "±", Commit: "✓", "Merge request": "⇄", "Review suggestions": "✎", Decisions: "?", Validation: "☑" };
 function featureNav(f, current, board, opts = {}) {
   const item = (label, href, on, sub, file) => {
     const ic = !file && NAV_ICONS[label];
@@ -866,8 +868,9 @@ function featureNav(f, current, board, opts = {}) {
     el("a", { class: "fnav-back small", href: "#home" }, "← Features"),
     el("h3", {}, f.name),
     f.title ? el("div", { class: "fnav-title dim small" }, f.title) : "",
-    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate && !opts.diagram && !opts.mr),
+    item("Overview", featureHref(f.name), !current && !board && !opts.commit && !opts.suggestions && !opts.side && !opts.diff && !opts.decide && !opts.validate && !opts.diagram && !opts.mr && !opts.notepad),
     item("Whiteboard", featureBoardHref(f.name), !!board),
+    item("Notepad", featureNotepadHref(f.name), !!opts.notepad), // notepad.js
     item("Diagram", featureDiagramHref(f.name), !!opts.diagram), // diagram.js
     item("Code Diff", featureDiffHref(f.name), !!opts.diff),
     f.phase === "complete" ? item("Commit", featureCommitHref(f.name), !!opts.commit) : "", // commit.js
@@ -970,6 +973,35 @@ async function featureBoard(f, main) {
   wb.setCards(d.docs.map(x => ({ id: x.file, w: W, h: H,
     node: el("div", { class: "wbdoc", tabindex: "0", role: "button", "aria-label": `Open ${x.doc}` },
       el("div", { class: "dim small" }, x.prefix || "Working note"), el("strong", {}, x.doc), el("div", { class: "dim small" }, `updated ${ago(x.updated)}`)) })));
+}
+
+// A feature's notepad (#feature/<name>/notepad): Notepad.md in its folder, written on notepad.js.
+// Saved a moment after the last keystroke; a copy changed on disk meanwhile (Obsidian, another
+// window) is asked about, never overwritten.
+async function featureNotepad(f, main) {
+  main.classList.add("fmain-notepad");
+  main.replaceChildren(el("p", { class: "dim pad" }, "Opening the notepad…"));
+  const url = `/api/notepad?name=${encodeURIComponent(f.name)}`;
+  let d;
+  try { d = await api(url); } catch (e) {
+    main.replaceChildren(el("p", { class: "st missing pad" }, String(e.message || e)));
+    return;
+  }
+  const me = Math.random().toString(36).slice(2, 10); // this window's id: its own saves aren't news to it
+  const pad = makeNotepad({ id: "fnote", text: d.text, updated: d.updated,
+    save: (text, expected) => api("/api/notepad", { name: f.name, text, expected, client: me }),
+    reload: () => api(url) });
+  main.replaceChildren(
+    el("div", { class: "doc-head" }, el("h2", {}, "Notepad"),
+      el("span", { class: "dim small" }, "Notepad.md in this feature's folder. Select text for formatting.")),
+    pad.element);
+  const onEvent = e => {
+    if (!pad.element.isConnected) { document.removeEventListener("tt-event", onEvent); return; }
+    const ev = e.detail;
+    if (ev.type === "notepad" && ev.name === f.name && ev.client !== me) pad.refresh();
+  };
+  document.addEventListener("tt-event", onEvent);
+  pad.focus();
 }
 
 // Whether the feature has reached the merge step: the build is complete, the review is finished (or left

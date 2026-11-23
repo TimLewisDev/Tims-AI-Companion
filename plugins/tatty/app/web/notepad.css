@@ -1,0 +1,56 @@
+/* The notepad (notepad.js): a text area with a bar that floats at the caret, and a preview.
+   Only theme.css's tokens are used, so a shop look skins it too. Sizes and alignment
+   are classes, never style attributes: the page's CSP forbids those. */
+
+.fmain.fmain-notepad { display: flex; flex-direction: column; overflow: hidden; }
+.fmain-notepad > .np { max-width: 980px; width: 100%; margin-top: 8px; }
+
+.np { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.np-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 30px; padding-bottom: 8px; }
+.np-fix { display: inline-flex; gap: 6px; }
+.np-pad { position: relative; display: flex; flex: 1; min-height: 240px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); }
+.np-pad:focus-within { border-color: var(--accent); }
+
+.np-edit { flex: 1; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: none; background: transparent;
+  color: var(--ink); font: inherit; font-size: 14px; line-height: 1.6; padding: 14px 16px; tab-size: 2; border-radius: 8px; }
+.np-edit[hidden], .np-view[hidden], .np-bar[hidden], .np-menu[hidden] { display: none; }
+.np-view { flex: 1; min-width: 0; overflow: auto; padding: 8px 16px 14px; }
+
+/* the copy of the text the bar's position is measured on */
+.np-mirror { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; box-sizing: content-box;
+  white-space: pre-wrap; overflow-wrap: break-word; border: 0; margin: 0; overflow: hidden; height: 0; }
+
+/* the bar that floats above the caret or selection (like the whiteboard's .wbpop) */
+.np-bar { position: absolute; z-index: 12; display: flex; align-items: center; gap: 2px; padding: 3px; max-width: calc(100% - 8px);
+  flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .16); }
+.np-btn { min-width: 28px; height: 26px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; border-radius: 6px; }
+.np-btn:hover { background: var(--accent-soft); }
+.np-btn .np-ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.np-sep { width: 1px; align-self: stretch; margin: 3px 3px; background: var(--line); }
+.np-menu { position: absolute; z-index: 13; left: 0; top: calc(100% + 4px); display: flex; flex-direction: column; min-width: 120px;
+  padding: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .16); }
+.np-item { text-align: left; border: 0; background: transparent; color: var(--ink); padding: 3px 8px; border-radius: 6px; }
+.np-item:hover { background: var(--accent-soft); }
+
+/* sizes and alignment, in the editor's menu and in the preview */
+.np-s12 { font-size: 12px; }
+.np-s14 { font-size: 14px; }
+.np-s18 { font-size: 18px; }
+.np-s24 { font-size: 24px; }
+.np-s32 { font-size: 32px; line-height: 1.25; }
+.np-align.np-left { text-align: left; }
+.np-align.np-center { text-align: center; }
+.np-align.np-right { text-align: right; }
+.np-align.np-center ul, .np-align.np-center ol, .np-align.np-right ul, .np-align.np-right ol { display: inline-block; text-align: left; }
+
+/* checkboxes in the preview */
+.np-tasks { list-style: none; padding-left: 4px; margin: 6px 0; }
+.np-task { display: flex; align-items: baseline; gap: 8px; margin: 3px 0; }
+.np-task input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.np-task.done > span { color: var(--dim); text-decoration: line-through; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .np-pad { transition: border-color .12s; }
+}

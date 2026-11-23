@@ -67,6 +67,7 @@ banner	^planning IDs	planids
 banner	^questions	decide
 banner	^design \(user stories\)	stories,whiteboards,cache
 banner	^whiteboards	whiteboards,stories,diagrams
+banner	^notepad	notepad
 banner	^diagrams	diagrams
 banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
 banner	^QA	qa

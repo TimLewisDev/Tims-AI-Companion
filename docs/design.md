@@ -1684,6 +1684,44 @@ the pointer, Fit, `frame(ids)`, `outline(ids, label)` (a group's frame).
   card's drag now draws only that card's lines again (the layer only grows while
   it goes on, and is sized again at the drop).
 
+## The notepad
+
+`notepad.js` (and `notepad.css`) is a markdown notepad a host page makes with
+`makeNotepad(o)`, as it does a whiteboard: it knows nothing of features or URLs, and the
+host gives it the text, `save(text, expected)` and `reload()` (the header of the file
+lists them all, and what the pad gives back). A feature's page is the only host:
+**Notepad** in the rail, straight after Whiteboard (`#feature/<name>/notepad`,
+`featureNotepad` in `features.js`).
+
+- **Where it is kept:** `Notepad.md` in the feature's folder (so Obsidian opens it, and
+  it goes with the feature on Archive and Delete). `GET /api/notepad?name=` reads it
+  (`exists: false` and no file until something is written); `POST /api/notepad`
+  `{name, text, expected, client}` writes it through `save_doc`, the same mtime check,
+  line-end keeping and atomic replace as a document's Save: a copy changed on disk since
+  the page read it (Obsidian, a skill, a second window) is a 409, and the pad offers
+  *Overwrite with mine* / *Load the disk version*, as the document editor does. An empty
+  first save makes no file; 512 KB is the limit (413). `docs_of` leaves `Notepad.md` out
+  of the feature's documents; the toolbox only reads `<Prefix> - <Doc>.md`, so it never
+  sees it. A save is a `notepad` event (`name`, `client`): another window of the same
+  feature reloads when it has nothing unsaved.
+- **Writing:** a text area (markdown source) with a bar that floats above the caret or
+  selection (placed from a hidden copy of the text; it keeps the selection because its
+  buttons take no focus): Bold, Italic, Strikethrough, Code, Heading (cycles H1 to H3 and
+  back), Font size (a menu), Align left/centre/right, Bullet, Numbered, Checkbox, Quote.
+  Ctrl+B and Ctrl+I, Enter continues a list, checkbox or quote line (and ends it on an
+  empty one), Ctrl+E switches Edit and Preview. The edits are `NotepadOps`, plain functions
+  from (text, selection) to (text, selection), made through `execCommand` so Ctrl+Z
+  undoes them. Saving is automatic, 0.8 s after the last keystroke and on leaving.
+- **What markdown can't say:** size is `<span style="font-size:18px">x</span>` (12, 14,
+  18, 24, 32) and alignment is `<div align="center">` with blank lines inside and round
+  the paragraphs; both are what Obsidian draws too. The preview (`notepadRender`) turns
+  back only those forms, plus `~~strike~~` and `- [ ]` checkboxes, into tags with classes
+  (the CSP forbids style attributes); everything else the text holds stays text. Clicking
+  a checkbox in the preview turns over that line of the source and saves. Not drawn:
+  nested lists and horizontal rules.
+- **Tests:** the `notepad` section of `test-tatty.sh`, and `features-check.py --notepad`
+  (real mouse and keys, the preview, a reload, a save conflict, the edits on strings).
+
 ## Generated diagrams
 
 A class diagram of C# code, drawn on the whiteboard (read-only), in three places:

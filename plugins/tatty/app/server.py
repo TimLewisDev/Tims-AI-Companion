@@ -80,6 +80,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "taskboard.js": "text/javascript", "taskboard.css": "text/css",
           "tasks.js": "text/javascript", "tasks.css": "text/css", "qa.js": "text/javascript", "qa.css": "text/css", "tasktype.js": "text/javascript",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
+          "notepad.js": "text/javascript", "notepad.css": "text/css",
           "diagram.js": "text/javascript", "diagram-layout.js": "text/javascript", "diagram.css": "text/css",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
@@ -2509,10 +2510,11 @@ def plain(p):
 
 
 def docs_of(folder):
-    """The feature's documents, in workflow order: <Prefix> - <Doc>.md first, then other .md files."""
+    """The feature's documents, in workflow order: <Prefix> - <Doc>.md first, then other .md files.
+    (Not the notepad: it has a page of its own, see "notepad".)"""
     out = []
     for f in lp(folder).iterdir():
-        if f.is_file() and f.suffix.lower() == ".md":
+        if f.is_file() and f.suffix.lower() == ".md" and f.name.lower() != NOTEPAD_FILE.lower():
             prefix, _, doc = f.stem.rpartition(" - ")
             out.append({"file": f.name, "prefix": prefix, "doc": doc if prefix else f.stem,
                         "updated": f.stat().st_mtime})
@@ -8844,6 +8846,78 @@ def watch_designs(state):
             pass
 
 
+# ---------------------------------------------------------------- notepad
+# A feature's notepad (web/notepad.js) is Notepad.md in its folder: a plain
+# markdown file, so Obsidian opens it and it goes with the feature when that is
+# archived or deleted. Tatty makes it on the first save, not when the page is
+# opened, never lists it among the feature's documents (docs_of), and writes it
+# through save_doc, so a change made on disk since the page read it (Obsidian, a
+# skill) is refused with a 409 instead of overwritten.
+#   GET  /api/notepad?name=<feature>   -> 200 {text, updated, exists} | 404
+#   POST /api/notepad {name, text, expected, client}
+#        -> 200 {updated} | 400 | 404 | 409 {error, updated} | 413 | 500
+#   `expected` is the `updated` the page last had (0 while there is no file yet).
+# A save is announced as a "notepad" event (name, client) so another window of
+# the same feature can reload; the page that saved ignores its own.
+
+NOTEPAD_FILE = "Notepad.md"
+NOTEPAD_MAX = 512 * 1024  # bytes of text
+_NP_LOCKS = {}
+
+
+def np_path(name):
+    """The notepad's path for a feature (it may not exist yet), or None for an unknown feature."""
+    folder = feature_dir(str(name or ""))
+    return lp(folder.resolve() / NOTEPAD_FILE) if folder else None
+
+
+def np_lock(p):
+    with _BOARD_LAYOUT_LOCKS_GUARD:
+        return _NP_LOCKS.setdefault(str(p).lower(), threading.RLock())
+
+
+def np_view(name):
+    p = np_path(name)
+    if p is None:
+        return 404, {"error": "no such feature"}
+    if not p.is_file():
+        return 200, {"text": "", "updated": 0, "exists": False}
+    with np_lock(p):
+        text = p.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+        return 200, {"text": text, "updated": p.stat().st_mtime, "exists": True}
+
+
+def np_save(st, b):
+    p = np_path(b.get("name"))
+    if p is None:
+        return 404, {"error": "no such feature"}
+    text, expected = b.get("text"), b.get("expected")
+    if not isinstance(text, str) or isinstance(expected, bool) or not isinstance(expected, (int, float)):
+        return 400, {"error": "text (a string) and expected (the updated /api/notepad gave, 0 for none) are required"}
+    if len(text.encode("utf-8")) > NOTEPAD_MAX:
+        return 413, {"error": f"the notepad is over {NOTEPAD_MAX // 1024} KB"}
+    with np_lock(p):
+        if p.is_file():
+            code, answer = save_doc(p, text, float(expected))
+        elif float(expected) != 0:
+            # it was there when the page opened it, and has been removed since
+            return 409, {"error": "the notepad was removed since you opened it", "updated": 0}
+        elif not text.strip():
+            return 200, {"updated": 0}  # nothing to keep: no file for an empty pad
+        else:
+            tmp = p.with_name(f".{p.name}.tatty-tmp")
+            try:
+                tmp.write_bytes(text.replace("\r\n", "\n").encode("utf-8"))
+                os.replace(tmp, p)
+            except OSError as e:
+                tmp.unlink(missing_ok=True)
+                return 500, {"error": f"couldn't save: {e}"}
+            code, answer = 200, {"updated": p.stat().st_mtime}
+    if code == 200:
+        st.emit("notepad", name=feature_dir(str(b.get("name"))).name, client=str(b.get("client") or ""))
+    return code, answer
+
+
 # ---------------------------------------------------------------- whiteboards
 # The board the User Stories page draws its notes on is web/whiteboard.js, and
 # so are a feature's whiteboard and the blank ones. What a person puts on one
@@ -14057,6 +14131,9 @@ class Handler(BaseHTTPRequestHandler):
             if not folder:
                 return self.send(404, {"error": "no such board"})
             return self.send(200, design_view(st, folder))
+        if path == "/api/notepad":
+            code, answer = np_view(q.get("name", [""])[0])
+            return self.send(code, answer)
         if path == "/api/whiteboards":
             return self.send(200, wb_list())
         if path == "/api/whiteboard":
@@ -14462,6 +14539,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"ok": st.compact.stop(b.get("project") if isinstance(b, dict) else "")})
         if path == "/api/stories/cancel":
             return self.send(200, {"ok": cancel_stories_run(st)})
+        if path == "/api/notepad":
+            code, answer = np_save(st, b)
+            return self.send(code, answer)
         if path == "/api/whiteboard":
             code, answer = wb_change(st, b)
             return self.send(code, answer)
