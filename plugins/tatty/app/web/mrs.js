@@ -121,6 +121,13 @@ async function mrsDetail(box, key, tab0) {
   const api1 = (route, body) => api("/api/mrs/" + route, { key, ...body });
   const pending = () => (view.data.state.pending || []).filter(p => p.status !== "posted");
   const busy = id => view.data.busy.includes(id);
+  const spun = text => [spinnerMark("mr-spin"), " " + text];                                       // a button's "working": the ring and the words
+  const startRun = async (btn, text, route, body, id) => {                                             // the button is the spinner before the server has answered
+    btn.disabled = true; btn.replaceChildren(...spun(text));
+    try { await api1(route, body); if (!busy(id)) view.data.busy.push(id); }
+    catch (e) { alert(mrsErr(e)); }
+    draw(); reload(false);
+  };
 
   view.onEvent = ev => {
     if (ev.key !== key && !ev.list) return;
@@ -138,13 +145,13 @@ async function mrsDetail(box, key, tab0) {
       const said = el("p", { class: "st missing", id: "mrs-sheet-said" });
       const go = el("button", { type: "button", class: "primary", id: "mrs-send" }, `Send ${p.actions.length === 1 ? "this" : p.actions.length}`);
       go.addEventListener("click", async () => {
-        go.disabled = true; said.textContent = "";
+        go.disabled = true; said.textContent = ""; go.replaceChildren(...spun("Sending…"));
         try {
           const r = await api1("post", { items, confirm: p.digest });
           const bad = r.results.filter(x => !x.ok);
-          if (bad.length) { said.textContent = `${bad.length} of ${r.results.length} didn't go: ${bad[0].note}`; go.disabled = false; reload(true); return; }
+          if (bad.length) { said.textContent = `${bad.length} of ${r.results.length} didn't go: ${bad[0].note}`; go.disabled = false; go.textContent = "Send again"; reload(true); return; }
           close(true);
-        } catch (e) { said.textContent = mrsErr(e); go.disabled = e.status !== 409 ? false : true; }
+        } catch (e) { said.textContent = mrsErr(e); go.disabled = e.status !== 409 ? false : true; go.textContent = "Send again"; }
       });
       const cancel = el("button", { type: "button", id: "mrs-cancel", onclick: () => close(false) }, "Cancel");
       const back = el("div", { class: "mrs-sheet-back", role: "dialog", "aria-modal": "true", "aria-label": heading },
@@ -326,8 +333,8 @@ async function mrsDetail(box, key, tab0) {
       reply.value = st.text || "";
       let saving = 0;
       reply.addEventListener("input", () => { clearTimeout(saving); saving = setTimeout(() => api1("draft", { tid: t.id, text: reply.value }).catch(() => {}), 500); });
-      const help = el("button", { type: "button", class: "mrs-help", disabled: working, onclick: async () => { try { await api1("recommend", { tid: t.id }); } catch (e) { alert(mrsErr(e)); } reload(false); } },
-        working ? "Working…" : rec.action ? "Look again" : "Help me reply");
+      const help = el("button", { type: "button", class: "mrs-help", disabled: working, onclick: () => startRun(help, "Working…", "recommend", { tid: t.id }, t.id) },
+        working ? spun("Working…") : rec.action ? "Look again" : "Help me reply");
       const post = el("button", { type: "button", class: "primary mrs-post-reply", onclick: async () => {
         await api1("draft", { tid: t.id, text: reply.value });
         if (await sheet([{ kind: "reply", tid: t.id }], "Send this reply")) reload(true);
@@ -359,16 +366,13 @@ async function mrsDetail(box, key, tab0) {
     const thread = tid => threads.find(t => t.id === tid) || {};
     const whereBtn = tid => { const t = thread(tid); return t.path ? el("button", { type: "button", class: "mr-where", onclick: () => { view.tab = "files"; view.file = t.path; draw(); } }, `${t.path}:${t.line || ""}`) : el("span", { class: "chip route" }, "general"); };
     const picks = new Map();
-    const label = n => running ? "Looking again…" : n ? `Re-review ${n} addressed comment${n === 1 ? "" : "s"}` : "Nothing ticked";
-    const go = el("button", { type: "button", class: "primary", id: "mrs-again", disabled: running || !cands.length, onclick: async () => {
-      const tids = [...picks].filter(([, b]) => b.checked).map(([t]) => t);
-      try { await api1("again", { tids }); } catch (e) { alert(mrsErr(e)); }
-      reload(false);
-    } }, label(cands.length));
+    const label = n => n ? `Re-review ${n} addressed comment${n === 1 ? "" : "s"}` : "Nothing ticked";
+    const go = el("button", { type: "button", class: "primary", id: "mrs-again", disabled: running || !cands.length,
+      onclick: () => startRun(go, "Looking again…", "again", { tids: [...picks].filter(([, b]) => b.checked).map(([t]) => t) }, "rereview") }, running ? spun("Looking again…") : label(cands.length));
     const rows = cands.map(c => {
       const box = el("input", { type: "checkbox", class: "mrs-again-pick", "aria-label": "Re-review this comment" });
       box.checked = true;
-      box.addEventListener("change", () => { const n = [...picks.values()].filter(b => b.checked).length; go.disabled = running || !n; go.textContent = label(n); });
+      box.addEventListener("change", () => { const n = [...picks.values()].filter(b => b.checked).length; go.disabled = running || !n; if (!running) go.textContent = label(n); });
       picks.set(c.tid, box);
       return el("div", { class: "mrs-again-row" }, box, whereBtn(c.tid), c.why.map(w => el("span", { class: "chip route" }, MRS_AGAIN_WHY[w] || w)),
         el("span", { class: "dim small" }, ((thread(c.tid).notes || [])[0] || {}).body ? ((thread(c.tid).notes[0].body).split("\n")[0].slice(0, 90)) : ""));
@@ -405,9 +409,10 @@ async function mrsDetail(box, key, tab0) {
   // ---- the review
   const reviewTab = () => {
     const d = view.data, rev = d.state.review, running = busy("review");
-    const go = depth => el("button", { type: "button", class: depth === "quick" ? "primary" : "", id: "mrs-review-" + depth, disabled: running || !d.mr,
-      onclick: async () => { try { await api1("review", { depth }); } catch (e) { alert(mrsErr(e)); } reload(false); } },
-      depth === "quick" ? (rev ? "Review again (quick)" : "Review this (quick)") : "Deep review");
+    const go = depth => { const btn = el("button", { type: "button", class: depth === "quick" ? "primary" : "", id: "mrs-review-" + depth, disabled: running || !d.mr,
+      onclick: () => startRun(btn, "Reviewing…", "review", { depth }, "review") },
+      depth === "quick" ? (running ? spun("Reviewing…") : rev ? "Review again (quick)" : "Review this (quick)") : "Deep review");
+    return btn; };
     const run = el("div", { class: "mrs-run card" }, el("div", { class: "start-actions" }, go("quick"), go("deep"),
       running ? el("button", { type: "button", onclick: () => api1("cancel", { tid: "review" }) }, "Stop") : "",
       running ? el("span", { class: "dim small mr-step", "data-step": "review" }, view.steps.review || "Starting") : ""),

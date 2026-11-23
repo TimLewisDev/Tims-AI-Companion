@@ -1907,7 +1907,7 @@ def check_mrs(p):
     res["again"] = p.js("""({ label: document.querySelector('#mrs-again').textContent, why: [...document.querySelectorAll('.mrs-again-row .chip')].map(c => c.textContent),
                             tab: document.querySelector('#mrs-host .mr-tabs button[data-tab=review]').textContent, verdict: document.querySelector('.mrs-again-card .chip').textContent,
                             reply: document.querySelector('.mrs-again-card textarea').value, resolveIsPrimary: document.querySelector('.mrs-again-resolve').classList.contains('primary') })""")
-    p.js("document.querySelector('#mrs-again').click(); 1")
+    res["againSpin"] = p.js("(() => { const b = document.querySelector('#mrs-again'); b.click(); return !!b.querySelector('.mr-spin') && b.disabled; })()")
     wait(p, "window.__sent.some(x => x[0] === '/api/mrs/again')")
     res["againSent"] = p.js("window.__sent.filter(x => x[0] === '/api/mrs/again').map(x => x[1].tids)")
     p.js("document.querySelector('.mrs-again-resolve').click(); 1")
@@ -1969,6 +1969,8 @@ def check_mrs(p):
         bad.append("the re-review card offers the answered thread")
     if res["again"]["verdict"] != "addressed" or res["again"]["reply"] != "Thanks." or res["again"]["resolveIsPrimary"] is not True:
         bad.append("a re-review verdict with its reply and a Resolve to confirm")
+    if res["againSpin"] is not True:
+        bad.append("the Re-review button turns to a spinner the moment it is pressed")
     if res["againSent"] != [["d3"]]:
         bad.append("Re-review sends only the ticked threads")
     res["problems"] = bad

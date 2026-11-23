@@ -6258,85 +6258,104 @@ def mrs_again_clean(got, asked, sha, counts):
 def mrs_again_start(state, key, b):
     """Look again at the comments the person made on a colleague's request that the author may have dealt with: only
     their threads, only the change to the files they are on since the person commented. Nothing is posted: the
-    verdicts are kept, and a suggested reply waits in the thread's reply box. (http code, answer)"""
-    mr, why = mrs_load(state, key, force=True)  # (the head and the threads must be current)
+    verdicts are kept, and a suggested reply waits in the thread's reply box. It answers at once from the request as
+    last read; reading the host again (the head and the threads must be current) is the job's first step. (http code, answer)"""
+    mr = read_json(mrs_file(key), {}) if MRS_KEY.match(str(key)) else {}
     if not mr:
-        return 404, {"error": why or "The merge request couldn't be read."}
+        return 404, {"error": "The merge request hasn't been read yet."}
     ctx = mrs_context(state)
     if not ctx["repo"]:
         return 400, {"error": ctx["why"]}
     me = read_json(mrs_dir() / "inbox.json", {}).get("me", "")
-    cands = mrs_again(mr, mrs_state_load(key), me)
-    if isinstance(b.get("tids"), list):
-        cands = [c for c in cands if c["tid"] in {str(t) for t in b["tids"]}]
-    if not cands:
+    want = {str(t) for t in b["tids"]} if isinstance(b.get("tids"), list) else None
+
+    def pick(m):
+        return [c for c in mrs_again(m, mrs_state_load(key), me) if want is None or c["tid"] in want]
+    if not pick(mr):
         return 400, {"error": "None of your comments has been answered or had its code changed since you looked."}
     code, answer, r = mrs_start(state, key, "rereview")
     if r is None:
         return code, answer
-    head, model = str(mr.get("sha") or ""), mrs_model()
-    byid = {t["id"]: t for t in mr.get("threads") or []}
-    counts = {c["tid"]: len(byid[c["tid"]].get("notes") or []) for c in cands}
-    ref = f"refs/tatty/mr/{mrs_number(key)}"
-    quiet = {}  # tid -> why nothing was asked about it
-
-    def prompt(note):
-        lines = [f"Merge request: {mr.get('title', '')}", f"By {mr.get('author', '')}: branch {mr.get('source', '')} into {mr.get('target', '')}",
-                 f"The code in your folder is the request's head, commit {head[:10]}. The engineer is {me}: the first comment of each thread below is theirs.",
-                 "Judge only these threads, only whether each concern is dealt with.", ""]
-        asked, used = [], 0
-        for c in cands:
-            t = byid[c["tid"]]
-            area, cant = "", ""
-            if t.get("path") and c["base"]:
-                area, cant = mrs_area(ctx["repo"], ref, c["base"], t["path"], int(t.get("line") or 0))
-            elif t.get("path"):
-                area, cant = None, "The commit this comment was made on isn't known, so the change since can't be shown."
-            if "replied" not in c["why"] and area == "":
-                quiet[c["tid"]] = "Nothing has changed in that file since you commented."
-                continue
-            notes = [f"- {n.get('author', '')}: {str(n.get('body') or '')[:1500]}" for n in (t.get("notes") or [])[-8:]]
-            block = [f"### Thread {c['tid']}" + (f" on {t['path']}:{t.get('line') or ''}" if t.get("path") else " (the conversation)")
-                     + (f", made on commit {c['base'][:10]}" if c["base"] else "") + (" (marked resolved)" if "resolved" in c["why"] else ""), "The conversation:", *notes,
-                     "The change to this file since:" if t.get("path") else "", (f"```diff\n{area}```" if area else cant or "No change to this file since.") if t.get("path") else ""]
-            text = "\n".join(x for x in block if x) + "\n"
-            if used + len(text) > 70000:
-                quiet[c["tid"]] = "Too much to look at in one go: run it again for this one."
-                continue
-            used += len(text)
-            lines.append(text)
-            asked.append(c["tid"])
-        prompt.asked = asked
-        if note:
-            lines.append(f"Note: {note}")
-        return "\n".join(lines) + "\n" if asked else None
-    prompt.asked = []
-
-    def accept(got, cost):
-        asked = prompt.asked
-        new = mrs_again_clean(got, asked, head, counts) if asked else []
-        for tid, text in quiet.items():
-            new.append({"tid": tid, "verdict": "nochange", "summary": text, "reply": "", "resolve": False, "sha": head, "notes": counts.get(tid, 0), "ts": int(time.time())})
-        fresh = {x["tid"] for x in new}
-
-        def how(data):
-            old = [x for x in ((data.get("rereview") or {}).get("results") or []) if isinstance(x, dict) and x.get("tid") not in fresh and x.get("tid") in byid]
-            data["rereview"] = {"ts": int(time.time()), "sha": head, "model": model, "cost": cost, "error": "", "results": (old + new)[:MRS_PENDING_MAX]}
-            for x in new:
-                if x["reply"] and x["verdict"] != "nochange":
-                    d = data["replies"].setdefault(x["tid"], {"text": "", "edited": False, "recommendation": None})
-                    if not d.get("edited") and not d.get("text"):
-                        d["text"] = x["reply"]
-        mrs_change(key, how)
+    model = mrs_model()
 
     def fail(error):
         def how(data):
             data["rereview"] = {**(data["rereview"] or {}), "error": error}
         mrs_change(key, how)
-    threading.Thread(target=mrs_work, args=(state, key, "rereview", r, mr, ctx, prompt, MRS_SYSTEM_AGAIN, ("Read", "Glob", "Grep"),
-                                            os.environ.get("TATTY_MRS_BUDGET", "1.5"), model, accept, fail), daemon=True).start()
+
+    def job():
+        try:
+            fresh, why = mrs_load(state, key, force=True)
+            cands = pick(fresh) if fresh else []
+            error = "" if cands else (why or "None of your comments has been answered or had its code changed since you looked.")
+        except Exception as e:  # (never leave the page waiting on a job that died)
+            fresh, cands, error = None, [], f"{type(e).__name__}: {e}"
+        if error:
+            with state.cond:
+                state.mrs_runs.pop(r["key"], None)
+            try:
+                fail(error)
+            except (OSError, reviewdoc.DocError):
+                pass
+            state.emit("mrs", key=key, tid="rereview", done=True, ok=False, error=error)
+            return
+        head = str(fresh.get("sha") or "")
+        byid = {t["id"]: t for t in fresh.get("threads") or []}
+        counts = {c["tid"]: len(byid[c["tid"]].get("notes") or []) for c in cands}
+        ref = f"refs/tatty/mr/{mrs_number(key)}"
+        quiet = {}  # tid -> why nothing was asked about it
+        asked = []
+
+        def prompt(note):
+            lines = [f"Merge request: {fresh.get('title', '')}", f"By {fresh.get('author', '')}: branch {fresh.get('source', '')} into {fresh.get('target', '')}",
+                     f"The code in your folder is the request's head, commit {head[:10]}. The engineer is {me}: the first comment of each thread below is theirs.",
+                     "Judge only these threads, only whether each concern is dealt with.", ""]
+            used = 0
+            for c in cands:
+                t = byid[c["tid"]]
+                area, cant = "", ""
+                if t.get("path") and c["base"]:
+                    area, cant = mrs_area(ctx["repo"], ref, c["base"], t["path"], int(t.get("line") or 0))
+                elif t.get("path"):
+                    area, cant = None, "The commit this comment was made on isn't known, so the change since can't be shown."
+                if "replied" not in c["why"] and area == "":
+                    quiet[c["tid"]] = "Nothing has changed in that file since you commented."
+                    continue
+                notes = [f"- {n.get('author', '')}: {str(n.get('body') or '')[:1500]}" for n in (t.get("notes") or [])[-8:]]
+                block = [f"### Thread {c['tid']}" + (f" on {t['path']}:{t.get('line') or ''}" if t.get("path") else " (the conversation)")
+                         + (f", made on commit {c['base'][:10]}" if c["base"] else "") + (" (marked resolved)" if "resolved" in c["why"] else ""), "The conversation:", *notes,
+                         "The change to this file since:" if t.get("path") else "", (f"```diff\n{area}```" if area else cant or "No change to this file since.") if t.get("path") else ""]
+                text = "\n".join(x for x in block if x) + "\n"
+                if used + len(text) > 70000:
+                    quiet[c["tid"]] = "Too much to look at in one go: run it again for this one."
+                    continue
+                used += len(text)
+                lines.append(text)
+                asked.append(c["tid"])
+            if note:
+                lines.append(f"Note: {note}")
+            return "\n".join(lines) + "\n" if asked else None
+
+        def accept(got, cost):
+            new = mrs_again_clean(got, asked, head, counts) if asked else []
+            for tid, text in quiet.items():
+                new.append({"tid": tid, "verdict": "nochange", "summary": text, "reply": "", "resolve": False, "sha": head, "notes": counts.get(tid, 0), "ts": int(time.time())})
+            done = {x["tid"] for x in new}
+
+            def how(data):
+                old = [x for x in ((data.get("rereview") or {}).get("results") or []) if isinstance(x, dict) and x.get("tid") not in done and x.get("tid") in byid]
+                data["rereview"] = {"ts": int(time.time()), "sha": head, "model": model, "cost": cost, "error": "", "results": (old + new)[:MRS_PENDING_MAX]}
+                for x in new:
+                    if x["reply"] and x["verdict"] != "nochange":
+                        d = data["replies"].setdefault(x["tid"], {"text": "", "edited": False, "recommendation": None})
+                        if not d.get("edited") and not d.get("text"):
+                            d["text"] = x["reply"]
+            mrs_change(key, how)
+        mrs_work(state, key, "rereview", r, fresh, ctx, prompt, MRS_SYSTEM_AGAIN, ("Read", "Glob", "Grep"),
+                 os.environ.get("TATTY_MRS_BUDGET", "1.5"), model, accept, fail)
+    threading.Thread(target=job, daemon=True).start()
     state.emit("mrs", key=key, tid="rereview", busy=True)
-    return 202, {"ok": True, "threads": len(cands)}
+    return 202, {"ok": True}
 
 
 def mrs_cancel(state, key, b):
