@@ -45,6 +45,13 @@
 .np-align.np-right { text-align: right; }
 .np-align.np-center ul, .np-align.np-center ol, .np-align.np-right ul, .np-align.np-right ol { display: inline-block; text-align: left; }
 
+/* a range a host asked the preview to mark (marks): a quiet wash and an edge, so it reads as "added" without shouting */
+.np-mark { background: color-mix(in srgb, var(--accent) 9%, transparent); border-left: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  margin: 6px 0; padding: 0 0 0 10px; border-radius: 0 4px 4px 0; }
+.np-mark > :first-child { margin-top: 2px; }
+.np-mark > :last-child { margin-bottom: 2px; }
+.np-view.np-nomarks .np-mark { background: transparent; border-left-color: transparent; padding-left: 0; }
+
 /* checkboxes in the preview */
 .np-tasks { list-style: none; padding-left: 4px; margin: 6px 0; }
 .np-task { display: flex; align-items: baseline; gap: 8px; margin: 3px 0; }

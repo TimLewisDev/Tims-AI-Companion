@@ -81,6 +81,7 @@ STATIC = {"index.html": "text/html", "app.js": "text/javascript", "modes.js": "t
           "tasks.js": "text/javascript", "tasks.css": "text/css", "qa.js": "text/javascript", "qa.css": "text/css", "tasktype.js": "text/javascript",
           "whiteboard.js": "text/javascript", "whiteboard.css": "text/css", "whiteboards.js": "text/javascript",
           "notepad.js": "text/javascript", "notepad.css": "text/css",
+          "documents.js": "text/javascript", "documents.css": "text/css",
           "diagram.js": "text/javascript", "diagram-layout.js": "text/javascript", "diagram.css": "text/css",
           "ids.js": "text/javascript", "split.js": "text/javascript", "split.css": "text/css",
           "chat.js": "text/javascript", "chat.css": "text/css", "archive.js": "text/javascript", "archive.css": "text/css",
@@ -286,6 +287,7 @@ class State:
         self.httpd = None  # the listening server, so a restart can stop it (see "restarting")
         self.jira_busy = {}  # the Jira jobs running (board, issue:<KEY>, move:<KEY>) -> when each began (see "Jira")
         self.stories_run = None  # the headless tt-user-stories run (see start_stories_run)
+        self.docreview_runs = {}  # document name -> its tt-design-review run (see "documents (design review)")
         self.qa_runs = {}  # run id -> a QA draft the model is writing (see "QA")
         self.diagram_runs = {}  # run id -> a diagram being made (see "diagrams")
         self.mr_runs = {}  # "<feature>|<thread id>" -> the agent looking into a merge request comment (see "the merge request page")
@@ -363,6 +365,8 @@ SETTINGS_DEFAULTS = {"autoUpdate": True,
                      # the models of the other helpers (stories, task writing, QA bug and plan drafting)
                      "storiesModel": "claude:haiku", "tasksModel": "claude:haiku",
                      "qaModel": "claude:haiku", "qaPlanModel": "claude:haiku",
+                     # the Documents area's design review (see "documents (design review)"): a stronger model finds more
+                     "docReviewModel": "claude:sonnet",
                      # per provider (claude, copilot, codex): false once switched off in Tatty; no key means on
                      "providerEnabled": {},
                      # set once the model choices above and the old helper environment variables were carried over
@@ -394,7 +398,7 @@ def load_settings():
 
 
 QUALIFIED_MODEL = re.compile(r"(claude|copilot|codex):[A-Za-z0-9._:/-]+\Z")
-MODEL_KEYS = ("chatModel", "jiraModel", "storiesModel", "tasksModel", "qaModel", "qaPlanModel")
+MODEL_KEYS = ("chatModel", "jiraModel", "storiesModel", "tasksModel", "qaModel", "qaPlanModel", "docReviewModel")
 
 
 def unresolved_models(settings):
@@ -666,7 +670,7 @@ def restart_needs(state):
                 going.append({"tag": s["tag"], "name": s.get("name", ""), "feature": s.get("feature", ""),
                               "status": v["status"], "stale": bool(updated and s.get("started", 0) < updated)})
         asks = sum(1 for q in state.questions.values() if q.get("answers") is None and not q.get("declined"))
-        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + len(state.task_writes) + len(state.qa_runs) + len(state.diagram_runs) + len(state.mr_runs) + len(state.mrs_runs)
+        busy = len(state.chat_runs) + len(state.compact.runs) + len(state.jira_busy) + (1 if state.stories_run and state.stories_run.get("status") == "running" else 0) + sum(1 for r in state.docreview_runs.values() if r.get("status") == "running") + len(state.task_writes) + len(state.qa_runs) + len(state.diagram_runs) + len(state.mr_runs) + len(state.mrs_runs)
     return {"server": server, "sessions": going, "stale": sum(1 for s in going if s["stale"]), "openQuestions": asks,
             "busy": busy, "cached": sessions_cache_file().exists()}
 
@@ -8876,10 +8880,8 @@ def np_lock(p):
         return _NP_LOCKS.setdefault(str(p).lower(), threading.RLock())
 
 
-def np_view(name):
-    p = np_path(name)
-    if p is None:
-        return 404, {"error": "no such feature"}
+def pad_read(p):
+    """A notepad-style text file (a feature's Notepad.md, a design document): (200, {text, updated, exists})."""
     if not p.is_file():
         return 200, {"text": "", "updated": 0, "exists": False}
     with np_lock(p):
@@ -8887,35 +8889,499 @@ def np_view(name):
         return 200, {"text": text, "updated": p.stat().st_mtime, "exists": True}
 
 
+def pad_write(p, text, expected, what="notepad"):
+    """Save text over the file at p, or make it: (http code, answer). `expected` is the `updated` the page last
+    had (0 while there is no file yet); a file changed since then is a 409, never overwritten."""
+    if not isinstance(text, str) or isinstance(expected, bool) or not isinstance(expected, (int, float)):
+        return 400, {"error": "text (a string) and expected (the updated the page last had, 0 for none) are required"}
+    if len(text.encode("utf-8")) > NOTEPAD_MAX:
+        return 413, {"error": f"the {what} is over {NOTEPAD_MAX // 1024} KB"}
+    with np_lock(p):
+        if p.is_file():
+            return save_doc(p, text, float(expected))
+        if float(expected) != 0:
+            # it was there when the page opened it, and has been removed since
+            return 409, {"error": f"the {what} was removed since you opened it", "updated": 0}
+        if not text.strip():
+            return 200, {"updated": 0}  # nothing to keep: no file for an empty pad
+        tmp = p.with_name(f".{p.name}.tatty-tmp")
+        try:
+            tmp.write_bytes(text.replace("\r\n", "\n").encode("utf-8"))
+            os.replace(tmp, p)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            return 500, {"error": f"couldn't save: {e}"}
+        return 200, {"updated": p.stat().st_mtime}
+
+
+def np_view(name):
+    p = np_path(name)
+    if p is None:
+        return 404, {"error": "no such feature"}
+    return pad_read(p)
+
+
 def np_save(st, b):
     p = np_path(b.get("name"))
     if p is None:
         return 404, {"error": "no such feature"}
-    text, expected = b.get("text"), b.get("expected")
-    if not isinstance(text, str) or isinstance(expected, bool) or not isinstance(expected, (int, float)):
-        return 400, {"error": "text (a string) and expected (the updated /api/notepad gave, 0 for none) are required"}
-    if len(text.encode("utf-8")) > NOTEPAD_MAX:
-        return 413, {"error": f"the notepad is over {NOTEPAD_MAX // 1024} KB"}
-    with np_lock(p):
-        if p.is_file():
-            code, answer = save_doc(p, text, float(expected))
-        elif float(expected) != 0:
-            # it was there when the page opened it, and has been removed since
-            return 409, {"error": "the notepad was removed since you opened it", "updated": 0}
-        elif not text.strip():
-            return 200, {"updated": 0}  # nothing to keep: no file for an empty pad
-        else:
-            tmp = p.with_name(f".{p.name}.tatty-tmp")
-            try:
-                tmp.write_bytes(text.replace("\r\n", "\n").encode("utf-8"))
-                os.replace(tmp, p)
-            except OSError as e:
-                tmp.unlink(missing_ok=True)
-                return 500, {"error": f"couldn't save: {e}"}
-            code, answer = 200, {"updated": p.stat().st_mtime}
+    code, answer = pad_write(p, b.get("text"), b.get("expected"))
     if code == 200:
         st.emit("notepad", name=feature_dir(str(b.get("name"))).name, client=str(b.get("client") or ""))
     return code, answer
+
+
+# ---------------------------------------------------------------- documents (design review)
+# Design mode's Documents area: a design document written on web/notepad.js, the person's comments on
+# passages of it, and the toolbox's tt-design-review skill's list of areas the document may be missing.
+# One folder per document, <root>/documents/<name>/:
+#   <name>.md                    the document: plain markdown, so Obsidian opens it; saved through save_doc,
+#                                so a change made on disk since the page read it is a 409, not an overwrite
+#   <name> - Design Review.md    the review: written only by design-review.sh, which also adds an accepted
+#                                suggestion to the document (confirm) and records exactly what it added
+#   .tt/<name> - Comments.json   the comments: Tatty's own, one writer (comments_change) under reviewdoc.Lock
+# A review run is a headless claude (the way a User Stories draft is) and the only thing here that costs
+# tokens: accepting, rejecting, rewording and confirming a suggestion are plain script calls.
+#   GET  /api/documents                -> {documents: [...], ...}
+#   GET  /api/document?name=           -> text, updated, comments, review, run (document_view)
+#   POST /api/documents/new {name, intake?}                          -> 200 | 400 | 409
+#   POST /api/document {name, text, expected, client}                 -> 200 {updated} | 409 (see /api/notepad)
+#   POST /api/documents/comments {name, action: add|edit|resolve|reopen|remove, ...}
+#   POST /api/documents/review {name, action: run|cancel|accept|reject|reopen|wording|confirm, id, ...}
+# Events: "document" {name, client, what: text|comments|review|disk|list} and "docreview" {name, run}, then
+# {done, ok, error, added, cost} when a run ends.
+
+DOCS_AREA = "documents"
+REVIEW_SCRIPT = "tt-design-review/scripts/design-review.sh"
+REVIEW_SUFFIX = " - Design Review.md"
+REVIEW_COLS = ["id", "area", "status", "why", "where", "wording", "edited", "under", "text", "reason", "hash"]
+DOCREVIEW_TIMEOUT = float(os.environ.get("TATTY_DOCREVIEW_TIMEOUT", "900"))
+DOCREVIEW_BUDGET = os.environ.get("TATTY_DOCREVIEW_BUDGET", "2")  # US dollars, at most, per run
+COMMENT_MAX = 4000
+WORDING_MAX = 20000
+REVIEW_MISSING = ("Reviewing a document needs the toolbox's design plugin (its tt-design-review skill). "
+                  "Add the Design mode on the modes page, or set TATTY_TOOLBOX to a Tims-AI-Toolbox checkout. "
+                  "Writing and commenting still work.")
+
+
+def documents_root():
+    return tatty_root()[0] / DOCS_AREA
+
+
+def document_dir(name):
+    return area_dir(DOCS_AREA, name)
+
+
+def document_file(folder):
+    return folder.resolve() / (folder.name + ".md")
+
+
+def review_file(folder):
+    return folder.resolve() / (folder.name + REVIEW_SUFFIX)
+
+
+def comments_path(folder):
+    return folder.resolve() / ".tt" / (folder.name + " - Comments.json")
+
+
+def review_script():
+    p = toolbox_plugin("design")
+    return p / "skills" / REVIEW_SCRIPT if p and (p / "skills" / REVIEW_SCRIPT).is_file() else None
+
+
+def run_review(state, args, cwd=None):
+    """design-review.sh <args>: (exit code, stdout, stderr). Exit 2 with a reason when it can't run."""
+    script = review_script()
+    if not script:
+        return 2, "", REVIEW_MISSING
+    try:
+        argv = [state.bash, script.as_posix()] + [a.as_posix() if isinstance(a, Path) else str(a) for a in args]
+        p = quiet_run(state, argv, cwd=cwd, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 2, "", str(e)
+    return p.returncode, p.stdout, p.stderr
+
+
+def review_read(state, folder):
+    """The review through `design-review.sh list --tsv`: {exists, meta, items, problems, error, docHash}.
+    `problems` are the script's word on a review edited out of its layout; `error` is anything else."""
+    got = {"exists": False, "meta": {}, "items": [], "problems": [], "error": "", "docHash": ""}
+    rev = review_file(folder)
+    if not rev.is_file():
+        return got
+    got["exists"] = True
+    if not review_script():
+        got["error"] = REVIEW_MISSING
+        return got
+    code, out, err = run_review(state, ["list", rev, "--tsv", "--doc", document_file(folder)], cwd=str(folder))
+    if code != 0:
+        got["problems"] = [ln[len("problem: "):] for ln in err.splitlines() if ln.startswith("problem: ")]
+        if not got["problems"]:
+            got["error"] = (err.strip().splitlines() or ["design-review.sh couldn't read the review"])[-1]
+        return got
+    for line in out.splitlines():
+        cols = line.rstrip("\r").split("\t")
+        if cols[0] == "meta" and len(cols) >= 3:
+            got["meta"][cols[1]] = unesc(cols[2])
+        elif cols[0] == "dr" and len(cols) >= len(REVIEW_COLS) + 1:
+            item = {k: unesc(v) for k, v in zip(REVIEW_COLS, cols[1:len(REVIEW_COLS) + 1])}
+            item["edited"] = item["edited"] == "yes"
+            got["items"].append(item)
+    got["docHash"] = got["meta"].get("doc", "")
+    return got
+
+
+# -- the comments
+
+def comments_read(folder):
+    got = read_json(comments_path(folder), {})
+    items = got.get("comments") if isinstance(got, dict) else None
+    return [c for c in items if isinstance(c, dict)] if isinstance(items, list) else []
+
+
+def comments_write(folder, items):
+    p = comments_path(folder)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.name}.tatty-tmp")
+    tmp.write_text(json.dumps({"comments": items}, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def short_text(v, limit):
+    return v.strip()[:limit] if isinstance(v, str) else ""
+
+
+def comments_change(state, folder, b):
+    """Add, edit, (re)solve or remove one comment: (http code, answer {comments})."""
+    action = str(b.get("action", ""))
+    cid = str(b.get("id", ""))
+    if action not in ("add", "edit", "resolve", "reopen", "remove"):
+        return 400, {"error": "action: add, edit, resolve, reopen or remove"}
+    p = comments_path(folder)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with reviewdoc.Lock(p):
+            items = comments_read(folder)
+            at = next((i for i, c in enumerate(items) if c.get("id") == cid), -1)
+            if action == "add":
+                quote, text = short_text(b.get("quote"), 2000), short_text(b.get("text"), COMMENT_MAX)
+                if not quote or not text:
+                    return 400, {"error": "A comment needs the passage it is on (quote) and its text."}
+                items.append({"id": "c" + secrets.token_hex(3), "quote": quote, "before": short_text(b.get("before"), 200),
+                              "after": short_text(b.get("after"), 200), "heading": short_text(b.get("heading"), 200),
+                              "text": text, "resolved": False, "at": time.time()})
+            elif at < 0:
+                return 404, {"error": "no such comment"}
+            elif action == "edit":
+                text = short_text(b.get("text"), COMMENT_MAX)
+                if not text:
+                    return 400, {"error": "A comment needs its text."}
+                items[at]["text"] = text
+            elif action in ("resolve", "reopen"):
+                items[at]["resolved"] = action == "resolve"
+            else:
+                del items[at]
+            comments_write(folder, items)
+    except (OSError, reviewdoc.DocError) as e:
+        return 500, {"error": f"couldn't save the comment: {e}"}
+    state.emit("document", name=folder.name, client=str(b.get("client") or "")[:40], what="comments")
+    return 200, {"comments": items}
+
+
+# -- the list, and a document
+
+def documents_list(state):
+    """The documents under <root>/documents, newest first: counted from their files (no script runs)."""
+    base = documents_root()
+    out = []
+    if base.is_dir():
+        for d in base.iterdir():
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            doc = document_file(d)
+            rev = review_file(d)
+            rtext = rev.read_text(encoding="utf-8", errors="replace") if rev.is_file() else ""
+            statuses = re.findall(r"^- \*\*Status:\*\* (\w+)\s*$", rtext, re.M)
+            try:
+                updated = doc.stat().st_mtime if doc.is_file() else d.stat().st_mtime
+            except OSError:
+                updated = 0
+            out.append({"name": d.name, "updated": updated,
+                        "comments": len([c for c in comments_read(d) if not c.get("resolved")]),
+                        "open": statuses.count("Open"), "accepted": statuses.count("Accepted"),
+                        "added": statuses.count("Added"), "reviewing": docreview_view(state, d.name) is not None})
+    root, is_set = tatty_root()
+    return {"root": root.as_posix(), "isSet": is_set, "folder": base.as_posix(), "plugin": review_script() is not None,
+            "claude": claude_path() is not None, "picker": picker_argv() is not None,
+            "documents": sorted(out, key=lambda d: -d["updated"])}
+
+
+def document_view(state, folder):
+    code, got = pad_read(lp(document_file(folder)))
+    return {"name": folder.name, "text": got["text"], "updated": got["updated"], "exists": got["exists"],
+            "comments": comments_read(folder), "review": review_read(state, folder), "plugin": review_script() is not None,
+            "missing": "" if review_script() else REVIEW_MISSING, "claude": claude_path() is not None,
+            "run": docreview_view(state, folder.name)}
+
+
+def document_new(state, name, intake):
+    """Make <root>/documents/<name>/ with a blank document, or a copy of a picked .md: (http code, answer)."""
+    name = " ".join(str(name).split())
+    if not name or NAME_REFUSED.search(name) or name.startswith("."):
+        return 400, {"error": "Not a usable name (no / \\ : * ? \" < > |)."}
+    root, is_set = tatty_root()
+    if not is_set or not root.is_dir():
+        return 400, {"error": "Set Tatty's root folder first."}
+    text = f"# {name}\n\n"
+    if intake:
+        src = Path(str(intake))
+        if not src.is_file() or src.suffix.lower() != ".md":
+            return 400, {"error": "Pick a markdown (.md) document."}
+        try:
+            if src.stat().st_size > NOTEPAD_MAX:
+                return 413, {"error": f"That document is over {NOTEPAD_MAX // 1024} KB."}
+            text = src.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+        except OSError as e:
+            return 400, {"error": f"Couldn't read it: {e}"}
+    d = documents_root() / name
+    if d.exists():
+        return 409, {"error": f"{name} already exists."}
+    try:
+        d.mkdir(parents=True)
+        (d / (name + ".md")).write_bytes(text.replace("\r\n", "\n").encode("utf-8"))
+    except OSError as e:
+        return 500, {"error": f"couldn't make it: {e}"}
+    state.emit("document", name=name, what="list")
+    return 200, {"name": name}
+
+
+# -- the review: the run
+
+def docreview_view(state, name):
+    r = state.docreview_runs.get(name)
+    if not r or r["status"] != "running":
+        return None
+    return {k: r[k] for k in ("name", "status", "step", "steps", "started")}
+
+
+def review_step(block):
+    """A tool call in the run, as one line for the page."""
+    name, inp = block.get("name", ""), block.get("input") or {}
+    cmd = str(inp.get("command", ""))
+    if name == "Bash" and "design-review.sh" in cmd:
+        m = re.search(r"design-review\.sh\"?\s+(\w+)", cmd)
+        return {"add": "Writing suggestions", "list": "Reading the review", "init": "Starting the review",
+                "check": "Checking the review"}.get(m.group(1) if m else "", "Running design-review.sh")
+    if name == "Read":
+        return f"Reading {Path(str(inp.get('file_path', ''))).name or 'a file'}"
+    if name == "Skill":
+        return "Starting tt-design-review"
+    return name or "Working"
+
+
+def start_docreview_run(state, folder, b):
+    """Start a headless run of tt-design-review on this document: (http code, answer). One run per document."""
+    if not review_script():
+        return 501, {"error": REVIEW_MISSING}
+    claude = claude_path()
+    if not claude:
+        return 501, {"error": NO_CLAUDE}
+    model, why = surface_model(state, "docReviewModel")
+    if why:
+        return 409, {"error": why}
+    doc = document_file(folder)
+    if not doc.is_file() or not doc.read_text(encoding="utf-8", errors="replace").strip():
+        return 400, {"error": "Write something in the document first."}
+    rev = review_file(folder)
+    before = {i["id"] for i in review_read(state, folder)["items"]}
+    run_dir = home() / "runs" / secrets.token_hex(4)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    open_comments = [{"quote": c.get("quote", ""), "text": c.get("text", ""), "heading": c.get("heading", ""), "resolved": False}
+                     for c in comments_read(folder) if not c.get("resolved")]
+    comments_arg = ""
+    if open_comments:
+        (run_dir / "comments.json").write_text(json.dumps(open_comments, indent=2, ensure_ascii=False), encoding="utf-8")
+        comments_arg = f' "{(run_dir / "comments.json").as_posix()}"'
+    with state.cond:
+        got = state.docreview_runs.get(folder.name)
+        if got and got["status"] == "running":
+            shutil.rmtree(run_dir, ignore_errors=True)
+            return 409, {"error": f"Tatty is already reviewing {folder.name}."}
+        r = state.docreview_runs[folder.name] = {"name": folder.name, "status": "running", "step": "Starting", "steps": 0,
+                                                 "started": time.time(), "proc": None, "cancelled": False}
+    argv = [state.bash, claude] if claude.endswith(".sh") else [claude]
+    argv += ["-p", "--output-format", "stream-json", "--verbose",
+             # the skill reads, and writes only through design-review.sh (specs on stdin): no Write at all
+             "--tools", "Bash,Read,Glob,Grep,Skill",
+             "--allowedTools", "Read", "Glob", "Grep", "Skill", "Bash(bash *design-review.sh*)",
+             "--permission-mode", "dontAsk", "--setting-sources", "user", "--no-session-persistence",
+             "--strict-mcp-config", "--max-budget-usd", DOCREVIEW_BUDGET, "--add-dir", run_dir.as_posix()]
+    argv += ["--model", model]
+    design = toolbox_plugin("design")
+    if design and from_checkout(design):
+        core = toolbox_plugin("core")
+        argv += ["--plugin-dir", str(design)] + (["--plugin-dir", str(core)] if core else [])
+    prompt = f'/design:tt-design-review review "{doc.name}" "{rev.name}"{comments_arg}\n'
+    threading.Thread(target=docreview_work, args=(state, folder, r, argv, prompt, before, run_dir), daemon=True).start()
+    state.emit("docreview", name=folder.name, run=docreview_view(state, folder.name))
+    return 202, {"run": docreview_view(state, folder.name)}
+
+
+def docreview_work(state, folder, r, argv, prompt, before, run_dir):
+    env = claude_child_env(state)
+    if os.name == "nt" and not env.get("CLAUDE_CODE_GIT_BASH_PATH") and git_bash_path(state):
+        env["CLAUDE_CODE_GIT_BASH_PATH"] = git_bash_path(state)
+    final, error = None, ""
+    try:
+        with open(run_dir / "stderr.txt", "w+", encoding="utf-8", errors="replace") as errf:
+            p = subprocess.Popen(argv, cwd=str(folder.resolve()), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf,
+                                 encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW,
+                                 start_new_session=os.name != "nt")
+            r["proc"] = p
+            if r.get("cancelled"):
+                kill_tree(p)
+            timer = threading.Timer(DOCREVIEW_TIMEOUT, lambda: (r.update(timedOut=True), kill_tree(p)))
+            timer.start()
+            try:
+                p.stdin.write(prompt)
+                p.stdin.close()
+            except OSError:
+                pass
+            for line in p.stdout:
+                state.touch()
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("type") == "assistant":
+                    for block in (msg.get("message") or {}).get("content") or []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            r["step"], r["steps"] = review_step(block), r["steps"] + 1
+                            state.emit("docreview", name=folder.name, run=docreview_view(state, folder.name))
+                elif msg.get("type") == "result":
+                    final = msg
+            p.wait()
+            timer.cancel()
+            errf.seek(0)
+            said = [ln.strip() for ln in errf.read().splitlines() if ln.strip()]
+        if r.get("cancelled"):
+            error = "Stopped."
+        elif r.get("timedOut"):
+            error = f"The run took longer than {int(DOCREVIEW_TIMEOUT // 60)} minutes and was stopped."
+        elif final is None:
+            error = said[-1] if said else f"claude exited {p.returncode} saying nothing"
+        elif final.get("is_error") or final.get("subtype") != "success":
+            error = str(final.get("result") or final.get("subtype") or "the run failed")[:400]
+    except OSError as e:
+        error = f"couldn't run claude: {e}"
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+    after = review_read(state, folder)
+    added = [i["id"] for i in after["items"] if i["id"] not in before]
+    with state.cond:
+        r["status"] = "error" if error else "done"
+        r["proc"] = None
+    cost = float(final.get("total_cost_usd") or 0) if final else 0.0
+    state.emit("docreview", name=folder.name, done=True, ok=not error, error=error, added=added,
+               note=error or ("Nothing new to suggest." if not added else ""), problems=after["problems"], cost=round(cost, 4))
+    state.emit("document", name=folder.name, what="review")
+
+
+def cancel_docreview_run(state, name):
+    r = state.docreview_runs.get(name)
+    if not r or r["status"] != "running":
+        return False
+    r["cancelled"] = True
+    if r.get("proc"):
+        kill_tree(r["proc"])
+    return True
+
+
+# -- the review: a decision
+
+def review_change(state, folder, b):
+    """One decision on one suggestion, by design-review.sh (no model): (http code, answer {document, said})."""
+    action, sid = str(b.get("action", "")), str(b.get("id", ""))
+    if action == "run":
+        return start_docreview_run(state, folder, b)
+    if action == "cancel":
+        return 200, {"ok": cancel_docreview_run(state, folder.name)}
+    if not review_script():
+        return 501, {"error": REVIEW_MISSING}
+    if not re.fullmatch(r"DR\d{2,}", sid):
+        return 400, {"error": "id: a suggestion's ID (DR01 ...)"}
+    rev, doc = review_file(folder), document_file(folder)
+    if not rev.is_file():
+        return 404, {"error": "This document has no review yet."}
+    run_dir = None
+    ifh = str(b.get("hash", "") or "")
+    if ifh and not re.fullmatch(r"\d{1,12}", ifh):
+        return 400, {"error": "hash: the suggestion's hash as it was read"}
+    iff = ["--if", ifh] if ifh else []
+    try:
+        if action in ("accept", "reject", "reopen"):
+            reason = " ".join(short_text(b.get("reason"), 400).split()) if action == "reject" else ""
+            args = ["decide", rev, sid, action] + ([reason] if reason else []) + iff
+        elif action == "wording":
+            text = b.get("text")
+            if not isinstance(text, str) or not text.strip() or len(text) > WORDING_MAX:
+                return 400, {"error": f"text: the wording (at most {WORDING_MAX} characters)"}
+            run_dir = home() / "runs" / secrets.token_hex(4)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "wording.txt").write_bytes(text.replace("\r\n", "\n").encode("utf-8"))
+            where = " ".join(short_text(b.get("where"), 200).split())
+            args = ["wording", rev, sid, run_dir / "wording.txt"] + (["--where", where] if where else []) + iff
+        elif action == "confirm":
+            exp = b.get("expected")
+            if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+                return 400, {"error": "expected: the document's updated stamp (save it first)"}
+            try:
+                if abs(doc.stat().st_mtime - float(exp)) > 1e-6:
+                    return 409, {"error": "The document changed on disk since you saved it. Nothing was added.",
+                                 "document": document_view(state, folder)}
+            except OSError:
+                return 404, {"error": "no such document"}
+            args = ["confirm", rev, sid, "--doc", doc] + iff
+        else:
+            return 400, {"error": "action: run, cancel, accept, reject, reopen, wording or confirm"}
+        if state.docreview_runs.get(folder.name, {}).get("status") == "running":
+            return 409, {"error": "A review is being written. Wait for it to finish."}
+        code, out, err = run_review(state, args, cwd=str(folder.resolve()))
+    finally:
+        if run_dir:
+            shutil.rmtree(run_dir, ignore_errors=True)
+    said = out.strip().splitlines()[-1] if out.strip() else ""
+    if code == 0:
+        state.emit("document", name=folder.name, client=str(b.get("client") or "")[:40],
+                   what="text" if action == "confirm" else "review")
+        return 200, {"document": document_view(state, folder), "said": said}
+    why = (err.strip().splitlines() or ["design-review.sh refused it"])[-1].replace("design-review.sh: ", "")
+    if code == 3:
+        return 409, {"error": why, "document": document_view(state, folder)}
+    return (400 if code == 1 else 500), {"error": why, "document": document_view(state, folder)}
+
+
+def watch_documents(state):
+    """Hand edits (in Obsidian, say) and the skill's own writes reach the page: a "document" event
+    (what: disk) whenever a document, its review or its comments change on disk."""
+    seen = {}
+    while True:
+        time.sleep(1.5)
+        base = documents_root()
+        if not base.is_dir():
+            continue
+        try:
+            for d in base.iterdir():
+                if not d.is_dir() or d.name.startswith("."):
+                    continue
+                sig = tuple(p.stat().st_mtime if p.is_file() else 0 for p in (document_file(d), review_file(d), comments_path(d)))
+                if d.name in seen and seen[d.name] != sig:
+                    state.emit("document", name=d.name, what="disk")
+                seen[d.name] = sig
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------- whiteboards
@@ -14134,6 +14600,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/notepad":
             code, answer = np_view(q.get("name", [""])[0])
             return self.send(code, answer)
+        if path == "/api/documents":
+            return self.send(200, documents_list(st))
+        if path == "/api/document":
+            folder = document_dir(q.get("name", [""])[0])
+            if not folder:
+                return self.send(404, {"error": "no such document"})
+            return self.send(200, document_view(st, folder))
         if path == "/api/whiteboards":
             return self.send(200, wb_list())
         if path == "/api/whiteboard":
@@ -14542,6 +15015,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/notepad":
             code, answer = np_save(st, b)
             return self.send(code, answer)
+        if path == "/api/documents/new":
+            code, answer = document_new(st, b.get("name", ""), b.get("intake", ""))
+            return self.send(code, answer)
+        if path in ("/api/document", "/api/documents/comments", "/api/documents/review"):
+            folder = document_dir(str(b.get("name", "")))
+            if not folder:
+                return self.send(404, {"error": "no such document"})
+            if path == "/api/document":
+                code, answer = pad_write(lp(document_file(folder)), b.get("text"), b.get("expected"), "document")
+                if code == 200:
+                    st.emit("document", name=folder.name, client=str(b.get("client") or "")[:40], what="text")
+            elif path == "/api/documents/comments":
+                code, answer = comments_change(st, folder, b)
+            else:
+                code, answer = review_change(st, folder, b)
+            return self.send(code, answer)
         if path == "/api/whiteboard":
             code, answer = wb_change(st, b)
             return self.send(code, answer)
@@ -14773,6 +15262,7 @@ def serve(cwd, bash):
     threading.Thread(target=watch_ledger, args=(state,), daemon=True).start()
     threading.Thread(target=watch_updates, args=(state,), daemon=True).start()
     threading.Thread(target=watch_designs, args=(state,), daemon=True).start()
+    threading.Thread(target=watch_documents, args=(state,), daemon=True).start()
     threading.Thread(target=watch_tasks, args=(state,), daemon=True).start()
     threading.Thread(target=watch_mrs, args=(state,), daemon=True).start()
     threading.Thread(target=watch_catalog, args=(state,), daemon=True).start()

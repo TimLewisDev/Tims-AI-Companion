@@ -67,7 +67,10 @@ banner	^planning IDs	planids
 banner	^questions	decide
 banner	^design \(user stories\)	stories,whiteboards,cache
 banner	^whiteboards	whiteboards,stories,diagrams
-banner	^notepad	notepad
+banner	^notepad	notepad,documents
+banner	^documents \(design review\)	documents,notepad
+file	plugins/tatty/app/web/documents*	documents
+file	plugins/tatty/app/web/notepad*	notepad,documents
 banner	^diagrams	diagrams
 banner	^tasks	tasks,taskwrite,taskmerge,taskfiles
 banner	^QA	qa

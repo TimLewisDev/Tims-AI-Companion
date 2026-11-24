@@ -42,6 +42,7 @@ qa	-	60
 stories	tasks	196
 whiteboards	features,project	7
 notepad	features	3
+documents	features	40
 models	features,project	324
 llms	features,project	289
 chats	features	33

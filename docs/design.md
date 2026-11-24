@@ -1797,6 +1797,40 @@ unchanged greyed.
   shows all of its own (the rest step back); a link with neither end in the group opened last is faint; counts
   show on a hovered box's links only. Legend chips turn kinds off. Search marks the boxes it finds; Enter frames them.
 
+## Documents (the design mode)
+
+- **What it is:** design mode's **Documents** (`#documents`, a document `#document/<name>`; `documents.js`,
+  `documents.css`): write a design document on the notepad, comment on passages of it, and have it checked for what
+  it is missing. A document is `<root>/documents/<name>/` holding `<name>.md` (plain markdown: Obsidian opens it),
+  `<name> - Design Review.md` (only the toolbox's `design-review.sh` writes it, see the contract, "Design review")
+  and `.tt/<name> - Comments.json` (Tatty's own, written under `reviewdoc.Lock`).
+- **The text** is `makeNotepad` (`notepad.js`) saved through `pad_write`, the same save the feature notepad uses
+  (`/api/document`, a stale stamp is a 409, the file's line ends are kept). The notepad gained three generic hooks for
+  this and knows nothing of documents: `marks(text)` (line ranges the preview wraps in `.np-mark`), `decorate(view)`
+  (called after every draw) and `pad.view` / `pad.redraw()`.
+- **Comments** are made in Preview: a selection shows a **Comment** button; the comment keeps the quote, 24
+  characters either side (to tell a repeated phrase apart) and the heading it is under. `decorate` finds the quote in
+  the preview's text with white space left out (so it works across bold, links and paragraphs) and wraps it in
+  `mark.dr-comment`. A passage that is gone shows its comment as detached. `/api/documents/comments`
+  `add|edit|resolve|reopen|remove`.
+- **Review** is the right-hand section, apart from Comments. **Review this document** starts a headless
+  `claude -p` run of `/design:tt-design-review` (`start_docreview_run`, copied from the stories run: one per
+  document, Stop, `TATTY_DOCREVIEW_BUDGET` (default 2) and `TATTY_DOCREVIEW_TIMEOUT`; the model is `docReviewModel`,
+  `claude:sonnet`). It is the only part that costs tokens. Open comments go to it as a file of hints. Each
+  suggestion is a card: why, where it would go, and wording. **Accept** opens the wording in a text area and the
+  place as a select of the document's headings (or a new section at the end); edits save by themselves
+  (`wording`); **Confirm** saves the notepad, then `design-review.sh confirm` adds the wording to the document and
+  records exactly what it added; the preview then marks it and scrolls there. **Reject** moves it under Rejected,
+  where it can be reopened. Every decision is a plain script call (`/api/documents/review`), and calls are queued
+  so a reword still on its way is in before Confirm.
+- **Highlights** come from what the review recorded, not from marks in the file: `marks` finds each Added
+  suggestion's exact text in the document (else its first line, else nothing: the card says the text was changed
+  since). A checkbox turns them off. Confirm is refused (409, nothing added) when the document changed on disk after
+  the page saved it.
+- **Events:** `document {name, client, what: text|comments|review|disk|list}` (a watcher sends `disk` for a hand
+  edit), `docreview {name, run}` while a run goes and `{done, ok, error, added, cost}` at its end.
+- **Without the design plugin** writing and commenting work; the review section says what is missing.
+
 ## Model settings
 
 Every model Tatty runs is chosen in Settings and checked on the server, not only
@@ -1821,7 +1855,8 @@ every picker read the same provider and model state from it.
   `session` role; chat (`chatModel`) `claude:sonnet`; Jira (`jiraModel`) and the
   helpers `claude:haiku`. The helpers are Tatty settings, with the same name in the
   API: `storiesModel` (User Stories), `tasksModel` (writing a task), `qaModel`
-  (drafting a bug) and `qaPlanModel` (breaking a plan into areas). Settings has a
+  (drafting a bug), `qaPlanModel` (breaking a plan into areas) and `docReviewModel` (reviewing a
+  design document, `claude:sonnet`). Settings has a
   picker for each, as it has for the family versions.
 - **Migration.** Each owner migrates its own values once. The toolbox qualifies its
   bare values; Tatty does its settings and remembered choices. A bare value is

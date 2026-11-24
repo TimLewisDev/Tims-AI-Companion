@@ -14,11 +14,18 @@
  *     mode: "edit" | "view",           // optional: else the last one used (localStorage tt-notepad-mode)
  *     placeholder, readOnly,           // optional
  *     actions: [...],                  // optional: a subset of NP_ACTIONS to show in the bar
+ *     marks(text) -> [{from, to, id}],  // optional: ranges of the text (character offsets) the preview
+ *                                       // wraps in <div class="np-mark" data-mark=id>. Widened to whole
+ *                                       // lines; overlapping ones are dropped. Mark whole blocks.
+ *     decorate(view, text),            // optional: called after every draw of the preview, so a host can
+ *                                      // mark passages in it (the node is rebuilt each time)
  *   });
  *   pad.element    the node to mount          pad.focus()        put the caret in the pad
  *   pad.getText()  what is written now        pad.flush()        save now (a promise)
  *   pad.refresh()  read it again, if the pad has nothing unsaved
  *   pad.setMode("edit"|"view")                pad.destroy()      drop the page-level listeners
+ *   pad.view       the preview node           pad.redraw()       draw the preview again (if it is showing)
+ *   pad.mode()     "edit" or "view"
  * Page-level listeners (window focus, hashchange, tab hidden) remove themselves
  * once the pad's node has left the page, so a host that just replaces it is fine.
  *
@@ -254,9 +261,9 @@ function npBlocks(text, off) {
 }
 
 // The notepad's text as HTML (to set as the innerHTML of a .md node).
-function notepadRender(src) {
+function notepadRender(src, line0 = 0) {
   src = String(src || "").replace(/\r/g, "").replace(/^\uFEFF/, "").replace(/\u0001/g, "");
-  const lineOf = i => src.slice(0, i).split("\n").length - 1;
+  const lineOf = i => line0 + src.slice(0, i).split("\n").length - 1;
   let html = "", at = 0;
   const seg = (from, to) => { if (to > from) html += npBlocks(src.slice(from, to), lineOf(from)); };
   for (const m of src.matchAll(/^<div align="(left|center|right)">[ \t]*\n([\s\S]*?)\n<\/div>[ \t]*$/gm)) {
@@ -265,6 +272,31 @@ function notepadRender(src) {
     at = m.index + m[0].length;
   }
   seg(at, src.length);
+  return html;
+}
+
+// The text drawn with some ranges wrapped (see `marks`): each stretch is drawn on its own, with its first
+// line's number, so a checkbox still points at its line in the whole text.
+function notepadRenderMarked(text, marks) {
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  const lineAt = pos => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= pos) lo = mid; else hi = mid - 1; } return lo; };
+  const spans = [];
+  for (const m of marks || []) {
+    if (!m || !(m.to > m.from)) continue;
+    const a = lineAt(Math.max(0, m.from)), b = lineAt(Math.min(text.length, m.to) - 1);
+    spans.push({ a, b, id: m.id });
+  }
+  spans.sort((x, y) => x.a - y.a);
+  const lineEnd = n => (n + 1 < starts.length ? starts[n + 1] - 1 : text.length);
+  let html = "", line = 0;
+  for (const s of spans) {
+    if (s.a < line) continue; // overlaps the one before
+    if (s.a > line) html += notepadRender(text.slice(starts[line], starts[s.a]), line);
+    html += `<div class="np-mark" data-mark="${String(s.id).replace(/[^\w-]/g, "")}">${notepadRender(text.slice(starts[s.a], lineEnd(s.b)), s.a)}</div>`;
+    line = s.b + 1;
+  }
+  if (line < starts.length) html += notepadRender(text.slice(starts[line]), line);
   return html;
 }
 
@@ -433,8 +465,11 @@ function makeNotepad(o) {
 
   /* ---- the preview */
   function drawView() {
-    view.innerHTML = notepadRender(ta.value);
+    const text = ta.value;
+    const marks = typeof o.marks === "function" ? o.marks(text) : null;
+    view.innerHTML = marks && marks.length ? notepadRenderMarked(text, marks) : notepadRender(text);
     if (typeof codeActions === "function") codeActions(view);
+    if (typeof o.decorate === "function") o.decorate(view, text);
   }
   view.addEventListener("change", e => {
     const box = e.target;
@@ -509,7 +544,8 @@ function makeNotepad(o) {
   root.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "e" && !ro) { e.preventDefault(); setMode(mode === "edit" ? "view" : "edit"); } });
   setMode(mode, true);
 
-  return { element: root, focus: () => (mode === "edit" ? ta : view).focus(), getText: () => ta.value, flush, refresh, setMode, destroy };
+  return { element: root, view, focus: () => (mode === "edit" ? ta : view).focus(), getText: () => ta.value, flush, refresh, setMode, destroy,
+    mode: () => mode, redraw: () => { if (mode === "view") drawView(); } };
 }
 
 function npModeGet() { try { return localStorage.getItem("tt-notepad-mode") === "view" ? "view" : "edit"; } catch { return "edit"; } }

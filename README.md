@@ -199,6 +199,7 @@ back. `tatty.sh hub list`, `hub add` and `hub open` do the same from a shell, an
 | start a workflow from a Jira ticket | **Jira** → the ticket → **Load ticket** → **Start workflow** |
 | turn a design document into user stories | design mode → **User Stories** → **New from a design document…** |
 | add a story on the board | the **＋** tool (S), then click where it goes |
+| write a design document and have it checked for gaps | design mode → **Documents** → **New document…**, then **Review this document** |
 | plan on a blank board | design mode → **Whiteboards** → **New whiteboard** |
 | sketch next to a feature's plan | the feature's page → **Whiteboard** |
 | write, comment or join things on a board | the **T** (text), **💬** (comment) and **↗** (line) tools, or double-click for text |

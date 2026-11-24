@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/static/notepad.css">
 <link rel="stylesheet" href="/static/diagram.css">
 <link rel="stylesheet" href="/static/stories.css">
+<link rel="stylesheet" href="/static/documents.css">
 <link rel="stylesheet" href="/static/taskboard.css">
 <link rel="stylesheet" href="/static/tasks.css">
 <link rel="stylesheet" href="/static/qa.css">
@@ -63,6 +64,7 @@
     <a href="#tasks" data-page="tasks" data-mode="production">Tasks</a>
     <a href="#qa" data-page="qa" data-mode="qa">QA</a>
     <a href="#designs" data-page="designs" data-mode="design">User Stories</a>
+    <a href="#documents" data-page="documents" data-mode="design">Documents</a>
     <a href="#whiteboards" data-page="whiteboards" data-mode="design">Whiteboards</a>
     <a href="#toolbox" data-page="toolbox">Toolbox</a>
   </nav>
@@ -109,6 +111,9 @@
   <!-- User Stories: the design mode's boards, and one board of sticky notes (stories.js). -->
   <section class="page" id="page-designs"></section>
   <section class="page" id="page-design"></section>
+  <!-- Documents: the design mode's design documents, and one document with its comments and review (documents.js, on notepad.js). -->
+  <section class="page" id="page-documents"></section>
+  <section class="page" id="page-document"></section>
   <!-- Whiteboards: blank boards to plan on, and one board (whiteboards.js, on whiteboard.js). -->
   <section class="page" id="page-whiteboards"></section>
   <section class="page" id="page-whiteboard"></section>
@@ -196,6 +201,7 @@
 <script src="/static/whiteboard.js"></script>
 <script src="/static/notepad.js"></script>
 <script src="/static/stories.js"></script>
+<script src="/static/documents.js"></script>
 <script src="/static/whiteboards.js"></script>
 <script src="/static/diagram-layout.js"></script>
 <script src="/static/diagram.js"></script>

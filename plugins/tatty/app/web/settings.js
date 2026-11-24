@@ -483,7 +483,8 @@ function helperModelSettings(s) {
     ["storiesModel", "Stories model", "The model used to write stories."],
     ["tasksModel", "Tasks model", "The model used to write tasks."],
     ["qaModel", "QA model", "The model used to investigate QA findings."],
-    ["qaPlanModel", "QA planning model", "The model used to plan QA work."]
+    ["qaPlanModel", "QA planning model", "The model used to plan QA work."],
+    ["docReviewModel", "Document review model", "The model that looks for what a design document is missing."]
   ];
   return el("section", { id: "helper-model-settings" },
     el("h3", {}, "Helper models"),

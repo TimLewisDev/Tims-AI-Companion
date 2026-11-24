@@ -282,6 +282,44 @@ may get PowerShell, where `bash stories.sh` can't run). One run at a time; Stop
 kills it. The page sees each tool call as a step, then which stories are new or
 rewritten and what the run cost.
 
+## Design review (the Documents area)
+
+Design mode's **Documents** page works on the design plugin's `tt-design-review` skill, found the way
+`tt-user-stories` is (above). A document is a folder `<root>/documents/<name>/` Tatty makes: `<name>.md` is the
+design document (Tatty and the person write it; Obsidian may too), and `<name> - Design Review.md` is the skill's
+document, written only by `tt-design-review/scripts/design-review.sh`. Without the plugin Documents still opens,
+and its review section says what is missing.
+
+| Command | When | Used in Tatty |
+|---|---|---|
+| `design-review.sh list <review> --tsv --doc <design doc>` | every time the document is read | `meta` rows (title, source, reviewed, and `doc`: the design doc's hash) and one `dr` row per suggestion: id, area, status (Open, Accepted, Rejected, Added), why, where, wording, edited, added under, added text, reason, hash; `problem:` lines on stderr mean a hand edit broke the layout |
+| `design-review.sh decide <review> <DR-id> accept\|reject [<reason>]\|reopen [--if <hash>]` | Accept, Reject, Not yet, Reopen | the change; exit 3 (the suggestion changed since it was read) is a 409 and the card reloads |
+| `design-review.sh wording <review> <DR-id> <text file> [--where <heading>\|end] [--if <hash>]` | the wording or the place edited on an Accepted card (saved a moment after the last keystroke) | the new wording, marked edited |
+| `design-review.sh confirm <review> <DR-id> --doc <design doc> [--if <hash>]` | Confirm | adds the wording to the design doc as whole blocks at the end of the section under the `where` heading (or a new `## <area>` section at the end) and records the added text; prints `under: <heading>` or `new section: <heading>` |
+
+Tatty never writes the review's markdown itself, and adds to the design document only through `confirm` (the
+person's own typing is a plain save). Confirm is refused by Tatty, before the script runs, when the document's
+modified time is not the one the page saved.
+
+To **review**, Tatty runs the skill headless on a person's click (**Review this document**):
+
+```
+claude -p --output-format stream-json --verbose
+  --tools Bash,Read,Glob,Grep,Skill
+  --allowedTools Read Glob Grep Skill "Bash(bash *design-review.sh*)"
+  --permission-mode dontAsk --setting-sources user --no-session-persistence
+  --strict-mcp-config --max-budget-usd <TATTY_DOCREVIEW_BUDGET, default 2>
+  --model <docReviewModel> [--plugin-dir <design> --plugin-dir <core>]   (the plugin only for a checkout)
+```
+
+with the prompt on stdin: `/design:tt-design-review review "<design doc>" "<review doc>" ["<comments file>"]`. It
+runs in the document's folder with the same environment rules as the stories run (no `TATTY_SESSION`,
+`CLAUDE_CODE_GIT_BASH_PATH` set on Windows). The comments file, when the person has open comments, is a copy
+Tatty writes under `<home>/runs/` (given with `--add-dir`, removed after): JSON `[{quote, text, heading,
+resolved}]`, hints about where the author feels the document is thin. The run has no Write or Edit tool. One run
+per document; Stop kills it. The page sees each tool call as a step, then how many suggestions were added and
+what the run cost.
+
 ## Commands Tatty starts
 
 (Besides the User Stories runs above.)
@@ -571,7 +609,7 @@ Start, a headless run) is blocked.
 **Tatty's own choices.** The toolbox keeps only the `session` role and the step
 models. Tatty keeps the rest in its settings, in the same `provider:model-id`
 form, each checked against this catalog: `chatModel`, `jiraModel`, `storiesModel`,
-`tasksModel`, `qaModel` and `qaPlanModel`.
+`tasksModel`, `qaModel`, `qaPlanModel` and `docReviewModel`.
 
 Not part of this contract: running a Codex or Copilot session. Their models are
 listed, disabled, and stay that way until the toolbox can run them.
@@ -674,6 +712,8 @@ are therefore Tatty's own, outside the workflow's records:
   - its WebView2 data;
   - the full panel's last size and position.
 - `<root>/tasks/`: the task boards (see "Tasks").
+- `<root>/documents/<name>/`: a design document (`<name>.md`), its review (`<name> - Design Review.md`, only
+  `design-review.sh` writes it) and `.tt/<name> - Comments.json` (the comments on its passages, Tatty's own). See "Design review".
 - The feature's repository: on a person's click on the Commit page, `git add` and
   `git commit` of the files chosen (never a push, never `--no-verify`, no trailer added); Tatty
   reads the workflow's task results (`.tt/**/results/*.md`, "Files Modified") to say which
@@ -687,4 +727,5 @@ ledger, the workflow links) are never written, except that Settings changes the
 model choices and LLM connections through the toolbox's own scripts (above), and
 its documents only on a person's Save in Edit mode, the ticket's on Start workflow (from a Jira ticket
 or a task), or a User Stories
-document through `stories.sh` on a person's click.
+document through `stories.sh` on a person's click, or a Design Review document and the design document it adds to
+through `design-review.sh` on a person's click.

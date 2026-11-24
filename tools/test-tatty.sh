@@ -58,6 +58,8 @@ cat >"$T/claude.sh" <<'EOS'
 #!/usr/bin/env bash
 # a User Stories headless run (it may run stories.sh): the stand-in is claude-p.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *stories.sh*) exec bash "$(dirname "$0")/claude-p.sh" "$@" ;; esac
+# a design document's review (tt-design-review, writing through design-review.sh): the stand-in is claude-dr.sh, made with its tests
+[ "${1:-}" = -p ] && case "$*" in *design-review.sh*) exec bash "$(dirname "$0")/claude-dr.sh" "$@" ;; esac
 # a generated diagram's summaries and plan (they name their job in the system prompt): the stand-in is claude-dg.sh, made with its tests
 [ "${1:-}" = -p ] && case "$*" in *"reading a class diagram"*|*"You draw the class diagram"*) exec bash "$(dirname "$0")/claude-dg.sh" "$@" ;; esac
 # the task panel's "Write it for me" (it names its job in the system prompt): the stand-in is claude-tw.sh, made with its tests
@@ -4228,6 +4230,197 @@ rm -f "$NPD/Notepad.md"
 [ "$(npc '{"name":"Pad","text":"again","expected":5}')" = 409 ] && ok "a notepad removed meanwhile is a conflict" || bad "a notepad removed meanwhile is a conflict" "$(cat "$T/np")"
 [ "$(npc '{"name":"Pad","text":"again","expected":0}')" = 200 ] && [ -f "$NPD/Notepad.md" ] && ok "and is made again by a save of 0" || bad "and is made again by a save of 0"
 rm -rf "$NPD"
+fi
+if section documents; then
+echo "# documents (design review)"
+for f in documents.js documents.css; do [ "$(code "$U/static/$f")" = 200 ] && ok "$f served" || bad "$f served"; done
+DR_SCRIPT=""
+for c in "$TATTY_TOOLBOX/plugins/design" "$TATTY_TOOLBOX/../design"; do
+	[ -f "$c/skills/tt-design-review/scripts/design-review.sh" ] && { DR_SCRIPT="$c/skills/tt-design-review/scripts/design-review.sh"; break; }
+done
+dcode() { curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d "$2" "$U$1"; }
+get /api/documents >"$T/j"
+has "no documents yet" "$T/j" '"documents": []'
+has "documents live in the root's documents folder" "$T/j" "fxroot/documents"
+[ -n "$DR_SCRIPT" ] && has "the design plugin is found" "$T/j" '"plugin": true' || has "no design-review skill: said so" "$T/j" '"plugin": false'
+[ "$(dcode /api/documents/new '{"name":"a/b"}')" = 400 ] && ok "new: a bad name is refused" || bad "new: a bad name is refused"
+[ "$(dcode /api/documents/new '{"name":".hidden"}')" = 400 ] && ok "new: a hidden name is refused" || bad "new: a hidden name is refused"
+[ "$(dcode /api/documents/new '{"name":"X","intake":"'"$T"'/none.txt"}')" = 400 ] && ok "new: only a markdown document" || bad "new: only a markdown document"
+[ "$(dcode /api/documents/new '{"name":"Bag"}')" = 200 ] && ok "new: a blank document" || bad "new: a blank document" "$(cat "$T/dj")"
+DD="$FX/documents/Bag"
+[ -f "$DD/Bag.md" ] && ok "in its own folder, named for it" || bad "in its own folder, named for it"
+[ "$(dcode /api/documents/new '{"name":"Bag"}')" = 409 ] && ok "new: one that exists is refused" || bad "new: one that exists is refused"
+printf '# Imported\r\n\r\nFrom Obsidian.\r\n' >"$T/imp.md"
+IMP=$(cd "$T" && { pwd -W 2>/dev/null || pwd; })/imp.md
+[ "$(dcode /api/documents/new '{"name":"Imp","intake":"'"$IMP"'"}')" = 200 ] && ok "new: a picked document is copied" || bad "new: a picked document is copied" "$(cat "$T/dj")"
+get "/api/document?name=Imp" >"$T/j"
+[ "$(pick "$T/j" "d['text'] == '# Imported\\n\\nFrom Obsidian.\\n'")" = True ] && ok "its text is read with plain line ends" || bad "its text is read with plain line ends" "$(head -c 200 "$T/j")"
+rm -rf "$FX/documents/Imp"
+# the text: saved like the notepad's, by stamp
+get "/api/document?name=Bag" >"$T/j"
+[ "$(pick "$T/j" "(d['exists'], d['comments'], d['review']['exists'], d['run'])")" = "(True, [], False, None)" ] && ok "a new document: no comments, no review, no run" || bad "a new document" "$(head -c 300 "$T/j")"
+UPD=$(pick "$T/j" "d['updated']")
+DOC1=$'# Bag\n\n## Pickup\n\nWalking over an item puts it in the bag.\n\n## Sorting\n\nBy rarity.\n'
+$PY -c "import json,sys; print(json.dumps({'name':'Bag','text':sys.argv[1],'expected':float(sys.argv[2]),'client':'t1'}))" "$DOC1" "$UPD" >"$T/body"
+[ "$(curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d @"$T/body" "$U/api/document")" = 200 ] && ok "save" || bad "save" "$(cat "$T/dj")"
+has "saved on disk" "$DD/Bag.md" "Walking over an item puts it in the bag."
+[ "$(dcode /api/document '{"name":"Bag","text":"mine","expected":1}')" = 409 ] && ok "save: a stale stamp is refused" || bad "save: a stale stamp is refused"
+has "the refusal says what is on disk now" "$T/dj" '"updated"'
+[ "$(dcode /api/document '{"name":"Nope","text":"x","expected":0}')" = 404 ] && ok "save: no such document" || bad "save: no such document"
+[ "$(dcode /api/document '{"name":"Bag","text":"x"}')" = 400 ] && ok "save: expected is required" || bad "save: expected is required"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "any(e.get('type') == 'document' and e.get('what') == 'text' and e.get('client') == 't1' for e in d)")" = True ] && ok "a save is a document event with its client" || bad "a save is a document event with its client"
+get "/api/document?name=Bag" >"$T/j"
+UPD=$(pick "$T/j" "d['updated']")
+# comments
+[ "$(dcode /api/documents/comments '{"name":"Bag","action":"add","quote":"","text":"x"}')" = 400 ] && ok "a comment needs its passage" || bad "a comment needs its passage"
+[ "$(dcode /api/documents/comments '{"name":"Bag","action":"add","quote":"the bag","text":""}')" = 400 ] && ok "a comment needs its text" || bad "a comment needs its text"
+[ "$(dcode /api/documents/comments '{"name":"Bag","action":"add","quote":"puts it in the bag","before":"an item ","after":".","heading":"Pickup","text":"What if it is full?","client":"t1"}')" = 200 ] && ok "add a comment" || bad "add a comment" "$(cat "$T/dj")"
+CID=$(pick "$T/dj" "d['comments'][0]['id']")
+[ -f "$DD/.tt/Bag - Comments.json" ] && ok "kept in .tt beside the document" || bad "kept in .tt beside the document"
+has "its passage and heading are kept" "$DD/.tt/Bag - Comments.json" '"heading": "Pickup"'
+[ "$(dcode /api/documents/comments "{\"name\":\"Bag\",\"action\":\"edit\",\"id\":\"$CID\",\"text\":\"What if the bag is full?\"}")" = 200 ] && ok "edit a comment" || bad "edit a comment"
+has "the new text" "$T/dj" "What if the bag is full?"
+[ "$(dcode /api/documents/comments "{\"name\":\"Bag\",\"action\":\"resolve\",\"id\":\"$CID\"}")" = 200 ] && [ "$(pick "$T/dj" "d['comments'][0]['resolved']")" = True ] && ok "resolve" || bad "resolve"
+[ "$(dcode /api/documents/comments "{\"name\":\"Bag\",\"action\":\"reopen\",\"id\":\"$CID\"}")" = 200 ] && [ "$(pick "$T/dj" "d['comments'][0]['resolved']")" = False ] && ok "reopen" || bad "reopen"
+[ "$(dcode /api/documents/comments '{"name":"Bag","action":"edit","id":"c000","text":"x"}')" = 404 ] && ok "no such comment" || bad "no such comment"
+[ "$(dcode /api/documents/comments '{"name":"Bag","action":"frob"}')" = 400 ] && ok "an unknown action" || bad "an unknown action"
+get /api/documents >"$T/j"
+[ "$(pick "$T/j" "(d['documents'][0]['name'], d['documents'][0]['comments'])")" = "('Bag', 1)" ] && ok "the list counts open comments" || bad "the list counts open comments" "$(head -c 300 "$T/j")"
+get /api/settings >"$T/j"
+has "the review model is a setting" "$T/j" '"docReviewModel"'
+if [ -z "$DR_SCRIPT" ]; then
+	[ "$(dcode /api/documents/review '{"name":"Bag","action":"run"}')" = 501 ] && ok "no design plugin: a review can't start, and says why" || bad "no design plugin: a review can't start"
+	has "the reason" "$T/dj" "design plugin"
+else
+printf '%s' "$DR_SCRIPT" >"$T/dr-script"
+cat >"$T/claude-dr.sh" <<'EOS'
+#!/usr/bin/env bash
+# a tt-design-review headless run: writes suggestions through design-review.sh, as the skill does
+here=$(dirname "$0"); DR=$(cat "$here/dr-script")
+prompt=$(cat)
+printf '%s\n' "$prompt" >"$here/claude-dr-prompt"; printf '%s\n' "$*" >"$here/claude-dr-args"
+printf '%s\n' "${TATTY_SESSION:-none}" >"$here/claude-dr-session"
+say() { printf '%s\n' "$1"; }
+tool() { say "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"bash design-review.sh $1\"}}]}}"; }
+say '{"type":"system","subtype":"init"}'
+[ -f "$here/claude-slow" ] && sleep 20 >/dev/null
+if [ -f "$here/dr-fail" ]; then say '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the model refused"}'; exit 1; fi
+doc=$(printf '%s' "$prompt" | sed 's/^[^"]*"\([^"]*\)" "\([^"]*\)".*$/\1/')
+rev=$(printf '%s' "$prompt" | sed 's/^[^"]*"\([^"]*\)" "\([^"]*\)".*$/\2/')
+[ -f "$rev" ] || { tool init; bash "$DR" init "$doc" "$rev" >/dev/null; }
+if [ ! -f "$here/dr-none" ]; then
+tool add
+bash "$DR" add "$rev" - >/dev/null <<'SPEC'
+area: Full bag behaviour
+where: Pickup
+why: The Pickup section never says what happens when the bag is full.
+wording:
+  When the bag is full the item stays on the ground and a message says "Bag full".
+---
+area: Rollout
+why: Nothing says how this ships.
+wording:
+  Ship behind a flag and turn it on for everyone once the numbers look right.
+SPEC
+fi
+say '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.0123,"result":"Added."}'
+EOS
+chmod +x "$T/claude-dr.sh"
+[ "$(dcode /api/documents/review '{"name":"Nope","action":"run"}')" = 404 ] && ok "review: no such document" || bad "review: no such document"
+printf '' >"$T/empty.md"
+EMPTY=$(cd "$T" && { pwd -W 2>/dev/null || pwd; })/empty.md
+dcode /api/documents/new '{"name":"Empty","intake":"'"$EMPTY"'"}' >/dev/null
+[ "$(dcode /api/documents/review '{"name":"Empty","action":"run"}')" = 400 ] && ok "review: an empty document is not sent" || bad "review: an empty document is not sent" "$(cat "$T/dj")"
+rm -rf "$FX/documents/Empty"
+# how many runs have ended, and wait for one more
+dcount() { get /api/events >"$T/ev"; pick "$T/ev" "len([e for e in d if e.get('type') == 'docreview' and e.get('done')])"; }
+dwait() { for _ in $(seq 1 80); do [ "$(dcount)" -gt "$1" ] && return 0; sleep 0.5; done; return 1; }
+N0=$(dcount)
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"run"}')" = 202 ] && ok "review: starts" || bad "review: starts" "$(cat "$T/dj")"
+dwait "$N0" && ok "review: it ends" || bad "review: it ends"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[e for e in d if e.get('type') == 'docreview' and e.get('done')][-1]['ok']")" = True ] && ok "review: ended well" || bad "review: ended well" "$(grep -o '"type": "docreview".\{0,200\}' "$T/ev" | tail -1)"
+[ "$(pick "$T/ev" "[e for e in d if e.get('type') == 'docreview' and e.get('done')][-1]['added']")" = "['DR01', 'DR02']" ] && ok "review: says which were added" || bad "review: says which were added"
+[ "$(pick "$T/ev" "[e for e in d if e.get('type') == 'docreview' and e.get('done')][-1]['cost']")" = "0.0123" ] && ok "review: and the cost" || bad "review: and the cost"
+has "review: a step was reported" "$T/ev" "Writing suggestions"
+has "the prompt names the skill, the document and its review" "$T/claude-dr-prompt" '/design:tt-design-review review "Bag.md" "Bag - Design Review.md"'
+has "open comments go in as a file" "$T/claude-dr-prompt" "comments.json"
+has "no Write tool: only the script writes" "$T/claude-dr-args" "Bash(bash *design-review.sh*)"
+has "nothing is asked of the person" "$T/claude-dr-args" "dontAsk"
+has "on the configured model" "$T/claude-dr-args" "--model"
+[ "$(cat "$T/claude-dr-session")" = none ] && ok "the Tatty mod stays out of the run" || bad "the Tatty mod stays out of the run" "$(cat "$T/claude-dr-session")"
+[ -f "$DD/Bag - Design Review.md" ] && ok "the review is beside the document" || bad "the review is beside the document"
+get "/api/document?name=Bag" >"$T/j"
+[ "$(pick "$T/j" "[(i['id'], i['status'], i['where']) for i in d['review']['items']]")" = "[('DR01', 'Open', 'Pickup'), ('DR02', 'Open', 'end')]" ] && ok "the page's view lists the suggestions" || bad "the page's view lists the suggestions" "$(head -c 400 "$T/j")"
+[ "$(pick "$T/j" "d['review']['docHash'] != ''")" = True ] && ok "with the document's hash" || bad "with the document's hash"
+hasnt "a finished run isn't running" "$T/j" '"status": "running"'
+get /api/documents >"$T/j"
+[ "$(pick "$T/j" "(d['documents'][0]['open'], d['documents'][0]['added'])")" = "(2, 0)" ] && ok "the list counts open suggestions" || bad "the list counts open suggestions" "$(head -c 300 "$T/j")"
+# a run that fails, a run that finds nothing, stopping a run, and one at a time
+: >"$T/dr-fail"
+N0=$(dcount); dcode /api/documents/review '{"name":"Bag","action":"run"}' >/dev/null; dwait "$N0"; get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "[e for e in d if e.get('type') == 'docreview' and e.get('done')][-1]['ok']")" = False ] && ok "a failed run says so" || bad "a failed run says so"
+has "with the model's words" "$T/ev" "the model refused"
+rm -f "$T/dr-fail"
+: >"$T/claude-slow"
+N0=$(dcount)
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"run"}')" = 202 ] && ok "a slow run starts" || bad "a slow run starts"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"run"}')" = 409 ] && ok "one run at a time per document" || bad "one run at a time per document"
+get "/api/document?name=Bag" >"$T/j"
+has "the page's view shows it running" "$T/j" '"status": "running"'
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"accept","id":"DR01"}')" = 409 ] && ok "no decisions while a review is being written" || bad "no decisions while a review is being written"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"cancel"}')" = 200 ] && ok "stop" || bad "stop"
+dwait "$N0"; get /api/events >"$T/ev"
+has "stopped" "$T/ev" '"error": "Stopped."'
+rm -f "$T/claude-slow"
+# decisions: no model, only the script
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"accept","id":"bogus"}')" = 400 ] && ok "a suggestion's ID is checked" || bad "a suggestion's ID is checked"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"accept","id":"DR09"}')" = 400 ] && ok "an unknown suggestion is refused" || bad "an unknown suggestion is refused" "$(cat "$T/dj")"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"frob","id":"DR01"}')" = 400 ] && ok "an unknown action is refused" || bad "an unknown action is refused"
+get "/api/document?name=Bag" >"$T/j"; H1=$(pick "$T/j" "d['review']['items'][0]['hash']"); UPD=$(pick "$T/j" "d['updated']")
+[ "$(dcode /api/documents/review "{\"name\":\"Bag\",\"action\":\"confirm\",\"id\":\"DR01\",\"expected\":$UPD}")" = 400 ] && ok "confirm: an Open suggestion can't be added" || bad "confirm: an Open suggestion can't be added" "$(cat "$T/dj")"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"accept","id":"DR01","hash":"1"}')" = 409 ] && ok "accept: a stale hash is refused" || bad "accept: a stale hash is refused"
+[ "$(dcode /api/documents/review "{\"name\":\"Bag\",\"action\":\"accept\",\"id\":\"DR01\",\"hash\":\"$H1\"}")" = 200 ] && ok "accept" || bad "accept" "$(cat "$T/dj")"
+[ "$(pick "$T/dj" "d['document']['review']['items'][0]['status']")" = Accepted ] && ok "and the answer is the document's new view" || bad "and the answer is the document's new view"
+printf 'When the bag is full the item stays on the ground.\n\nA message says "Bag full".\n' >"$T/w.txt"
+$PY -c "import json,sys; print(json.dumps({'name':'Bag','action':'wording','id':'DR01','text':open(sys.argv[1]).read(),'where':'Pickup'}))" "$T/w.txt" >"$T/body"
+[ "$(curl -s -o "$T/dj" -w '%{http_code}' -H "X-TT-Token: $K" -H 'Content-Type: application/json' -d @"$T/body" "$U/api/documents/review")" = 200 ] && ok "reword" || bad "reword" "$(cat "$T/dj")"
+[ "$(pick "$T/dj" "(d['document']['review']['items'][0]['edited'], d['document']['review']['items'][0]['wording'])")" = "(True, 'When the bag is full the item stays on the ground.\n\nA message says \"Bag full\".')" ] && ok "the edit is kept, marked edited" || bad "the edit is kept, marked edited" "$(head -c 400 "$T/dj")"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"wording","id":"DR01","text":"   "}')" = 400 ] && ok "reword: empty is refused" || bad "reword: empty is refused"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"wording","id":"DR01","text":"# A title"}')" = 400 ] && ok "reword: no level 1 heading" || bad "reword: no level 1 heading"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"reject","id":"DR02","reason":"not now"}')" = 200 ] && ok "reject, with a reason" || bad "reject, with a reason"
+has "the reason is kept" "$DD/Bag - Design Review.md" "- **Reason:** not now"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"reopen","id":"DR02"}')" = 200 ] && ok "reopen" || bad "reopen"
+# confirm: the page saves first, and says which save it is on
+cp "$DD/Bag.md" "$T/Bag.before"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"confirm","id":"DR01"}')" = 400 ] && ok "confirm: needs the document's stamp" || bad "confirm: needs the document's stamp"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"confirm","id":"DR01","expected":1}')" = 409 ] && ok "confirm: refused when the document moved on" || bad "confirm: refused when the document moved on"
+cmp -s "$DD/Bag.md" "$T/Bag.before" && ok "and nothing was added" || bad "and nothing was added"
+get "/api/document?name=Bag" >"$T/j"; UPD=$(pick "$T/j" "d['updated']")
+[ "$(dcode /api/documents/review "{\"name\":\"Bag\",\"action\":\"confirm\",\"id\":\"DR01\",\"expected\":$UPD,\"client\":\"t1\"}")" = 200 ] && ok "confirm" || bad "confirm" "$(cat "$T/dj")"
+[ "$(pick "$T/dj" "d['said']")" = "under: Pickup" ] && ok "it says where it went" || bad "it says where it went" "$(cat "$T/dj")"
+has "added to the document" "$DD/Bag.md" 'A message says "Bag full".'
+awk '/^Walking over/ { a = NR } /^When the bag is full/ { b = NR } /^## Sorting/ { c = NR } END { exit !(a < b && b < c) }' "$DD/Bag.md" && ok "at the end of its section" || bad "at the end of its section"
+[ "$(pick "$T/dj" "(d['document']['review']['items'][0]['status'], d['document']['review']['items'][0]['under'])")" = "('Added', 'Pickup')" ] && ok "recorded as Added, under its heading" || bad "recorded as Added"
+[ "$(pick "$T/dj" "'A message says' in d['document']['review']['items'][0]['text']")" = True ] && ok "with the exact text that went in" || bad "with the exact text that went in"
+[ "$(pick "$T/dj" "'A message says' in d['document']['text']")" = True ] && ok "and the answer carries the new text" || bad "and the answer carries the new text"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "any(e.get('type') == 'document' and e.get('what') == 'text' for e in d)")" = True ] && ok "confirm tells the other windows" || bad "confirm tells the other windows"
+[ "$(dcode /api/documents/review '{"name":"Bag","action":"reject","id":"DR01"}')" = 400 ] && ok "an Added suggestion can't change" || bad "an Added suggestion can't change"
+# a heading that isn't there goes to a new section at the end
+get "/api/document?name=Bag" >"$T/j"; UPD=$(pick "$T/j" "d['updated']")
+dcode /api/documents/review '{"name":"Bag","action":"accept","id":"DR02"}' >/dev/null
+[ "$(dcode /api/documents/review "{\"name\":\"Bag\",\"action\":\"confirm\",\"id\":\"DR02\",\"expected\":$UPD}")" = 200 ] && ok "confirm: a suggestion for the end" || bad "confirm: a suggestion for the end" "$(cat "$T/dj")"
+[ "$(pick "$T/dj" "d['said']")" = "new section: Rollout" ] && ok "it is a new section" || bad "it is a new section" "$(cat "$T/dj")"
+[ "$(tail -n 3 "$DD/Bag.md" | head -n 1)" = "## Rollout" ] && ok "at the end of the document" || bad "at the end of the document" "$(tail -n 4 "$DD/Bag.md")"
+# a review edited by hand out of its layout is reported, not repaired
+sed 's/^- \*\*Status:\*\* Added/- **Status:** Bogus/' "$DD/Bag - Design Review.md" >"$T/rv.bad"; cp "$T/rv.bad" "$DD/Bag - Design Review.md"
+get "/api/document?name=Bag" >"$T/j"
+has "a broken review is reported" "$T/j" "has the status Bogus"
+[ "$(pick "$T/j" "d['review']['items']")" = "[]" ] && ok "and none of it is trusted" || bad "and none of it is trusted"
+fi
+rm -rf "$FX/documents"
 fi
 if section models; then
 echo "# model and effort at start"

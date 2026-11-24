@@ -6,13 +6,13 @@
 
 const pageEls = { modes: $("#page-modes"), hub: $("#page-hub"), mode: $("#page-mode"), home: $("#page-home"),
   feature: $("#page-feature"), toolbox: $("#page-toolbox"), settings: $("#page-settings"), shop: $("#page-shop"), jira: $("#page-jira"),
-  designs: $("#page-designs"), design: $("#page-design"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
+  designs: $("#page-designs"), design: $("#page-design"), documents: $("#page-documents"), document: $("#page-document"), tasks: $("#page-tasks"), taskboard: $("#page-taskboard"),
   whiteboards: $("#page-whiteboards"), whiteboard: $("#page-whiteboard"), diagram: $("#page-diagram"), worktrees: $("#page-worktrees"),
   qa: $("#page-qa"), qabug: $("#page-qabug"), qaplan: $("#page-qaplan"), mrs: $("#page-mrs") };
 // A page of one mode's own: going to it switches to that mode, so a link never
 // shows a mode's pages in another mode's colours. The rest belong to every mode.
 const PAGE_MODE = { home: "engineering", feature: "engineering", diagram: "engineering", worktrees: "engineering", mrs: "engineering", jira: "production", tasks: "production", taskboard: "production",
-  designs: "design", design: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
+  designs: "design", design: "design", documents: "design", document: "design", whiteboards: "design", whiteboard: "design", qa: "qa", qabug: "qa", qaplan: "qa" };
 // name -> the last /api/feature answer. Whenever one is stored, the buttons that point at a feature's
 // decisions are painted from it (paintDecisions).
 const featureCache = new (class extends Map { set(k, v) { super.set(k, v); paintDecisions(v); return this; } })();
@@ -142,7 +142,7 @@ window.addEventListener("hashchange", closeSidePanel);
 // · #feature/<name> · #feature/<name>/doc/<file> · #feature/<name>/whiteboard · #feature/<name>/notepad · #feature/<name>/code-diff (diff.js)
 // · #feature/<name>/diagram[/plan|/review] · #diagram (the Project diagram; diagram.js)
 // · #toolbox · #settings · #shop (shop.js) · #jira
-// · #designs · #design/<name>[/card/<story id>] (stories.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
+// · #designs · #design/<name>[/card/<story id>] (stories.js) · #documents · #document/<name> (documents.js) · #whiteboards · #whiteboard/<name> (whiteboards.js)
 // · #tasks · #tasks/<board>[/backlog|/completed][/task/<id>] (tasks.js)
 // · #qa · #qa/bug/new · #qa/bug/<ID> · #qa/test/<feature>[/<A1>] (qa.js)
 
@@ -162,6 +162,8 @@ function parseRoute() {
   if (parts[0] === "whiteboards") return { page: "whiteboards" };
   if (parts[0] === "design" && parts[1]) return { page: "design", name: parts[1], card: parts[2] === "card" ? parts[3] : null };
   if (parts[0] === "designs") return { page: "designs" };
+  if (parts[0] === "document" && parts[1]) return { page: "document", name: parts[1] };
+  if (parts[0] === "documents") return { page: "documents" };
   if (parts[0] === "tasks" && parts[1]) {
     const view = parts[2] === "backlog" || parts[2] === "completed" ? parts[2] : "board";
     const at = view === "board" ? 2 : 3;
@@ -195,7 +197,7 @@ const featureDiagramHref = (name, kind) => "#feature/" + encodeURIComponent(name
 
 function showPage(which) {
   for (const [k, n] of Object.entries(pageEls)) n.classList.toggle("on", k === which);
-  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", taskboard: "tasks", whiteboard: "whiteboards", qabug: "qa", qaplan: "qa" }[which] || which));
+  for (const a of document.querySelectorAll(".pnav a")) a.classList.toggle("on", a.dataset.page === ({ feature: "home", design: "designs", document: "documents", taskboard: "tasks", whiteboard: "whiteboards", qabug: "qa", qaplan: "qa" }[which] || which));
   $("#settings-link").classList.toggle("on", which === "settings");
   const purse = $("#wallet-link");
   if (purse) purse.classList.toggle("on", which === "shop");
@@ -286,6 +288,12 @@ async function route() {
   }
   else if (r.page === "designs") await renderDesigns(pageEls.designs);
   else if (r.page === "design") await renderBoard(pageEls.design, r.name, r.card);
+  else if (r.page === "documents" || r.page === "document") {
+    if (typeof renderDocuments !== "function") pageEls[r.page].replaceChildren(el("p", { class: "st missing pad" },
+      "Documents didn't load: the Tatty server running is older than this page. Restart Tatty (tray menu → Close Tatty's window, then open it again)."));
+    else if (r.page === "documents") await renderDocuments(pageEls.documents);
+    else await renderDocument(pageEls.document, r.name);
+  }
   else if (r.page === "whiteboards") await renderWhiteboards(pageEls.whiteboards);
   else if (r.page === "whiteboard") await renderWhiteboard(pageEls.whiteboard, r.name);
   else if (!loaded.has("status")) { loaded.add("status"); loadStatus(); }

@@ -1,0 +1,65 @@
+/* Design mode's Documents (documents.js): the notepad on the left, two separate sections on the right
+   (Comments, Review). Only theme.css's tokens are used, so a shop look skins it too. No style attributes:
+   the page's CSP forbids them (the floating Comment button is positioned through the DOM). */
+
+.docpage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); gap: 16px; flex: 1; min-height: 0; padding: 12px 18px 18px; }
+.dr-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.dr-main > .np { max-width: 980px; width: 100%; }
+.dr-top { display: flex; align-items: baseline; gap: 8px; padding-bottom: 8px; flex-wrap: wrap; }
+.dr-top h2 { margin: 0; font-size: 18px; }
+.dr-top a { color: var(--accent); }
+.dr-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow: auto; padding-right: 2px; }
+.dr-box { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px 12px; }
+.dr-box h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.dr-box h4 { margin: 12px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+.dr-count { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.dr-note { padding: 7px 10px; border-radius: 6px; background: var(--accent-soft); border: 1px solid var(--line); }
+.dr-note.bad { border-color: var(--bad, #c0392b); }
+.dr-note[hidden] { display: none; }
+.dr-warn { padding: 7px 10px; border-radius: 6px; border: 1px solid var(--bad, #c0392b); margin: 0 0 8px; }
+
+.dr-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.dr-toggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--dim); }
+.dr-edit { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; font: inherit; font-size: 13px; line-height: 1.5;
+  color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.dr-wording-edit { min-height: 140px; font-family: inherit; }
+.dr-edit:focus, .dr-where:focus { outline: none; border-color: var(--accent); }
+.dr-field { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.dr-where { font: inherit; font-size: 13px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.dr-saved { margin-left: auto; }
+
+/* a review in progress */
+.dr-run { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px; background: var(--accent-soft); border: 1px solid var(--line); font-size: 13px; }
+.dr-run .spacer { flex: 1; }
+.dr-pulse { color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) { .dr-pulse { animation: dr-pulse 1.2s ease-in-out infinite; } }
+@keyframes dr-pulse { 50% { opacity: .3; } }
+
+/* suggestion cards */
+.dr-group { margin-top: 6px; }
+.dr-card { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 10px 10px; margin: 6px 0; background: var(--bg); }
+.dr-card.added { border-left-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.dr-card.rejected { border-left-color: var(--line); opacity: .8; }
+.dr-card-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.dr-why { margin: 6px 0 0; font-size: 13px; line-height: 1.5; }
+.dr-peek summary { cursor: pointer; font-size: 12px; color: var(--dim); margin-top: 6px; }
+.dr-wording { white-space: pre-wrap; margin: 6px 0 0; padding: 8px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); font: inherit; font-size: 13px; line-height: 1.5; }
+
+/* comments, in the list and marked in the preview */
+.dr-comment-card { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 6px 0; background: var(--bg); }
+.dr-comment-card.done { opacity: .7; }
+.dr-comment-card.flash, mark.dr-comment.flash { outline: 2px solid var(--accent); }
+.dr-quote { margin: 0 0 6px; padding: 2px 8px; border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); color: var(--dim); font-size: 12px; font-style: italic;
+  cursor: pointer; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.dr-ctext { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+mark.dr-comment { background: color-mix(in srgb, var(--accent) 22%, transparent); color: inherit; border-radius: 2px; cursor: pointer;
+  box-shadow: 0 -1px 0 color-mix(in srgb, var(--accent) 50%, transparent) inset; }
+mark.dr-comment.done { background: transparent; box-shadow: 0 -1px 0 var(--line) inset; }
+.dr-resolved summary { cursor: pointer; font-size: 12px; color: var(--dim); margin: 8px 0 2px; }
+
+/* the button that floats by a selection in the preview */
+.dr-fab { position: fixed; z-index: 40; padding: 3px 10px; font-size: 12px; border-radius: 14px; background: var(--accent); color: #fff;
+  border: 0; box-shadow: 0 3px 10px rgba(0, 0, 0, .25); cursor: pointer; }
+.dr-fab[hidden] { display: none; }
+
+@media (max-width: 900px) { .docpage { grid-template-columns: minmax(0, 1fr); } }

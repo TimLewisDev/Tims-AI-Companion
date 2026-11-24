@@ -7,8 +7,8 @@ the production mode's Jira board (from a sample board) and task boards
 (check_tasks), and the design mode's User Stories board (check_stories). Uses
 page-check.py's DevTools client. Standard library only.
 
-usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --notepad | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
-       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --notepad | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff]
+usage: features-check.py <browser exe> <page url> [feature | --stories | --tasks | --export | --whiteboard | --notepad | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff | --documents]
+       features-check.py attach <devtools port> [feature | --stories | --tasks | --export | --whiteboard | --notepad | --diagram | --tabs | --actions | --sections | --split | --chats | --settings | --archive | --stages | --review | --commit | --mr | --pool | --suggestions | --decide | --loading | --launcher | --modes | --debug | --diff | --documents]
 --settings only the Settings page's connections, session and step models, and a model picker; it
 changes a step's model and puts it back, so run it on a server with a throwaway TT_CONFIG_DIR;
 --tabs only the workflow tabs on the Features page, from sample sessions (nothing is started);
@@ -51,6 +51,9 @@ files, so only ever on a throwaway root.
 --whiteboard only the whiteboard: a new blank board with text, a comment and a
 line, then a story added on the first User Stories board. It writes too: a
 throwaway root and home only.
+--documents only design mode's Documents: a document made and written, a passage commented on, a review by a stand-in claude
+(tools/fixtures/claude-design-review.sh, with TATTY_TOOLBOX at a toolbox that has tt-design-review), a suggestion accepted,
+reworded and confirmed into the document, and the added text marked. It writes a document: a throwaway root and home only.
 --notepad only a feature's notepad (the Demo feature's): real mouse and keys on the floating formatting bar, the preview
 and its checkboxes, a reload, a save conflict. It writes Notepad.md: a throwaway root and home only.
 Prints one JSON object of what it found at each step.
@@ -3278,6 +3281,104 @@ def check_qa(p):
     return res
 
 
+def check_documents(p):
+    """Design mode's Documents, with real mouse input: the nav item and the list, a new document, text typed and
+    saved by itself, a passage selected in the preview and commented on (the Comment button, the card, the mark in
+    the text, the same after a reload), a review run by a stand-in claude (tools/fixtures/claude-design-review.sh,
+    which writes two suggestions through design-review.sh), Accept, the wording edited, Confirm, and the added text
+    marked in the preview (and the mark switched off and on). It writes a document under the root and runs the
+    toolbox's design-review.sh: a throwaway root and home only, on a server started with
+    TATTY_CLAUDE=<tools/fixtures/claude-design-review.sh> and TATTY_TOOLBOX=<a toolbox with tt-design-review>.
+    `failed` lists the checks that did not hold."""
+    res = {"checks": {}}
+    try:
+        documents_steps(p, res)
+    except Exception as e:  # report how far it got
+        res["error"] = str(e)[:400]
+    res["failed"] = [k for k, v in res["checks"].items() if not v]
+    return res
+
+
+def documents_steps(p, res):
+    ck = res["checks"]
+    where = lambda sel: p.js(f"(() => {{ const n = document.querySelector({json.dumps(sel)}); n.scrollIntoView({{block: 'center'}}); const r = n.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; }})()")
+
+    def press(sel):
+        click(p, *where(sel))
+        time.sleep(0.25)
+
+    name = "Walk documents"
+    text = "# Bag\\n\\n## Pickup\\n\\nWalking over an item puts it in the bag.\\n\\n## Sorting\\n\\nBy rarity.\\n"
+    p.call("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    p.js("localStorage.removeItem('tt-notepad-mode'); location.hash = '#documents'; 1")
+    ck["the list opens"] = wait(p, "!!document.querySelector('#new-document') && !document.querySelector('#new-document').disabled", 120)
+    ck["Documents is in the design mode's nav"] = p.js("document.body.dataset.mode === 'design' && !!document.querySelector('.pnav a[data-page=documents].on')")
+    ck["it is a tile on the design home"] = p.js("(async () => { location.hash = '#mode'; await new Promise(r => setTimeout(r, 700)); const ok = !!document.querySelector('#page-mode a[href=\"#documents\"]'); location.hash = '#documents'; await new Promise(r => setTimeout(r, 500)); return ok; })()")
+    press("#new-document")
+    ck["New document opens a panel"] = wait(p, "!!document.querySelector('#new-document-form')")
+    p.js(f"document.querySelector('#document-name').value = {json.dumps(name)}; 1")
+    press("#new-document-form button[type=submit]")
+    ck["a new document opens on the notepad"] = wait(p, "!!document.querySelector('#docpad-edit')", 80)
+    ck["with no review yet, and a button to make one"] = p.js("(document.querySelector('#dr-run') || {}).textContent === 'Review this document' && !document.querySelector('.dr-card')")
+    url = "'/api/document?name=' + encodeURIComponent(" + json.dumps(name) + ")"
+    p.js(f"(() => {{ const t = document.querySelector('#docpad-edit'); t.value = \"{text}\"; t.dispatchEvent(new Event('input', {{bubbles: true}})); return 1; }})()")
+    ck["typed text is saved by itself"] = wait(p, f"(async () => (await api({url})).text === document.querySelector('#docpad-edit').value)()", 40)
+
+    # a comment, from a selection in the preview
+    press(".np-top [data-mode=view]")
+    ck["the preview shows the document"] = wait(p, "document.querySelector('#docpad-view').innerText.includes('Walking over an item')")
+    p.js("""(() => { const p = [...document.querySelectorAll('#docpad-view p')].find(p => p.textContent.includes('Walking')); const r = document.createRange();
+             r.setStart(p.firstChild, 8); r.setEnd(p.firstChild, 24); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+             document.querySelector('#docpad-view').dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); return 1; })()""")
+    ck["a selection offers the Comment button, by it"] = wait(p, "!document.querySelector('#dr-fab').hidden")
+    press("#dr-fab")
+    ck["it opens a comment box with the passage"] = wait(p, "!!document.querySelector('#dr-new-comment') && document.querySelector('#dr-comments .dr-quote').textContent === 'over an item put'")
+    p.js("document.querySelector('#dr-new-comment').value = 'What if the bag is full?'; 1")
+    press("#dr-save-comment")
+    ck["the comment is a card"] = wait(p, "document.querySelectorAll('#dr-comments .dr-comment-card:not(.new)').length === 1")
+    ck["and a mark on the passage in the text"] = p.js("(document.querySelector('#docpad-view mark.dr-comment') || {}).textContent === 'over an item put'")
+    ck["kept under the heading it is under"] = p.js(f"(async () => (await api({url})).comments[0].heading === 'Pickup')()")
+    press("#docpad-view mark.dr-comment")
+    ck["a click on the mark finds its card"] = p.js("!!document.querySelector('.dr-comment-card.flash')")
+    ck["no style attributes on the page (the CSP)"] = p.js("document.querySelectorAll('#docpad-view [style], #dr-comments [style], #dr-review [style]').length === 0")
+
+    # a reload brings the comment back on its passage
+    p.js("location.reload(); 1")
+    time.sleep(1.5)
+    ck["after a reload"] = wait(p, "!!document.querySelector('#docpad-view') && !!document.querySelector('#docpad-view mark.dr-comment')", 120)
+    ck["the comment is still on its passage"] = p.js("document.querySelector('#docpad-view mark.dr-comment').textContent === 'over an item put'")
+
+    # a review, and a decision on one of its suggestions
+    press("#dr-run")
+    ck["a run shows what it is doing"] = wait(p, "!!document.querySelector('#dr-run-strip') || document.querySelectorAll('.dr-card.open').length > 0", 40)
+    ck["the suggestions arrive"] = wait(p, "document.querySelectorAll('.dr-card.open').length === 2", 240)
+    ck["each says where it would go"] = p.js("[...document.querySelectorAll('.dr-card.open')].every(c => c.textContent.includes('Goes'))")
+    ck["the run's end is said, with its cost"] = wait(p, "document.querySelector('#dr-note').textContent.startsWith('Added 2 suggestions')", 20)
+    press(".dr-card[data-id=DR01] [data-act=accept]")
+    ck["Accept opens the wording to edit"] = wait(p, "!!document.querySelector('.dr-card.accepted textarea') && document.querySelector('.dr-card.accepted .dr-where').value === 'Pickup'", 60)
+    p.js("""(() => { const t = document.querySelector('.dr-card.accepted textarea'); t.value = 'When the bag is full the item stays on the ground.\\n\\nA message says "Bag full".';
+             t.dispatchEvent(new Event('input', {bubbles: true})); return 1; })()""")
+    ck["the edit is saved"] = wait(p, "document.querySelector('.dr-card.accepted .dr-saved').textContent === 'Saved'", 60)
+    ck["and marked edited"] = p.js(f"(async () => (await api({url})).review.items[0].edited === true)()")
+    ck["the document has not changed yet"] = p.js(f"(async () => !(await api({url})).text.includes('Bag full'))()")
+    press(".dr-card.accepted [data-act=confirm]")
+    ck["Confirm adds it to the document"] = wait(p, f"(async () => (await api({url})).text.includes('A message says \"Bag full\".'))()", 60)
+    ck["and marks it in the preview"] = wait(p, "document.querySelectorAll('.np-mark').length === 1 && document.querySelector('.np-mark').innerText.includes('Bag full')", 40)
+    ck["after its section, before the next"] = p.js("""(() => { const t = document.querySelector('#docpad-view').innerText; return t.indexOf('Walking') < t.indexOf('Bag full') && t.indexOf('Bag full') < t.indexOf('Sorting'); })()""")
+    ck["the comment is still marked"] = p.js("document.querySelectorAll('#docpad-view mark.dr-comment').length === 1")
+    ck["the suggestion is under Added"] = wait(p, "document.querySelectorAll('.dr-card.added').length === 1 && document.querySelectorAll('.dr-card.open').length === 1", 40)
+    ck["the document file is plain markdown (no marks in it)"] = p.js(f"(async () => {{ const t = (await api({url})).text; return !t.includes('np-mark') && !t.includes('<mark') && !t.includes('DR01'); }})()")
+    press("#dr-show-marks")
+    ck["the highlight can be turned off"] = wait(p, "document.querySelectorAll('.np-mark').length === 0", 20)
+    press("#dr-show-marks")
+    ck["and on"] = wait(p, "document.querySelectorAll('.np-mark').length === 1", 20)
+    press(".dr-card.open [data-act=reject]")
+    ck["Reject puts it under Rejected, where it can be reopened"] = wait(p, "document.querySelectorAll('details.dr-group .dr-card.rejected').length === 1 && !!document.querySelector('.dr-card.rejected [data-act=reopen]')", 40)
+    # the mode is remembered for the other pages; put it back
+    p.js("localStorage.removeItem('tt-notepad-mode'); 1")
+    return res
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -3313,10 +3414,10 @@ def main(argv):
         time.sleep(0.5)
         leave_hub(p)
         out = {}
-        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--notepad", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--pool", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa"):
+        if feature in ("--stories", "--tasks", "--jira", "--export", "--whiteboard", "--notepad", "--diagram", "--tabs", "--actions", "--sections", "--split", "--chats", "--settings", "--archive", "--stages", "--review", "--commit", "--mr", "--mrs", "--pool", "--suggestions", "--decide", "--validate", "--intake", "--loading", "--launcher", "--modes", "--debug", "--diff", "--qa", "--documents"):
             out[feature[2:]] = {"--stories": check_stories, "--tasks": check_tasks, "--jira": check_jira, "--export": check_export,
                                 "--whiteboard": check_whiteboard, "--notepad": check_notepad, "--diagram": check_diagram, "--tabs": check_tabs, "--actions": check_actions, "--sections": check_sections, "--split": check_split,
-                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--mrs": check_mrs, "--pool": check_pool, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa}[feature](p)
+                                "--chats": check_chats, "--settings": check_settings, "--archive": check_archive, "--stages": check_stages, "--review": check_review, "--commit": check_commit, "--mr": check_mr, "--mrs": check_mrs, "--pool": check_pool, "--suggestions": check_suggestions, "--decide": check_decide, "--validate": check_validate, "--intake": check_intake, "--loading": check_loading, "--launcher": check_launcher, "--modes": check_modes, "--debug": check_debug, "--diff": check_diff, "--qa": check_qa, "--documents": check_documents}[feature](p)
             print(json.dumps(out, indent=1))
             return 0
         wait(p, "document.querySelectorAll('#page-home .hcard, #page-hub .hub-card, #page-hub .hub-new').length > 0")

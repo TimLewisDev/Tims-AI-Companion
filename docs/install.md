@@ -288,7 +288,8 @@ for it to notice.
 - **Defaults.** A fresh install needs no setup: Start and sessions use
   `claude:sonnet` (the toolbox's `session` setting), chats `claude:sonnet`, and
   Jira and the helpers (`jiraModel`, `storiesModel`, `tasksModel`, `qaModel`,
-  `qaPlanModel`) `claude:haiku`. Settings changes any of them.
+  `qaPlanModel`) `claude:haiku`; reviewing a design document (`docReviewModel`) uses `claude:sonnet`.
+  Settings changes any of them.
 - **Upgrading.** A saved bare model name is qualified (`sonnet` becomes
   `claude:sonnet`) only if exactly one model in the catalog matches; otherwise it
   stays in Settings marked unresolved until you choose again. If you set

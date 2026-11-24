@@ -138,6 +138,7 @@ const MODE_PAGES = {
   ],
   design: [
     { href: "#designs", label: "User Stories", icon: "stories", blurb: "Your user story boards of sticky notes." },
+    { href: "#documents", label: "Documents", icon: "documents", blurb: "Write a design document, comment on it, and have it checked for what it is missing." },
   ],
   qa: [
     { href: "#qa", label: "QA", icon: "qa", blurb: "Features under test, and the bugs." },
@@ -157,6 +158,7 @@ const ALL_MODES_PAGE = { href: "#modes", label: "All modes", icon: "modes", blur
 const ICONS = {
   features: ["M12 3 3 8l9 5 9-5-9-5Z", "M3 12.5l9 5 9-5", "M3 17l9 5 9-5"],
   stories: ["M5 4h14v10l-6 6H5Z", "M13 20v-6h6", "M8 9h8", "M8 13h4"],
+  documents: ["M6 3h9l4 4v14H6Z", "M15 3v4h4", "M9 12h7", "M9 16h7"],
   jira: ["M4 4h4.5v16H4Z", "M9.75 4h4.5v10h-4.5Z", "M15.5 4H20v13h-4.5Z"],
   tasks: ["M4 4h16v16H4Z", "M8 12.5l2.5 2.5L16 9"],
   qa: ["M9 3h6v4l4 11a2 2 0 0 1-1.9 2.7H6.9A2 2 0 0 1 5 18L9 7Z", "M8 14h8"],
