@@ -9,7 +9,7 @@
 // after that is a plain script call). Confirming an accepted suggestion adds its
 // wording to the document, and the preview then marks what was added.
 // Uses app.js's $, el and api, features.js's pageEls, ago, chip, copyable, pickRoot,
-// openSidePanel and closeSidePanel, stories.js's pickFile and notepad.js's makeNotepad.
+// openSidePanel and closeSidePanel, featureHref, stories.js's pickFile and designHref and notepad.js's makeNotepad.
 "use strict";
 
 const documentHref = name => "#document/" + encodeURIComponent(name);
@@ -136,6 +136,7 @@ const { renderDocuments, renderDocument } = (() => {
     const comments = el("section", { class: "dr-box", id: "dr-comments" });
     const review = el("section", { class: "dr-box", id: "dr-review" });
     const note = el("div", { class: "dr-note small", id: "dr-note", role: "status" });
+    const links = el("div", { class: "dr-links small", id: "dr-links" });
     document.querySelectorAll("#dr-fab").forEach(n => n.remove());
 
     const pad = makeNotepad({ id: "docpad", text: D.text, updated: D.updated,
@@ -149,8 +150,10 @@ const { renderDocuments, renderDocument } = (() => {
     const root = el("div", { class: "docpage" },
       el("div", { class: "dr-main" },
         el("div", { class: "dr-top" }, el("a", { href: "#documents" }, "Documents"), el("span", { class: "dim" }, " / "), el("h2", {}, D.name),
-          el("span", { class: "dim small" }, "Select text in Preview to comment on it.")),
-        pad.element),
+          el("span", { class: "dim small" }, "Select text in Preview to comment on it."), el("span", { class: "spacer" }),
+          el("button", { type: "button", id: "doc-to-feature", title: "Make a feature from this document", onclick: () => openSidePanel("Take to a feature", featureForm) }, "Take to a feature…"),
+          el("button", { type: "button", id: "doc-to-stories", title: "Break this document into user stories", onclick: () => openSidePanel("Break into user stories", storiesForm) }, "Break into user stories…")),
+        links, pad.element),
       el("aside", { class: "dr-side" }, note, comments, review));
     box.replaceChildren(root);
 
@@ -161,6 +164,58 @@ const { renderDocuments, renderDocument } = (() => {
       note.hidden = !S.note;
     }
     paintNote();
+
+    // ---- taking the document on: to a feature, to a User Stories board
+    function paintLinks() {
+      const L = S.D.links || { features: [], boards: [] };
+      links.replaceChildren(...[...L.features.map(f => el("a", { href: featureHref(f.name), class: "chip done" }, `Feature ${f.name}`)),
+        ...L.boards.map(x => el("a", { href: designHref(x.name), class: "chip done" }, `Stories: ${x.name}`))]);
+      links.hidden = !links.childElementCount;
+    }
+    function featureForm(msg) {
+      const title = el("input", { id: "doc-feature-title", "aria-label": "The feature's title" });
+      title.value = S.D.name;
+      const go = el("button", { type: "submit", class: "primary", id: "doc-feature-go" }, "Make the feature");
+      return el("form", { class: "card new-feature", id: "doc-feature-form", onsubmit: async e => {
+        e.preventDefault();
+        go.disabled = true;
+        try {
+          await pad.flush();
+          const r = await api("/api/documents/to-feature", { name, title: title.value, client: me });
+          closeSidePanel();
+          location.hash = featureHref(r.feature);
+        } catch (err) { msg.textContent = String(err.message || err); go.disabled = false; }
+      } },
+        el("strong", {}, "Take to a feature"),
+        el("div", { class: "row" }, title), el("div", { class: "row" }, go),
+        el("p", { class: "dim small" }, "Makes a new feature (the next ID of this project) and copies the document into it as its Ticket. ",
+          "The document here stays as it is. Nothing is started: the feature's page offers Start Workflow."));
+    }
+    function storiesForm(msg) {
+      const board = el("input", { id: "doc-board-name", "aria-label": "The board's name" });
+      board.value = S.D.name;
+      const go = el("button", { type: "submit", class: "primary", id: "doc-stories-go" }, S.D.claude ? "Make the board and write the stories" : "Make the board");
+      const form = el("form", { class: "card new-feature", id: "doc-stories-form", onsubmit: async e => {
+        e.preventDefault();
+        go.disabled = true;
+        try {
+          await pad.flush();
+          const r = await api("/api/documents/to-stories", { name, board: board.value, client: me });
+          if (r.runError) {
+            msg.textContent = `The board is made, but the stories weren't started: ${r.runError}`;
+            form.replaceChildren(el("p", {}, el("a", { href: designHref(r.board), onclick: closeSidePanel }, "Open the board"), " and press Write stories there."));
+            return;
+          }
+          closeSidePanel();
+          location.hash = designHref(r.board);
+        } catch (err) { msg.textContent = String(err.message || err); go.disabled = false; }
+      } },
+        el("strong", {}, "Break into user stories"),
+        el("div", { class: "row" }, board), el("div", { class: "row" }, go),
+        el("p", { class: "dim small" }, "Copies the document into a User Stories board, then Tatty writes its user stories in the background ",
+          "(a model run: a small document costs about $0.30). Suggested and merged stories wait as Proposed for you. The document here stays as it is."));
+      return form;
+    }
 
     // ---- comments: marked in the preview
     function markComments(view) {
@@ -472,9 +527,10 @@ const { renderDocuments, renderDocument } = (() => {
     async function refetch() {
       try {
         const cur = await api(url);
-        S.D.comments = cur.comments; S.D.review = cur.review; S.D.run = cur.run; S.D.plugin = cur.plugin; S.D.missing = cur.missing; S.D.claude = cur.claude;
+        S.D.comments = cur.comments; S.D.links = cur.links; S.D.review = cur.review; S.D.run = cur.run; S.D.plugin = cur.plugin; S.D.missing = cur.missing; S.D.claude = cur.claude;
       } catch { return; }
       pad.redraw();
+      paintLinks();
       paintCommentList();
       paintReview();
     }
@@ -498,6 +554,7 @@ const { renderDocuments, renderDocument } = (() => {
     };
     document.addEventListener("tt-event", onEvent);
 
+    paintLinks();
     paintCommentList();
     paintReview();
     pad.focus();

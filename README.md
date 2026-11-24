@@ -200,6 +200,7 @@ back. `tatty.sh hub list`, `hub add` and `hub open` do the same from a shell, an
 | turn a design document into user stories | design mode → **User Stories** → **New from a design document…** |
 | add a story on the board | the **＋** tool (S), then click where it goes |
 | write a design document and have it checked for gaps | design mode → **Documents** → **New document…**, then **Review this document** |
+| make a feature, or user stories, from a design document | design mode → **Documents** → open it → **Take to a feature…** or **Break into user stories…** |
 | plan on a blank board | design mode → **Whiteboards** → **New whiteboard** |
 | sketch next to a feature's plan | the feature's page → **Whiteboard** |
 | write, comment or join things on a board | the **T** (text), **💬** (comment) and **↗** (line) tools, or double-click for text |

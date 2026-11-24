@@ -297,6 +297,11 @@ and its review section says what is missing.
 | `design-review.sh wording <review> <DR-id> <text file> [--where <heading>\|end] [--if <hash>]` | the wording or the place edited on an Accepted card (saved a moment after the last keystroke) | the new wording, marked edited |
 | `design-review.sh confirm <review> <DR-id> --doc <design doc> [--if <hash>]` | Confirm | adds the wording to the design doc as whole blocks at the end of the section under the `where` heading (or a new `## <area>` section at the end) and records the added text; prints `under: <heading>` or `new section: <heading>` |
 
+A document can also be taken on from the same page. **To a feature** writes the copy as the new feature's
+`<ID> - Ticket.md`, like a task or an intake (the toolbox sees a folder holding only a ticket, and the person starts
+the workflow from Tatty). **To user stories** is the User Stories board's own route (above): `stories.sh init`, then
+the draft run.
+
 Tatty never writes the review's markdown itself, and adds to the design document only through `confirm` (the
 person's own typing is a plain save). Confirm is refused by Tatty, before the script runs, when the document's
 modified time is not the one the page saved.
@@ -713,7 +718,8 @@ are therefore Tatty's own, outside the workflow's records:
   - the full panel's last size and position.
 - `<root>/tasks/`: the task boards (see "Tasks").
 - `<root>/documents/<name>/`: a design document (`<name>.md`), its review (`<name> - Design Review.md`, only
-  `design-review.sh` writes it) and `.tt/<name> - Comments.json` (the comments on its passages, Tatty's own). See "Design review".
+  `design-review.sh` writes it) and `.tt/<name> - Comments.json` (the comments on its passages, Tatty's own) and `.tt/<name> - Links.json` (the features and
+  User Stories boards it was taken to). See "Design review".
 - The feature's repository: on a person's click on the Commit page, `git add` and
   `git commit` of the files chosen (never a push, never `--no-verify`, no trailer added); Tatty
   reads the workflow's task results (`.tt/**/results/*.md`, "Files Modified") to say which

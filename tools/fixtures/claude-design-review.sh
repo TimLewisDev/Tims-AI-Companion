@@ -8,6 +8,8 @@ prompt=$(cat)
 say() { printf '%s\n' "$1"; }
 tool() { say "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"bash design-review.sh $1\"}}]}}"; }
 say '{"type":"system","subtype":"init"}'
+# a User Stories draft (Break into user stories): nothing to write here, only a run that finishes
+case "$prompt" in *tt-user-stories*) say '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0,"result":"ok"}'; exit 0 ;; esac
 sleep 1 >/dev/null
 doc=$(printf '%s' "$prompt" | sed 's/^[^"]*"\([^"]*\)" "\([^"]*\)".*$/\1/')
 rev=$(printf '%s' "$prompt" | sed 's/^[^"]*"\([^"]*\)" "\([^"]*\)".*$/\2/')

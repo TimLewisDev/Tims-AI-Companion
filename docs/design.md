@@ -1827,7 +1827,17 @@ unchanged greyed.
   suggestion's exact text in the document (else its first line, else nothing: the card says the text was changed
   since). A checkbox turns them off. Confirm is refused (409, nothing added) when the document changed on disk after
   the page saved it.
-- **Events:** `document {name, client, what: text|comments|review|disk|list}` (a watcher sends `disk` for a hand
+- **Taking it on:** two buttons in the document's header. **Take to a feature** (`/api/documents/to-feature`,
+  `document_to_feature`) makes a feature the way the intake box does (`new_numbered_feature`: the next ID of the
+  project, the document's name or the typed title as its subheading) and writes a copy of the document into its folder
+  as `<ID> - Ticket.md` (under a `# <ID>: <title>` heading and a line saying where it came from): the form a task or a
+  Jira ticket takes, so the feature page offers Start Workflow (it is `ticketOnly`) and nothing is started. **Break into
+  user stories** (`/api/documents/to-stories`, `document_to_stories`) is the User Stories page's New from a design
+  document: `new_design` copies the document into `<root>/design/<board>/` and `stories.sh init`s it, then
+  `start_stories_run` starts the draft run (the board is made even when the run can't start: one is going, or there is no
+  claude, and the answer says so). The document is never changed by either. What a document was taken to is kept in
+  `.tt/<name> - Links.json` and shown as chips under its title.
+- **Events:** `document {name, client, what: text|comments|review|links|disk|list}` (a watcher sends `disk` for a hand
   edit), `docreview {name, run}` while a run goes and `{done, ok, error, added, cost}` at its end.
 - **Without the design plugin** writing and commenting work; the review section says what is missing.
 

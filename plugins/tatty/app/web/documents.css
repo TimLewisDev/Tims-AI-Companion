@@ -8,6 +8,10 @@
 .dr-top { display: flex; align-items: baseline; gap: 8px; padding-bottom: 8px; flex-wrap: wrap; }
 .dr-top h2 { margin: 0; font-size: 18px; }
 .dr-top a { color: var(--accent); }
+.dr-top .spacer { flex: 1; }
+.dr-links { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 8px; }
+.dr-links[hidden] { display: none; }
+.dr-links a { text-decoration: none; }
 .dr-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow: auto; padding-right: 2px; }
 .dr-box { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px 12px; }
 .dr-box h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }

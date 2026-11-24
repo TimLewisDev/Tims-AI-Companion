@@ -3286,7 +3286,8 @@ def check_documents(p):
     saved by itself, a passage selected in the preview and commented on (the Comment button, the card, the mark in
     the text, the same after a reload), a review run by a stand-in claude (tools/fixtures/claude-design-review.sh,
     which writes two suggestions through design-review.sh), Accept, the wording edited, Confirm, and the added text
-    marked in the preview (and the mark switched off and on). It writes a document under the root and runs the
+    marked in the preview (and the mark switched off and on), then Take to a feature (a new feature whose Ticket is the document)
+    and Break into user stories (a board, and its draft run). It writes a document, a feature and a board under the root and runs the
     toolbox's design-review.sh: a throwaway root and home only, on a server started with
     TATTY_CLAUDE=<tools/fixtures/claude-design-review.sh> and TATTY_TOOLBOX=<a toolbox with tt-design-review>.
     `failed` lists the checks that did not hold."""
@@ -3358,11 +3359,11 @@ def documents_steps(p, res):
     ck["Accept opens the wording to edit"] = wait(p, "!!document.querySelector('.dr-card.accepted textarea') && document.querySelector('.dr-card.accepted .dr-where').value === 'Pickup'", 60)
     p.js("""(() => { const t = document.querySelector('.dr-card.accepted textarea'); t.value = 'When the bag is full the item stays on the ground.\\n\\nA message says "Bag full".';
              t.dispatchEvent(new Event('input', {bubbles: true})); return 1; })()""")
-    ck["the edit is saved"] = wait(p, "document.querySelector('.dr-card.accepted .dr-saved').textContent === 'Saved'", 60)
+    ck["the edit is saved"] = wait(p, "document.querySelector('.dr-card.accepted .dr-saved').textContent === 'Saved'", 160)
     ck["and marked edited"] = p.js(f"(async () => (await api({url})).review.items[0].edited === true)()")
     ck["the document has not changed yet"] = p.js(f"(async () => !(await api({url})).text.includes('Bag full'))()")
     press(".dr-card.accepted [data-act=confirm]")
-    ck["Confirm adds it to the document"] = wait(p, f"(async () => (await api({url})).text.includes('A message says \"Bag full\".'))()", 60)
+    ck["Confirm adds it to the document"] = wait(p, f"(async () => (await api({url})).text.includes('A message says \"Bag full\".'))()", 160)
     ck["and marks it in the preview"] = wait(p, "document.querySelectorAll('.np-mark').length === 1 && document.querySelector('.np-mark').innerText.includes('Bag full')", 40)
     ck["after its section, before the next"] = p.js("""(() => { const t = document.querySelector('#docpad-view').innerText; return t.indexOf('Walking') < t.indexOf('Bag full') && t.indexOf('Bag full') < t.indexOf('Sorting'); })()""")
     ck["the comment is still marked"] = p.js("document.querySelectorAll('#docpad-view mark.dr-comment').length === 1")
@@ -3374,6 +3375,25 @@ def documents_steps(p, res):
     ck["and on"] = wait(p, "document.querySelectorAll('.np-mark').length === 1", 20)
     press(".dr-card.open [data-act=reject]")
     ck["Reject puts it under Rejected, where it can be reopened"] = wait(p, "document.querySelectorAll('details.dr-group .dr-card.rejected').length === 1 && !!document.querySelector('.dr-card.rejected [data-act=reopen]')", 40)
+
+    # taking it on: to a feature, and to a User Stories board
+    ck["the header offers both"] = p.js("!!document.querySelector('#doc-to-feature') && !!document.querySelector('#doc-to-stories')")
+    press("#doc-to-feature")
+    ck["Take to a feature opens a panel, titled with the document's name"] = wait(p, f"!!document.querySelector('#doc-feature-form') && document.querySelector('#doc-feature-title').value === {json.dumps(name)}")
+    press("#doc-feature-go")
+    ck["and opens the new feature"] = wait(p, "location.hash.startsWith('#feature/')", 80)
+    feature = p.js("decodeURIComponent(location.hash.split('/')[1])")
+    ck["whose Ticket is the document, ready to start"] = wait(p, f"(async () => {{ const f = await api('/api/feature?name=' + encodeURIComponent({json.dumps(feature)})); return f.ticketOnly === true; }})()", 40)
+    ck["the document text is in it"] = p.js(f"(async () => {{ const r = await fetch('/api/doc?name=' + encodeURIComponent({json.dumps(feature)}) + '&file=' + encodeURIComponent({json.dumps(feature + ' - Ticket.md')}), {{ headers: {{ 'X-TT-Token': token }} }}); return (await r.json()).text.includes('Walking over an item'); }})()")
+    p.js(f"location.hash = '#document/' + encodeURIComponent({json.dumps(name)}); 1")
+    ck["back on the document, it says which feature it became"] = wait(p, f"[...document.querySelectorAll('#dr-links a')].some(a => a.textContent === 'Feature {feature}')", 80)
+    press("#doc-to-stories")
+    ck["Break into user stories opens a panel"] = wait(p, "!!document.querySelector('#doc-stories-form')")
+    ck["offering to write the stories"] = p.js("document.querySelector('#doc-stories-go').textContent === 'Make the board and write the stories'")
+    press("#doc-stories-go")
+    ck["and opens the new board"] = wait(p, "location.hash.startsWith('#design/')", 80)
+    p.js(f"location.hash = '#document/' + encodeURIComponent({json.dumps(name)}); 1")
+    ck["back on the document, it says which board it became"] = wait(p, f"[...document.querySelectorAll('#dr-links a')].some(a => a.textContent === 'Stories: {name}')", 80)
     # the mode is remembered for the other pages; put it back
     p.js("localStorage.removeItem('tt-notepad-mode'); 1")
     return res

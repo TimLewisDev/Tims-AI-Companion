@@ -8940,6 +8940,7 @@ def np_save(st, b):
 #   <name> - Design Review.md    the review: written only by design-review.sh, which also adds an accepted
 #                                suggestion to the document (confirm) and records exactly what it added
 #   .tt/<name> - Comments.json   the comments: Tatty's own, one writer (comments_change) under reviewdoc.Lock
+#   .tt/<name> - Links.json      what the document was taken to: the features made from it and the user stories boards
 # A review run is a headless claude (the way a User Stories draft is) and the only thing here that costs
 # tokens: accepting, rejecting, rewording and confirming a suggestion are plain script calls.
 #   GET  /api/documents                -> {documents: [...], ...}
@@ -8948,6 +8949,8 @@ def np_save(st, b):
 #   POST /api/document {name, text, expected, client}                 -> 200 {updated} | 409 (see /api/notepad)
 #   POST /api/documents/comments {name, action: add|edit|resolve|reopen|remove, ...}
 #   POST /api/documents/review {name, action: run|cancel|accept|reject|reopen|wording|confirm, id, ...}
+#   POST /api/documents/to-feature {name, title?}  -> a new feature holding a copy as its Ticket (the person starts it)
+#   POST /api/documents/to-stories {name, board?}  -> a User Stories board from a copy, and its draft run
 # Events: "document" {name, client, what: text|comments|review|disk|list} and "docreview" {name, run}, then
 # {done, ok, error, added, cost} when a run ends.
 
@@ -8993,6 +8996,10 @@ def review_file(folder):
 
 def comments_path(folder):
     return folder.resolve() / ".tt" / (folder.name + " - Comments.json")
+
+
+def links_path(folder):
+    return folder.resolve() / ".tt" / (folder.name + " - Links.json")
 
 
 def review_script():
@@ -9130,7 +9137,7 @@ def documents_list(state):
 def document_view(state, folder):
     code, got = pad_read(lp(document_file(folder)))
     return {"name": folder.name, "text": got["text"], "updated": got["updated"], "exists": got["exists"],
-            "comments": comments_read(folder), "review": review_read(state, folder), "plugin": review_script() is not None,
+            "comments": comments_read(folder), "links": links_read(folder), "review": review_read(state, folder), "plugin": review_script() is not None,
             "missing": "" if review_script() else review_missing(), "claude": claude_path() is not None,
             "run": docreview_view(state, folder.name)}
 
@@ -9164,6 +9171,86 @@ def document_new(state, name, intake):
         return 500, {"error": f"couldn't make it: {e}"}
     state.emit("document", name=name, what="list")
     return 200, {"name": name}
+
+
+# -- taking a document on: to a feature, to a User Stories board
+
+def links_read(folder):
+    got = read_json(links_path(folder), {})
+    return {k: [e for e in got.get(k, []) if isinstance(e, dict)] if isinstance(got.get(k), list) else [] for k in ("features", "boards")}
+
+
+def links_add(folder, kind, entry):
+    """Remember what the document was taken to (the page shows it); never fails the action it follows."""
+    p = links_path(folder)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with reviewdoc.Lock(p):
+            got = links_read(folder)
+            got[kind] = [e for e in got[kind] if e.get("name") != entry["name"]] + [{**entry, "at": time.time()}]
+            tmp = p.with_name(f".{p.name}.tatty-tmp")
+            tmp.write_text(json.dumps(got, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, p)
+    except (OSError, reviewdoc.DocError):
+        pass
+
+
+def document_ticket_md(name, title, source, text):
+    """The feature's Ticket document: the design document under a heading in the Ticket's own form."""
+    return (f"# {name}: {title}\n\n_From the design document \"{source}\" in Documents, copied "
+            f"{datetime.date.today().isoformat()}. The document there stays as it is; this copy is the feature's brief._\n\n"
+            + text.lstrip("\n").rstrip() + "\n")
+
+
+def document_to_feature(state, folder, b):
+    """A new feature (the next ID under the project's short name) holding a copy of the document as its Ticket,
+    the way a task or an intake becomes one. Nothing is started: the feature's page offers Start Workflow."""
+    got = pad_read(lp(document_file(folder)))[1]
+    if not got["text"].strip():
+        return 400, {"error": "Write something in the document first."}
+    title = clean_title(b.get("title")) or clean_title(folder.name)
+    code, made = new_numbered_feature(title)
+    if code != 200:
+        return code, made
+    feature = feature_dir(made["name"])
+    try:
+        (feature / f"{made['name']} - Ticket.md").write_text(document_ticket_md(made["name"], title, folder.name, got["text"]), encoding="utf-8")
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            feature.rmdir()
+        set_feature_title(made["name"], "")
+        return 500, {"error": f"couldn't write the feature's Ticket: {e}"}
+    links_add(folder, "features", {"name": made["name"], "title": title})
+    state.emit("document", name=folder.name, what="links")
+    return 200, {"feature": made["name"], "title": title}
+
+
+def document_to_stories(state, folder, b):
+    """A User Stories board made from a copy of the document (the page's New from a design document…), and its draft
+    run started: (http code, answer {board, run?, runError?}). The board is made even when the run can't start (one is
+    already going, no claude): its page has Write stories."""
+    doc = document_file(folder)
+    if not pad_read(lp(doc))[1]["text"].strip():
+        return 400, {"error": "Write something in the document first."}
+    board = " ".join(str(b.get("board") or folder.name).split())
+    code, made = new_design(state, board, doc.as_posix())
+    if code == 409:
+        return 409, {"error": f"A User Stories board called {board} already exists.", "board": board}
+    if code != 200:
+        return code, made
+    links_add(folder, "boards", {"name": made["name"]})
+    state.emit("document", name=folder.name, what="links")
+    state.emit("stories", name=made["name"], changed=True)
+    out = {"board": made["name"]}
+    if claude_path():
+        rcode, ran = start_stories_run(state, design_dir(made["name"]), {"mode": "draft"})
+        if rcode == 202:
+            out["run"] = ran.get("run")
+        else:
+            out["runError"] = ran.get("error", "The run couldn't start.")
+    else:
+        out["runError"] = NO_CLAUDE
+    return 200, out
 
 
 # -- the review: the run
@@ -15029,7 +15116,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/documents/new":
             code, answer = document_new(st, b.get("name", ""), b.get("intake", ""))
             return self.send(code, answer)
-        if path in ("/api/document", "/api/documents/comments", "/api/documents/review"):
+        if path in ("/api/document", "/api/documents/comments", "/api/documents/review", "/api/documents/to-feature", "/api/documents/to-stories"):
             folder = document_dir(str(b.get("name", "")))
             if not folder:
                 return self.send(404, {"error": "no such document"})
@@ -15039,6 +15126,10 @@ class Handler(BaseHTTPRequestHandler):
                     st.emit("document", name=folder.name, client=str(b.get("client") or "")[:40], what="text")
             elif path == "/api/documents/comments":
                 code, answer = comments_change(st, folder, b)
+            elif path == "/api/documents/to-feature":
+                code, answer = document_to_feature(st, folder, b)
+            elif path == "/api/documents/to-stories":
+                code, answer = document_to_stories(st, folder, b)
             else:
                 code, answer = review_change(st, folder, b)
             return self.send(code, answer)

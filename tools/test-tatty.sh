@@ -4287,6 +4287,71 @@ has "the new text" "$T/dj" "What if the bag is full?"
 [ "$(dcode /api/documents/comments '{"name":"Bag","action":"frob"}')" = 400 ] && ok "an unknown action" || bad "an unknown action"
 get /api/documents >"$T/j"
 [ "$(pick "$T/j" "(d['documents'][0]['name'], d['documents'][0]['comments'])")" = "('Bag', 1)" ] && ok "the list counts open comments" || bad "the list counts open comments" "$(head -c 300 "$T/j")"
+# taking the document on: to a feature, to a User Stories board
+# (a feature takes the next number, and its title is remembered: both are put back, so the sections after this see what they did)
+HOMEDIR=$(find "$TATTY_HOME" -name feature-ids.json 2>/dev/null | head -1)
+SNAP="$T/doc-snap"; mkdir -p "$SNAP"
+for f in feature-ids.json titles.json; do for loc in $(find "$TATTY_HOME" -name "$f" 2>/dev/null); do cp "$loc" "$SNAP/$(echo "$loc" | tr '/:\\' '___')"; done; done
+[ "$(dcode /api/documents/to-feature '{"name":"Nope"}')" = 404 ] && ok "to feature: no such document" || bad "to feature: no such document"
+dcode /api/documents/new '{"name":"Hollow"}' >/dev/null; : >"$FX/documents/Hollow/Hollow.md"
+[ "$(dcode /api/documents/to-feature '{"name":"Hollow"}')" = 400 ] && ok "to feature: an empty document is not taken" || bad "to feature: an empty document is not taken" "$(cat "$T/dj")"
+[ "$(dcode /api/documents/to-stories '{"name":"Hollow"}')" = 400 ] && ok "to stories: an empty document is not taken" || bad "to stories: an empty document is not taken" "$(cat "$T/dj")"
+rm -rf "$FX/documents/Hollow"
+cp "$DD/Bag.md" "$T/Bag.untouched"
+ls "$FX/features" >"$T/features.before"
+[ "$(dcode /api/documents/to-feature '{"name":"Bag","title":"Bag pickup"}')" = 200 ] && ok "to feature: makes a feature" || bad "to feature: makes a feature" "$(cat "$T/dj")"
+FEAT=$(pick "$T/dj" "d['feature']")
+FD="$FX/features/$FEAT"
+[ -f "$FD/$FEAT - Ticket.md" ] && ok "to feature: its Ticket is in its folder" || bad "to feature: its Ticket is in its folder" "$FEAT"
+has "to feature: the Ticket holds the document" "$FD/$FEAT - Ticket.md" "Walking over an item puts it in the bag."
+has "to feature: under a heading in the Ticket's own form" "$FD/$FEAT - Ticket.md" "# $FEAT: Bag pickup"
+has "to feature: and says where it came from" "$FD/$FEAT - Ticket.md" 'From the design document "Bag"'
+[ "$(ls "$FD" | wc -l | tr -d ' ')" = 1 ] && ok "to feature: nothing else is in the folder, so nothing has started" || bad "to feature: nothing else is in the folder"
+get "/api/feature?name=$FEAT" >"$T/j"
+[ "$(pick "$T/j" "d['ticketOnly']")" = True ] && ok "to feature: the feature is the kind that is ready to start" || bad "to feature: the feature is ready to start" "$(head -c 200 "$T/j")"
+has "to feature: titled as asked" "$T/j" "Bag pickup"
+cmp -s "$DD/Bag.md" "$T/Bag.untouched" && ok "to feature: the document is as it was" || bad "to feature: the document is as it was"
+get "/api/document?name=Bag" >"$T/j"
+[ "$(pick "$T/j" "[f['name'] for f in d['links']['features']]")" = "['$FEAT']" ] && ok "to feature: the document remembers it" || bad "to feature: the document remembers it" "$(head -c 300 "$T/j")"
+get /api/events >"$T/ev"
+[ "$(pick "$T/ev" "any(e.get('type') == 'document' and e.get('what') == 'links' for e in d)")" = True ] && ok "to feature: other windows are told" || bad "to feature: other windows are told"
+rm -rf "$FD"
+STORIES_SH=""
+for c in "$TATTY_TOOLBOX/plugins/design" "$TATTY_TOOLBOX/../design"; do
+	[ -f "$c/skills/tt-user-stories/scripts/stories.sh" ] && { STORIES_SH="$c/skills/tt-user-stories/scripts/stories.sh"; break; }
+done
+if [ -z "$STORIES_SH" ]; then
+	echo "skip  to stories: the toolbox has no design plugin with tt-user-stories"
+else
+	# the draft run's stand-in (the stories section makes a fuller one; this one only reports a finished run)
+	[ -f "$T/claude-p.sh" ] || cat >"$T/claude-p.sh" <<'EOS'
+#!/usr/bin/env bash
+here=$(dirname "$0"); cat >"$here/claude-prompt"
+printf '%s\n' '{"type":"system","subtype":"init"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0,"result":"ok"}'
+EOS
+	[ "$(dcode /api/documents/to-stories '{"name":"Bag","board":"a/b"}')" = 400 ] && ok "to stories: a bad board name is refused" || bad "to stories: a bad board name is refused"
+	N0=$(pick "$T/ev" "len([e for e in d if e.get('type') == 'stories' and e.get('done')])")
+	[ "$(dcode /api/documents/to-stories '{"name":"Bag","board":"Bag stories"}')" = 200 ] && ok "to stories: makes a board" || bad "to stories: makes a board" "$(cat "$T/dj")"
+	[ "$(pick "$T/dj" "d['board']")" = "Bag stories" ] && ok "to stories: and says which" || bad "to stories: and says which"
+	[ -f "$FX/design/Bag stories/Bag.md" ] && ok "to stories: a copy of the document is in the board" || bad "to stories: a copy of the document is in the board"
+	has "to stories: the stories document is started by stories.sh" "$FX/design/Bag stories/Bag stories - User Stories.md" "- **Source:** [[Bag]]"
+	[ "$(pick "$T/dj" "d.get('run') is not None and 'runError' not in d")" = True ] && ok "to stories: the draft run is started" || bad "to stories: the draft run is started" "$(cat "$T/dj")"
+	for _ in $(seq 1 40); do get /api/events >"$T/ev"; [ "$(pick "$T/ev" "len([e for e in d if e.get('type') == 'stories' and e.get('done')]) > $N0")" = True ] && break; sleep 0.5; done
+	has "to stories: the run is the draft of this board's document" "$T/claude-prompt" '/design:tt-user-stories draft "Bag.md" "Bag stories - User Stories.md"'
+	cmp -s "$DD/Bag.md" "$T/Bag.untouched" && ok "to stories: the document is as it was" || bad "to stories: the document is as it was"
+	[ "$(dcode /api/documents/to-stories '{"name":"Bag","board":"Bag stories"}')" = 409 ] && ok "to stories: a board that exists is refused, and named" || bad "to stories: a board that exists is refused"
+	has "to stories: with its name" "$T/dj" '"board": "Bag stories"'
+	get "/api/document?name=Bag" >"$T/j"
+	[ "$(pick "$T/j" "[b['name'] for b in d['links']['boards']]")" = "['Bag stories']" ] && ok "to stories: the document remembers it" || bad "to stories: the document remembers it" "$(head -c 300 "$T/j")"
+	rm -rf "$FX/design/Bag stories"
+fi
+# put back what a new feature and a board changed in Tatty's own records
+for loc in $(find "$TATTY_HOME" -name feature-ids.json -o -name titles.json 2>/dev/null); do
+	saved="$SNAP/$(echo "$loc" | tr '/:\\' '___')"
+	[ -f "$saved" ] && cp "$saved" "$loc" || rm -f "$loc"
+done
+ls "$FX/features" | cmp -s - "$T/features.before" && ok "the features are as they were after taking it on" || bad "the features are as they were after taking it on"
 get /api/settings >"$T/j"
 has "the review model is a setting" "$T/j" '"docReviewModel"'
 if [ -z "$DR_SCRIPT" ]; then
