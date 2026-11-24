@@ -8964,6 +8964,17 @@ REVIEW_MISSING = ("Reviewing a document needs the toolbox's design plugin (its t
                   "Writing and commenting still work.")
 
 
+def review_missing():
+    """Why a review can't be made: no design plugin found, or one found that is too old to hold tt-design-review
+    (a toolbox checkout that hasn't been updated, say), which is not the same thing to fix."""
+    p = toolbox_plugin("design")
+    if not p:
+        return REVIEW_MISSING
+    return (f"The design plugin Tatty found ({p.as_posix()}) is too old: it has no tt-design-review skill. "
+            "Update the toolbox there to design 0.3.0 or later (git pull in that checkout, or update the plugin), "
+            "then reload this page. Writing and commenting still work.")
+
+
 def documents_root():
     return tatty_root()[0] / DOCS_AREA
 
@@ -8993,7 +9004,7 @@ def run_review(state, args, cwd=None):
     """design-review.sh <args>: (exit code, stdout, stderr). Exit 2 with a reason when it can't run."""
     script = review_script()
     if not script:
-        return 2, "", REVIEW_MISSING
+        return 2, "", review_missing()
     try:
         argv = [state.bash, script.as_posix()] + [a.as_posix() if isinstance(a, Path) else str(a) for a in args]
         p = quiet_run(state, argv, cwd=cwd, timeout=60)
@@ -9011,7 +9022,7 @@ def review_read(state, folder):
         return got
     got["exists"] = True
     if not review_script():
-        got["error"] = REVIEW_MISSING
+        got["error"] = review_missing()
         return got
     code, out, err = run_review(state, ["list", rev, "--tsv", "--doc", document_file(folder)], cwd=str(folder))
     if code != 0:
@@ -9120,7 +9131,7 @@ def document_view(state, folder):
     code, got = pad_read(lp(document_file(folder)))
     return {"name": folder.name, "text": got["text"], "updated": got["updated"], "exists": got["exists"],
             "comments": comments_read(folder), "review": review_read(state, folder), "plugin": review_script() is not None,
-            "missing": "" if review_script() else REVIEW_MISSING, "claude": claude_path() is not None,
+            "missing": "" if review_script() else review_missing(), "claude": claude_path() is not None,
             "run": docreview_view(state, folder.name)}
 
 
@@ -9182,7 +9193,7 @@ def review_step(block):
 def start_docreview_run(state, folder, b):
     """Start a headless run of tt-design-review on this document: (http code, answer). One run per document."""
     if not review_script():
-        return 501, {"error": REVIEW_MISSING}
+        return 501, {"error": review_missing()}
     claude = claude_path()
     if not claude:
         return 501, {"error": NO_CLAUDE}
@@ -9309,7 +9320,7 @@ def review_change(state, folder, b):
     if action == "cancel":
         return 200, {"ok": cancel_docreview_run(state, folder.name)}
     if not review_script():
-        return 501, {"error": REVIEW_MISSING}
+        return 501, {"error": review_missing()}
     if not re.fullmatch(r"DR\d{2,}", sid):
         return 400, {"error": "id: a suggestion's ID (DR01 ...)"}
     rev, doc = review_file(folder), document_file(folder)
