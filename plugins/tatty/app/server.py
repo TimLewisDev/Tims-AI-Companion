@@ -1010,7 +1010,7 @@ def run_view(state, name, query):
     script = toolbox_script(spec[0])
     if not script:
         return {"exit": 2, "stdout": "", "stderr": TOOLBOX_MISSING}
-    argv = [state.bash, str(script)]
+    argv = [state.bash, script.as_posix()]
     for a in spec[1:]:
         if a == "{dir}":
             argv.append(d)
@@ -1061,7 +1061,7 @@ def toolbox_run(state, rel, args, timeout=60):
     if not script:
         return None
     try:
-        p = subprocess.run([state.bash, str(script), *args], cwd=state.cwd, capture_output=True, timeout=timeout,
+        p = subprocess.run([state.bash, script.as_posix(), *args], cwd=state.cwd, capture_output=True, timeout=timeout,
                            stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
         return p.returncode, p.stdout.replace("\r", ""), p.stderr.replace("\r", "")
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -2433,7 +2433,7 @@ def workflow_rows(state, folder):
 
     def run():
         try:
-            p = quiet_run(state, [state.bash, str(script), "--tsv", folder.as_posix()], cwd=str(folder))
+            p = quiet_run(state, [state.bash, script.as_posix(), "--tsv", folder.as_posix()], cwd=str(folder))
         except (OSError, subprocess.TimeoutExpired):
             return False, []
         found = [dict(zip(STATE_COLS, line.split("\t"))) for line in p.stdout.splitlines() if line.strip()]
@@ -2733,7 +2733,7 @@ def stages_view(state, folder):
 
     def run():
         try:
-            p = quiet_run(state, [state.bash, str(script), "show", "--tsv", folder.as_posix()], cwd=str(folder))
+            p = quiet_run(state, [state.bash, script.as_posix(), "show", "--tsv", folder.as_posix()], cwd=str(folder))
         except (OSError, subprocess.TimeoutExpired):
             return False, None
         if p.returncode:
@@ -2758,7 +2758,7 @@ def stages_set(state, folder, key, on):
     if not script:
         return 409, {"error": "The installed toolbox is too old to choose stages. Update its core plugin."}
     try:
-        p = quiet_run(state, [state.bash, str(script), "set", folder.as_posix(), key, "on" if on else "off"], cwd=str(folder))
+        p = quiet_run(state, [state.bash, script.as_posix(), "set", folder.as_posix(), key, "on" if on else "off"], cwd=str(folder))
     except (OSError, subprocess.TimeoutExpired) as e:
         return 500, {"error": str(e)}
     if p.returncode:
@@ -2853,7 +2853,7 @@ def decide_run(state, folder, *args):
     if not script:
         return None
     try:
-        return quiet_run(state, [state.bash, str(script), *args], cwd=str(folder))
+        return quiet_run(state, [state.bash, script.as_posix(), *args], cwd=str(folder))
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -3069,7 +3069,7 @@ def break_view(state, folder):
 
     def run():
         try:
-            p = quiet_run(state, [state.bash, str(script), "show", "--tsv", folder.as_posix()], cwd=str(folder))
+            p = quiet_run(state, [state.bash, script.as_posix(), "show", "--tsv", folder.as_posix()], cwd=str(folder))
         except (OSError, subprocess.TimeoutExpired):
             return False, None
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("waiting\t")), "") if not p.returncode else ""
@@ -3091,7 +3091,7 @@ def gate_answer(state, folder, choice):
     if choice not in ("continue", "skip", "stop"):
         return 400, {"error": "continue, skip or stop"}
     try:
-        p = quiet_run(state, [state.bash, str(script), "answer", folder.as_posix(), choice], cwd=str(folder))
+        p = quiet_run(state, [state.bash, script.as_posix(), "answer", folder.as_posix(), choice], cwd=str(folder))
     except (OSError, subprocess.TimeoutExpired) as e:
         return 500, {"error": str(e)}
     if p.returncode:
@@ -3115,7 +3115,7 @@ def gate_answer(state, folder, choice):
             if code != 200:
                 return code, started
     try:
-        quiet_run(state, [state.bash, str(script), "clear", folder.as_posix()], cwd=str(folder))
+        quiet_run(state, [state.bash, script.as_posix(), "clear", folder.as_posix()], cwd=str(folder))
     except (OSError, subprocess.TimeoutExpired):
         pass
     return 200, {"ok": True, "choice": choice, "started": started}
@@ -6779,7 +6779,7 @@ def reconcile_ledger(state, folder, project):
     if not script or not project or not os.path.isdir(project):
         return
     try:
-        quiet_run(state, [state.bash, str(script), "reconcile", folder.as_posix()], cwd=str(project), timeout=15)
+        quiet_run(state, [state.bash, script.as_posix(), "reconcile", folder.as_posix()], cwd=str(project), timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -7894,7 +7894,7 @@ def item_index(state, folder):
     if hit and hit[0] == stamp:
         return hit[1]
     try:
-        p = quiet_run(state, [state.bash, str(script), "index", folder.as_posix()], cwd=str(folder))
+        p = quiet_run(state, [state.bash, script.as_posix(), "index", folder.as_posix()], cwd=str(folder))
     except (OSError, subprocess.TimeoutExpired):
         return {}
     ids = {}
@@ -12857,7 +12857,7 @@ def qa_run(state, rel, args, spec=None, timeout=60):
     if not script:
         return None
     try:
-        p = subprocess.run([state.bash, str(script), *[str(a) for a in args]], cwd=state.cwd, capture_output=True,
+        p = subprocess.run([state.bash, script.as_posix(), *[str(a) for a in args]], cwd=state.cwd, capture_output=True,
                            timeout=timeout, input=spec if spec is not None else "", encoding="utf-8",
                            errors="replace", creationflags=NO_WINDOW)
         return p.returncode, p.stdout.replace("\r", ""), p.stderr.replace("\r", "")
@@ -15783,7 +15783,7 @@ def greet(info, cwd, bash):
         if not script:
             return None
         try:
-            p = subprocess.run([bash, str(script), *args], cwd=cwd, capture_output=True, timeout=60, stdin=subprocess.DEVNULL,
+            p = subprocess.run([bash, script.as_posix(), *args], cwd=cwd, capture_output=True, timeout=60, stdin=subprocess.DEVNULL,
                                encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
             return p.stdout if p.returncode == 0 and p.stdout.strip() else None
         except (OSError, subprocess.TimeoutExpired):
